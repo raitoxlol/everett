@@ -1,0 +1,31 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "everett-sessions"
+version = "1.1.0"
+description = "One layer above all your coding-agent sessions: list, route, and deliver work across Claude Code, Codex, OMP, Pi, Hermes Agent, and Grok CLI."
+readme = "README.md"
+requires-python = ">=3.10"
+license = {text = "MIT"}
+authors = [{name = "Everett contributors"}]
+keywords = ["claude-code", "codex", "grok", "mcp", "agents", "sessions", "router", "cli"]
+classifiers = [
+    "Environment :: Console",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: MacOS",
+    "Operating System :: POSIX :: Linux",
+    "Programming Language :: Python :: 3",
+    "Topic :: Software Development",
+]
+dependencies = []
+
+[project.scripts]
+everett = "everett.cli:main"
+
+[tool.setuptools]
+packages = ["everett", "everett.adapters", "everett.hooks"]
+
+[tool.setuptools.package-data]
+"everett.hooks" = ["*.mjs"]
