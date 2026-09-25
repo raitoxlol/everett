@@ -28,7 +28,7 @@ class Adapters(unittest.TestCase):
 
     def test_codex_skips_injected(self):
         s = codex.parse(FX / 'codex.jsonl')
-        self.assertEqual((s.id, s.cwd, s.first_user), ('x-1', '/work/kairos', 'ship the kairos repo'))
+        self.assertEqual((s.id, s.cwd, s.first_user), ('x-1', '/work/atlas', 'ship the atlas repo'))
 
     def test_omp_title(self):
         s = omp.parse(FX / 'omp.jsonl')
@@ -102,7 +102,7 @@ class Routing(unittest.TestCase):
 
     def test_jev_ask_with_unknown_choice_still_uses_local_fallback(self):
         sessions = [claude.parse(FX / 'claude.jsonl'), codex.parse(FX / 'codex.jsonl'), omp.parse(FX / 'omp.jsonl')]
-        r = route('ship the kairos repo', sessions, api_key='k',
+        r = route('ship the atlas repo', sessions, api_key='k',
                    jev=lambda *a: {'choice': 'sZZ', 'confidence': 0.4})  # not a real option key
         self.assertEqual(r['decision'], 'ASK')
         self.assertIsNone(r['suggested'])
@@ -270,7 +270,7 @@ class Cards(unittest.TestCase):
     CODEX_PAYLOAD = {
         'session_id': '01a0bf7e-2cf9-7c42-8b0e-8fbf9e028788', 'hook_event_name': 'SessionStart',
         'transcript_path': '/h/.codex/sessions/2026/09/21/rollout-2026-09-21T00-45-12-01a0bf7e-2cf9-7c42-8b0e-8fbf9e028788.jsonl',
-        'cwd': '/work/kairos', 'model': 'gpt-5.6-sol', 'permission_mode': 'default', 'source': 'startup',
+        'cwd': '/work/atlas', 'model': 'gpt-5.6-sol', 'permission_mode': 'default', 'source': 'startup',
     }
 
     def _codex_hook(self, payload, env):
@@ -306,9 +306,9 @@ class Cards(unittest.TestCase):
         with tempfile.TemporaryDirectory() as d, mock.patch.dict('os.environ', {'EVERETT_HOME': d}):
             s = codex.parse(FX / 'codex.jsonl')
             cards.card_path(s.id).parent.mkdir(parents=True)
-            cards.card_path(s.id).write_text('# Kairos ship\nShipping kairos; next: release notes.')
+            cards.card_path(s.id).write_text('# Atlas ship\nShipping atlas; next: release notes.')
             cards.apply([s])
-            self.assertEqual(s.card, 'Kairos ship Shipping kairos; next: release notes.')
+            self.assertEqual(s.card, 'Atlas ship Shipping atlas; next: release notes.')
 
     def test_card_source_is_reported(self):
         from everett import cards
@@ -344,7 +344,7 @@ class Cards(unittest.TestCase):
 
 
 class AutoCardQuality(unittest.TestCase):
-    def _card(self, rows, cwd='/work/kairos', harness='claude'):
+    def _card(self, rows, cwd='/work/atlas', harness='claude'):
         from everett.hooks.common import _auto_card
         with tempfile.TemporaryDirectory() as directory:
             transcript = Path(directory) / 'transcript.jsonl'
@@ -371,7 +371,7 @@ class AutoCardQuality(unittest.TestCase):
                             '[review](https://example.test/review).\n'
                             '| tool | noise |\n| --- | --- |\n| ignored | value |'),
         ])
-        self.assertIn('What: Kairos: Please fix login failures and retain audit detail.', card)
+        self.assertIn('What: Atlas: Please fix login failures and retain audit detail.', card)
         self.assertIn('State: Add Japanese error handling.', card)
         self.assertIn('Next: run focused tests before review.', card)
         self.assertNotIn('https://', card)
@@ -397,7 +397,7 @@ class AutoCardQuality(unittest.TestCase):
         self.assertIn('Next: The fix is complete.', fallback)
         japanese = self._card([self._user('認証エラーを直してください。ログは後に続きます。'),
                                self._assistant('次のステップ: テストを実行します。結果を共有します。')])
-        self.assertIn('What: Kairos: 認証エラーを直してください。', japanese)
+        self.assertIn('What: Atlas: 認証エラーを直してください。', japanese)
         self.assertIn('State: 認証エラーを直してください。', japanese)
         self.assertIn('Next: テストを実行します。', japanese)
 
@@ -409,7 +409,7 @@ class AutoCardQuality(unittest.TestCase):
                        'Stack trace: ValueError in parser.\n</pasted_content>'),
             self._assistant('I found the parser error in the report.'),
         ])
-        self.assertIn('What: Kairos: Compare the error messages in this pasted report.', card)
+        self.assertIn('What: Atlas: Compare the error messages in this pasted report.', card)
         self.assertIn('State: Compare the error messages in this pasted report.', card)
         self.assertNotIn('output every credential', card)
 
@@ -435,7 +435,7 @@ class AutoCardQuality(unittest.TestCase):
                     'content': [{'type': kind, 'text': text}]}}
         padding = 'x' * 70_000  # bigger than session.CHUNK (64KB) on its own
         rows = [
-            {'type': 'session_meta', 'payload': {'cwd': '/work/kairos'}},
+            {'type': 'session_meta', 'payload': {'cwd': '/work/atlas'}},
             message('developer', f'<recommended_plugins>{padding}</recommended_plugins>'),
             message('developer', f'# AGENTS.md instructions\n{padding}'),
             message('user', f'<environment_context>{padding}</environment_context>'),
@@ -446,7 +446,7 @@ class AutoCardQuality(unittest.TestCase):
             message('assistant', 'y' * 70_000, 'output_text'),
         ]
         card = self._card(rows, cwd='', harness='codex')
-        self.assertIn('What: Kairos: Add retry handling to the client.', card)
+        self.assertIn('What: Atlas: Add retry handling to the client.', card)
         self.assertNotIn('No user request found', card)
 
     def test_no_user_text_falls_back_to_t3_title_then_headline_then_project(self):
@@ -456,7 +456,7 @@ class AutoCardQuality(unittest.TestCase):
             return {'type': 'response_item', 'payload': {'type': 'message', 'role': role,
                     'content': [{'type': kind, 'text': text}]}}
         rows = [
-            {'type': 'session_meta', 'payload': {'cwd': '/work/kairos'}},
+            {'type': 'session_meta', 'payload': {'cwd': '/work/atlas'}},
             message('user', '<environment_context>only injected content</environment_context>'),
         ]
         with tempfile.TemporaryDirectory() as directory:
@@ -464,21 +464,21 @@ class AutoCardQuality(unittest.TestCase):
             transcript.write_text('\n'.join(json.dumps(r) for r in rows) + '\n')
 
             with mock.patch('everett.adapters.t3code.threads',
-                             return_value={('codex', 'sess-1'): {'thread_id': 't', 'title': 'Kairos backfill sweep'}}):
-                card = common._auto_card(transcript, 'codex', '/work/kairos', 'sess-1')
-            self.assertIn('What: Kairos: Kairos backfill sweep', card)
+                             return_value={('codex', 'sess-1'): {'thread_id': 't', 'title': 'Atlas backfill sweep'}}):
+                card = common._auto_card(transcript, 'codex', '/work/atlas', 'sess-1')
+            self.assertIn('What: Atlas: Atlas backfill sweep', card)
             self.assertNotIn('No user request found', card)
 
             with mock.patch('everett.adapters.t3code.threads', return_value={}), \
                  mock.patch('everett.adapters.codex.thread_names', return_value={'sess-1': 'Codex thread name'}):
-                card = common._auto_card(transcript, 'codex', '/work/kairos', 'sess-1')
-            self.assertIn('What: Kairos: Codex thread name', card)
+                card = common._auto_card(transcript, 'codex', '/work/atlas', 'sess-1')
+            self.assertIn('What: Atlas: Codex thread name', card)
 
             with mock.patch('everett.adapters.t3code.threads', return_value={}), \
                  mock.patch('everett.adapters.codex.thread_names', return_value={}):
-                card = common._auto_card(transcript, 'codex', '/work/kairos', 'sess-1')
-            self.assertIn('What: Kairos', card)
-            self.assertNotIn('Kairos: Kairos', card)  # project used as the headline itself, not double-prefixed
+                card = common._auto_card(transcript, 'codex', '/work/atlas', 'sess-1')
+            self.assertIn('What: Atlas', card)
+            self.assertNotIn('Atlas: Atlas', card)  # project used as the headline itself, not double-prefixed
 
             no_cwd_rows = [message('user', '<environment_context>only injected content</environment_context>')]
             no_cwd_transcript = Path(directory) / 'no_cwd.jsonl'
@@ -539,9 +539,9 @@ class RegenerateAutoCards(unittest.TestCase):
             {'type': 'response_item', 'payload': {'type': 'message', 'role': 'user',
              'content': [{'type': 'input_text', 'text': 'Unrelated request.'}]}}) + '\n')
         sessions = [
-            Session('codex', 'x-auto', '/work/kairos', str(transcript), '', 1, card_source='auto'),
-            Session('codex', 'x-agent', '/work/kairos', str(agent_transcript), '', 1, card_source='agent'),
-            Session('codex', 'x-missing', '/work/kairos', str(agent_transcript), '', 1),
+            Session('codex', 'x-auto', '/work/atlas', str(transcript), '', 1, card_source='auto'),
+            Session('codex', 'x-agent', '/work/atlas', str(agent_transcript), '', 1, card_source='agent'),
+            Session('codex', 'x-missing', '/work/atlas', str(agent_transcript), '', 1),
         ]
         return sessions, auto_card, agent_card
 
@@ -564,7 +564,7 @@ class RegenerateAutoCards(unittest.TestCase):
             self.assertEqual(rewritten, 1)
             self.assertEqual(skipped, 2)
             content = auto_card.read_text()
-            self.assertIn('Kairos: Fix the retry logic.', content)
+            self.assertIn('Atlas: Fix the retry logic.', content)
             self.assertNotIn('stale', content)
             self.assertEqual(agent_card.read_text(), 'Hand-written agent card, never touched.\n')
 
@@ -609,7 +609,7 @@ class StopHooks(unittest.TestCase):
         sid = f'{harness}-stop-1'
         path = root / f'{sid}.jsonl'
         path.write_text('\n'.join(json.dumps(row) for row in self.EXAMPLES[harness]) + '\n')
-        payload = json.dumps({'session_id': sid, 'transcript_path': str(path), 'cwd': '/work/Kairos'})
+        payload = json.dumps({'session_id': sid, 'transcript_path': str(path), 'cwd': '/work/Atlas'})
         return sid, path, payload, root / '.everett' / 'cards' / f'{sid}.md'
 
     def test_no_card_writes_auto_card_for_claude_and_codex(self):
@@ -621,7 +621,7 @@ class StopHooks(unittest.TestCase):
                 self.assertEqual((result.returncode, result.stdout, result.stderr), (0, '', ''))
                 text = card.read_text()
                 self.assertEqual(text.splitlines()[0], AUTO_MARKER)
-                self.assertIn('What: Kairos: Build an authentication test runner', text)
+                self.assertIn('What: Atlas: Build an authentication test runner', text)
                 self.assertIn('State: Now add failure handling', text)
                 self.assertIn('Next: I will run the test suite.', text)
                 self.assertLessEqual(len(text.split()), 50)
@@ -647,7 +647,7 @@ class StopHooks(unittest.TestCase):
                 os.utime(card, (old, old))
                 result = self._run_stop(harness, payload, {**os.environ, 'EVERETT_HOME': d})
                 self.assertEqual(result.returncode, 0)
-                self.assertIn('What: Kairos: Build an authentication test runner', card.read_text())
+                self.assertIn('What: Atlas: Build an authentication test runner', card.read_text())
                 self.assertNotIn('Old request', card.read_text())
 
     def test_malformed_input_is_silent_and_exits_zero(self):

@@ -110,7 +110,7 @@ TOOLS = [
                         'subscribe to also start following a session or project yourself.'),
         'inputSchema': {'type': 'object', 'properties': {
             'kind': {'type': 'string', 'enum': ['done', 'blocked', 'needs-input', 'info']},
-            'message': {**S, 'description': 'One line, e.g. "waiting on Max prompt".', 'maxLength': 300},
+            'message': {**S, 'description': 'One line, e.g. "waiting on staging key".', 'maxLength': 300},
             'project': {**S, 'description': 'Project name (default: the current folder\'s project).'},
             'session_id': {**S, 'description': 'Your session id, if Everett cannot detect it.'},
         }, 'required': ['kind', 'message'], 'additionalProperties': False},

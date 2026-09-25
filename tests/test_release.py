@@ -42,13 +42,13 @@ class TempHome(unittest.TestCase):
 class LocalRouter(unittest.TestCase):
     def setUp(self):
         self.sessions = [
-            session('a', '/work/kairos', card='Kairos: shipping the release notes and changelog'),
+            session('a', '/work/atlas', card='Atlas: shipping the release notes and changelog'),
             session('b', '/work/app', card='App: fixing the login redirect bug; next add tests'),
             session('c', '/work/site', first='redesign the marketing site hero'),
         ]
 
     def test_picks_matching_session(self):
-        r = local_route('keep going on kairos', self.sessions, now=NOW)
+        r = local_route('keep going on atlas', self.sessions, now=NOW)
         self.assertEqual((r['decision'], r['session']['id']), ('SESSION', 'a'))
         self.assertGreaterEqual(r['confidence'], 0.6)
         self.assertIn('claude --resume a', r['command'])
@@ -81,7 +81,7 @@ class LocalRouter(unittest.TestCase):
 
     def test_route_flag_forces_local_even_with_key(self):
         jev = mock.Mock()
-        r = route('keep going on kairos', self.sessions, router='local', api_key='k', jev=jev)
+        r = route('keep going on atlas', self.sessions, router='local', api_key='k', jev=jev)
         self.assertEqual(r['router'], 'local')
         jev.assert_not_called()
 

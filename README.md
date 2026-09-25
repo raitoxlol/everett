@@ -103,10 +103,10 @@ Done. MAX_RETRIES is now 5 and the backoff test covers the cap.
 | `everett event done\|blocked\|needs-input\|info "<msg>" [--project P]` | Records what this session is doing (see [Events](#events)). |
 | `everett events [--since 24h] [--session S] [--json] [--check]` | Recent events across sessions. `--check` also runs the blocked-too-long escalation. |
 | `everett subscribe <session\|project> [--as S] [--remove]` | Delivers another session's (or a project's) events to your inbox. |
-| `everett send --to <id-prefix\|name> "<text>"` | Skips routing and delivers to one session. The target is an exact id, a unique id prefix, the card's name (`Kairos: …` → `kairos`), or the project folder name. If more than one session matches, Everett lists them and sends nothing. |
+| `everett send --to <id-prefix\|name> "<text>"` | Skips routing and delivers to one session. The target is an exact id, a unique id prefix, the card's name (`Atlas: …` → `atlas`), or the project folder name. If more than one session matches, Everett lists them and sends nothing. |
 | `everett send --spawn [--dir D] [--harness H] "<text>"` | When routing says `NEW` with confidence ≥ 0.6, starts a new headless session and prints its reply and new session id. The directory defaults to the folder of the best-matching session, else the current one. |
 | `everett cards` | Card coverage per harness: agent-written, automatic, missing. |
-| `everett onboard [--yes] [--span-days N] [--no-backfill] [--no-mcp]` | Friendly first-time setup TUI (welcome, detect, hooks, MCP, optional card backfill, summary); `--yes` runs it non-interactively for scripts. |
+| `everett onboard [--yes] [--span-days N] [--no-backfill] [--no-mcp]` | Friendly first-time setup TUI (welcome, detect, hooks, MCP, optional Jev key + nightly merge, optional card backfill, summary); `--yes` runs it non-interactively for scripts. |
 | `everett install-hooks [--claude] [--codex] [--omp] [--grok] [--apply]` | Prints the hook registrations. `--apply` backs up the file, then merges idempotently. |
 | `everett mcp` | Runs the stdio MCP server (harnesses start it; see below). |
 | `everett install-mcp [--claude] [--codex] [--omp] [--grok] [--apply]` | Prints or registers the MCP server for each harness. |
@@ -170,15 +170,15 @@ Claude Code has its own cross-session messages (`<cross-session-message>` over s
 
 Everett knows what each session is doing, not just what it was about.
 
-- **Kinds.** `done`, `blocked`, `needs-input`, `info`. An agent reports one with `everett_event(kind, message)`, or anyone with `everett event blocked "waiting on Max prompt"`. Events are appended to `~/.everett/events.jsonl` and set the session's state in `~/.everett/state/<session-id>.json`, with `since` (when that state began). Messages are capped at 300 characters and secret-filtered.
+- **Kinds.** `done`, `blocked`, `needs-input`, `info`. An agent reports one with `everett_event(kind, message)`, or anyone with `everett event blocked "waiting on staging key"`. Events are appended to `~/.everett/events.jsonl` and set the session's state in `~/.everett/state/<session-id>.json`, with `since` (when that state began). Messages are capped at 300 characters and secret-filtered.
 - **Automatic.** The Stop hooks (Claude Code, Codex, Grok) read the turn's last assistant message (from the hook input, else the transcript) and classify it deterministically, with no LLM:
   - `blocked`: a closing line states "blocked", "stuck", "waiting on" / "waiting for", "can't proceed" / "cannot continue", or "unable to proceed". Negated ("not blocked", "no longer blocked", "unblocked") and questioned ("is it blocked?") mentions do not count.
   - `needs-input`: a closing line ends with a question mark, or asks the user to act ("need you to", "please confirm", "should I", "do you want", "would you like", "let me know if" …).
   - `done`: anything else, a clean finish.
   Only the last four prose lines count; code blocks, quotes, and tables are ignored. An automatic event that repeats the session's current state within 10 minutes, or with the same text, is dropped, so a chatty session does not spam.
-- **Seeing them.** `everett ls` prefixes sessions that are blocked or need input (`⚠ blocked 32h: waiting on Max prompt · <card>`). `everett_ls` returns `state` and `state_kind` for every session. `everett events --since 24h` lists them.
+- **Seeing them.** `everett ls` prefixes sessions that are blocked or need input (`⚠ blocked 32h: waiting on staging key · <card>`). `everett_ls` returns `state` and `state_kind` for every session. `everett events --since 24h` lists them.
 - **Subscriptions.** `everett subscribe <session|project>` (or `everett_subscribe`) puts another session's or a whole project's events into your inbox, so they are injected at your next turn. Stored in `~/.everett/subscriptions.json`. A session never receives its own events.
-- **The human.** `blocked` and `needs-input` also go to you. By default that is a macOS notification (`osascript`). Set `notify_command` to run your own command as well, for example one that sends Max a message so it reaches your phone. It runs under `sh -c` with the one-line summary as `$1` and `EVERETT_EVENT_KIND`, `EVERETT_EVENT_TEXT`, `EVERETT_EVENT_SESSION`, `EVERETT_EVENT_PROJECT`, `EVERETT_EVENT_REASON`, and `EVERETT_EVENT_JSON` in its environment. Notifiers run detached, so hooks never wait on them.
+- **The human.** `blocked` and `needs-input` also go to you. By default that is a macOS notification (`osascript`). Set `notify_command` to run your own command as well, for example one that pushes a message to your phone. It runs under `sh -c` with the one-line summary as `$1` and `EVERETT_EVENT_KIND`, `EVERETT_EVENT_TEXT`, `EVERETT_EVENT_SESSION`, `EVERETT_EVENT_PROJECT`, `EVERETT_EVENT_REASON`, and `EVERETT_EVENT_JSON` in its environment. Notifiers run detached, so hooks never wait on them.
 - **Escalation.** A session still `blocked` or `needs-input` after `escalate_minutes` (default 30) triggers one more notification ("blocked for 45 min: …"). The check runs at most once a minute from any session's hooks, and on demand with `everett events --check` (for example from cron).
 
 ## Routing
@@ -217,7 +217,7 @@ everett install-hooks --apply    # back up, then merge into the real config file
 
 Parallel sessions each build their own context and drift apart. The shared core is the part they all have in common. Their context and actions differ, but the core is the same.
 
-1. **Push.** Any session (or you) runs `everett learn "Kairos deploys from main; staging is auto"`. The fact is checked by a secret filter (key and token patterns plus an entropy check), capped at 500 characters, and appended to `~/.everett/core/inbox.jsonl` with the time, session id, harness, folder, and project.
+1. **Push.** Any session (or you) runs `everett learn "Atlas deploys from main; staging is auto"`. The fact is checked by a secret filter (key and token patterns plus an entropy check), capped at 500 characters, and appended to `~/.everett/core/inbox.jsonl` with the time, session id, harness, folder, and project.
 2. **Merge (slow path).** `everett trunk merge` distills the inbox into `~/.everett/core/core.md` (global) and `~/.everett/core/projects/<project>.md`, at most 300 words each. It deduplicates, lets newer facts win over contradicted ones (noting the old value), and drops one-off items. With `--llm claude` or `--llm codex`, a headless `claude -p` or `codex exec` run does the merge under a strict prompt; invalid or secret-bearing output changes nothing. `--llm none` is a deterministic append and dedupe with no LLM. Before writing, the previous core files go to `~/.everett/core/history/<time>/`, and the processed inbox is archived there too. If a vault is configured, the merged core is mirrored to `<vault>/<vault_dir>/Core.md`.
 3. **Pull.** The SessionStart hooks (Claude Code, Codex, OMP) add the global core plus the current project's core (at most 350 words in total) to each new session's context, with one line telling the agent to run `everett learn` when it finds something other sessions should know. The hooks read local files only, take about 40 ms, and stay silent on any error.
 
@@ -258,7 +258,7 @@ Everett is mostly used by agents. `everett mcp` is a stdio MCP server (JSON-RPC 
 Register it:
 
 ```bash
-everett install-mcp            # print the registration for Claude Code, Codex, and OMP
+everett install-mcp            # print the registration for Claude Code, Codex, OMP, and Grok
 everett install-mcp --apply    # back up, then register (idempotent)
 ```
 
@@ -292,7 +292,7 @@ router = "local"              # local | jev
 typesafe_api_key = "…"        # Jev key ([jev] api_key also works)
 merge_llm = "claude"          # trunk merge engine: claude | codex | none
 notify = "osascript"          # blocked/needs-input: osascript | command | both | none
-notify_command = "…"          # e.g. a Max/Hermes command; gets the summary as $1 (sets notify default to both)
+notify_command = "…"          # e.g. a push-notification command; gets the summary as $1 (sets notify default to both)
 escalate_minutes = 30         # re-notify once when a session stays blocked this long (0 = never)
 ```
 

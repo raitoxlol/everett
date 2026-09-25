@@ -89,7 +89,7 @@ class SessionLookupError(Exception):
 
 
 def _name(s: Session) -> str:
-    """The short name a card or title gives a session ("Kairos: ..." -> "kairos")."""
+    """The short name a card or title gives a session ("Atlas: ..." -> "atlas")."""
     text = s.card or s.title or ''
     text = text.split('What:', 1)[-1].strip()
     head = text.split(':', 1)[0] if ':' in text[:40] else ''

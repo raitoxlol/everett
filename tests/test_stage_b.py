@@ -28,7 +28,7 @@ class TempHome(unittest.TestCase):
         patcher.start()
         self.addCleanup(patcher.stop)
         self.addCleanup(self._dir.cleanup)
-        self.project = self.home / 'src' / 'kairos'
+        self.project = self.home / 'src' / 'atlas'
         (self.project / '.git').mkdir(parents=True)
         (self.project / 'pkg').mkdir()
 
@@ -66,11 +66,11 @@ class SecretFilter(unittest.TestCase):
 class Learn(TempHome):
     def test_appends_entry_with_metadata(self):
         with mock.patch.dict(os.environ, {'EVERETT_SESSION_ID': 's-1', 'CLAUDECODE': '1'}):
-            entry = core.learn('Kairos uses pnpm, not npm', scope='project', cwd=str(self.project / 'pkg'))
+            entry = core.learn('Atlas uses pnpm, not npm', scope='project', cwd=str(self.project / 'pkg'))
         self.assertEqual((entry['project'], entry['scope'], entry['session'], entry['harness']),
-                         ('kairos', 'project', 's-1', 'claude'))
+                         ('atlas', 'project', 's-1', 'claude'))
         [stored] = core.read_inbox()
-        self.assertEqual(stored['text'], 'Kairos uses pnpm, not npm')
+        self.assertEqual(stored['text'], 'Atlas uses pnpm, not npm')
         self.assertEqual(stored['cwd'], str(self.project / 'pkg'))
 
     def test_defaults_and_rejections(self):
@@ -98,7 +98,7 @@ class Learn(TempHome):
 class Merge(TempHome):
     def test_deterministic_merge_dedupes_and_archives(self):
         core.learn('Everett tests use a temp HOME', cwd=str(self.home))
-        core.learn('Kairos deploys from main', project='kairos')
+        core.learn('Atlas deploys from main', project='atlas')
         core.learn('everett tests use a temp home.', cwd=str(self.home))  # same fact, newer
         out = io.StringIO()
         with contextlib.redirect_stdout(out):
@@ -106,7 +106,7 @@ class Merge(TempHome):
         text = core.global_path().read_text()
         self.assertEqual(text.count('temp'), 1)
         self.assertIn('everett tests use a temp home.', text)
-        self.assertIn('Kairos deploys from main', core.project_path('kairos').read_text())
+        self.assertIn('Atlas deploys from main', core.project_path('atlas').read_text())
         self.assertFalse(core.inbox_path().exists())
         [snap] = list(core.history_dir().iterdir())
         self.assertEqual(len((snap / 'inbox.jsonl').read_text().splitlines()), 3)
@@ -118,7 +118,7 @@ class Merge(TempHome):
         snaps = sorted(core.history_dir().iterdir())
         self.assertEqual(len(snaps), 2)
         self.assertEqual((snaps[-1] / 'core.md').read_text(), before)
-        self.assertIn('Kairos deploys', (snaps[-1] / 'projects' / 'kairos.md').read_text())
+        self.assertIn('Atlas deploys', (snaps[-1] / 'projects' / 'atlas.md').read_text())
 
     def test_dry_run_writes_nothing(self):
         core.learn('A fact', cwd=str(self.home))
@@ -142,7 +142,7 @@ class Merge(TempHome):
     def test_llm_merge_uses_headless_harness(self):
         core.learn('Old: deploy on Fridays', cwd=str(self.home))
         reply = json.dumps({'global': '# Everett core\n\n- Never deploy on Fridays (was: deploy on Fridays)\n',
-                            'projects': {'Kairos': '# Project core: kairos\n\n- Uses pnpm\n'}})
+                            'projects': {'Atlas': '# Project core: atlas\n\n- Uses pnpm\n'}})
         runner = mock.Mock(return_value=SimpleNamespace(returncode=0, stdout=reply, stderr=''))
         result = core.merge('claude', runner=runner)
         command = runner.call_args.args[0]
@@ -150,7 +150,7 @@ class Merge(TempHome):
         self.assertIn('Old: deploy on Fridays', command[-1])
         self.assertEqual(runner.call_args.kwargs['env']['EVERETT_SEND'], '1')
         self.assertIn('Never deploy', core.global_path().read_text())
-        self.assertIn('pnpm', core.project_path('kairos').read_text())
+        self.assertIn('pnpm', core.project_path('atlas').read_text())
         self.assertEqual(result['merged'], 1)
 
     def test_bad_llm_output_changes_nothing(self):
@@ -194,8 +194,8 @@ class Pull(TempHome):
     def _fill(self):
         core.global_path().parent.mkdir(parents=True, exist_ok=True)
         core.global_path().write_text('# Everett core\n\n' + ''.join(f'- global fact {i} ' + 'g ' * 10 + '\n' for i in range(40)))
-        core.project_path('kairos').parent.mkdir(parents=True, exist_ok=True)
-        core.project_path('kairos').write_text('# Project core: kairos\n\n- Kairos uses pnpm\n')
+        core.project_path('atlas').parent.mkdir(parents=True, exist_ok=True)
+        core.project_path('atlas').write_text('# Project core: atlas\n\n- Atlas uses pnpm\n')
 
     def test_claude_and_codex_hooks_inject_bounded_core(self):
         self._fill()
@@ -205,7 +205,7 @@ class Pull(TempHome):
             self.assertEqual(result.returncode, 0)
             ctx = json.loads(result.stdout)['hookSpecificOutput']['additionalContext']
             self.assertIn('.everett/cards/abc.md', ctx)
-            self.assertIn('Kairos uses pnpm', ctx)
+            self.assertIn('Atlas uses pnpm', ctx)
             self.assertIn('global fact 0', ctx)
             self.assertIn('everett learn', ctx)
             shared = ctx.split('Everett shared core', 1)[1]
@@ -233,7 +233,7 @@ class Pull(TempHome):
         result = subprocess.run([sys.executable, str(REPO / 'everett/hooks/omp_card_context.py'), 'o-1'],
                                 capture_output=True, text=True, cwd=self.project,
                                 env={**self.env, 'PATH': '/usr/bin:/bin'})
-        self.assertIn('Kairos uses pnpm', result.stdout)
+        self.assertIn('Atlas uses pnpm', result.stdout)
         self.assertIn('o-1.md', result.stdout)
 
 

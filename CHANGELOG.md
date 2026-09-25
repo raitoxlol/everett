@@ -44,7 +44,7 @@ First public release. It includes the 1.0.0 work prepared on 2026-09-24, which w
 - Not used: Claude Code's own `<cross-session-message>` socket channel, which has no public way to send.
 
 ### Events
-- `everett event done|blocked|needs-input|info "<msg>" [--project P]` and `everett_event`. Stored in `~/.everett/events.jsonl`, with each session's current state (and since when) in `~/.everett/state/`. `everett ls` flags blocked and waiting sessions (`⚠ blocked 32h: waiting on Max prompt`), `everett_ls` returns `state` for each session, and `everett events [--since 24h]` lists them.
+- `everett event done|blocked|needs-input|info "<msg>" [--project P]` and `everett_event`. Stored in `~/.everett/events.jsonl`, with each session's current state (and since when) in `~/.everett/state/`. `everett ls` flags blocked and waiting sessions (`⚠ blocked 32h: waiting on staging key`), `everett_ls` returns `state` for each session, and `everett events [--since 24h]` lists them.
 - Stop hooks detect events deterministically from the turn's last assistant message: a closing question or an ask ("need you to", "should I", "please confirm") → `needs-input`; "blocked" / "stuck" / "waiting on" / "can't proceed" (not negated, not asked) → `blocked`; otherwise `done`. Repeats of the current state within 10 minutes are dropped.
 - `everett subscribe <session|project>` / `everett_subscribe` route events into the subscriber's inbox. `blocked` and `needs-input` notify the human: a macOS notification by default, plus `notify_command` (config or `EVERETT_NOTIFY_COMMAND`) for your own channel, and one escalation after `escalate_minutes` (default 30). `everett events --check` runs the escalation from cron.
 
@@ -60,7 +60,7 @@ First public release. It includes the 1.0.0 work prepared on 2026-09-24, which w
 - `everett onboard`: a friendly first-time-setup TUI (curses, with a plain-prompt fallback when not a TTY) -- welcome, detected harnesses, per-hook toggles with the exact files that will change, MCP registration toggles, and an optional card-backfill step (deterministic AUTO cards, no LLM calls) with a progress bar. Nothing is written before the final confirm. `--yes [--span-days N] [--no-backfill] [--no-mcp]` runs it non-interactively.
 - `~/.everett/config.toml` (`vault`, `vault_dir`, `default_harness`, `router`, `merge_llm`, Jev key), with environment overrides. No vault path is hardcoded.
 - `everett doctor` shows the Python version, session stores (including Grok and T3 Code), hooks, MCP registration, card coverage, router, and vault.
-- `pipx install everett-sessions`, `python -m everett`, and `everett --version`. No runtime dependencies. MIT license.
+- Install with `pipx install git+https://github.com/raitoxlol/everett` (the package is not on PyPI), `python -m everett`, and `everett --version`. No runtime dependencies. MIT license.
 
 ### Verified
 Live round trips on throwaway sessions (2026-09-24):

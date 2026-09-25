@@ -111,11 +111,11 @@ class BackfillSpanAndSafety(IsolatedHome):
     def test_never_overwrites_agent_card(self):
         self.write_claude_session('c-agent', '/work/agent', 'has a real card')
         cards.card_path('c-agent').parent.mkdir(parents=True, exist_ok=True)
-        cards.card_path('c-agent').write_text('Kairos: agent-written, do not touch.', encoding='utf-8')
+        cards.card_path('c-agent').write_text('Atlas: agent-written, do not touch.', encoding='utf-8')
         written, skipped = onboard.generate_backfill_cards(onboard.missing_card_sessions(3))
         self.assertEqual(written, 0)
         self.assertEqual(skipped, 0)  # the agent-carded session isn't in the "missing" list at all
-        self.assertEqual(cards.card_path('c-agent').read_text(), 'Kairos: agent-written, do not touch.')
+        self.assertEqual(cards.card_path('c-agent').read_text(), 'Atlas: agent-written, do not touch.')
 
     def test_missing_card_sessions_excludes_cards_already_written(self):
         self.write_claude_session('c-x', '/work/x', 'needs a card')

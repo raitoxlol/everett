@@ -319,7 +319,7 @@ def age(seconds: float) -> str:
 
 
 def describe(data: dict, now: float | None = None) -> str:
-    """'blocked 32h: waiting on Max prompt'."""
+    """'blocked 32h: waiting on staging key'."""
     now = time.time() if now is None else now
     return f'{data["kind"]} {age(now - float(data.get("since") or data.get("ts") or now))}: {data.get("text", "")}'
 

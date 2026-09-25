@@ -196,7 +196,7 @@ def _bm25(query: list[str], document: list[str], document_frequency: dict[str, i
     return score
 
 
-PROJECT_BOOST = 3.0  # request names a session's cwd/repo project (e.g. "kairos" ~ ~/Kairos)
+PROJECT_BOOST = 3.0  # request names a session's cwd/repo project (e.g. "atlas" ~ ~/Atlas)
 
 
 def rank(text: str, sessions: list[Session], now: float | None = None) -> list[tuple[float, str, float]]:

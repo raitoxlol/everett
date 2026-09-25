@@ -27,7 +27,7 @@ class Session:
     card_source: str | None = None
     profile: str = ''   # Hermes profile name
     source: str = ''    # harness-specific origin (e.g. Hermes cli/telegram)
-    state: str = ''     # latest Everett event, e.g. "blocked 32h: waiting on Max prompt"
+    state: str = ''     # latest Everett event, e.g. "blocked 32h: waiting on staging key"
     state_kind: str = ''  # done | blocked | needs-input | info
 
     def to_dict(self) -> dict:

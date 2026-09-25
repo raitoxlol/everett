@@ -73,10 +73,10 @@ def run(hours: float = 72) -> int:
         else:
             _line(True, f'  {harness:<7} installed')
 
-    print('mcp:')
-    for harness in ('claude', 'codex', 'omp', 'grok'):
-        if not (home() / STORES[harness]).is_dir():
-            continue
+    mcp_harnesses = [h for h in ('claude', 'codex', 'omp', 'grok') if (home() / STORES[h]).is_dir()]
+    if mcp_harnesses:
+        print('mcp:')
+    for harness in mcp_harnesses:
         ok = install.mcp_installed(harness)
         _line(ok or None, f'  {harness:<7} ' + ('everett MCP server registered' if ok else
                                                 f'not registered; `everett install-mcp --{harness}`'))

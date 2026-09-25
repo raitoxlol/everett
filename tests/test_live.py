@@ -45,14 +45,14 @@ class Base(unittest.TestCase):
 
 class Inbox(Base):
     def test_post_pending_take(self):
-        m = inbox.post('s1', 'hello there', sender='s0', from_harness='codex', from_card='Kairos: retries')
+        m = inbox.post('s1', 'hello there', sender='s0', from_harness='codex', from_card='Atlas: retries')
         self.assertTrue(m['id'].startswith('m'))
         self.assertEqual([x['id'] for x in inbox.pending('s1')], [m['id']])
         text = inbox.take('s1')
         self.assertIn('[Everett]', text)
         self.assertIn('hello there', text)
         self.assertIn('codex session s0', text)
-        self.assertIn('Kairos: retries', text)
+        self.assertIn('Atlas: retries', text)
         self.assertIn(f'everett_send(reply_to="{m["id"]}"', text)
         self.assertEqual(inbox.pending('s1'), [])
         self.assertEqual(inbox.take('s1'), '')

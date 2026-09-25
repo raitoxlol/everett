@@ -31,7 +31,7 @@ class Base(unittest.TestCase):
         self.addCleanup(shutil.rmtree, self.home, True)
         for name in ('EVERETT_SESSION_ID', 'CLAUDE_CODE_SESSION_ID', 'EVERETT_SEND', 'EVERETT_NOTIFY_COMMAND'):
             os.environ.pop(name, None)
-        self.project = self.home / 'kairos'
+        self.project = self.home / 'atlas'
         self.project.mkdir()
         self.calls = []
 
@@ -52,8 +52,8 @@ class Classify(unittest.TestCase):
             ('Which option do you prefer: A or B?', 'needs-input'),
             ('The migration is ready. I need you to run it against prod.', 'needs-input'),
             ('Let me know if you want the retry cap raised.', 'needs-input'),
-            ("I'm blocked: the Max prompt is missing.", 'blocked'),
-            ('Waiting on the staging credentials from Wright.', 'blocked'),
+            ("I'm blocked: the staging key is missing.", 'blocked'),
+            ('Waiting on the staging credentials from ops.', 'blocked'),
             ("I can't proceed until the API key is rotated.", 'blocked'),
             ('The deploy is no longer blocked; it finished.', 'done'),
             ('The job is not blocked anymore. Shipped.', 'done'),
@@ -64,18 +64,18 @@ class Classify(unittest.TestCase):
             self.assertEqual(events.classify(text)[0], kind, text)
         self.assertIsNone(events.classify(''))
         self.assertIsNone(events.classify('```\ncode only\n```'))
-        self.assertEqual(events.classify("Everything else works. I'm blocked on the Max prompt.")[1],
-                         "I'm blocked on the Max prompt.")
+        self.assertEqual(events.classify("Everything else works. I'm blocked on the staging key.")[1],
+                         "I'm blocked on the staging key.")
 
 
 class Record(Base):
     def test_event_log_state_and_describe(self):
-        e = self.record('blocked', 'waiting on Max prompt')
-        self.assertEqual((e['kind'], e['project'], e['session']), ('blocked', 'kairos', 's1'))
+        e = self.record('blocked', 'waiting on staging key')
+        self.assertEqual((e['kind'], e['project'], e['session']), ('blocked', 'atlas', 's1'))
         self.assertEqual(events.read()[0]['id'], e['id'])
         st = events.state('s1')
         self.assertEqual(st['since'], e['ts'])
-        later = self.record('blocked', 'still waiting on Max prompt')
+        later = self.record('blocked', 'still waiting on staging key')
         self.assertEqual(events.state('s1')['since'], e['ts'])  # the same state keeps its start
         self.assertTrue(events.describe(events.state('s1'), now=e['ts'] + 32 * 3600).startswith('blocked 32h: '))
         self.record('done', 'shipped')
@@ -104,7 +104,7 @@ class Record(Base):
             self.record('needs-input', 'Should I "deploy"?')
         (cmd, env), (osa, _) = self.calls
         self.assertEqual(cmd[:3], ['/bin/sh', '-c', 'max-notify "$1"'])
-        self.assertIn('needs-input [kairos] Should I "deploy"?', cmd[4])
+        self.assertIn('needs-input [atlas] Should I "deploy"?', cmd[4])
         self.assertEqual(env['EVERETT_EVENT_KIND'], 'needs-input')
         self.assertEqual(osa[0], 'osascript')
         self.assertIn('\\"deploy\\"', osa[2])
@@ -134,11 +134,11 @@ class Record(Base):
             if out.exists() and out.read_text():
                 break
             time.sleep(0.05)
-        self.assertEqual(out.read_text(), 'blocked [kairos] need creds|blocked')
+        self.assertEqual(out.read_text(), 'blocked [atlas] need creds|blocked')
 
     def test_escalation_once_after_threshold(self):
         start = time.time()
-        self.record('blocked', 'waiting on Max prompt', now=start)
+        self.record('blocked', 'waiting on staging key', now=start)
         self.calls.clear()
         with mock.patch.dict(os.environ, {'EVERETT_ESCALATE_MINUTES': '30', 'EVERETT_NOTIFY': 'command',
                                           'EVERETT_NOTIFY_COMMAND': 'x'}):
@@ -159,7 +159,7 @@ class Record(Base):
             self.calls.clear()
             events.check_escalations(now=start + 3600, runner=self.fake)
         argv, env = self.calls[0]
-        self.assertTrue(argv[4].startswith('needs-input for 60 min: needs-input [kairos]'))
+        self.assertTrue(argv[4].startswith('needs-input for 60 min: needs-input [atlas]'))
         self.assertEqual(env['EVERETT_EVENT_REASON'], 'needs-input for 60 min')
 
     def test_maybe_escalate_is_throttled(self):
@@ -173,12 +173,12 @@ class Record(Base):
 class Subscriptions(Base):
     def test_session_and_project_subscribers_get_inbox_events(self):
         events.subscribe('watcher', 's1')
-        events.subscribe('pm', 'project:kairos')
+        events.subscribe('pm', 'project:atlas')
         events.subscribe('other', 'project:web')
         events.subscribe('s1', '*')  # never gets its own events
         e = self.record('done', 'shipped retries')
         self.assertEqual(inbox.pending('watcher')[0]['kind'], 'event')
-        self.assertIn('DONE from claude s1 in kairos: shipped retries', inbox.pending('watcher')[0]['text'])
+        self.assertIn('DONE from claude s1 in atlas: shipped retries', inbox.pending('watcher')[0]['text'])
         self.assertEqual(len(inbox.pending('pm')), 1)
         self.assertEqual(inbox.pending('other'), [])
         self.assertEqual(inbox.pending('s1'), [])
@@ -194,7 +194,7 @@ class Subscriptions(Base):
         with mock.patch('everett.registry.scan', return_value=[s]):
             self.assertEqual(events.resolve_target('abcdef'), 'abcdef-123')
             self.assertEqual(events.resolve_target('Web App'), 'project:web-app')
-        self.assertEqual(events.resolve_target('project:Kairos'), 'project:kairos')
+        self.assertEqual(events.resolve_target('project:Atlas'), 'project:atlas')
         self.assertEqual(events.resolve_target('*'), '*')
 
 
@@ -206,7 +206,7 @@ class StopHook(Base):
         self.assertEqual(events.state('c1')['source'], 'auto')
         transcript = self.home / 't.jsonl'
         transcript.write_text(json.dumps({'type': 'assistant', 'message': {'role': 'assistant', 'content': [
-            {'type': 'text', 'text': "I'm blocked: waiting on the Max prompt."}]}}) + '\n')
+            {'type': 'text', 'text': "I'm blocked: waiting on the staging key."}]}}) + '\n')
         stop_event(json.dumps({'session_id': 'c1', 'cwd': str(self.project), 'transcript_path': str(transcript)}),
                    'claude')
         self.assertEqual(events.state('c1')['kind'], 'blocked')
@@ -241,12 +241,12 @@ class Surfaces(Base):
     def test_cli_event_events_subscribe_and_ls_state(self):
         out = io.StringIO()
         with mock.patch.dict(os.environ, {'EVERETT_SESSION_ID': 'sess-1'}), contextlib.redirect_stdout(out):
-            self.assertEqual(main(['event', 'blocked', 'waiting on Max prompt', '--project', 'kairos']), 0)
-        self.assertIn('blocked [kairos] waiting on Max prompt', out.getvalue())
+            self.assertEqual(main(['event', 'blocked', 'waiting on staging key', '--project', 'atlas']), 0)
+        self.assertIn('blocked [atlas] waiting on staging key', out.getvalue())
         out = io.StringIO()
         with contextlib.redirect_stdout(out):
             self.assertEqual(main(['events', '--since', '1h']), 0)
-        self.assertIn('waiting on Max prompt', out.getvalue())
+        self.assertIn('waiting on staging key', out.getvalue())
         out = io.StringIO()
         with contextlib.redirect_stdout(out):
             main(['events', '--json'])
@@ -254,18 +254,18 @@ class Surfaces(Base):
         err = io.StringIO()
         with contextlib.redirect_stderr(err):
             self.assertEqual(main(['events', '--since', 'soon']), 2)
-            self.assertEqual(main(['subscribe', 'kairos']), 2)  # no session to subscribe
+            self.assertEqual(main(['subscribe', 'atlas']), 2)  # no session to subscribe
         out = io.StringIO()
         with mock.patch('everett.registry.scan', return_value=[]), contextlib.redirect_stdout(out):
-            self.assertEqual(main(['subscribe', 'kairos', '--as', 'me-1']), 0)
-        self.assertEqual(events.subscriptions(), {'me-1': ['project:kairos']})
-        s = Session('claude', 'sess-1', str(self.project), '', '', time.time(), card='Kairos: retries')
+            self.assertEqual(main(['subscribe', 'atlas', '--as', 'me-1']), 0)
+        self.assertEqual(events.subscriptions(), {'me-1': ['project:atlas']})
+        s = Session('claude', 'sess-1', str(self.project), '', '', time.time(), card='Atlas: retries')
         events.apply([s])
-        self.assertTrue(s.state.startswith('blocked 0m: waiting on Max prompt'))
+        self.assertTrue(s.state.startswith('blocked 0m: waiting on staging key'))
         out = io.StringIO()
         with mock.patch('everett.cli.registry.scan', return_value=[s]), contextlib.redirect_stdout(out):
             main(['ls'])
-        self.assertIn('⚠ blocked 0m: waiting on Max prompt · Kairos: retries', out.getvalue())
+        self.assertIn('⚠ blocked 0m: waiting on staging key · Atlas: retries', out.getvalue())
 
     def test_mcp_tools(self):
         with mock.patch.dict(os.environ, {'EVERETT_SESSION_ID': 'mcp-1'}):

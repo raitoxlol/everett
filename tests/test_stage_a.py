@@ -125,7 +125,7 @@ class PiAdapter(TempHome):
 class DirectSend(unittest.TestCase):
     def setUp(self):
         self.sessions = [
-            Session('claude', 'abc-111', '/work/kairos', '', '', 0, card='Kairos: release notes'),
+            Session('claude', 'abc-111', '/work/atlas', '', '', 0, card='Atlas: release notes'),
             Session('codex', 'abd-222', '/work/app', '', '', 0, title='Login bug'),
             Session('omp', 'xyz-333', '/work/app', '', '', 0),
         ]
@@ -133,7 +133,7 @@ class DirectSend(unittest.TestCase):
     def test_exact_prefix_name_and_folder(self):
         self.assertEqual(registry.find('abc', self.sessions).id, 'abc-111')
         self.assertEqual(registry.find('xyz-333', self.sessions).id, 'xyz-333')
-        self.assertEqual(registry.find('Kairos', self.sessions).id, 'abc-111')
+        self.assertEqual(registry.find('Atlas', self.sessions).id, 'abc-111')
 
     def test_ambiguous_prefix_lists_candidates(self):
         with self.assertRaises(registry.SessionLookupError) as cm:
@@ -246,9 +246,9 @@ class Spawn(TempHome):
             spawner.assert_not_called()
 
     def test_spawn_dir_defaults_to_best_match(self):
-        sessions = [Session('claude', 'a', '/work/kairos', '', '', time.time(), card='kairos release')]
+        sessions = [Session('claude', 'a', '/work/atlas', '', '', time.time(), card='atlas release')]
         from everett.route import best_dir
-        self.assertEqual(best_dir('kairos docs', sessions), '/work/kairos')
+        self.assertEqual(best_dir('atlas docs', sessions), '/work/atlas')
         self.assertEqual(best_dir('penguins', sessions), '')
 
 
