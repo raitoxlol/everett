@@ -12,6 +12,10 @@ First public release. It includes the 1.0.0 work prepared on 2026-09-24, which w
 - T3 Code: each thread runs Codex, Claude Code, or Grok underneath, and `~/.t3/userdata/state.sqlite` names the underlying session. Those sessions are marked source `t3code` (`[t3code]` in `ls`) and take the thread title when they have none, so nothing is listed twice. Codex sessions started by T3 are also recognized by their `t3code_desktop` originator.
 - `everett ls [--json] [--all] [--harness H]`. `--harness` filters before the 40-session cap.
 
+### Jev first
+- `everett_send` (and `everett send`) route by default: omit `to` and Everett picks the session (jev when a key is configured, else the local matcher) instead of an agent eyeballing `everett_ls` and sending straight `to` an id. `to` is now documented as for a named session or a reply only. The MCP server instructions and the `everett_ls` / `everett_route` / `everett_send` tool descriptions say so explicitly, and `everett_ls`'s says it is for overview, not for picking a send target.
+- The `everett_send` response and the `everett send` CLI report the routing decision (router `jev`/`local`, chosen session, confidence): the CLI prints `routed by jev → [claude] ~/src/api — ... (0.87)` before delivering. On an `ASK` decision nothing is sent; the response now carries `candidates` (up to 3 close sessions) instead of a single `suggested` guess.
+
 ### Routing and delivery
 - Local router (default without a Jev key): BM25 over each session's card, title, first and last requests, and project folder, weighted by recency. The Jev router is used when a key is set. Both return `SESSION` / `NEW` / `ASK` with a confidence.
 - `everett send` waits for the target to go idle (up to 2 minutes), then resumes it headless and prints the reply. `--to <id-prefix|name>` skips routing. `--spawn` starts a new headless session on a confident `NEW` and records it in `~/.everett/spawned.jsonl`.

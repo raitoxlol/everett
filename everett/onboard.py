@@ -43,6 +43,42 @@ WELCOME_LINES = (
 )
 
 
+# ---- pure layout helpers (no curses import; safe to unit-test directly) -----------------------
+
+def step_indicator(step: int, total: int) -> str:
+    """'step 2 of 6'."""
+    return f'step {step} of {total}'
+
+
+def progress_rail(step: int, total: int) -> str:
+    """'●●○○○○' -- filled dots for completed/current steps, hollow for the rest."""
+    step = max(0, min(step, total))
+    return '●' * step + '○' * (total - step)
+
+
+def use_ascii_glyphs(encoding: str | None) -> bool:
+    """Whether to fall back to [x]/[ ] because the terminal encoding isn't UTF-8."""
+    return 'utf' not in (encoding or '').lower()
+
+
+def glyph(checked: bool, ascii_mode: bool = False) -> str:
+    """Checkbox glyph: unicode ☑/☐, or ASCII [x]/[ ] when the terminal can't render unicode."""
+    if ascii_mode:
+        return '[x]' if checked else '[ ]'
+    return '☑' if checked else '☐'
+
+
+def stepper_text(value: int, unit: str = 'day') -> str:
+    """Inline stepper label, e.g. '‹ 3 days ›'."""
+    plural = '' if value == 1 else 's'
+    return f'‹ {value} {unit}{plural} ›'
+
+
+def animation_disabled() -> bool:
+    """Skip the detect-screen reveal animation under NO_COLOR, EVERETT_NO_ANIM, or CI-style envs."""
+    return bool(os.environ.get('NO_COLOR') or os.environ.get('EVERETT_NO_ANIM'))
+
+
 class QuitOnboarding(Exception):
     """Raised when the user quits the TUI or plain flow; caught to exit cleanly with no changes."""
 
@@ -136,7 +172,7 @@ def generate_backfill_cards(sessions: list, progress=None) -> tuple:
     for i, s in enumerate(sessions, 1):
         content = ''
         try:
-            content = common._auto_card(Path(s.path), s.harness, s.cwd)
+            content = common._auto_card(Path(s.path), s.harness, s.cwd, s.id)
         except OSError:
             content = ''
         if content:
@@ -288,32 +324,126 @@ def run_plain(args) -> int:
 
 
 # ---- curses TUI -----------------------------------------------------------------------------
+#
+# Screens share a frame (title bar + "step N of 6" + progress rail) drawn by _draw_frame, and a
+# small palette from _init_colors that degrades to bold/dim attributes when the terminal has no
+# color support. All drawing goes through _put, which clips to the screen and never raises even
+# at the bottom-right corner or on a terminal too small to hold the frame.
 
-def _checklist(stdscr, title, intro, items):
-    """Generic toggle-list screen. items: list of (label, getter, setter). Returns 'forward'/'back'."""
+STEP_TITLES = ('Welcome', 'Detect', 'Hooks', 'MCP server', 'Backfill', 'Confirm')
+TOTAL_STEPS = len(STEP_TITLES)
+MIN_COLS = 54
+MIN_ROWS = 14
+
+
+def _init_colors():
+    """Accent / dim / green / amber attributes, degrading gracefully with no color support."""
     import curses
+    has_color = False
+    try:
+        if curses.has_colors() and os.environ.get('NO_COLOR') is None:
+            curses.start_color()
+            try:
+                curses.use_default_colors()
+                bg = -1
+            except curses.error:
+                bg = curses.COLOR_BLACK
+            curses.init_pair(1, curses.COLOR_CYAN, bg)
+            curses.init_pair(2, curses.COLOR_WHITE, bg)
+            curses.init_pair(3, curses.COLOR_GREEN, bg)
+            curses.init_pair(4, curses.COLOR_YELLOW, bg)
+            has_color = True
+    except curses.error:
+        has_color = False
+    if has_color:
+        return {
+            'has_color': True,
+            'accent': curses.color_pair(1) | curses.A_BOLD,
+            'dim': curses.color_pair(2) | curses.A_DIM,
+            'green': curses.color_pair(3) | curses.A_BOLD,
+            'amber': curses.color_pair(4) | curses.A_BOLD,
+        }
+    return {'has_color': False, 'accent': curses.A_BOLD, 'dim': curses.A_DIM,
+            'green': curses.A_BOLD, 'amber': curses.A_BOLD}
+
+
+def _put(stdscr, y, x, text, attr=0, w=None):
+    """addnstr that clips to the window and swallows the bottom-right-corner curses.error."""
+    import curses
+    h, maxw = stdscr.getmaxyx()
+    if y < 0 or y >= h or x < 0 or x >= maxw:
+        return
+    width = maxw - x if w is None else min(w, maxw - x)
+    if width <= 0:
+        return
+    try:
+        stdscr.addnstr(y, x, text, width, attr)
+    except curses.error:
+        pass
+
+
+def _ascii_mode(stdscr) -> bool:
+    enc = getattr(stdscr, 'encoding', None) or (sys.stdout.encoding if sys.stdout else None)
+    return use_ascii_glyphs(enc)
+
+
+def _draw_frame(stdscr, colors, step, title):
+    """Erases the screen and draws the title bar + step indicator + progress rail + screen title.
+    Returns the first free content row, or None if the terminal is too small to draw into."""
+    import curses
+    stdscr.erase()
+    h, w = stdscr.getmaxyx()
+    if h < MIN_ROWS or w < MIN_COLS:
+        msg = f'terminal too small ({w}x{h}) -- resize to at least {MIN_COLS}x{MIN_ROWS}'
+        _put(stdscr, min(h - 1, 1), max(0, (w - len(msg)) // 2), msg, colors['amber'])
+        _put(stdscr, min(h - 1, max(0, h - 1)), max(0, (w - 6) // 2), 'q quit')
+        stdscr.refresh()
+        return None
+    bar = ' everett · setup'
+    _put(stdscr, 0, 0, bar.ljust(w), colors['accent'] | curses.A_REVERSE, w)
+    indicator = step_indicator(step, TOTAL_STEPS)
+    _put(stdscr, 0, max(0, w - len(indicator) - 2), indicator, colors['accent'] | curses.A_REVERSE)
+    _put(stdscr, 1, 2, progress_rail(step, TOTAL_STEPS), colors['accent'])
+    _put(stdscr, 2, 2, title, curses.A_BOLD)
+    return 4
+
+
+def _footer(stdscr, colors, hint):
+    h, w = stdscr.getmaxyx()
+    _put(stdscr, h - 1, 2, hint, colors['dim'])
+
+
+def _wait_for_resize_or_key(stdscr):
+    """getch that keeps redrawing on KEY_RESIZE instead of treating it as an ordinary key."""
+    import curses
+    return stdscr.getch()
+
+
+def _checklist(stdscr, colors, step, title, intro, items):
+    """Generic toggle-list screen. items: list of (label, path, getter, setter). Returns 'forward'/'back'."""
+    import curses
+    ascii_mode = _ascii_mode(stdscr)
     idx = 0
     while True:
-        stdscr.erase()
-        h, w = stdscr.getmaxyx()
-        y = 0
-        stdscr.addnstr(y, 2, title, max(1, w - 4), curses.A_BOLD)
-        y += 2
-        for line in intro:
-            stdscr.addnstr(y, 2, line, max(1, w - 4))
+        y = _draw_frame(stdscr, colors, step, title)
+        if y is not None:
+            h, w = stdscr.getmaxyx()
+            for line in intro:
+                _put(stdscr, y, 2, line, colors['dim'])
+                y += 1
             y += 1
-        y += 1
-        for n, (label, getter, _setter) in enumerate(items):
-            mark = 'x' if getter() else ' '
-            prefix = '>' if n == idx else ' '
-            attr = curses.A_REVERSE if n == idx else 0
-            stdscr.addnstr(y, 2, f'{prefix} [{mark}] {label}', max(1, w - 4), attr)
-            y += 1
-        y += 1
-        stdscr.addnstr(y, 2, 'up/down or j/k move   space toggle   enter continue   b back   q quit',
-                       max(1, w - 4))
-        stdscr.refresh()
-        key = stdscr.getch()
+            for n, (label, path, getter, _setter) in enumerate(items):
+                mark = glyph(getter(), ascii_mode)
+                focused = n == idx
+                attr = curses.A_REVERSE if focused else 0
+                prefix = '›' if focused else ' '
+                _put(stdscr, y, 2, f'{prefix} {mark} {label}', attr)
+                if path:
+                    _put(stdscr, y + 1, 6, str(path), colors['dim'])
+                y += 2
+            _footer(stdscr, colors, 'up/down move   space toggle   enter continue   b back   q quit')
+            stdscr.refresh()
+        key = _wait_for_resize_or_key(stdscr)
         if key in (ord('q'), 27):
             raise QuitOnboarding()
         if key in (curses.KEY_UP, ord('k')) and items:
@@ -321,7 +451,7 @@ def _checklist(stdscr, title, intro, items):
         elif key in (curses.KEY_DOWN, ord('j')) and items:
             idx = (idx + 1) % len(items)
         elif key == ord(' ') and items:
-            label, getter, setter = items[idx]
+            _label, _path, getter, setter = items[idx]
             setter(not getter())
         elif key in (curses.KEY_ENTER, 10, 13):
             return 'forward'
@@ -329,19 +459,19 @@ def _checklist(stdscr, title, intro, items):
             return 'back'
 
 
-def _pause(stdscr, title, lines, allow_back=True, key_hint=None):
+def _pause(stdscr, colors, step, title, lines, allow_back=True, key_hint=None):
     """A plain information screen with enter/back/quit."""
     import curses
     hint = key_hint or ('enter continue   b back   q quit' if allow_back else 'enter continue   q quit')
     while True:
-        stdscr.erase()
-        h, w = stdscr.getmaxyx()
-        stdscr.addnstr(0, 2, title, max(1, w - 4), curses.A_BOLD)
-        for n, line in enumerate(lines):
-            stdscr.addnstr(2 + n, 2, line, max(1, w - 4))
-        stdscr.addnstr(2 + len(lines) + 1, 2, hint, max(1, w - 4))
-        stdscr.refresh()
-        key = stdscr.getch()
+        y = _draw_frame(stdscr, colors, step, title)
+        if y is not None:
+            for line in lines:
+                _put(stdscr, y, 2, line, colors['dim'] if line.startswith('  ') else 0)
+                y += 1
+            _footer(stdscr, colors, hint)
+            stdscr.refresh()
+        key = _wait_for_resize_or_key(stdscr)
         if key in (ord('q'), 27):
             raise QuitOnboarding()
         if key in (curses.KEY_ENTER, 10, 13, ord('a')):
@@ -350,24 +480,38 @@ def _pause(stdscr, title, lines, allow_back=True, key_hint=None):
             return 'back'
 
 
-def _screen_welcome(stdscr):
-    return _pause(stdscr, 'Welcome to Everett', list(WELCOME_LINES), allow_back=False)
+def _screen_welcome(stdscr, colors):
+    lines = list(WELCOME_LINES)
+    return _pause(stdscr, colors, 1, 'Welcome to Everett', lines, allow_back=False)
 
 
-def _screen_detect(stdscr, cfg: OnboardConfig):
+def _screen_detect(stdscr, colors, cfg: OnboardConfig):
+    import curses
     if not cfg.detected:
-        lines = ['No coding-agent sessions or stores were found on this machine.']
+        rows = ['No coding-agent sessions or stores were found on this machine.']
     else:
-        lines = [f'v {harness}  --  {count} session(s)' for harness, count in cfg.detected.items()]
-    return _pause(stdscr, 'What Everett found', lines)
+        rows = [f'{harness}  --  {count} session(s) found' for harness, count in cfg.detected.items()]
+
+    animate = not animation_disabled() and cfg.detected
+    if animate:
+        y0 = _draw_frame(stdscr, colors, 2, 'What Everett found')
+        if y0 is not None:
+            delay = min(0.4, 0.4 / max(1, len(rows))) if rows else 0
+            for n, row in enumerate(rows):
+                mark = glyph(True, _ascii_mode(stdscr))
+                _put(stdscr, y0 + n, 2, f'{mark} {row}', colors['green'])
+                stdscr.refresh()
+                curses.napms(int(delay * 1000))
+    lines = [f'{glyph(True, _ascii_mode(stdscr))} {row}' for row in rows] if cfg.detected else rows
+    return _pause(stdscr, colors, 2, 'What Everett found', lines)
 
 
-def _screen_hooks(stdscr, cfg: OnboardConfig):
+def _screen_hooks(stdscr, colors, cfg: OnboardConfig):
     items = []
     for harness, events in cfg.hooks.items():
         path = install.omp_extension_path() if harness == 'omp' else install.settings_path(harness)
         for event in events:
-            label = f'{harness}: {EVENT_LABELS.get(event, event)} -> {path}'
+            label = f'{harness}: {EVENT_LABELS.get(event, event)}'
 
             def getter(h=harness, e=event):
                 return cfg.hooks[h][e]
@@ -375,15 +519,16 @@ def _screen_hooks(stdscr, cfg: OnboardConfig):
             def setter(value, h=harness, e=event):
                 cfg.hooks[h][e] = value
 
-            items.append((label, getter, setter))
+            items.append((label, path, getter, setter))
     intro = ['Toggle which hooks to install. A backup is made of any file before it changes.']
-    return _checklist(stdscr, 'Hooks', intro, items)
+    return _checklist(stdscr, colors, 3, 'Hooks', intro, items)
 
 
-def _screen_mcp(stdscr, cfg: OnboardConfig):
+def _screen_mcp(stdscr, colors, cfg: OnboardConfig):
     items = []
     for harness in cfg.mcp:
-        label = f'{harness}: register the Everett MCP server -> {install.mcp_path(harness)}'
+        label = f'{harness}: register the Everett MCP server'
+        path = install.mcp_path(harness)
 
         def getter(h=harness):
             return cfg.mcp[h]
@@ -391,36 +536,36 @@ def _screen_mcp(stdscr, cfg: OnboardConfig):
         def setter(value, h=harness):
             cfg.mcp[h] = value
 
-        items.append((label, getter, setter))
+        items.append((label, path, getter, setter))
     intro = ['Lets each harness call Everett (ls / route / send / learn / card) as a native tool.']
-    return _checklist(stdscr, 'MCP server', intro, items)
+    return _checklist(stdscr, colors, 4, 'MCP server', intro, items)
 
 
-def _screen_backfill(stdscr, cfg: OnboardConfig):
+def _screen_backfill(stdscr, colors, cfg: OnboardConfig):
     import curses
+    ascii_mode = _ascii_mode(stdscr)
     while True:
         preview = missing_card_sessions(cfg.span_days) if cfg.backfill_enabled else []
-        stdscr.erase()
-        h, w = stdscr.getmaxyx()
-        y = 0
-        stdscr.addnstr(y, 2, 'Backfill cards (optional)', max(1, w - 4), curses.A_BOLD)
-        y += 2
-        stdscr.addnstr(y, 2, 'Make cards for your recent sessions? This step is skippable.', max(1, w - 4))
-        y += 2
-        mark = 'x' if cfg.backfill_enabled else ' '
-        stdscr.addnstr(y, 2, f'[{mark}] enabled  (space to toggle)', max(1, w - 4))
-        y += 2
-        stdscr.addnstr(y, 2, f'span: {cfg.span_days} day(s)  (left/right or h/l to change, 1-30)', max(1, w - 4))
-        y += 2
-        if cfg.backfill_enabled:
-            stdscr.addnstr(y, 2, f'{len(preview)} session(s) without a card in that span', max(1, w - 4))
+        y = _draw_frame(stdscr, colors, 5, 'Backfill cards (optional)')
+        if y is not None:
+            _put(stdscr, y, 2, 'Make cards for your recent sessions. This step is skippable.', colors['dim'])
             y += 2
-        stdscr.addnstr(y, 2, 'no LLM calls; cards are deterministic and marked <!-- everett:auto -->',
-                       max(1, w - 4))
-        y += 2
-        stdscr.addnstr(y, 2, 'enter continue   b back   q quit', max(1, w - 4))
-        stdscr.refresh()
-        key = stdscr.getch()
+            mark = glyph(cfg.backfill_enabled, ascii_mode)
+            _put(stdscr, y, 2, f'{mark} enabled', curses.A_BOLD)
+            _put(stdscr, y, 20, '(space to toggle)', colors['dim'])
+            y += 2
+            _put(stdscr, y, 2, 'span:', 0)
+            _put(stdscr, y, 8, stepper_text(cfg.span_days), colors['accent'] | curses.A_BOLD)
+            _put(stdscr, y, 24, '(left/right or h/l, 1-30)', colors['dim'])
+            y += 2
+            if cfg.backfill_enabled:
+                _put(stdscr, y, 2, f'{len(preview)} session(s) without a card in that span', colors['green'])
+                y += 2
+            _put(stdscr, y, 2, 'no LLM calls; cards are deterministic and marked <!-- everett:auto -->',
+                 colors['dim'])
+            _footer(stdscr, colors, 'space toggle   ‹/› or h/l span   enter continue   b back   q quit')
+            stdscr.refresh()
+        key = _wait_for_resize_or_key(stdscr)
         if key in (ord('q'), 27):
             raise QuitOnboarding()
         if key == ord(' '):
@@ -447,53 +592,121 @@ def _confirm_lines(cfg: OnboardConfig) -> list:
     return lines
 
 
-def _screen_confirm(stdscr, cfg: OnboardConfig):
-    direction = _pause(stdscr, 'Apply these changes?', _confirm_lines(cfg),
+def _screen_confirm(stdscr, colors, cfg: OnboardConfig):
+    direction = _pause(stdscr, colors, 6, 'Apply these changes?', _confirm_lines(cfg),
                         key_hint='enter/a apply   b back   q quit')
     return 'apply' if direction == 'forward' else direction
 
 
-def _screen_apply(stdscr, cfg: OnboardConfig) -> ApplyResult:
+def _screen_apply(stdscr, colors, cfg: OnboardConfig) -> ApplyResult:
+    """Ticks off Hooks / MCP / Backfill as each finishes, with a progress bar for backfill."""
     import curses
-    h, w = stdscr.getmaxyx()
+    ascii_mode = _ascii_mode(stdscr)
+    steps = ['Hooks', 'MCP', 'Backfill'] if cfg.backfill_enabled else ['Hooks', 'MCP']
+    done = set()
 
-    def progress(i, total):
+    def draw(extra_line=None):
         stdscr.erase()
-        stdscr.addnstr(0, 2, 'Generating backfill cards...', max(1, w - 4), curses.A_BOLD)
-        pct = (i / total) if total else 1.0
-        bar_w = max(10, w - 24)
-        filled = int(bar_w * pct)
-        stdscr.addnstr(2, 2, '[' + '#' * filled + '-' * (bar_w - filled) + f'] {i}/{total}', max(1, w - 4))
+        h, w = stdscr.getmaxyx()
+        _put(stdscr, 0, 2, 'Applying...', curses.A_BOLD)
+        y = 2
+        for name in steps:
+            mark = glyph(name in done, ascii_mode)
+            attr = colors['green'] if name in done else colors['dim']
+            _put(stdscr, y, 2, f'{mark} {name}', attr)
+            y += 1
+        if extra_line:
+            _put(stdscr, y + 1, 2, extra_line, colors['accent'])
         stdscr.refresh()
 
-    stdscr.erase()
-    stdscr.addnstr(0, 2, 'Applying...', max(1, w - 4), curses.A_BOLD)
-    stdscr.refresh()
-    return run_apply(cfg, backfill_progress=progress)
+    draw()
+    hook_lines = apply_hooks(cfg)
+    done.add('Hooks')
+    draw()
+    mcp_lines = apply_mcp(cfg)
+    done.add('MCP')
+    draw()
+
+    written = skipped = 0
+    if cfg.backfill_enabled:
+        def progress(i, total):
+            pct = (i / total) if total else 1.0
+            bar_w = 30
+            filled = int(bar_w * pct)
+            bar = '#' * filled + '-' * (bar_w - filled)
+            draw(f'[{bar}] {i}/{total}')
+
+        written, skipped = generate_backfill_cards(missing_card_sessions(cfg.span_days), progress)
+        done.add('Backfill')
+        draw()
+    return ApplyResult(hook_lines, mcp_lines, written, skipped)
 
 
-def _screen_summary(stdscr, cfg: OnboardConfig, result: ApplyResult):
-    _pause(stdscr, 'Done', summary_lines(cfg, result), allow_back=False, key_hint='enter/q to exit')
+def _try_this_box(stdscr, colors, y, w):
+    """Draws a boxed 'Try this' panel with the exact first commands and a sample agent prompt."""
+    import curses
+    commands = ['everett ls', 'everett route "what is my codex session doing?"']
+    prompt = 'use everett to ask my <name> session what it is doing'
+    inner_w = min(w - 6, max(len(c) for c in commands + [prompt]) + 4)
+    box_w = inner_w + 4
+    x = 2
+    _put(stdscr, y, x, '┌' + '─' * (box_w - 2) + '┐', colors['accent'])
+    _put(stdscr, y + 1, x, '│ Try this' + ' ' * (box_w - 11) + '│', colors['accent'] | curses.A_BOLD)
+    row = y + 2
+    for cmd in commands:
+        _put(stdscr, row, x, '│', colors['accent'])
+        _put(stdscr, row, x + 2, f'$ {cmd}', colors['green'])
+        _put(stdscr, row, x + box_w - 1, '│', colors['accent'])
+        row += 1
+    _put(stdscr, row, x, '│', colors['accent'])
+    _put(stdscr, row, x + 2, 'sample agent prompt:', colors['dim'])
+    _put(stdscr, row, x + box_w - 1, '│', colors['accent'])
+    row += 1
+    _put(stdscr, row, x, '│', colors['accent'])
+    _put(stdscr, row, x + 2, f'"{prompt}"', 0)
+    _put(stdscr, row, x + box_w - 1, '│', colors['accent'])
+    row += 1
+    _put(stdscr, row, x, '└' + '─' * (box_w - 2) + '┘', colors['accent'])
+    return row + 1
+
+
+def _screen_summary(stdscr, colors, cfg: OnboardConfig, result: ApplyResult):
+    import curses
+    lines = summary_lines(cfg, result)
+    while True:
+        y = _draw_frame(stdscr, colors, TOTAL_STEPS, 'Done')
+        if y is not None:
+            h, w = stdscr.getmaxyx()
+            for line in lines:
+                _put(stdscr, y, 2, line, colors['dim'] if line.startswith('  ') else 0)
+                y += 1
+            _try_this_box(stdscr, colors, y + 1, w)
+            _footer(stdscr, colors, 'enter/q to exit')
+            stdscr.refresh()
+        key = _wait_for_resize_or_key(stdscr)
+        if key in (ord('q'), 27, curses.KEY_ENTER, 10, 13, ord('a')):
+            return
 
 
 def _tui_main(stdscr, cfg: OnboardConfig):
     import curses
     curses.curs_set(0)
+    colors = _init_colors()
     steps = ('welcome', 'detect', 'hooks', 'mcp', 'backfill', 'confirm')
     screens = {
-        'welcome': lambda: _screen_welcome(stdscr),
-        'detect': lambda: _screen_detect(stdscr, cfg),
-        'hooks': lambda: _screen_hooks(stdscr, cfg),
-        'mcp': lambda: _screen_mcp(stdscr, cfg),
-        'backfill': lambda: _screen_backfill(stdscr, cfg),
-        'confirm': lambda: _screen_confirm(stdscr, cfg),
+        'welcome': lambda: _screen_welcome(stdscr, colors),
+        'detect': lambda: _screen_detect(stdscr, colors, cfg),
+        'hooks': lambda: _screen_hooks(stdscr, colors, cfg),
+        'mcp': lambda: _screen_mcp(stdscr, colors, cfg),
+        'backfill': lambda: _screen_backfill(stdscr, colors, cfg),
+        'confirm': lambda: _screen_confirm(stdscr, colors, cfg),
     }
     i = 0
     while i < len(steps):
         direction = screens[steps[i]]()
         if direction == 'apply':
-            result = _screen_apply(stdscr, cfg)
-            _screen_summary(stdscr, cfg, result)
+            result = _screen_apply(stdscr, colors, cfg)
+            _screen_summary(stdscr, colors, cfg, result)
             return
         i = max(0, i - 1) if direction == 'back' else i + 1
 

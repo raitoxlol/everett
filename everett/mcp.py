@@ -25,11 +25,14 @@ PARSE_ERROR, INVALID_REQUEST, METHOD_NOT_FOUND, INVALID_PARAMS, INTERNAL_ERROR =
 
 INSTRUCTIONS = (
     'Everett is the layer above every coding-agent session on this machine (Claude Code, Codex, OMP, Pi, Hermes). '
-    'Use everett_ls to see what other sessions are working on, everett_route to find the session a task belongs to, '
-    'and everett_send to hand that session work (a running session gets it live at its next turn; answer '
-    'messages you receive with everett_send(reply_to=...)). Use everett_learn to push durable facts that '
-    'every session should know into the shared core, and everett_core to read it. Keep your own card current '
-    'with everett_card so others can route to you, and report done / blocked / needs-input with everett_event.'
+    'To hand off work, call everett_send with just `text` describing the task and let Everett route it -- do not '
+    'eyeball everett_ls and pick a target yourself. Only pass `to` when the user named a specific session, or when '
+    'you are replying to one. everett_ls is for a quick overview of what other sessions are doing, not for picking '
+    'a send target. everett_route is the read-only preview of that same routing decision, for when you want to see '
+    'it before sending. Answer messages you receive with everett_send(reply_to=...). Use everett_learn to push '
+    'durable facts that every session should know into the shared core, and everett_core to read it. Keep your own '
+    'card current with everett_card so others can route to you, and report done / blocked / needs-input with '
+    'everett_event.'
 )
 
 S = {'type': 'string'}
@@ -37,8 +40,10 @@ TOOLS = [
     {
         'name': 'everett_ls',
         'description': ('List recent coding-agent sessions on this machine (all harnesses), newest first, each with '
-                        'its card: what it is working on, state, next step. Use it to see what the parallel '
-                        'sessions are doing before routing or sending work.'),
+                        'its card: what it is working on, state, next step. For overview only -- to see what the '
+                        'parallel sessions are doing. Do not use it to hand-pick a target session to send to; call '
+                        'everett_send with just the task text and let it route, or use everett_route to preview the '
+                        'routing decision.'),
         'inputSchema': {'type': 'object', 'properties': {
             'hours': {'type': 'number', 'description': 'Look-back window in hours (default 72).', 'minimum': 0},
             'harness': {'type': 'string', 'enum': ['claude', 'codex', 'omp', 'pi', 'hermes', 'grok'],
@@ -47,9 +52,11 @@ TOOLS = [
     },
     {
         'name': 'everett_route',
-        'description': ('Decide which existing session a request continues. Returns decision SESSION (with the '
-                        'session), NEW (belongs to no session), or ASK (ambiguous; the closest candidate is '
-                        'given), plus a confidence. Read-only: it never sends anything.'),
+        'description': ('Preview which existing session a request would continue, without sending anything. '
+                        'Returns decision SESSION (with the session), NEW (belongs to no session), or ASK '
+                        '(ambiguous; candidate sessions are given), plus a confidence and which router (jev or '
+                        'local) decided. Usually you want everett_send instead, which does this routing itself -- '
+                        'use everett_route only when you want to see the decision before committing to it.'),
         'inputSchema': {'type': 'object', 'properties': {
             'text': {**S, 'description': 'The request, as you would send it.'},
             'router': {'type': 'string', 'enum': ['local', 'jev'], 'description': 'Default: jev if configured, else local.'},
@@ -57,12 +64,18 @@ TOOLS = [
     },
     {
         'name': 'everett_send',
-        'description': ('Deliver a request to another session. Without `to`, Everett routes the text; only a '
-                        'SESSION decision is delivered. With `to` (session id prefix, card name, or project folder) '
-                        'routing is skipped. A session with a live harness process (someone has it open) gets the '
-                        'request in its inbox, injected at its next turn or tool call; pass `wait` to wait for the '
-                        'reply, or it arrives in YOUR inbox later. An idle session is resumed headless and its '
-                        'reply returned. To answer an Everett message you received, pass reply_to=<message id> '
+        'description': ('Deliver a request to another session. This is the default way to hand off work: pass '
+                        'just `text` describing the task and Everett routes it for you (jev when configured, else '
+                        'the local matcher) -- do not call everett_ls and pick a target by hand. Only pass `to` '
+                        '(session id prefix, card name, or project folder) when the user named a specific session, '
+                        'or when replying to one; it skips routing entirely. The response always reports the route '
+                        'decision -- which router decided (jev/local), the chosen session, and its confidence -- so '
+                        'you can tell the user e.g. "jev picked ...". A SESSION decision is delivered. On ASK '
+                        '(ambiguous) nothing is sent; the candidate sessions come back for you to disambiguate, '
+                        'then call again with `to`. A session with a live harness process (someone has it open) '
+                        'gets the request in its inbox, injected at its next turn or tool call; pass `wait` to wait '
+                        'for the reply, or it arrives in YOUR inbox later. An idle session is resumed headless and '
+                        'its reply returned. To answer an Everett message you received, pass reply_to=<message id> '
                         'and text. A NEW decision starts a new headless session only when spawn=true. It refuses '
                         'to send to your own session and refuses requests forwarded more than 3 times.'),
         'inputSchema': {'type': 'object', 'properties': {
@@ -209,11 +222,13 @@ def tool_ls(args):
 def tool_route(args):
     text = _str(args, 'text', True)
     router = _str(args, 'router') or None
+    caller = _str(args, 'session_id') or caller_identity()['session_id']
     try:
-        r = route(text, registry.scan(72), router=router)
+        r = route(text, registry.scan(72), router=router, caller_id=caller or None)
     except RouteError as e:
         raise ToolError(str(e)) from e
-    out = {k: r.get(k) for k in ('decision', 'confidence', 'router', 'suggested', 'command') if r.get(k) is not None}
+    out = {k: r.get(k) for k in ('decision', 'confidence', 'router', 'suggested', 'candidates', 'command')
+           if r.get(k) is not None}
     if r.get('session'):
         out['session'] = _brief(Session(**r['session']))
     return out
@@ -254,7 +269,7 @@ def tool_send(args):
         else:
             sessions = registry.scan(72)
             try:
-                r = route(text, sessions)
+                r = route(text, sessions, caller_id=caller or None)
             except RouteError as e:
                 raise ToolError(str(e)) from e
             decision = {k: r.get(k) for k in ('decision', 'confidence', 'router')}
@@ -270,6 +285,7 @@ def tool_send(args):
                         'session_id': result.session_id, 'reply': result.reply}
             if r['decision'] != 'SESSION':
                 return {**decision, 'delivered': False, 'suggested': r.get('suggested'),
+                        'candidates': r.get('candidates', []),
                         'note': 'Ambiguous. Nothing was sent; pass `to` with the session you mean.'}
             session = Session(**r['session'])
         refuse_self(session, caller)

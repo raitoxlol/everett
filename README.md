@@ -15,12 +15,15 @@ pipx install everett-sessions   # or, from a checkout: pipx install .
 everett onboard                 # friendly terminal setup wizard
 ```
 
-It is a short terminal UI: welcome, what Everett found on this machine, which hooks to install
-(and in which files -- a backup is made of each one first), whether to register the MCP server,
-and an optional "make cards for my recent sessions" backfill step with a progress bar. Nothing is
-written until you confirm at the end; `q` quits at any point with no changes. Not a TTY (or curses
-fails to start)? It falls back to the same steps as plain yes/no prompts. For scripts and CI, skip
-the UI entirely:
+It is a six-step terminal UI (welcome, detect, hooks, MCP, backfill, confirm) with a title bar,
+step indicator, and progress rail so you always know where you are, plus a live "Try this" panel
+with the exact first commands at the end: what Everett found on this machine, which hooks to
+install (and in which files -- a backup is made of each one first), whether to register the MCP
+server, and an optional "make cards for my recent sessions" backfill step -- pick the day span
+with an inline `‹ 3 days ›` stepper and watch a per-step checklist tick off with a progress bar as
+it runs. Nothing is written until you confirm at the end; `q` quits at any point with no changes.
+Not a TTY (or curses fails to start)? It falls back to the same steps as plain yes/no prompts. For
+scripts and CI, skip the UI entirely:
 
 ```bash
 everett onboard --yes                # apply every default, non-interactively
@@ -69,7 +72,7 @@ Done. MAX_RETRIES is now 5 and the backoff test covers the cap.
 |---|---|
 | `everett ls [--json] [--all] [--harness H]` | Recent sessions from every harness, one line each. `--all` includes scripted runs. |
 | `everett route "<text>" [--router local\|jev] [--json]` | Picks the session a request continues: `SESSION`, `NEW`, or `ASK`, with a confidence and the resume command. It never sends. |
-| `everett send "<text>" [--dry-run] [--timeout S] [--router …]` | Routes the request and delivers it. A session with a live harness process gets it in its inbox, injected at its next turn or tool call (see [Live delivery](#live-delivery)). An idle one is resumed headless after it goes quiet (up to 2 min), and the reply is printed. `NEW` and `ASK` send nothing. |
+| `everett send "<text>" [--dry-run] [--timeout S] [--router …]` | Routes the request (jev when a key is configured, else local) and delivers it, printing `routed by jev → [claude] ~/src/api — … (0.87)` before sending. A session with a live harness process gets it in its inbox, injected at its next turn or tool call (see [Live delivery](#live-delivery)). An idle one is resumed headless after it goes quiet (up to 2 min), and the reply is printed. `NEW` and `ASK` send nothing (`ASK` prints its candidates; resend with `--to`). |
 | `everett send … [--mode auto\|resume\|inbox] [--wait S]` | `--mode` forces headless resume or inbox delivery (default `auto`). `--wait S` waits up to S seconds for an inbox reply; without it the reply arrives in your inbox later. |
 | `everett reply <message-id> "<text>"` | Answers an Everett message; the reply goes to the sender's inbox. |
 | `everett inbox [--session S] [--peek] [--json]` | Shows the messages waiting for this session (or the human inbox when run outside a session) and marks them delivered. |
@@ -199,11 +202,13 @@ The project is the enclosing git repository's folder name, else the folder name.
 
 Everett is mostly used by agents. `everett mcp` is a stdio MCP server (JSON-RPC 2.0, protocol versions 2025-06-18, 2025-03-26, and 2024-11-05) written with the standard library only, so every MCP-capable harness gets Everett as native tools:
 
+**Jev first.** Call `everett_send` with just `text`; do not call `everett_ls` and hand-pick a target session. Without `to`, Everett routes the request itself (Jev when a key is configured, else the local matcher) before delivering it, and the response reports the decision -- router, chosen session, confidence -- so you can tell the user e.g. "jev picked \[claude\] ~/src/api". Pass `to` only when the user named a specific session or you are replying to one; it skips routing. On an ambiguous `ASK` decision nothing is sent -- the response carries `candidates` (close sessions) to disambiguate, then send again with `to`. `everett_ls` is for a quick overview of what sessions are doing, not for picking a send target.
+
 | Tool | Arguments | Returns |
 |---|---|---|
-| `everett_ls` | `hours?`, `harness?` | Sessions with their cards (and `source`, such as `t3code`); your own session is marked `you`. |
-| `everett_route` | `text`, `router?` | `SESSION` / `NEW` / `ASK`, confidence, candidate. Never sends. |
-| `everett_send` | `text`, `to?`, `spawn?`, `dir?`, `harness?`, `timeout?`, `session_id?`, `mode?`, `wait?`, `reply_to?` | The reply of a resumed session, or the queued message id for a live one (plus its reply when `wait` is set). `reply_to` answers a message you received. |
+| `everett_ls` | `hours?`, `harness?` | Sessions with their cards (and `source`, such as `t3code`); your own session is marked `you`. Overview only -- not for picking a send target. |
+| `everett_route` | `text`, `router?` | `SESSION` / `NEW` / `ASK`, confidence, router used, candidates. Never sends. |
+| `everett_send` | `text`, `to?`, `spawn?`, `dir?`, `harness?`, `timeout?`, `session_id?`, `mode?`, `wait?`, `reply_to?` | Without `to`, routes then delivers, reporting the route decision (router, session, confidence; `candidates` on `ASK`, nothing sent). The reply of a resumed session, or the queued message id for a live one (plus its reply when `wait` is set). `reply_to` answers a message you received. |
 | `everett_learn` | `fact`, `project?`, `scope?` | Queues a fact for the shared core (secret-filtered). |
 | `everett_core` | `project?` | The shared core this session's project sees. |
 | `everett_card` | `what`, `state`, `next`, `session_id?` | Writes the calling session's card. |

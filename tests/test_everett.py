@@ -14,7 +14,7 @@ from everett import trunk
 from everett.adapters import claude, codex, omp
 from everett.cli import main
 from everett.registry import mark_running
-from everett.route import RouteError, criteria, route
+from everett.route import RouteError, criteria, describe, route
 from everett.send import SendError, command_for, send
 from everett.session import CHUNK, Session, read_edges
 
@@ -89,6 +89,31 @@ class Routing(unittest.TestCase):
     def test_new(self):
         r = route('new thing', self.sessions, api_key='k', jev=lambda *a: {'choice': 'new', 'confidence': 0.8})
         self.assertEqual(r['decision'], 'NEW')
+
+    def test_jev_ask_without_candidate_falls_back_to_local_top3(self):
+        sessions = [claude.parse(FX / 'claude.jsonl'), codex.parse(FX / 'codex.jsonl'), omp.parse(FX / 'omp.jsonl')]
+        r = route('fix the login bug', sessions, api_key='k',
+                   jev=lambda *a: {'choice': 'none', 'confidence': 0.1})
+        self.assertEqual(r['decision'], 'ASK')
+        self.assertTrue(r['candidates'])
+        self.assertLessEqual(len(r['candidates']), 3)
+        self.assertTrue(any('Login bug fix' in c for c in r['candidates']))  # local BM25 picks the login-bug session
+        self.assertEqual(r['candidates'][0], describe(sessions[0]))  # best match first
+
+    def test_jev_ask_with_unknown_choice_still_uses_local_fallback(self):
+        sessions = [claude.parse(FX / 'claude.jsonl'), codex.parse(FX / 'codex.jsonl'), omp.parse(FX / 'omp.jsonl')]
+        r = route('ship the kairos repo', sessions, api_key='k',
+                   jev=lambda *a: {'choice': 'sZZ', 'confidence': 0.4})  # not a real option key
+        self.assertEqual(r['decision'], 'ASK')
+        self.assertIsNone(r['suggested'])
+        self.assertTrue(r['candidates'])
+
+    def test_local_router_ask_with_no_lexical_match_still_has_candidates(self):
+        from everett.route import local_route
+        sessions = [claude.parse(FX / 'claude.jsonl'), codex.parse(FX / 'codex.jsonl')]
+        r = local_route('the and of', sessions)  # only stop words -> no query tokens, rank() returns []
+        self.assertEqual(r['decision'], 'ASK')
+        self.assertEqual(len(r['candidates']), 2)
 
 
 class Sending(unittest.TestCase):
@@ -400,6 +425,71 @@ class AutoCardQuality(unittest.TestCase):
         self.assertIn('What: Orbit: Add retry handling to the client.', card)
         self.assertIn('Next: run tests.', card)
 
+    def test_codex_large_injected_preamble_does_not_hide_real_user_text(self):
+        """A Codex session whose injected preamble (AGENTS.md / recommended_plugins /
+        environment_context) is individually larger than the read_edges head/tail window must
+        still surface the real user request via the full-scan fallback, not 'No user request
+        found'."""
+        def message(role, text, kind='input_text'):
+            return {'type': 'response_item', 'payload': {'type': 'message', 'role': role,
+                    'content': [{'type': kind, 'text': text}]}}
+        padding = 'x' * 70_000  # bigger than session.CHUNK (64KB) on its own
+        rows = [
+            {'type': 'session_meta', 'payload': {'cwd': '/work/kairos'}},
+            message('developer', f'<recommended_plugins>{padding}</recommended_plugins>'),
+            message('developer', f'# AGENTS.md instructions\n{padding}'),
+            message('user', f'<environment_context>{padding}</environment_context>'),
+            message('user', 'Add retry handling to the client.'),
+            message('assistant', 'The client change is ready.\n**Next step: run tests.**', 'output_text'),
+            # filler so the real turn also falls outside the tail window, not just the head
+            message('assistant', 'x' * 70_000, 'output_text'),
+            message('assistant', 'y' * 70_000, 'output_text'),
+        ]
+        card = self._card(rows, cwd='', harness='codex')
+        self.assertIn('What: Kairos: Add retry handling to the client.', card)
+        self.assertNotIn('No user request found', card)
+
+    def test_no_user_text_falls_back_to_t3_title_then_headline_then_project(self):
+        from everett.hooks import common
+
+        def message(role, text, kind='input_text'):
+            return {'type': 'response_item', 'payload': {'type': 'message', 'role': role,
+                    'content': [{'type': kind, 'text': text}]}}
+        rows = [
+            {'type': 'session_meta', 'payload': {'cwd': '/work/kairos'}},
+            message('user', '<environment_context>only injected content</environment_context>'),
+        ]
+        with tempfile.TemporaryDirectory() as directory:
+            transcript = Path(directory) / 'transcript.jsonl'
+            transcript.write_text('\n'.join(json.dumps(r) for r in rows) + '\n')
+
+            with mock.patch('everett.adapters.t3code.threads',
+                             return_value={('codex', 'sess-1'): {'thread_id': 't', 'title': 'Kairos backfill sweep'}}):
+                card = common._auto_card(transcript, 'codex', '/work/kairos', 'sess-1')
+            self.assertIn('What: Kairos: Kairos backfill sweep', card)
+            self.assertNotIn('No user request found', card)
+
+            with mock.patch('everett.adapters.t3code.threads', return_value={}), \
+                 mock.patch('everett.adapters.codex.thread_names', return_value={'sess-1': 'Codex thread name'}):
+                card = common._auto_card(transcript, 'codex', '/work/kairos', 'sess-1')
+            self.assertIn('What: Kairos: Codex thread name', card)
+
+            with mock.patch('everett.adapters.t3code.threads', return_value={}), \
+                 mock.patch('everett.adapters.codex.thread_names', return_value={}):
+                card = common._auto_card(transcript, 'codex', '/work/kairos', 'sess-1')
+            self.assertIn('What: Kairos', card)
+            self.assertNotIn('Kairos: Kairos', card)  # project used as the headline itself, not double-prefixed
+
+            no_cwd_rows = [message('user', '<environment_context>only injected content</environment_context>')]
+            no_cwd_transcript = Path(directory) / 'no_cwd.jsonl'
+            no_cwd_transcript.write_text('\n'.join(json.dumps(r) for r in no_cwd_rows) + '\n')
+            with mock.patch('everett.adapters.t3code.threads', return_value={}), \
+                 mock.patch('everett.adapters.codex.thread_names', return_value={}), \
+                 mock.patch('everett.hooks.common.os.getcwd', return_value=str(Path.home())):
+                # no cwd anywhere (home isn't a project) and no title anywhere: nothing to fall back to
+                card = common._auto_card(no_cwd_transcript, 'codex', '', 'sess-1')
+            self.assertEqual(card, '')
+
     def test_card_hard_cap_and_word_safe_ellipsis(self):
         long_request = ' '.join(f'request{i}' for i in range(80))
         long_state = ' '.join(f'state{i}' for i in range(80))
@@ -429,6 +519,67 @@ class AutoCardQuality(unittest.TestCase):
         self.assertIn('Auto cards: 1', output.getvalue())
         self.assertIn('Missing: 1', output.getvalue())
         self.assertIn('  codex: 1 sessions, 0 agent, 0 auto, 1 missing', output.getvalue())
+class RegenerateAutoCards(unittest.TestCase):
+    def _setup(self, directory):
+        from everett import cards as cards_mod
+        transcript = Path(directory) / 'x-auto.jsonl'
+        transcript.write_text('\n'.join(json.dumps(r) for r in [
+            {'type': 'response_item', 'payload': {'type': 'message', 'role': 'user',
+             'content': [{'type': 'input_text', 'text': 'Fix the retry logic.'}]}},
+            {'type': 'response_item', 'payload': {'type': 'message', 'role': 'assistant',
+             'content': [{'type': 'output_text', 'text': 'Retries are fixed. Next: run the suite.'}]}},
+        ]) + '\n')
+        auto_card = cards_mod.card_path('x-auto')
+        auto_card.parent.mkdir(parents=True, exist_ok=True)
+        auto_card.write_text(f'{cards_mod.AUTO_MARKER}\nWhat: stale text\nState: stale\nNext: stale\n')
+        agent_card = cards_mod.card_path('x-agent')
+        agent_card.write_text('Hand-written agent card, never touched.\n')
+        agent_transcript = Path(directory) / 'x-agent.jsonl'
+        agent_transcript.write_text(json.dumps(
+            {'type': 'response_item', 'payload': {'type': 'message', 'role': 'user',
+             'content': [{'type': 'input_text', 'text': 'Unrelated request.'}]}}) + '\n')
+        sessions = [
+            Session('codex', 'x-auto', '/work/kairos', str(transcript), '', 1, card_source='auto'),
+            Session('codex', 'x-agent', '/work/kairos', str(agent_transcript), '', 1, card_source='agent'),
+            Session('codex', 'x-missing', '/work/kairos', str(agent_transcript), '', 1),
+        ]
+        return sessions, auto_card, agent_card
+
+    def test_dry_run_reports_without_writing(self):
+        from everett.cli import regenerate_auto_cards
+        with tempfile.TemporaryDirectory() as d, mock.patch.dict('os.environ', {'EVERETT_HOME': d}):
+            sessions, auto_card, agent_card = self._setup(d)
+            before = auto_card.read_text()
+            rewritten, skipped = regenerate_auto_cards(sessions, dry_run=True)
+            self.assertEqual(rewritten, 1)
+            self.assertEqual(skipped, 2)  # the agent card and the missing one are never touched
+            self.assertEqual(auto_card.read_text(), before)  # dry run wrote nothing
+            self.assertEqual(agent_card.read_text(), 'Hand-written agent card, never touched.\n')
+
+    def test_real_run_rewrites_only_the_auto_card(self):
+        from everett.cli import regenerate_auto_cards
+        with tempfile.TemporaryDirectory() as d, mock.patch.dict('os.environ', {'EVERETT_HOME': d}):
+            sessions, auto_card, agent_card = self._setup(d)
+            rewritten, skipped = regenerate_auto_cards(sessions, dry_run=False)
+            self.assertEqual(rewritten, 1)
+            self.assertEqual(skipped, 2)
+            content = auto_card.read_text()
+            self.assertIn('Kairos: Fix the retry logic.', content)
+            self.assertNotIn('stale', content)
+            self.assertEqual(agent_card.read_text(), 'Hand-written agent card, never touched.\n')
+
+    def test_cli_regenerate_auto_flag(self):
+        import contextlib
+        import io
+        with tempfile.TemporaryDirectory() as d, mock.patch.dict('os.environ', {'EVERETT_HOME': d}):
+            sessions, auto_card, agent_card = self._setup(d)
+            output = io.StringIO()
+            with mock.patch('everett.cli.registry.scan', return_value=sessions), contextlib.redirect_stdout(output):
+                self.assertEqual(main(['cards', '--regenerate-auto', '--dry-run', '--hours', '48']), 0)
+            self.assertIn('Would rewrite 1 auto card(s), skipped 2', output.getvalue())
+            self.assertIn('stale', auto_card.read_text())  # dry run: unchanged
+
+
 class StopHooks(unittest.TestCase):
     ROOT = Path(__file__).parents[1]
     EXAMPLES = {

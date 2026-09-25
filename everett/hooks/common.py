@@ -9,7 +9,7 @@ from pathlib import Path
 
 from ..adapters import claude, codex, grok
 from ..cards import AUTO_MARKER, INSTRUCTION, card_path
-from ..session import read_edges
+from ..session import clean, read_edges, scan_full
 
 SKIP_ENV = 'EVERETT_SEND'  # set by `everett send`; headless resumes don't get cards
 
@@ -167,7 +167,29 @@ def _project_name(cwd: str) -> str:
     return name[:1].upper() + name[1:] if name else 'Project'
 
 
-def _auto_card(transcript: Path, harness: str, cwd: str = '') -> str:
+def _thread_headline(harness: str, session_id: str) -> str:
+    """T3 Code's thread title, then the harness's own session headline (e.g. a Codex Desktop
+    thread name) -- used only when a session has no usable user text anywhere in it."""
+    if not session_id:
+        return ''
+    try:
+        from ..adapters import t3code
+        thread = t3code.threads().get((harness, session_id))
+        if thread and thread.get('title'):
+            return clean(thread['title'], 120)
+    except Exception:  # noqa: BLE001  best effort
+        pass
+    if harness == 'codex':
+        try:
+            name = codex.thread_names().get(session_id, '')
+            if name:
+                return clean(name, 120)
+        except Exception:  # noqa: BLE001
+            pass
+    return ''
+
+
+def _auto_card(transcript: Path, harness: str, cwd: str = '', session_id: str = '') -> str:
     adapter = {'claude': claude, 'codex': codex, 'grok': grok}.get(harness)
     if adapter is None:
         return ''
@@ -176,28 +198,50 @@ def _auto_card(transcript: Path, harness: str, cwd: str = '') -> str:
     users = [text for row in rows if (text := adapter.user_text(row, raw=True))]
     tail_users = [text for row in tail if (text := adapter.user_text(row, raw=True))]
     assistants = [text for row in rows if (text := adapter.assistant_text(row, raw=True))]
-    if not users and not assistants:
-        return ''
+    if not users:
+        # read_edges' fixed byte window can miss real user text entirely when a session opens
+        # with an oversized injected preamble (see _thread_headline docstring context above --
+        # Codex AGENTS.md / environment_context / recommended plugins can each run tens of KB)
+        # that fills the whole head budget before the real first user message. Fall back to a
+        # full, bounded scan of the transcript before concluding there is no user text.
+        full_rows = scan_full(transcript)
+        full_users = [text for row in full_rows if (text := adapter.user_text(row, raw=True))]
+        if full_users:
+            users = full_users
+            tail_users = full_users
+            if not assistants:
+                assistants = [text for row in full_rows if (text := adapter.assistant_text(row, raw=True))]
+    if not users and not assistants and not session_id:
+        return ''  # nothing to build from and no session id to look up a fallback headline with
     if not cwd:
         cwd = next((row.get('cwd') or (row.get('payload') or {}).get('cwd')
                     for row in rows if row.get('cwd') or (row.get('payload') or {}).get('cwd')), '')
     cwd = cwd or os.getcwd()
     latest_users = tail_users or users
-    what = next((intent for text in users if (intent := _intent(text))), 'No user request found')
-    state = next((intent for text in reversed(latest_users) if (intent := _intent(text))),
-                 'No user request found')
-    next_step = next((step for text in reversed(assistants) if (step := _next_step(text))),
-                     'No assistant response found')
+    what = next((intent for text in users if (intent := _intent(text))), '')
+    state = next((intent for text in reversed(latest_users) if (intent := _intent(text))), '')
+    next_step = next((step for text in reversed(assistants) if (step := _next_step(text))), '')
     project = _project_name(cwd)
+    if not what and not state:
+        headline = _thread_headline(harness, session_id)
+        if headline:
+            what = state = headline
+        elif project != 'Project':
+            what = state = project
+            project = 'Project'  # already used as the headline below; skip the redundant prefix
+        else:
+            return ''  # no user text, and nowhere else to get a headline from: write nothing
+    elif not what:
+        what = state
+    elif not state:
+        state = what
     if project != 'Project':
         what = f'{project}: {what}'
     # The marker and labels occupy six words; these limits leave 44 for content.
-    return '\n'.join((
-        AUTO_MARKER,
-        f'What: {_word_limit(what, 14)}',
-        f'State: {_word_limit(state, 14)}',
-        f'Next: {_word_limit(next_step, 16)}',
-    )) + '\n'
+    lines = [AUTO_MARKER, f'What: {_word_limit(what, 14)}', f'State: {_word_limit(state, 14)}']
+    if next_step:  # no assistant turn yet: leave Next out rather than write a placeholder
+        lines.append(f'Next: {_word_limit(next_step, 16)}')
+    return '\n'.join(lines) + '\n'
 
 
 def stop_hook(raw: str, harness: str) -> None:
@@ -234,7 +278,7 @@ def stop_hook(raw: str, harness: str) -> None:
         if existed and (current.splitlines()[:1] != [AUTO_MARKER]
                         or current_stat.st_mtime_ns >= transcript_mtime):
             return
-        content = _auto_card(transcript, harness, data.get('cwd', ''))
+        content = _auto_card(transcript, harness, data.get('cwd', ''), session_id)
         if not content:
             return
         target.parent.mkdir(parents=True, exist_ok=True)

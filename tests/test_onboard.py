@@ -216,5 +216,52 @@ class Detection(IsolatedHome):
         self.assertNotIn('omp', cfg.mcp)
 
 
+class LayoutHelpers(unittest.TestCase):
+    """Pure functions behind the curses frame -- no curses import required to test them."""
+
+    def test_step_indicator(self):
+        self.assertEqual(onboard.step_indicator(2, 6), 'step 2 of 6')
+        self.assertEqual(onboard.step_indicator(1, 1), 'step 1 of 1')
+
+    def test_progress_rail(self):
+        self.assertEqual(onboard.progress_rail(2, 6), '●●○○○○')
+        self.assertEqual(onboard.progress_rail(0, 3), '○○○')
+        self.assertEqual(onboard.progress_rail(3, 3), '●●●')
+
+    def test_progress_rail_clamps(self):
+        self.assertEqual(onboard.progress_rail(-1, 3), '○○○')
+        self.assertEqual(onboard.progress_rail(9, 3), '●●●')
+
+    def test_use_ascii_glyphs(self):
+        self.assertTrue(onboard.use_ascii_glyphs('ascii'))
+        self.assertTrue(onboard.use_ascii_glyphs(None))
+        self.assertTrue(onboard.use_ascii_glyphs('ANSI_X3.4-1968'))
+        self.assertFalse(onboard.use_ascii_glyphs('utf-8'))
+        self.assertFalse(onboard.use_ascii_glyphs('UTF-8'))
+
+    def test_glyph_unicode(self):
+        self.assertEqual(onboard.glyph(True, ascii_mode=False), '☑')
+        self.assertEqual(onboard.glyph(False, ascii_mode=False), '☐')
+
+    def test_glyph_ascii_fallback(self):
+        self.assertEqual(onboard.glyph(True, ascii_mode=True), '[x]')
+        self.assertEqual(onboard.glyph(False, ascii_mode=True), '[ ]')
+
+    def test_stepper_text(self):
+        self.assertEqual(onboard.stepper_text(3), '‹ 3 days ›')
+        self.assertEqual(onboard.stepper_text(1), '‹ 1 day ›')
+        self.assertEqual(onboard.stepper_text(30, unit='day'), '‹ 30 days ›')
+
+    def test_animation_disabled_respects_env(self):
+        with mock.patch.dict(os.environ, {'NO_COLOR': '', 'EVERETT_NO_ANIM': ''}, clear=False):
+            os.environ.pop('NO_COLOR', None)
+            os.environ.pop('EVERETT_NO_ANIM', None)
+            self.assertFalse(onboard.animation_disabled())
+        with mock.patch.dict(os.environ, {'NO_COLOR': '1'}):
+            self.assertTrue(onboard.animation_disabled())
+        with mock.patch.dict(os.environ, {'EVERETT_NO_ANIM': '1'}):
+            self.assertTrue(onboard.animation_disabled())
+
+
 if __name__ == '__main__':
     unittest.main()

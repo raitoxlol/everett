@@ -65,6 +65,31 @@ def _parse(lines: list[bytes]) -> list[dict]:
     return out
 
 
+def scan_full(path: Path, limit_lines: int = 20000) -> list[dict]:
+    """Parse the whole file as JSON lines (bounded), line by line. A fallback for when the
+    edge-window read (read_edges) misses real content buried behind an oversized head record --
+    e.g. a Codex session whose injected preamble (AGENTS.md, environment_context, recommended
+    plugins -- each tens of KB) fills the entire head budget before the real first user message."""
+    out: list[dict] = []
+    try:
+        with path.open('r', encoding='utf-8', errors='ignore') as f:
+            for i, line in enumerate(f):
+                if i >= limit_lines:
+                    break
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    obj = json.loads(line)
+                except ValueError:
+                    continue
+                if isinstance(obj, dict):
+                    out.append(obj)
+    except OSError:
+        return []
+    return out
+
+
 def clean(text: str, limit: int = 200) -> str:
     text = re.sub(r'<[^>]{1,80}>', ' ', text or '')  # inline tags like <pasted_content id=…>
     return ' '.join(text.split())[:limit]

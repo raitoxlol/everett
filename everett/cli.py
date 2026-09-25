@@ -71,7 +71,51 @@ def card_coverage(sessions) -> tuple[dict, dict]:
     return counts, totals
 
 
+REGENERATE_HARNESSES = ('claude', 'codex', 'grok')  # hooks.common._auto_card only builds these
+
+
+def regenerate_auto_cards(sessions, dry_run: bool = False) -> tuple[int, int]:
+    """Rewrite every AUTO-marked card among `sessions` with the current builder. Never touches a
+    missing card or an agent-written one. Returns (rewritten, skipped)."""
+    from . import cards as cards_mod
+    from .hooks import common
+    rewritten = skipped = 0
+    for s in sessions:
+        if s.harness not in REGENERATE_HARNESSES or not s.path:
+            skipped += 1
+            continue
+        if not cards_mod.is_auto_card(s.id):
+            skipped += 1  # missing or agent-written: never touched
+            continue
+        try:
+            content = common._auto_card(Path(s.path), s.harness, s.cwd, s.id)
+        except OSError:
+            content = ''
+        if not content:
+            skipped += 1  # nothing usable to rebuild from; leave the existing card as-is
+            continue
+        target = cards_mod.card_path(s.id)
+        try:
+            current = target.read_text(encoding='utf-8')
+        except OSError:
+            current = None
+        if current == content:
+            skipped += 1
+            continue
+        if not dry_run:
+            target.write_text(content, encoding='utf-8')
+        rewritten += 1
+    return rewritten, skipped
+
+
 def cmd_cards(args) -> int:
+    if args.regenerate_auto:
+        hours = args.regen_hours if args.regen_hours is not None else args.hours
+        sessions = registry.scan(hours, include_auto=True, limit=None)
+        rewritten, skipped = regenerate_auto_cards(sessions, dry_run=args.dry_run)
+        label = 'Would rewrite' if args.dry_run else 'Rewrote'
+        print(f'{label} {rewritten} auto card(s), skipped {skipped} (last {hours:g} hours).')
+        return 0
     sessions = registry.scan(args.hours, include_auto=True, limit=None)
     counts, totals = card_coverage(sessions)
     print(f'Sessions (last {args.hours:g} hours): {totals["total"]}')
@@ -86,9 +130,10 @@ def cmd_cards(args) -> int:
 
 
 def cmd_route(args) -> int:
+    from .send import caller_session_id
     sessions = registry.scan(args.hours)
     try:
-        r = route(args.text, sessions, router=args.router)
+        r = route(args.text, sessions, router=args.router, caller_id=caller_session_id() or None)
     except RouteError as e:
         print(f'everett: {e}', file=sys.stderr)
         return e.code
@@ -101,6 +146,8 @@ def cmd_route(args) -> int:
         print(f'  → [{s["harness"]}] {s["cwd"]} — {s["title"] or s["first_user"][:80]}')
     if r.get('suggested'):
         print(f'  closest: {r["suggested"]}')
+    for c in r.get('candidates', []):
+        print(f'  candidate: {c}')
     if r.get('command'):
         print(f'  {r["command"]}')
     return 0
@@ -157,7 +204,8 @@ def cmd_send(args) -> int:
     else:
         sessions = registry.scan(args.hours)
         try:
-            r = route(args.text, sessions, router=args.router)
+            from .send import caller_session_id
+            r = route(args.text, sessions, router=args.router, caller_id=caller_session_id() or None)
         except RouteError as e:
             print(f'everett: {e}', file=sys.stderr)
             return e.code
@@ -167,17 +215,19 @@ def cmd_send(args) -> int:
             r['delivered'] = False
             hint = ('  nothing was sent (add --spawn to start a new session)' if r['decision'] == 'NEW'
                     else '  nothing was sent')
-            _emit(args, r, [f'{r["decision"]}  (choice={r["choice"]}, confidence={r["confidence"]:.2f})',
-                            f'  closest: {r["suggested"]}' if r.get('suggested') else None, hint])
+            _emit(args, r, [f'{r["decision"]}  (choice={r["choice"]}, confidence={r["confidence"]:.2f}, '
+                            f'router={r.get("router", "local")})',
+                            *[f'  candidate: {c}' for c in r.get('candidates', [])], hint])
             return 0
 
     session = Session(**r['session'])
     label = f'[{session.harness}] {session.cwd} — {session.card or session.title or session.first_user[:80]}'
+    routed_line = (None if args.to else f'routed by {r.get("router", "local")} → {label} ({r["confidence"]:.2f})')
     try:
         refuse_self(session)
         mode = delivery_mode(session, args.mode)
         if mode == 'inbox':
-            return _send_inbox(args, r, session, label)
+            return _send_inbox(args, r, session, label, routed_line)
         command = command_for(session, args.text)
     except SendError as e:
         print(f'everett: {e}', file=sys.stderr)
@@ -186,7 +236,7 @@ def cmd_send(args) -> int:
         blocked_running = session.running or registry.session_running(session)
         _emit(args, {**r, 'manual_command': r.get('command'), 'delivered': False, 'dry_run': True,
                      'command': command, 'blocked_running': blocked_running},
-              [f'DRY RUN  {label}', f'  {format_command(command)}',
+              [routed_line, f'DRY RUN  {label}', f'  {format_command(command)}',
                '  blocked: target session is marked running' if blocked_running else None])
         return 0
 
@@ -197,21 +247,21 @@ def cmd_send(args) -> int:
         return e.code
     _emit(args, {**r, 'manual_command': r.get('command'), 'delivered': True,
                  'command': result.command, 'reply': result.reply},
-          [f'SENT  {label}', result.reply or None])
+          [routed_line, f'SENT  {label}', result.reply or None])
     return 0
 
 
-def _send_inbox(args, r: dict, session: Session, label: str) -> int:
+def _send_inbox(args, r: dict, session: Session, label: str, routed_line: str | None = None) -> int:
     """Live delivery: queue the request in the running session's inbox (its hooks inject it)."""
     if args.dry_run:
         _emit(args, {**r, 'delivered': False, 'dry_run': True, 'mode': 'inbox'},
-              [f'DRY RUN  {label}', '  would queue in its inbox; delivered at its next turn or tool call'])
+              [routed_line, f'DRY RUN  {label}', '  would queue in its inbox; delivered at its next turn or tool call'])
         return 0
     if not math.isfinite(args.wait) or args.wait < 0:
         print('everett: --wait must be a finite number of seconds, 0 or more.', file=sys.stderr)
         return 2
     result = send_inbox(session, args.text, wait=args.wait)
-    lines = [f'QUEUED  {label}',
+    lines = [routed_line, f'QUEUED  {label}',
              f'  message {result["message_id"]}: delivered at its next turn or tool call'
              + ('' if result['hooked'] else f' (no {session.harness} inbox hook; it must run `everett inbox`)')]
     if args.wait > 0:
@@ -440,6 +490,12 @@ def main(argv=None) -> int:
     a = sub.add_parser('ls'); a.add_argument('--json', action='store_true'); a.add_argument('--all', action='store_true', help='include automated runs')
     a.add_argument('--harness', choices=tuple(registry.ADAPTERS)); a.set_defaults(fn=cmd_ls)
     c = sub.add_parser('cards', help='show card coverage across recent sessions'); c.set_defaults(fn=cmd_cards)
+    c.add_argument('--regenerate-auto', action='store_true',
+                    help='rewrite existing auto cards (marked <!-- everett:auto -->) with the current builder; '
+                         'never touches missing cards or agent-written ones')
+    c.add_argument('--dry-run', action='store_true', help='with --regenerate-auto: report what would change, write nothing')
+    c.add_argument('--hours', type=float, dest='regen_hours', default=None,
+                    help='with --regenerate-auto: look-back window (default: the global --hours, 72)')
     routers = ('local', 'jev')
     r = sub.add_parser('route', help='pick the session a request belongs to (prints, never sends)')
     r.add_argument('text'); r.add_argument('--json', action='store_true')

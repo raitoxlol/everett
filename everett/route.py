@@ -57,11 +57,55 @@ class RouteError(Exception):
         self.code = code
 
 
+def project_name(session: Session) -> str:
+    """cwd (or git repo) basename, casefolded — how a request names a project."""
+    return (session.cwd or '').rstrip('/').rsplit('/', 1)[-1].casefold()
+
+
+COORDINATOR_TERMS = (
+    'everett_send', 'everett send', 'everett_route', 'everett route', 'everett_ls', 'everett ls',
+    'coordinator', 'coordinating', 'coordinate sessions', 'asking the', 'ask the', 'list sessions',
+    'listing sessions', 'dispatch to', 'delegate to', 'delegating to',
+)
+
+
+def is_coordinator(session: Session) -> bool:
+    """True for a session whose activity is mostly talking about/steering other sessions,
+    rather than doing project work itself (e.g. it mostly calls everett_send/route/ls, or its
+    card describes asking or coordinating other sessions)."""
+    text = ' '.join((session.card, session.title, session.first_user, session.last_user)).casefold()
+    return any(term in text for term in COORDINATOR_TERMS)
+
+
 def describe(session: Session) -> str:
+    project = project_name(session) or 'no-project'
+    role = ' role=coordinator' if is_coordinator(session) else ''
+    prefix = f'[{session.harness}] project={project}{role} cwd={session.cwd}'
     if session.card:
-        return f'[{session.harness}] {session.cwd} — {session.card}'
+        return f'{prefix} — {session.card}'
     headline = session.title or session.first_user[:100]
-    return f'[{session.harness}] {session.cwd} — {headline} — last: {session.last_user[:160]}'
+    return f'{prefix} — {headline} — last: {session.last_user[:160]}'
+
+
+def relevant_sessions(text: str, sessions: list[Session], caller_id: str | None = None) -> list[Session]:
+    """Candidate sessions for routing: never the caller's own session; coordinators (sessions that
+    talk about/steer other sessions rather than doing the work) are dropped unless the request
+    explicitly names that coordinator's own project. Remaining sessions are ordered so a session
+    whose project the request names, and any non-coordinator (working) session, sort first —
+    Jev sees working sessions before coordinators, and local ties break the same way."""
+    query_tokens = set(_tokens(text))
+    without_caller = [s for s in sessions if not (caller_id and s.id == caller_id)]
+    filtered = []
+    for s in without_caller:
+        proj = project_name(s)
+        named = bool(proj) and proj in query_tokens
+        if is_coordinator(s) and not named:
+            continue
+        filtered.append(s)
+    pool = filtered or without_caller  # never strand routing with an empty candidate set
+    # Stable sort: only reorder on project-name match / coordinator role: ties keep their given order.
+    pool.sort(key=lambda s: (project_name(s) not in query_tokens, is_coordinator(s)))
+    return pool
 
 
 def criteria(sessions: list[Session]) -> tuple[dict[str, str], dict[str, Session]]:
@@ -142,12 +186,16 @@ def _bm25(query: list[str], document: list[str], document_frequency: dict[str, i
     return score
 
 
+PROJECT_BOOST = 3.0  # request names a session's cwd/repo project (e.g. "kairos" ~ ~/Kairos)
+
+
 def rank(text: str, sessions: list[Session], now: float | None = None) -> list[tuple[float, str, float]]:
     """[(score, option key, query coverage)] best first; empty when the request has no terms."""
     options = {f's{i}': session for i, session in enumerate(sessions)}
     query = _tokens(text)
     if not query or not sessions:
         return []
+    query_set = set(query)
     docs = {key: _tokens(_document(session)) for key, session in options.items()}
     df = {token: sum(token in set(doc) for doc in docs.values()) for token in set(query)}
     average_length = max(1.0, sum(map(len, docs.values())) / len(docs))
@@ -158,6 +206,10 @@ def rank(text: str, sessions: list[Session], now: float | None = None) -> list[t
         age_hours = max(0.0, (current - session.last_active) / 3600)
         recency = 1 / (1 + age_hours / 72)
         coverage = sum(1 for token in set(query) if token in docs[key]) / len(set(query))
+        project = project_name(session)
+        if project and project in query_set:
+            raw_score = raw_score * PROJECT_BOOST + PROJECT_BOOST  # also lifts a zero BM25 score
+            coverage = max(coverage, 1 / len(query_set))
         ranked.append((raw_score * recency, key, coverage))
     ranked.sort(key=lambda item: (-item[0], int(item[1][1:])))
     return ranked
@@ -172,15 +224,19 @@ def best_dir(text: str, sessions: list[Session]) -> str:
     return ''
 
 
-def local_route(text: str, sessions: list[Session], now: float | None = None) -> dict:
+def local_route(text: str, sessions: list[Session], now: float | None = None,
+                 caller_id: str | None = None) -> dict:
+    sessions = relevant_sessions(text, sessions, caller_id)
     options = {f's{i}': session for i, session in enumerate(sessions)}
     if not sessions:
         return {'input': text, 'choice': 'new', 'confidence': 0.95,
                 'decision': 'NEW', 'command': new_command(text)}
     ranked = rank(text, sessions, now)
     if not ranked:
-        return {'input': text, 'choice': 'none', 'confidence': 0.0,
-                'decision': 'ASK', 'suggested': None}
+        # No lexical signal at all (e.g. a request with no usable terms): still hand back the
+        # top of the same filtered pool so the caller has choices instead of a dead end.
+        return {'input': text, 'choice': 'none', 'confidence': 0.0, 'decision': 'ASK',
+                'suggested': None, 'candidates': [describe(s) for s in sessions[:3]]}
     best_score, best_key, coverage = ranked[0]
     if best_score <= 0 or coverage < 0.2:
         return {'input': text, 'choice': 'new', 'confidence': 0.72,
@@ -191,8 +247,9 @@ def local_route(text: str, sessions: list[Session], now: float | None = None) ->
     # A tie (margin 0) stays below MIN_CONFIDENCE even at full coverage, so it asks.
     confidence = min(0.99, 0.25 + 0.3 * coverage + 0.45 * margin)
     if confidence < MIN_CONFIDENCE:
+        candidates = [describe(options[key]) for _, key, _ in ranked[:3] if options[key] is not None]
         return {'input': text, 'choice': 'none', 'confidence': round(confidence, 3),
-                'decision': 'ASK', 'suggested': describe(options[best_key])}
+                'decision': 'ASK', 'suggested': describe(options[best_key]), 'candidates': candidates}
     session = options[best_key]
     return {'input': text, 'choice': best_key, 'confidence': round(confidence, 3),
             'decision': 'SESSION', 'session': session.to_dict(),
@@ -212,21 +269,29 @@ def _normalize(text: str, answer: dict, options: dict[str, Session]) -> dict:
                 'command': resume_command(session, text)}
     if choice == 'new' and confidence >= MIN_CONFIDENCE:
         return {**base, 'decision': 'NEW', 'command': new_command(text)}
+    candidates = [describe(options[choice])] if choice in options else []
+    if not candidates:
+        # Jev's decision is ASK/none with no usable candidate of its own: fall back to the local
+        # router's top-3 from the same filtered pool (options, in the order relevant_sessions gave
+        # Jev), so the caller always gets choices instead of a dead end.
+        pool = list(options.values())
+        candidates = [describe(pool[int(key[1:])]) for _, key, _ in rank(text, pool)[:3]]
     return {**base, 'decision': 'ASK',
-            'suggested': describe(options[choice]) if choice in options else None}
+            'suggested': describe(options[choice]) if choice in options else None,
+            'candidates': candidates}
 
 
 def route(text: str, sessions: list[Session], router: str | None = None,
-          api_key: str | None = None, jev=call_jev) -> dict:
+          api_key: str | None = None, jev=call_jev, caller_id: str | None = None) -> dict:
     """Route with Jev when a key exists (or router='jev'), otherwise the local BM25 router."""
     key = find_api_key() if api_key is None else api_key
     selected = router or config.get('router', env='EVERETT_ROUTER') or ('jev' if key else 'local')
     if selected == 'local':
-        return {**local_route(text, sessions), 'router': 'local'}
+        return {**local_route(text, sessions, caller_id=caller_id), 'router': 'local'}
     if selected != 'jev':
         raise RouteError(2, 'router must be "local" or "jev".')
     if not key:
         raise RouteError(3, 'Jev router requested but no key found: set TYPESAFE_API_KEY, '
                             'typesafe_api_key in ~/.everett/config.toml, or use --router local.')
-    crit, options = criteria(sessions)
+    crit, options = criteria(relevant_sessions(text, sessions, caller_id))
     return {**_normalize(text, jev(text, crit, key), options), 'router': 'jev'}
