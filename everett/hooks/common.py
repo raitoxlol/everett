@@ -274,6 +274,55 @@ def stop_hook(raw: str, harness: str) -> None:
         return
 
 
+def _last_assistant(data: dict, harness: str) -> str:
+    """The turn's final assistant text: from the hook input when the harness sends it, else the transcript."""
+    for key in ('last_assistant_message', 'lastAssistantMessage'):
+        value = data.get(key)
+        if isinstance(value, str) and value.strip():
+            return value
+    adapter = {'claude': claude, 'codex': codex, 'grok': grok}.get(harness)
+    transcript = data.get('transcript_path')
+    if adapter is None or not isinstance(transcript, str) or not transcript:
+        return ''
+    head, tail = read_edges(Path(transcript))
+    for row in reversed(tail or head):
+        text = adapter.assistant_text(row, raw=True)
+        if text:
+            return text
+    return ''
+
+
+def stop_event(raw: str, harness: str) -> None:
+    """Stop hook awareness: record done / blocked / needs-input for this session (debounced), mark it idle,
+    and run the throttled escalation check. Silent on every error."""
+    try:
+        if os.environ.get(SKIP_ENV) or (harness == 'claude' and
+                                        os.environ.get('CLAUDE_CODE_ENTRYPOINT') == 'sdk-cli'):
+            return
+        data = json.loads(raw) if isinstance(raw, str) else raw
+        if not isinstance(data, dict) or data.get('stop_hook_active') or data.get('stopHookActive'):
+            return
+        session_id = data.get('session_id') or data.get('sessionId')
+        if not isinstance(session_id, str) or not re.fullmatch(r'[A-Za-z0-9._-]{1,128}', session_id):
+            return
+        from .. import events, inbox
+        try:
+            inbox.touch_live(session_id, harness, 'idle')
+        except OSError:
+            pass
+        found = events.classify(_last_assistant(data, harness))
+        if found:
+            cwd = data.get('cwd') if isinstance(data.get('cwd'), str) else ''
+            try:
+                events.record(found[0], found[1], session=session_id, harness=harness, cwd=cwd or os.getcwd(),
+                              source='auto')
+            except events.EventError:
+                pass
+        events.maybe_escalate()
+    except BaseException:  # noqa: BLE001  Stop hooks must never interrupt a harness session
+        return
+
+
 def grok_stop_hook(raw: str) -> None:
     """Grok's Stop payload -> the common stop hook (it has no transcript path of its own)."""
     try:
@@ -285,8 +334,10 @@ def grok_stop_hook(raw: str) -> None:
         if not isinstance(session_id, str) or not re.fullmatch(r'[A-Za-z0-9._-]+', session_id):
             return
         path = grok.transcript(session_id, cwd)
-        if path is None:
-            return
-        stop_hook(json.dumps({'session_id': session_id, 'transcript_path': str(path), 'cwd': cwd}), 'grok')
+        if path is not None:
+            stop_hook(json.dumps({'session_id': session_id, 'transcript_path': str(path), 'cwd': cwd}), 'grok')
+        stop_event(json.dumps({'session_id': session_id, 'transcript_path': str(path) if path else '', 'cwd': cwd,
+                               'lastAssistantMessage': data.get('lastAssistantMessage') or '',
+                               'stopHookActive': bool(data.get('stopHookActive'))}), 'grok')
     except BaseException:  # noqa: BLE001  hooks never interrupt the session
         return

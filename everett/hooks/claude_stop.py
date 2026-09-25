@@ -1,4 +1,4 @@
-"""Claude Code Stop hook: write a deterministic Everett fallback card."""
+"""Claude Code Stop hook: a deterministic Everett fallback card, plus the automatic done/blocked/needs-input event."""
 from __future__ import annotations
 
 import sys
@@ -8,8 +8,10 @@ from pathlib import Path
 def main() -> int:
     try:
         sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
-        from everett.hooks.common import stop_hook
-        stop_hook(sys.stdin.read(), 'claude')
+        from everett.hooks.common import stop_event, stop_hook
+        raw = sys.stdin.read()
+        stop_hook(raw, 'claude')
+        stop_event(raw, 'claude')
     except BaseException:
         pass
     return 0

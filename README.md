@@ -2,9 +2,32 @@
 
 Everett is one layer above all your coding-agent sessions. It sees every Claude Code, Codex, OMP, Pi, Hermes Agent, and Grok CLI session on your machine (including the ones T3 Code drives), routes a new request to the session it belongs to, and delivers it there.
 
-It is built mainly for agents: one agent can hand work to the right parallel session, and every session starts from the same shared core. Humans get the same commands.
+It is built mainly for agents: one agent can hand work to the right parallel session, even one that is running right now, and every session starts from the same shared core. Everett also knows which sessions are done, blocked, or waiting on you, and tells you. Humans get the same commands.
 
 Named after Hugh Everett (many worlds): every session branches from one origin but keeps its own history.
+
+## Quickstart: `everett onboard`
+
+New to Everett? One command walks you through setup:
+
+```bash
+pipx install everett-sessions   # or, from a checkout: pipx install .
+everett onboard                 # friendly terminal setup wizard
+```
+
+It is a short terminal UI: welcome, what Everett found on this machine, which hooks to install
+(and in which files -- a backup is made of each one first), whether to register the MCP server,
+and an optional "make cards for my recent sessions" backfill step with a progress bar. Nothing is
+written until you confirm at the end; `q` quits at any point with no changes. Not a TTY (or curses
+fails to start)? It falls back to the same steps as plain yes/no prompts. For scripts and CI, skip
+the UI entirely:
+
+```bash
+everett onboard --yes                # apply every default, non-interactively
+everett onboard --yes --span-days 7  # backfill cards for the last 7 days (default 3, 1-30)
+everett onboard --yes --no-backfill  # skip card backfill
+everett onboard --yes --no-mcp       # skip MCP registration
+```
 
 ## Quickstart (60 seconds)
 
@@ -46,13 +69,20 @@ Done. MAX_RETRIES is now 5 and the backoff test covers the cap.
 |---|---|
 | `everett ls [--json] [--all] [--harness H]` | Recent sessions from every harness, one line each. `--all` includes scripted runs. |
 | `everett route "<text>" [--router local\|jev] [--json]` | Picks the session a request continues: `SESSION`, `NEW`, or `ASK`, with a confidence and the resume command. It never sends. |
-| `everett send "<text>" [--dry-run] [--timeout S] [--router …]` | Routes the request, waits for that session to go idle (up to 2 min), resumes it headless, and prints the reply. `NEW` and `ASK` send nothing. |
+| `everett send "<text>" [--dry-run] [--timeout S] [--router …]` | Routes the request and delivers it. A session with a live harness process gets it in its inbox, injected at its next turn or tool call (see [Live delivery](#live-delivery)). An idle one is resumed headless after it goes quiet (up to 2 min), and the reply is printed. `NEW` and `ASK` send nothing. |
+| `everett send … [--mode auto\|resume\|inbox] [--wait S]` | `--mode` forces headless resume or inbox delivery (default `auto`). `--wait S` waits up to S seconds for an inbox reply; without it the reply arrives in your inbox later. |
+| `everett reply <message-id> "<text>"` | Answers an Everett message; the reply goes to the sender's inbox. |
+| `everett inbox [--session S] [--peek] [--json]` | Shows the messages waiting for this session (or the human inbox when run outside a session) and marks them delivered. |
+| `everett event done\|blocked\|needs-input\|info "<msg>" [--project P]` | Records what this session is doing (see [Events](#events)). |
+| `everett events [--since 24h] [--session S] [--json] [--check]` | Recent events across sessions. `--check` also runs the blocked-too-long escalation. |
+| `everett subscribe <session\|project> [--as S] [--remove]` | Delivers another session's (or a project's) events to your inbox. |
 | `everett send --to <id-prefix\|name> "<text>"` | Skips routing and delivers to one session. The target is an exact id, a unique id prefix, the card's name (`Kairos: …` → `kairos`), or the project folder name. If more than one session matches, Everett lists them and sends nothing. |
 | `everett send --spawn [--dir D] [--harness H] "<text>"` | When routing says `NEW` with confidence ≥ 0.6, starts a new headless session and prints its reply and new session id. The directory defaults to the folder of the best-matching session, else the current one. |
 | `everett cards` | Card coverage per harness: agent-written, automatic, missing. |
+| `everett onboard [--yes] [--span-days N] [--no-backfill] [--no-mcp]` | Friendly first-time setup TUI (welcome, detect, hooks, MCP, optional card backfill, summary); `--yes` runs it non-interactively for scripts. |
 | `everett install-hooks [--claude] [--codex] [--omp] [--grok] [--apply]` | Prints the hook registrations. `--apply` backs up the file, then merges idempotently. |
 | `everett mcp` | Runs the stdio MCP server (harnesses start it; see below). |
-| `everett install-mcp [--claude] [--codex] [--omp] [--apply]` | Prints or registers the MCP server for each harness. |
+| `everett install-mcp [--claude] [--codex] [--omp] [--grok] [--apply]` | Prints or registers the MCP server for each harness. |
 | `everett doctor` | Python version, session stores, hooks, card coverage, router, vault. |
 | `everett learn "<fact>" [--project P] [--scope global\|project]` | Pushes a fact to the shared core inbox. Secrets are rejected. |
 | `everett trunk merge [--llm claude\|codex\|none] [--dry-run]` | Distills the inbox into the shared core. |
@@ -86,6 +116,43 @@ Safety rails for agents that call `send`:
 
 Exit codes: 2 bad input, 3 no Jev key with `--router jev`, 4 session stayed busy, 5 harness did not start or timed out, 6 harness failed, 7 hop limit reached.
 
+## Live delivery
+
+Headless resume only works on a session nobody has open. When a session is running, Everett delivers into it instead: the request goes to the session's inbox, and the session's own hooks inject it at its next turn or, if it is busy, right after its next tool call.
+
+1. **Which path.** `send --mode auto` (the default) uses the inbox when a harness process is attached to the target: Everett's hooks recorded a live process for it (`~/.everett/inbox/live/<id>.json`), or its id is on a running harness command line. T3 Code sessions always use the inbox, because a CLI resume would fork the thread. Everything else is resumed headless, as before. `--mode resume` and `--mode inbox` force a path.
+2. **Inbox.** `~/.everett/inbox/<session-id>.jsonl`, one message per line: `id`, `from` (the sender's session id, or `human` from a terminal), `from_harness`, `from_card`, `text`, `ts`, `reply_to`, `hops`, `kind` (`message`, `reply`, or `event`). Delivered ids go to `<session-id>.done`. Undelivered messages expire after 7 days.
+3. **Injection.** The hook adds at most 5 messages (2,000 characters each, 6,000 in total) as context, marked as coming from Everett with the sender's session and card, and marks exactly those delivered. The rest arrive at the next hook. The hook reads local files only, takes about 40 ms, and prints nothing on any error.
+4. **Replies.** The receiving agent answers with `everett_send(reply_to="<id>", text=…)` or `everett reply <id> "<text>"`. The reply lands in the sender's inbox and is injected there the same way. A sender can instead block on it: `everett send --wait 120 …` or `everett_send(wait=120)`. `everett inbox` / `everett_inbox` read an inbox directly.
+5. **Safety.** A thread can go back and forth at most 3 hops (exit 7), the calling session is never a target, and headless `everett send` runs (`EVERETT_SEND=1`) never consume inbox messages.
+
+| Harness | Next turn | Mid-task | How |
+|---|---|---|---|
+| Claude Code | `UserPromptSubmit` | `PostToolUse` | `hookSpecificOutput.additionalContext` |
+| Codex (0.155+) | `UserPromptSubmit` | `PostToolUse` | the same contract (checked against the hook schemas embedded in the 0.155.1 binary) |
+| Grok CLI | no | `PostToolUse` | Grok discards an allowing `UserPromptSubmit` hook's context, so messages wait for the next tool call. A Grok session that runs no tool before stopping reads them with `everett_inbox`, or at its next tool call. |
+| OMP | `before_agent_start` | `tool_result` (steered in with `pi.sendMessage(…, {deliverAs: "steer"})`) | the Everett extension |
+| Pi, Hermes | no hooks | no hooks | messages wait in the inbox; the agent reads them with `everett_inbox` |
+
+Grok also runs the hooks in `~/.claude/settings.json`. Everett's Claude delivery hook recognizes Grok's camelCase input and leaves a Grok session's messages alone on `UserPromptSubmit`, so nothing is marked delivered that Grok would drop.
+
+Claude Code has its own cross-session messages (`<cross-session-message>` over sockets in `/tmp/cc-socks/`). It has no public or documented way to send one, so Everett does not use it; hooks are the supported path. This is future work if Anthropic documents a sender.
+
+## Events
+
+Everett knows what each session is doing, not just what it was about.
+
+- **Kinds.** `done`, `blocked`, `needs-input`, `info`. An agent reports one with `everett_event(kind, message)`, or anyone with `everett event blocked "waiting on Max prompt"`. Events are appended to `~/.everett/events.jsonl` and set the session's state in `~/.everett/state/<session-id>.json`, with `since` (when that state began). Messages are capped at 300 characters and secret-filtered.
+- **Automatic.** The Stop hooks (Claude Code, Codex, Grok) read the turn's last assistant message (from the hook input, else the transcript) and classify it deterministically, with no LLM:
+  - `blocked`: a closing line states "blocked", "stuck", "waiting on" / "waiting for", "can't proceed" / "cannot continue", or "unable to proceed". Negated ("not blocked", "no longer blocked", "unblocked") and questioned ("is it blocked?") mentions do not count.
+  - `needs-input`: a closing line ends with a question mark, or asks the user to act ("need you to", "please confirm", "should I", "do you want", "would you like", "let me know if" …).
+  - `done`: anything else, a clean finish.
+  Only the last four prose lines count; code blocks, quotes, and tables are ignored. An automatic event that repeats the session's current state within 10 minutes, or with the same text, is dropped, so a chatty session does not spam.
+- **Seeing them.** `everett ls` prefixes sessions that are blocked or need input (`⚠ blocked 32h: waiting on Max prompt · <card>`). `everett_ls` returns `state` and `state_kind` for every session. `everett events --since 24h` lists them.
+- **Subscriptions.** `everett subscribe <session|project>` (or `everett_subscribe`) puts another session's or a whole project's events into your inbox, so they are injected at your next turn. Stored in `~/.everett/subscriptions.json`. A session never receives its own events.
+- **The human.** `blocked` and `needs-input` also go to you. By default that is a macOS notification (`osascript`). Set `notify_command` to run your own command as well, for example one that sends Max a message so it reaches your phone. It runs under `sh -c` with the one-line summary as `$1` and `EVERETT_EVENT_KIND`, `EVERETT_EVENT_TEXT`, `EVERETT_EVENT_SESSION`, `EVERETT_EVENT_PROJECT`, `EVERETT_EVENT_REASON`, and `EVERETT_EVENT_JSON` in its environment. Notifiers run detached, so hooks never wait on them.
+- **Escalation.** A session still `blocked` or `needs-input` after `escalate_minutes` (default 30) triggers one more notification ("blocked for 45 min: …"). The check runs at most once a minute from any session's hooks, and on demand with `everett events --check` (for example from cron).
+
 ## Routing
 
 Everett has two routers with the same output:
@@ -111,9 +178,9 @@ everett install-hooks            # print the snippets for all harnesses
 everett install-hooks --apply    # back up, then merge into the real config files
 ```
 
-- **Claude Code**: adds `SessionStart` and `Stop` entries to `~/.claude/settings.json`.
-- **Codex** (0.155+): adds `SessionStart` and `Stop` entries to `~/.codex/hooks.json`. Codex needs `hooks = true` in `~/.codex/config.toml` and asks you to trust new hooks the first time they run.
-- **Grok CLI**: writes `~/.grok/hooks/everett.json` with a `Stop` hook for automatic cards. Grok ignores `SessionStart` output, so Grok sessions get no card instruction or shared core at start. Grok also runs the hooks in `~/.claude/settings.json`; Everett's Claude hooks do nothing there: they need `session_id` and `transcript_path`, and Grok's documented hook input uses camelCase `sessionId` with no transcript path. `--grok` is included by default when `~/.grok` exists.
+- **Claude Code**: adds `SessionStart`, `Stop`, `UserPromptSubmit`, and `PostToolUse` entries to `~/.claude/settings.json`. The last two deliver [live messages](#live-delivery); `Stop` also records [events](#events).
+- **Codex** (0.155+): adds the same four entries to `~/.codex/hooks.json`. Codex needs `hooks = true` in `~/.codex/config.toml` and asks you to trust new hooks the first time they run.
+- **Grok CLI**: writes `~/.grok/hooks/everett.json` with a `Stop` hook for automatic cards and events, and a `PostToolUse` hook for live delivery. Grok ignores `SessionStart` output, so Grok sessions get no card instruction or shared core at start. Grok also runs the hooks in `~/.claude/settings.json`; Everett's Claude hooks do nothing there: they need `session_id` and `transcript_path`, and Grok's documented hook input uses camelCase `sessionId` with no transcript path. `--grok` is included by default when `~/.grok` exists.
 - **OMP**: writes `~/.omp/agent/extensions/everett.ts`, which re-exports Everett's extension. OMP loads that folder at startup. You can also pass it per launch: `omp --hook=<path printed by install-hooks>`.
 
 `--apply` writes a backup (`<file>.everett-bak-<timestamp>`) before any change. It never removes other hooks and never adds a second Everett entry. The printed commands use the Python interpreter and the hook paths of the install you ran them from.
@@ -136,11 +203,14 @@ Everett is mostly used by agents. `everett mcp` is a stdio MCP server (JSON-RPC 
 |---|---|---|
 | `everett_ls` | `hours?`, `harness?` | Sessions with their cards (and `source`, such as `t3code`); your own session is marked `you`. |
 | `everett_route` | `text`, `router?` | `SESSION` / `NEW` / `ASK`, confidence, candidate. Never sends. |
-| `everett_send` | `text`, `to?`, `spawn?`, `dir?`, `harness?`, `timeout?`, `session_id?` | The other session's reply. |
+| `everett_send` | `text`, `to?`, `spawn?`, `dir?`, `harness?`, `timeout?`, `session_id?`, `mode?`, `wait?`, `reply_to?` | The reply of a resumed session, or the queued message id for a live one (plus its reply when `wait` is set). `reply_to` answers a message you received. |
 | `everett_learn` | `fact`, `project?`, `scope?` | Queues a fact for the shared core (secret-filtered). |
 | `everett_core` | `project?` | The shared core this session's project sees. |
 | `everett_card` | `what`, `state`, `next`, `session_id?` | Writes the calling session's card. |
 | `everett_whoami` | none | The caller's session id, harness, hop count, and how they were detected. |
+| `everett_inbox` | `session_id?`, `peek?` | The Everett messages (requests, replies, events) waiting for you; marks them delivered. |
+| `everett_event` | `kind`, `message`, `project?`, `session_id?` | Records done / blocked / needs-input / info for your session. |
+| `everett_subscribe` | `target`, `unsubscribe?`, `session_id?` | Follows a session's or project's events in your inbox. |
 
 Register it:
 
@@ -152,6 +222,7 @@ everett install-mcp --apply    # back up, then register (idempotent)
 - **Claude Code**: `claude mcp add --scope user everett -- <python> -m everett mcp`, or `--apply` adds `mcpServers.everett` to `~/.claude.json`.
 - **Codex**: an `[mcp_servers.everett]` block in `~/.codex/config.toml`.
 - **OMP**: `mcpServers.everett` in `~/.omp/agent/mcp.json`. OMP also imports Claude Code's servers.
+- **Grok CLI**: `grok mcp add everett <python> -- -m everett mcp`, or `--apply` appends an `[mcp_servers.everett]` block to `~/.grok/config.toml`. Grok also imports Claude Code's servers by default. Included by default when `~/.grok` exists.
 
 The registration uses the Python interpreter and package path of the install you ran it from.
 
@@ -177,13 +248,16 @@ default_harness = "claude"    # used in NEW suggestions: claude | codex | omp
 router = "local"              # local | jev
 typesafe_api_key = "…"        # Jev key ([jev] api_key also works)
 merge_llm = "claude"          # trunk merge engine: claude | codex | none
+notify = "osascript"          # blocked/needs-input: osascript | command | both | none
+notify_command = "…"          # e.g. a Max/Hermes command; gets the summary as $1 (sets notify default to both)
+escalate_minutes = 30         # re-notify once when a session stays blocked this long (0 = never)
 ```
 
-Environment overrides: `EVERETT_VAULT`, `EVERETT_VAULT_DIR`, `EVERETT_HARNESS`, `EVERETT_ROUTER`, `TYPESAFE_API_KEY`, and `EVERETT_HOME` (the root used in place of `~`).
+Environment overrides: `EVERETT_VAULT`, `EVERETT_VAULT_DIR`, `EVERETT_HARNESS`, `EVERETT_ROUTER`, `TYPESAFE_API_KEY`, `EVERETT_NOTIFY`, `EVERETT_NOTIFY_COMMAND`, `EVERETT_ESCALATE_MINUTES`, and `EVERETT_HOME` (the root used in place of `~`).
 
 ## Privacy
 
-Everything stays on your machine. Everett reads the harness session files and writes only under `~/.everett/` (plus the vault note if you configure one, and the harness config files if you run `install-hooks --apply` or `install-mcp --apply`). The only network call Everett makes is to Jev, and only when a Jev key is configured. Use `--router local` to keep routing offline. `send`, `--spawn`, and `trunk merge --llm claude|codex` run your installed harness CLI, which talks to its own model provider as usual. The shared core is plain Markdown in `~/.everett/core/`.
+Everything stays on your machine. Everett reads the harness session files and writes only under `~/.everett/` (plus the vault note if you configure one, and the harness config files if you run `install-hooks --apply` or `install-mcp --apply`). The only network call Everett makes is to Jev, and only when a Jev key is configured. Use `--router local` to keep routing offline. `send`, `--spawn`, and `trunk merge --llm claude|codex` run your installed harness CLI, which talks to its own model provider as usual. The shared core is plain Markdown in `~/.everett/core/`. Notifications use macOS `osascript` locally; a `notify_command` you configure is yours to run, and it can send events wherever you point it.
 
 Everett reads only the first and last 64 KB of each session file.
 

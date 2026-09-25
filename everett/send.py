@@ -292,3 +292,93 @@ def spawn(harness: str, text: str, cwd: str, timeout: float = 300, env: dict | N
     if session_id:
         record_spawn(harness, session_id, cwd, text)
     return SpawnResult(command, reply, session_id, harness, cwd)
+
+
+# ---- live delivery: running sessions get an inbox message instead of a resume --------------
+
+MODES = ('auto', 'resume', 'inbox')
+INBOX_HARNESSES = ('claude', 'codex', 'grok', 'omp')  # the harnesses whose hooks deliver the inbox
+
+
+def attached(session: Session, ps_out: str | None = None) -> bool:
+    """A harness process is attached to this session right now (its TUI is open or it is mid-run).
+
+    Evidence: Everett's own hooks recorded a live process for it, or its id is on a harness
+    command line. A headless resume here would race the open session, so it gets the inbox."""
+    from . import inbox
+    if inbox.live(session.id):
+        return True
+    ps_out = registry._ps() if ps_out is None else ps_out
+    return bool(session.id) and any(session.id in line and HARNESS_BIN.search(line) for line in ps_out.splitlines())
+
+
+def delivery_mode(session: Session, mode: str = 'auto', ps_out: str | None = None) -> str:
+    if mode not in MODES:
+        raise SendError(2, f'--mode must be one of {", ".join(MODES)}.')
+    if mode != 'auto':
+        return mode
+    if session.source == 't3code':
+        return 'inbox'  # a CLI resume would fork the T3 thread; its hooks can still deliver
+    return 'inbox' if attached(session, ps_out) else 'resume'
+
+
+def current_hops() -> int:
+    try:
+        return int(os.environ.get('EVERETT_HOPS', '0') or 0)
+    except ValueError:
+        return 0
+
+
+def sender_info(caller: str | None = None) -> dict:
+    """Who is sending: the calling session (with its card), else the human at a terminal."""
+    from . import cards, inbox
+    ident = caller_identity()
+    sid = caller if caller is not None else ident['session_id']
+    card = ''
+    if sid:
+        found = cards.read_card(sid)
+        card = found[0] if found else ''
+    return {'sender': sid or inbox.HUMAN, 'from_harness': ident['harness'] if sid else '',
+            'from_card': card}
+
+
+def send_inbox(session: Session, text: str, wait: float = 0, caller: str | None = None,
+               poll: float = 1.0) -> dict:
+    """Queue `text` in a running session's inbox; optionally wait for its reply."""
+    from . import inbox
+    if not math.isfinite(wait) or wait < 0:
+        raise SendError(2, '--wait must be a finite number of seconds, 0 or more.')
+    hops = current_hops()
+    if hops >= MAX_HOPS:
+        raise SendError(7, f'Hop limit reached ({hops}/{MAX_HOPS}): answer here instead of forwarding again.')
+    who = sender_info(caller)
+    try:
+        message = inbox.post(session.id, text, sender=who['sender'], hops=hops + 1,
+                             from_harness=who['from_harness'], from_card=who['from_card'])
+    except inbox.InboxError as e:
+        raise SendError(e.code, str(e)) from e
+    result = {'mode': 'inbox', 'message_id': message['id'], 'reply_inbox': who['sender'], 'reply': None,
+              'hooked': session.harness in INBOX_HARNESSES}
+    if wait > 0:
+        reply = inbox.wait_reply(who['sender'], message['id'], wait, poll=poll)
+        if reply:
+            result['reply'] = reply['text']
+            result['reply_from'] = reply.get('from')
+    return result
+
+
+def reply(message_id: str, text: str, caller: str | None = None) -> dict:
+    """Answer an inbox message: the reply goes to the original sender's inbox."""
+    from . import inbox
+    original = inbox.find(message_id.strip())
+    if original is None:
+        raise SendError(2, f'No message with id {message_id!r} in any Everett inbox.')
+    try:
+        hops = inbox.reply_hops(original, current_hops())
+        who = sender_info(caller)
+        message = inbox.post(original.get('from') or inbox.HUMAN, text, sender=who['sender'], kind='reply',
+                             reply_to=original['id'], hops=hops, from_harness=who['from_harness'],
+                             from_card=who['from_card'])
+    except inbox.InboxError as e:
+        raise SendError(e.code, str(e)) from e
+    return {'mode': 'reply', 'message_id': message['id'], 'reply_to': original['id'], 'to': message['to']}

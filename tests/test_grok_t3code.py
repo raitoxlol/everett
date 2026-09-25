@@ -145,13 +145,13 @@ class GrokAdapter(TempHome):
         self.assertFalse(card_path('missing').exists())
 
     def test_install_hooks_writes_grok_hook_file(self):
-        self.assertEqual(install.installed('grok'), {'Stop': False})
+        self.assertEqual(install.installed('grok'), {'Stop': False, 'PostToolUse': False})
         report = install.apply('grok')
         path = self.home / '.grok/hooks/everett.json'
         self.assertIn(str(path), report)
         data = json.loads(path.read_text())
         self.assertIn('grok_stop.py', data['hooks']['Stop'][0]['hooks'][0]['command'])
-        self.assertEqual(install.installed('grok'), {'Stop': True})
+        self.assertEqual(install.installed('grok'), {'Stop': True, 'PostToolUse': True})
         self.assertIn('already installed', install.apply('grok'))
 
 
@@ -242,7 +242,7 @@ class T3Code(TempHome):
         text = out.getvalue()
         self.assertIn('grok    ' + str(self.home / '.grok/sessions') + ' (found)', text)
         self.assertIn('t3code  ' + str(self.db) + ' (found); 4 thread(s) with a harness session id', text)
-        self.assertIn('grok    missing Stop; run `everett install-hooks --grok`', text)
+        self.assertIn('grok    missing Stop, PostToolUse; run `everett install-hooks --grok`', text)
 
 
 if __name__ == '__main__':

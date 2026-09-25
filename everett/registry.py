@@ -76,6 +76,11 @@ def scan(since_hours: float = 72, include_auto: bool = False,
         sessions = sessions[:limit]
     mark_running(sessions, _ps(), time.time())
     cards.apply(sessions)
+    try:
+        from . import events
+        events.apply(sessions)
+    except Exception:  # noqa: BLE001  a broken state file must never cost the listing
+        pass
     return sessions
 
 

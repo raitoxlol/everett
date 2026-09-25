@@ -163,12 +163,13 @@ class InstallHooks(TempHome):
     def test_existing_entry_at_another_path_counts(self):
         cmd = 'python3 /somewhere/everett/everett/hooks/codex_session_start.py'
         self.write('.codex/hooks.json', json.dumps({'hooks': {'SessionStart': [{'hooks': [{'command': cmd}]}]}}))
-        self.assertEqual(install.installed('codex'), {'SessionStart': True, 'Stop': False})
+        self.assertEqual(install.installed('codex'), {'SessionStart': True, 'Stop': False, 'UserPromptSubmit': False,
+                                                      'PostToolUse': False})
         with contextlib.redirect_stdout(io.StringIO()):
             main(['install-hooks', '--codex', '--apply'])
         data = json.loads((self.home / '.codex/hooks.json').read_text())
         self.assertEqual(len(data['hooks']['SessionStart']), 1)
-        self.assertEqual(install.installed('codex'), {'SessionStart': True, 'Stop': True})
+        self.assertEqual(install.installed('codex'), {'SessionStart': True, 'Stop': True, 'UserPromptSubmit': True, 'PostToolUse': True})
 
     def test_new_file_is_created_without_backup(self):
         with contextlib.redirect_stdout(io.StringIO()):

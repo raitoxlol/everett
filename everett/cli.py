@@ -11,8 +11,8 @@ from pathlib import Path
 
 from . import __version__, core, install, registry, trunk
 from .route import MIN_CONFIDENCE, RouteError, best_dir, default_harness, route
-from .send import (SPAWNABLE, SendError, command_for, format_command, hop_env, refuse_self, send, spawn,
-                   spawn_command)
+from .send import (MODES, SPAWNABLE, SendError, command_for, delivery_mode, format_command, hop_env, refuse_self,
+                   send, send_inbox, spawn, spawn_command)
 from .session import Session, home
 
 
@@ -49,6 +49,8 @@ def cmd_ls(args) -> int:
         work = s.card or s.title or s.first_user or '(no text)'
         if s.source == 't3code':
             work = f'[t3code] {work}'
+        if s.state_kind in ('blocked', 'needs-input'):
+            work = f'⚠ {s.state} · {work}'
         line = f'{dot} {s.harness:<6} {_ago(s.last_active):>3}  {where:<{wide}}  {work}'
         print(line[:_width()])
     return 0
@@ -170,13 +172,16 @@ def cmd_send(args) -> int:
             return 0
 
     session = Session(**r['session'])
+    label = f'[{session.harness}] {session.cwd} — {session.card or session.title or session.first_user[:80]}'
     try:
         refuse_self(session)
+        mode = delivery_mode(session, args.mode)
+        if mode == 'inbox':
+            return _send_inbox(args, r, session, label)
         command = command_for(session, args.text)
     except SendError as e:
         print(f'everett: {e}', file=sys.stderr)
         return e.code
-    label = f'[{session.harness}] {session.cwd} — {session.card or session.title or session.first_user[:80]}'
     if args.dry_run:
         blocked_running = session.running or registry.session_running(session)
         _emit(args, {**r, 'manual_command': r.get('command'), 'delivered': False, 'dry_run': True,
@@ -193,6 +198,113 @@ def cmd_send(args) -> int:
     _emit(args, {**r, 'manual_command': r.get('command'), 'delivered': True,
                  'command': result.command, 'reply': result.reply},
           [f'SENT  {label}', result.reply or None])
+    return 0
+
+
+def _send_inbox(args, r: dict, session: Session, label: str) -> int:
+    """Live delivery: queue the request in the running session's inbox (its hooks inject it)."""
+    if args.dry_run:
+        _emit(args, {**r, 'delivered': False, 'dry_run': True, 'mode': 'inbox'},
+              [f'DRY RUN  {label}', '  would queue in its inbox; delivered at its next turn or tool call'])
+        return 0
+    if not math.isfinite(args.wait) or args.wait < 0:
+        print('everett: --wait must be a finite number of seconds, 0 or more.', file=sys.stderr)
+        return 2
+    result = send_inbox(session, args.text, wait=args.wait)
+    lines = [f'QUEUED  {label}',
+             f'  message {result["message_id"]}: delivered at its next turn or tool call'
+             + ('' if result['hooked'] else f' (no {session.harness} inbox hook; it must run `everett inbox`)')]
+    if args.wait > 0:
+        lines.append(result['reply'] if result['reply'] is not None else
+                     f'  no reply within {args.wait:g}s; it will arrive in inbox {result["reply_inbox"]} '
+                     '(`everett inbox`)')
+    else:
+        lines.append(f'  replies go to inbox {result["reply_inbox"]} (`everett inbox`); add --wait S to wait')
+    _emit(args, {**r, 'delivered': True, **result}, lines)
+    return 0
+
+
+def cmd_reply(args) -> int:
+    from .send import reply
+    try:
+        result = reply(args.id, args.text)
+    except SendError as e:
+        print(f'everett: {e}', file=sys.stderr)
+        return e.code
+    print(f'REPLIED  to {result["reply_to"]} (inbox {result["to"]}), message {result["message_id"]}')
+    return 0
+
+
+def cmd_inbox(args) -> int:
+    from . import inbox
+    from .send import caller_session_id
+    sid = args.session or caller_session_id() or inbox.HUMAN
+    items = inbox.pending(sid)
+    if not args.peek:
+        inbox.mark_done(sid, [m['id'] for m in items])
+    if args.json:
+        print(json.dumps({'session': sid, 'messages': items}, indent=2, ensure_ascii=False))
+        return 0
+    if not items:
+        print(f'inbox {sid}: empty')
+        return 0
+    for m in items:
+        kind = {'reply': f'reply to {m.get("reply_to")}', 'event': 'event'}.get(m.get('kind'), 'message')
+        print(f'{m["id"]}  {_ago(float(m.get("ts") or 0))} ago  from {m.get("from")}  ({kind})')
+        print('  ' + m['text'].replace('\n', '\n  '))
+    return 0
+
+
+def cmd_event(args) -> int:
+    from . import events
+    try:
+        event = events.record(args.kind, args.message, session=args.session, project=args.project)
+    except events.EventError as e:
+        print(f'everett: {e}', file=sys.stderr)
+        return e.code
+    print(f'event {event["id"]}: {event["kind"]} [{event["project"] or "-"}] {event["text"]}'
+          + ('' if event['session'] else '  (no session detected; not attached to a card)'))
+    return 0
+
+
+def cmd_events(args) -> int:
+    from . import events
+    try:
+        window = events.parse_since(args.since)
+    except events.EventError as e:
+        print(f'everett: {e}', file=sys.stderr)
+        return e.code
+    if args.check:
+        for data in events.check_escalations():
+            print(f'escalated: {events.describe(data)} [{data.get("project") or data.get("session", "")[:8]}]')
+    items = [e for e in events.read(time.time() - window)
+             if not args.session or (e.get('session') or '').startswith(args.session)]
+    if args.json:
+        print(json.dumps(items, indent=2, ensure_ascii=False))
+        return 0
+    if not items:
+        print(f'no events in the last {args.since}')
+        return 0
+    for e in items:
+        where = e.get('project') or '-'
+        who = f'{e.get("harness") or "?"} {(e.get("session") or "-")[:8]}'
+        print(f'{time.strftime("%m-%d %H:%M", time.localtime(e["ts"]))}  {e["kind"]:<11} {who:<16} {where:<14} '
+              f'{e["text"]}'[:_width() + 40] + ('  (auto)' if e.get('source') == 'auto' else ''))
+    return 0
+
+
+def cmd_subscribe(args) -> int:
+    from . import events
+    from .send import caller_session_id
+    subscriber = args.as_ or caller_session_id()
+    try:
+        target = events.resolve_target(args.target)
+        current = events.subscribe(subscriber, target, remove=args.remove)
+    except events.EventError as e:
+        print(f'everett: {e}', file=sys.stderr)
+        return e.code
+    verb = 'unsubscribed from' if args.remove else 'subscribed to'
+    print(f'{subscriber} {verb} {target}; now following: {", ".join(current) or "nothing"}')
     return 0
 
 
@@ -294,7 +406,8 @@ def cmd_mcp(args) -> int:
 
 
 def cmd_install_mcp(args) -> int:
-    for harness in _harnesses(args):
+    choices = ('claude', 'codex', 'omp') + (('grok',) if (home() / '.grok').is_dir() or getattr(args, 'grok', False) else ())
+    for harness in _harnesses(args, choices):
         if args.apply:
             try:
                 print(install.apply_mcp(harness))
@@ -312,6 +425,11 @@ def cmd_install_mcp(args) -> int:
 def cmd_doctor(args) -> int:
     from . import doctor
     return doctor.run(args.hours)
+
+
+def cmd_onboard(args) -> int:
+    from . import onboard
+    return onboard.run(args)
 
 
 def main(argv=None) -> int:
@@ -337,7 +455,30 @@ def main(argv=None) -> int:
     s.add_argument('--spawn', action='store_true', help='when routing says NEW, start a new headless session')
     s.add_argument('--dir', help='directory for --spawn (default: the best-matching session\'s folder, else here)')
     s.add_argument('--harness', choices=SPAWNABLE, help='harness for --spawn (default: config default_harness, else claude)')
+    s.add_argument('--mode', choices=MODES, default='auto',
+                   help='auto (default): inbox for a session with a live harness process, else headless resume')
+    s.add_argument('--wait', type=float, default=0, metavar='S',
+                   help='inbox mode: wait up to S seconds for the reply (default 0: it arrives in your inbox)')
     s.set_defaults(fn=cmd_send)
+    ev = sub.add_parser('event', help='record what this session is doing: done, blocked, needs-input, info')
+    ev.add_argument('kind', choices=('done', 'blocked', 'needs-input', 'info')); ev.add_argument('message')
+    ev.add_argument('--project'); ev.add_argument('--session', help='default: the calling session')
+    ev.set_defaults(fn=cmd_event)
+    es = sub.add_parser('events', help='recent events across sessions')
+    es.add_argument('--since', default='24h', help='window like 30m, 24h, 7d (default 24h)')
+    es.add_argument('--session', help='only this session (id prefix)'); es.add_argument('--json', action='store_true')
+    es.add_argument('--check', action='store_true', help='also run the blocked-too-long escalation now')
+    es.set_defaults(fn=cmd_events)
+    sb = sub.add_parser('subscribe', help='get events from a session or project in your inbox')
+    sb.add_argument('target', help='session id prefix or name, project name, project:<name>, or *')
+    sb.add_argument('--as', dest='as_', metavar='SESSION', help='subscriber session (default: the calling session)')
+    sb.add_argument('--remove', action='store_true', help='unsubscribe'); sb.set_defaults(fn=cmd_subscribe)
+    rp = sub.add_parser('reply', help='answer an Everett inbox message (goes to the sender\'s inbox)')
+    rp.add_argument('id'); rp.add_argument('text'); rp.set_defaults(fn=cmd_reply)
+    ib = sub.add_parser('inbox', help='show (and mark delivered) the messages waiting for a session')
+    ib.add_argument('--session', help='default: the calling session, else the human inbox')
+    ib.add_argument('--peek', action='store_true', help='do not mark them delivered')
+    ib.add_argument('--json', action='store_true'); ib.set_defaults(fn=cmd_inbox)
     t = sub.add_parser('trunk', help='view: write the session list to your vault; merge: distill learnings into the core')
     t.add_argument('action', nargs='?', choices=('view', 'merge'), default='view')
     t.add_argument('--dry-run', action='store_true', help='print instead of writing')
@@ -357,11 +498,17 @@ def main(argv=None) -> int:
     ih.set_defaults(fn=cmd_install_hooks)
     m = sub.add_parser('mcp', help='run the stdio MCP server (for harnesses; see install-mcp)'); m.set_defaults(fn=cmd_mcp)
     im = sub.add_parser('install-mcp', help='print (or --apply) the MCP server registration')
-    for h in ('claude', 'codex', 'omp'):
+    for h in ('claude', 'codex', 'omp', 'grok'):
         im.add_argument(f'--{h}', action='store_true')
     im.add_argument('--apply', action='store_true', help='back up, then register')
     im.set_defaults(fn=cmd_install_mcp)
     d = sub.add_parser('doctor', help='check stores, hooks, cards, and router'); d.set_defaults(fn=cmd_doctor)
+    ob = sub.add_parser('onboard', help='friendly first-time setup (TUI, or --yes for scripts)')
+    ob.add_argument('--yes', action='store_true', help='non-interactive: apply the defaults without prompting')
+    ob.add_argument('--span-days', type=int, default=3, help='backfill span in days, 1-30 (default 3)')
+    ob.add_argument('--no-backfill', action='store_true', help='skip generating backfill cards')
+    ob.add_argument('--no-mcp', action='store_true', help='skip registering the MCP server')
+    ob.set_defaults(fn=cmd_onboard)
     args = p.parse_args(argv)
     return args.fn(args)
 

@@ -15,7 +15,8 @@ import traceback
 from . import __version__, cards, core, registry
 from .hooks.common import _word_limit
 from .route import MIN_CONFIDENCE, RouteError, best_dir, default_harness, route
-from .send import (SPAWNABLE, SendError, caller_identity, command_for, hop_env, refuse_self, send, spawn)
+from .send import (MODES, SPAWNABLE, SendError, caller_identity, command_for, delivery_mode, hop_env, refuse_self,
+                   reply, send, send_inbox, spawn)
 from .session import Session, home
 
 PROTOCOL_VERSIONS = ('2025-06-18', '2025-03-26', '2024-11-05')  # newest first
@@ -25,9 +26,10 @@ PARSE_ERROR, INVALID_REQUEST, METHOD_NOT_FOUND, INVALID_PARAMS, INTERNAL_ERROR =
 INSTRUCTIONS = (
     'Everett is the layer above every coding-agent session on this machine (Claude Code, Codex, OMP, Pi, Hermes). '
     'Use everett_ls to see what other sessions are working on, everett_route to find the session a task belongs to, '
-    'and everett_send to hand that session work and get its reply. Use everett_learn to push durable facts that '
+    'and everett_send to hand that session work (a running session gets it live at its next turn; answer '
+    'messages you receive with everett_send(reply_to=...)). Use everett_learn to push durable facts that '
     'every session should know into the shared core, and everett_core to read it. Keep your own card current '
-    'with everett_card so others can route to you.'
+    'with everett_card so others can route to you, and report done / blocked / needs-input with everett_event.'
 )
 
 S = {'type': 'string'}
@@ -55,11 +57,14 @@ TOOLS = [
     },
     {
         'name': 'everett_send',
-        'description': ('Deliver a request to another session and return its reply. Without `to`, Everett routes '
-                        'the text; only a SESSION decision is delivered. With `to` (session id prefix, card name, '
-                        'or project folder) routing is skipped. A NEW decision starts a new headless session only '
-                        'when spawn=true. It waits for a busy target to go idle (up to 2 minutes). It refuses to '
-                        'send to your own session and refuses requests forwarded more than 3 times.'),
+        'description': ('Deliver a request to another session. Without `to`, Everett routes the text; only a '
+                        'SESSION decision is delivered. With `to` (session id prefix, card name, or project folder) '
+                        'routing is skipped. A session with a live harness process (someone has it open) gets the '
+                        'request in its inbox, injected at its next turn or tool call; pass `wait` to wait for the '
+                        'reply, or it arrives in YOUR inbox later. An idle session is resumed headless and its '
+                        'reply returned. To answer an Everett message you received, pass reply_to=<message id> '
+                        'and text. A NEW decision starts a new headless session only when spawn=true. It refuses '
+                        'to send to your own session and refuses requests forwarded more than 3 times.'),
         'inputSchema': {'type': 'object', 'properties': {
             'text': {**S, 'description': 'The request for the other session. Make it self-contained.'},
             'to': {**S, 'description': 'Target session: id prefix, card name, or project folder name.'},
@@ -68,7 +73,44 @@ TOOLS = [
             'harness': {'type': 'string', 'enum': list(SPAWNABLE), 'description': 'Harness for a spawned session.'},
             'timeout': {'type': 'number', 'description': 'Seconds to wait for the reply (default 300).', 'minimum': 1},
             'session_id': {**S, 'description': 'Your own session id, if Everett cannot detect it (see everett_whoami).'},
+            'mode': {'type': 'string', 'enum': list(MODES), 'description': (
+                'auto (default): inbox when the target has a live harness process, else headless resume.')},
+            'wait': {'type': 'number', 'minimum': 0, 'description': (
+                'Inbox mode: seconds to wait for the reply (default 0: it arrives in your inbox later).')},
+            'reply_to': {**S, 'description': 'Answer this Everett message id; the reply goes to its sender.'},
         }, 'required': ['text'], 'additionalProperties': False},
+    },
+    {
+        'name': 'everett_inbox',
+        'description': ('Read the Everett messages waiting for your session (requests, replies, events) and mark '
+                        'them delivered. Hooks normally inject these automatically; use this where they cannot.'),
+        'inputSchema': {'type': 'object', 'properties': {
+            'session_id': {**S, 'description': 'Your session id, if Everett cannot detect it.'},
+            'peek': {'type': 'boolean', 'description': 'Do not mark them delivered.', 'default': False},
+        }, 'additionalProperties': False},
+    },
+    {
+        'name': 'everett_event',
+        'description': ('Report what your session is doing so other sessions and the human stay aware: done (finished '
+                        'a task), blocked (cannot continue; say on what), needs-input (waiting on the human), or '
+                        'info. blocked and needs-input notify the human. Subscribers get it in their inbox. Pass '
+                        'subscribe to also start following a session or project yourself.'),
+        'inputSchema': {'type': 'object', 'properties': {
+            'kind': {'type': 'string', 'enum': ['done', 'blocked', 'needs-input', 'info']},
+            'message': {**S, 'description': 'One line, e.g. "waiting on Max prompt".', 'maxLength': 300},
+            'project': {**S, 'description': 'Project name (default: the current folder\'s project).'},
+            'session_id': {**S, 'description': 'Your session id, if Everett cannot detect it.'},
+        }, 'required': ['kind', 'message'], 'additionalProperties': False},
+    },
+    {
+        'name': 'everett_subscribe',
+        'description': ('Follow another session or a whole project: its events (done, blocked, needs-input, info) '
+                        'arrive in your inbox and are injected at your next turn or tool call.'),
+        'inputSchema': {'type': 'object', 'properties': {
+            'target': {**S, 'description': 'Session id prefix or name, project name, "project:<name>", or "*".'},
+            'unsubscribe': {'type': 'boolean', 'default': False},
+            'session_id': {**S, 'description': 'Your session id, if Everett cannot detect it.'},
+        }, 'required': ['target'], 'additionalProperties': False},
     },
     {
         'name': 'everett_learn',
@@ -138,7 +180,8 @@ def _brief(s: Session) -> dict:
             'minutes_ago': int(max(0, time.time() - s.last_active) // 60),
             'card': s.card, 'card_source': s.card_source, 'title': s.title,
             'first_request': s.first_user[:160], 'last_request': s.last_user[:160],
-            **({'profile': s.profile} if s.profile else {}), **({'source': s.source} if s.source else {})}
+            **({'profile': s.profile} if s.profile else {}), **({'source': s.source} if s.source else {}),
+            **({'state': s.state, 'state_kind': s.state_kind} if s.state else {})}
 
 
 def _str(args: dict, key: str, required: bool = False) -> str:
@@ -186,6 +229,18 @@ def tool_send(args):
     if not isinstance(timeout, (int, float)) or isinstance(timeout, bool) or timeout <= 0:
         raise ParamsError('"timeout" must be a positive number')
     caller = _str(args, 'session_id') or caller_identity()['session_id']
+    mode = _str(args, 'mode') or 'auto'
+    if mode not in MODES:
+        raise ParamsError(f'"mode" must be one of {", ".join(MODES)}')
+    wait = args.get('wait', 0)
+    if not isinstance(wait, (int, float)) or isinstance(wait, bool) or wait < 0:
+        raise ParamsError('"wait" must be a non-negative number')
+    reply_to = _str(args, 'reply_to')
+    if reply_to:
+        try:
+            return {'delivered': True, **reply(reply_to, text, caller=caller)}
+        except SendError as e:
+            raise ToolError(str(e)) from e
     try:
         env = hop_env()
         if to:
@@ -218,6 +273,12 @@ def tool_send(args):
                         'note': 'Ambiguous. Nothing was sent; pass `to` with the session you mean.'}
             session = Session(**r['session'])
         refuse_self(session, caller)
+        if delivery_mode(session, mode) == 'inbox':
+            result = send_inbox(session, text, wait=float(wait), caller=caller)
+            note = ('Queued; it is injected into that live session at its next turn or tool call.' +
+                    ('' if result['reply'] is not None else
+                     ' Its reply will arrive in your inbox (injected by your hooks, or read it with everett_inbox).'))
+            return {**decision, 'delivered': True, 'session': _brief(session), **result, 'note': note}
         command_for(session, text)  # validates the harness can be resumed before waiting
         result = send(session, text, timeout=float(timeout), env=env)
     except SendError as e:
@@ -262,6 +323,51 @@ def tool_card(args):
     return {'written': str(path), 'card': body.strip()}
 
 
+def tool_inbox(args):
+    from . import inbox
+    sid = _str(args, 'session_id') or caller_identity()['session_id']
+    if not sid:
+        raise ToolError('Cannot tell which session you are. Pass session_id (your harness session id).')
+    if not inbox.valid_id(sid):
+        raise ParamsError('"session_id" is not a valid session id')
+    peek = args.get('peek', False)
+    if not isinstance(peek, bool):
+        raise ParamsError('"peek" must be a boolean')
+    items = inbox.pending(sid)
+    if not peek:
+        inbox.mark_done(sid, [m['id'] for m in items])
+    return {'session': sid, 'messages': [{k: m.get(k) for k in ('id', 'kind', 'from', 'from_harness', 'from_card',
+                                                               'text', 'reply_to', 'hops', 'ts')} for m in items]}
+
+
+def tool_event(args):
+    from . import events
+    kind = _str(args, 'kind', True)
+    sid = _str(args, 'session_id') or caller_identity()['session_id']
+    if sid and not events._valid_sid(sid):
+        raise ParamsError('"session_id" is not a valid session id')
+    try:
+        event = events.record(kind, _str(args, 'message', True), session=sid, project=_str(args, 'project') or None)
+    except events.EventError as e:
+        raise ToolError(str(e)) from e
+    return {'recorded': True, 'event': event, **({} if sid else {
+        'note': 'No session detected: the event is logged but not attached to a card. Pass session_id.'})}
+
+
+def tool_subscribe(args):
+    from . import events
+    sid = _str(args, 'session_id') or caller_identity()['session_id']
+    remove = args.get('unsubscribe', False)
+    if not isinstance(remove, bool):
+        raise ParamsError('"unsubscribe" must be a boolean')
+    try:
+        target = events.resolve_target(_str(args, 'target', True))
+        current = events.subscribe(sid, target, remove=remove)
+    except events.EventError as e:
+        raise ToolError(str(e)) from e
+    return {'subscriber': sid, 'following': current}
+
+
 def tool_whoami(args):
     ident = caller_identity()
     hops = os.environ.get('EVERETT_HOPS', '0')
@@ -272,7 +378,8 @@ def tool_whoami(args):
 
 HANDLERS = {'everett_ls': tool_ls, 'everett_route': tool_route, 'everett_send': tool_send,
             'everett_learn': tool_learn, 'everett_core': tool_core, 'everett_card': tool_card,
-            'everett_whoami': tool_whoami}
+            'everett_whoami': tool_whoami, 'everett_inbox': tool_inbox,
+            'everett_event': tool_event, 'everett_subscribe': tool_subscribe}
 
 
 # ---- JSON-RPC ------------------------------------------------------------------------------

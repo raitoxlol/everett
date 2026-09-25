@@ -17,11 +17,15 @@ from .session import home
 HOOKS_DIR = Path(__file__).resolve().parent / 'hooks'
 
 # harness -> [(event, script, timeout)]
+# UserPromptSubmit + PostToolUse deliver a live session's Everett inbox (next turn / mid-task).
 HOOKS = {
-    'claude': [('SessionStart', 'claude_session_start.py', 3), ('Stop', 'claude_stop.py', 3)],
-    'codex': [('SessionStart', 'codex_session_start.py', 5), ('Stop', 'codex_stop.py', 3)],
-    # Grok ignores SessionStart stdout, so it gets fallback cards only (no card instruction or core).
-    'grok': [('Stop', 'grok_stop.py', 5)],
+    'claude': [('SessionStart', 'claude_session_start.py', 3), ('Stop', 'claude_stop.py', 3),
+               ('UserPromptSubmit', 'claude_inbox.py', 3), ('PostToolUse', 'claude_inbox.py', 3)],
+    'codex': [('SessionStart', 'codex_session_start.py', 5), ('Stop', 'codex_stop.py', 3),
+              ('UserPromptSubmit', 'codex_inbox.py', 3), ('PostToolUse', 'codex_inbox.py', 3)],
+    # Grok ignores SessionStart stdout and discards an allowing UserPromptSubmit hook's context,
+    # so it gets fallback cards (Stop) and mid-task delivery (PostToolUse) only.
+    'grok': [('Stop', 'grok_stop.py', 5), ('PostToolUse', 'grok_inbox.py', 3)],
 }
 OMP_EXTENSION = 'omp_session_start.mjs'
 
@@ -63,14 +67,20 @@ def installed(harness: str, data: dict | None = None) -> dict[str, bool]:
     return {event: _has_script(hooks.get(event, []), script) for event, script, _ in HOOKS[harness]}
 
 
-def merge(data: dict, harness: str) -> tuple[dict, list[str]]:
-    """Return (merged settings, events added). Pure: does not touch the input."""
+def merge(data: dict, harness: str, events: list[str] | None = None) -> tuple[dict, list[str]]:
+    """Return (merged settings, events added). Pure: does not touch the input.
+
+    `events`, when given, restricts the merge to that subset of the harness's hook events
+    (used by `everett onboard` to apply only the hooks the user toggled on).
+    """
     data = json.loads(json.dumps(data))
     hooks = data.setdefault('hooks', {})
     if not isinstance(hooks, dict):
         raise ValueError('"hooks" is not an object')
     added = []
     for event, script, timeout in HOOKS[harness]:
+        if events is not None and event not in events:
+            continue
         entries = hooks.setdefault(event, [])
         if not isinstance(entries, list):
             raise ValueError(f'"hooks.{event}" is not a list')
@@ -126,8 +136,9 @@ def snippet(harness: str) -> str:
     return f'{note}\n{json.dumps({"hooks": hooks}, indent=2)}\n'
 
 
-def apply(harness: str) -> str:
-    """Install for one harness; returns a one-line report."""
+def apply(harness: str, events: list[str] | None = None) -> str:
+    """Install for one harness; returns a one-line report. `events` restricts which hook events
+    are merged (see `merge`); omitted or None installs every event Everett knows for the harness."""
     if harness == 'omp':
         path = omp_extension_path()
         source = omp_extension_source()
@@ -137,9 +148,11 @@ def apply(harness: str) -> str:
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(source, encoding='utf-8')
         return f'omp: wrote {path}' + (f' (backup {saved})' if saved else '')
+    if events is not None and not events:
+        return f'{harness}: skipped (no hooks selected)'
     path = settings_path(harness)
     data = _load(path)
-    merged, added = merge(data, harness)
+    merged, added = merge(data, harness, events=events)
     if not added:
         return f'{harness}: already installed ({path})'
     saved = backup(path)
@@ -167,7 +180,9 @@ def mcp_json_entry() -> dict:
 
 def mcp_path(harness: str) -> Path:
     return {'claude': home() / '.claude.json', 'codex': home() / '.codex' / 'config.toml',
-            'omp': home() / '.omp' / 'agent' / 'mcp.json'}[harness]
+            'grok': home() / '.grok' / 'config.toml', 'omp': home() / '.omp' / 'agent' / 'mcp.json'}[harness]
+
+TOML_MCP = ('codex', 'grok')  # both use an [mcp_servers.everett] table in a config.toml
 
 
 def _toml_str(value: str) -> str:
@@ -185,7 +200,7 @@ def codex_block() -> str:
 
 def mcp_installed(harness: str) -> bool:
     path = mcp_path(harness)
-    if harness == 'codex':
+    if harness in TOML_MCP:
         try:
             return any(line.strip() in ('[mcp_servers.everett]', '[mcp_servers."everett"]')
                        for line in path.read_text(encoding='utf-8').splitlines())
@@ -208,6 +223,11 @@ def mcp_snippet(harness: str) -> str:
                 f'{json.dumps({"mcpServers": {"everett": mcp_json_entry()}}, indent=2)}\n')
     if harness == 'codex':
         return f'# append to ~/.codex/config.toml\n{codex_block()}'
+    if harness == 'grok':
+        env_flags = ''.join(f' -e {k}={shlex.quote(v)}' for k, v in env.items())
+        return (f'# user scope (~/.grok/config.toml):\ngrok mcp add{env_flags} everett {shlex.quote(command)} -- '
+                f'{" ".join(args)}\n# (or append to ~/.grok/config.toml; Grok also imports Claude Code\'s servers)\n'
+                f'{codex_block()}')
     return (f'# merge into {mcp_path("omp")} (OMP also imports Claude Code\'s servers)\n'
             f'{json.dumps({"mcpServers": {"everett": mcp_json_entry()}}, indent=2)}\n')
 
@@ -216,7 +236,7 @@ def apply_mcp(harness: str) -> str:
     path = mcp_path(harness)
     if mcp_installed(harness):
         return f'{harness}: everett MCP server already registered ({path})'
-    if harness == 'codex':
+    if harness in TOML_MCP:
         try:
             text = path.read_text(encoding='utf-8')
         except FileNotFoundError:

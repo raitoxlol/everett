@@ -93,7 +93,8 @@ class Protocol(TempHome):
         self.assertEqual(init_info['result'], {})
         tools = s.request('tools/list')['result']['tools']
         self.assertEqual({t['name'] for t in tools}, {'everett_ls', 'everett_route', 'everett_send', 'everett_learn',
-                                                      'everett_core', 'everett_card', 'everett_whoami'})
+                                                      'everett_core', 'everett_card', 'everett_whoami', 'everett_inbox',
+                                                  'everett_event', 'everett_subscribe'})
         listing = s.call('everett_ls')
         self.assertFalse(listing['isError'])
         sessions = listing['structuredContent']['sessions']

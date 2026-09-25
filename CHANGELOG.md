@@ -18,6 +18,18 @@ First public release. It includes the 1.0.0 work prepared on 2026-09-24, which w
 - Resume and spawn commands: `claude --resume` / `--session-id`, `codex exec resume` / `codex exec`, `omp -r`, `pi --session`, `hermes -p <profile> chat --resume`, and `grok --resume <id> -p` / `grok --session-id <uuid> -p`. `send` refuses T3 Code sessions, because T3 keeps its own resume point and a CLI resume would fork the thread.
 - Safety: a hop guard (`EVERETT_HOPS`, max 3, exit 7), refusal to send to the calling session, and spawning only on request.
 
+### Live delivery
+- Running sessions are reachable. `send --mode auto` (the default) puts a request for a session with a live harness process into `~/.everett/inbox/<session-id>.jsonl` instead of refusing it or forking it with a headless resume; idle sessions are still resumed headless. `--mode resume|inbox` forces a path. T3 Code sessions now take inbox delivery instead of being refused.
+- The session's own hooks inject pending messages (at most 5 per hook, 6,000 characters) marked as coming from Everett with the sender's session and card: Claude Code and Codex at `UserPromptSubmit` and `PostToolUse` (`hookSpecificOutput.additionalContext`; the Codex contract checked against the 0.155.1 binary's embedded schemas), Grok at `PostToolUse` only (it discards `UserPromptSubmit` context), and OMP through its extension (`before_agent_start`, plus `tool_result` steering). About 40 ms per hook, silent on every error.
+- Replies: `everett reply <id> "<text>"` or `everett_send(reply_to=…)` deliver to the sender's inbox. `send --wait S` / `everett_send(wait=S)` wait for the reply. `everett inbox` and the `everett_inbox` MCP tool read an inbox directly (for Pi, Hermes, and humans). Reply chains stop at 3 hops.
+- `install-hooks` adds the new hooks (backup first, idempotent). `install-mcp --grok` registers the MCP server in `~/.grok/config.toml`. `everett onboard` offers the new hooks.
+- Not used: Claude Code's own `<cross-session-message>` socket channel, which has no public way to send.
+
+### Events
+- `everett event done|blocked|needs-input|info "<msg>" [--project P]` and `everett_event`. Stored in `~/.everett/events.jsonl`, with each session's current state (and since when) in `~/.everett/state/`. `everett ls` flags blocked and waiting sessions (`⚠ blocked 32h: waiting on Max prompt`), `everett_ls` returns `state` for each session, and `everett events [--since 24h]` lists them.
+- Stop hooks detect events deterministically from the turn's last assistant message: a closing question or an ask ("need you to", "should I", "please confirm") → `needs-input`; "blocked" / "stuck" / "waiting on" / "can't proceed" (not negated, not asked) → `blocked`; otherwise `done`. Repeats of the current state within 10 minutes are dropped.
+- `everett subscribe <session|project>` / `everett_subscribe` route events into the subscriber's inbox. `blocked` and `needs-input` notify the human: a macOS notification by default, plus `notify_command` (config or `EVERETT_NOTIFY_COMMAND`) for your own channel, and one escalation after `escalate_minutes` (default 30). `everett events --check` runs the escalation from cron.
+
 ### Cards and shared core
 - Session cards in `~/.everett/cards/`: the SessionStart hook asks the agent to write one, and the Stop hook writes a deterministic fallback. `everett install-hooks [--claude] [--codex] [--omp] [--grok] [--apply]` backs up the config first and merges idempotently. Grok gets the Stop hook only (`~/.grok/hooks/everett.json`), because Grok ignores `SessionStart` output.
 - Shared core: `everett learn` (secret-filtered, capped at 500 characters), `everett trunk merge [--llm claude|codex|none]` (capped at 300 words, with history snapshots), and `everett core`. SessionStart hooks for Claude Code, Codex, and OMP inject the global and project core, at most 350 words.
@@ -27,6 +39,7 @@ First public release. It includes the 1.0.0 work prepared on 2026-09-24, which w
 - Caller identity comes from `CLAUDE_CODE_SESSION_ID`, `CODEX_THREAD_ID`, `HERMES_SESSION_ID`, `PI_SESSION_FILE`, or `GROK_SESSION_ID`, and `EVERETT_SESSION_ID` overrides them all.
 
 ### Setup
+- `everett onboard`: a friendly first-time-setup TUI (curses, with a plain-prompt fallback when not a TTY) -- welcome, detected harnesses, per-hook toggles with the exact files that will change, MCP registration toggles, and an optional card-backfill step (deterministic AUTO cards, no LLM calls) with a progress bar. Nothing is written before the final confirm. `--yes [--span-days N] [--no-backfill] [--no-mcp]` runs it non-interactively.
 - `~/.everett/config.toml` (`vault`, `vault_dir`, `default_harness`, `router`, `merge_llm`, Jev key), with environment overrides. No vault path is hardcoded.
 - `everett doctor` shows the Python version, session stores (including Grok and T3 Code), hooks, MCP registration, card coverage, router, and vault.
 - `pipx install everett-sessions`, `python -m everett`, and `everett --version`. No runtime dependencies. MIT license.

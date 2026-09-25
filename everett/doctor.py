@@ -74,7 +74,7 @@ def run(hours: float = 72) -> int:
             _line(True, f'  {harness:<7} installed')
 
     print('mcp:')
-    for harness in ('claude', 'codex', 'omp'):
+    for harness in ('claude', 'codex', 'omp', 'grok'):
         if not (home() / STORES[harness]).is_dir():
             continue
         ok = install.mcp_installed(harness)
