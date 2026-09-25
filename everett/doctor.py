@@ -4,7 +4,7 @@ from __future__ import annotations
 import shutil
 import sys
 
-from . import config, install, registry, trunk
+from . import config, install, registry, trunk, trunk_schedule
 from .adapters import t3code
 from .route import find_api_key
 from .session import home
@@ -94,6 +94,11 @@ def run(hours: float = 72) -> int:
 
     folder = trunk.vault_folder()
     _line(True if folder else None, f'vault: {folder}' if folder else 'vault: not configured (optional)')
+
+    scheduled = trunk_schedule.is_scheduled()
+    _line(True if scheduled else None,
+          f'trunk schedule: scheduled ({trunk_schedule.plist_path()})' if scheduled
+          else 'trunk schedule: not scheduled (optional; `everett trunk schedule --apply`)')
     warnings = len(WARNINGS) - problems
     print('healthy' if not WARNINGS else f'{problems} problem(s), {warnings} warning(s)')
     return 1 if problems else 0

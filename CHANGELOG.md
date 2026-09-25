@@ -1,5 +1,19 @@
 # Changelog
 
+## 1.2.0 (unreleased)
+
+### Onboarding: Jev key + nightly merge
+- `everett onboard` adds a "Smarter routing (optional)" step (curses TUI, plain fallback, and `--yes`), between MCP and backfill: two lines explain that Jev (typesafe.ai) picks the right session when many are running, and that without it Everett uses local matching.
+- Paste a key or skip. If a key is already found (`TYPESAFE_API_KEY`, `~/.everett/config.toml`, or `~/.hermes/.env`), the screen shows "Jev key found ✓ (source)" and defaults to skip.
+- A pasted key is validated with one test route call (5 s timeout); on success it's saved, on failure you're offered "keep it anyway" or "skip". The key is masked while typing (curses `*`, plain `getpass`) and is never echoed or logged — only the saved/validated status appears in the summary.
+- The key is written as `typesafe_api_key` in `~/.everett/config.toml` (created `chmod 600`; every other key and `[section]` is preserved). `--yes --jev-key-env VAR` reads the key from an env var for scripted setup.
+- The same step carries an optional "merge shared memory nightly" toggle (see below); `--yes --schedule-merge` opts in non-interactively. The onboarding step count and progress rail updated (6 → 7 steps).
+
+### Nightly auto-merge for the shared core
+- `everett trunk schedule [--at HH:MM] [--remove] [--llm claude|codex|none]` prints (default) or, with `--apply`, installs/removes a macOS LaunchAgent (`~/Library/LaunchAgents/dev.everett.core-merge.plist`) that runs `everett trunk merge --llm <x>` nightly (default 04:00, default `claude`). `everett trunk merge` already skips cleanly when the inbox is empty. Logs go to `~/.everett/logs/merge.log`.
+- `--apply` writes the plist and runs `launchctl bootstrap`; `--remove --apply` runs `launchctl bootout` and deletes the plist. Every path and the launchctl call are injectable (`trunk_schedule.install/remove(path=, runner=)`), so tests never touch the real `~/Library` or `launchctl`.
+- `everett doctor` reports whether nightly merge is scheduled.
+
 ## 1.1.0 — 2026-09-25
 
 First public release. It includes the 1.0.0 work prepared on 2026-09-24, which was never published on its own.

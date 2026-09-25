@@ -26,22 +26,35 @@ git clone https://github.com/raitoxlol/everett && cd everett && pipx install .  
 
 Then run `everett onboard`.
 
-It is a six-step terminal UI (welcome, detect, hooks, MCP, backfill, confirm) with a title bar,
-step indicator, and progress rail so you always know where you are, plus a live "Try this" panel
-with the exact first commands at the end: what Everett found on this machine, which hooks to
-install (and in which files -- a backup is made of each one first), whether to register the MCP
-server, and an optional "make cards for my recent sessions" backfill step -- pick the day span
-with an inline `‹ 3 days ›` stepper and watch a per-step checklist tick off with a progress bar as
-it runs. Nothing is written until you confirm at the end; `q` quits at any point with no changes.
-Not a TTY (or curses fails to start)? It falls back to the same steps as plain yes/no prompts. For
-scripts and CI, skip the UI entirely:
+It is a seven-step terminal UI (welcome, detect, hooks, MCP, smarter routing, backfill, confirm)
+with a title bar, step indicator, and progress rail so you always know where you are, plus a live
+"Try this" panel with the exact first commands at the end: what Everett found on this machine,
+which hooks to install (and in which files -- a backup is made of each one first), whether to
+register the MCP server, an optional "smarter routing" step for a Jev key plus a nightly
+shared-core merge toggle (see below), and an optional "make cards for my recent sessions" backfill
+step -- pick the day span with an inline `‹ 3 days ›` stepper and watch a per-step checklist tick
+off with a progress bar as it runs. Nothing is written until you confirm at the end; `q` quits at
+any point with no changes. Not a TTY (or curses fails to start)? It falls back to the same steps as
+plain yes/no prompts. For scripts and CI, skip the UI entirely:
 
 ```bash
-everett onboard --yes                # apply every default, non-interactively
-everett onboard --yes --span-days 7  # backfill cards for the last 7 days (default 3, 1-30)
-everett onboard --yes --no-backfill  # skip card backfill
-everett onboard --yes --no-mcp       # skip MCP registration
+everett onboard --yes                       # apply every default, non-interactively
+everett onboard --yes --span-days 7         # backfill cards for the last 7 days (default 3, 1-30)
+everett onboard --yes --no-backfill         # skip card backfill
+everett onboard --yes --no-mcp              # skip MCP registration
+everett onboard --yes --jev-key-env MY_KEY  # save a Jev key from an env var (validated first)
+everett onboard --yes --schedule-merge      # also schedule nightly `everett trunk merge`
 ```
+
+**Smarter routing (optional).** Jev ([typesafe.ai](https://typesafe.ai)) picks the right session
+when many are running; without it, Everett falls back to local BM25 matching and stays fully
+offline. The onboarding step offers "paste a key" or "skip" -- if a key is already found
+(`TYPESAFE_API_KEY`, `~/.everett/config.toml`, or `~/.hermes/.env`), it shows "Jev key found ✓
+(source)" and defaults to skip. A pasted key is validated with one test route call (5 s timeout);
+on failure you can keep it anyway or skip. The key is masked while typing and never echoed or
+logged, and is saved as `typesafe_api_key` in `~/.everett/config.toml` (created `chmod 600`,
+preserving every other key). The same step has a "merge shared memory nightly" toggle -- see
+[Nightly auto-merge](#nightly-auto-merge) below.
 
 ## Quickstart (60 seconds)
 
@@ -102,6 +115,7 @@ Done. MAX_RETRIES is now 5 and the backoff test covers the cap.
 | `everett trunk merge [--llm claude\|codex\|none] [--dry-run]` | Distills the inbox into the shared core. |
 | `everett core [show\|edit-path\|history] [--project P]` | Shows the core a new session in this folder receives, the file to edit, or past merges. |
 | `everett trunk [view] [--dry-run]` | Writes the session list as a Markdown note into your notes vault (optional). |
+| `everett trunk schedule [--at HH:MM] [--remove] [--llm claude\|codex\|none] [--apply]` | Prints (default) or, with `--apply`, installs/removes a macOS LaunchAgent that runs `everett trunk merge` nightly (default 04:00, `--llm claude`). See [Nightly auto-merge](#nightly-auto-merge). |
 
 Global option: `--hours N` sets the look-back window (default 72).
 
@@ -208,6 +222,19 @@ Parallel sessions each build their own context and drift apart. The shared core 
 3. **Pull.** The SessionStart hooks (Claude Code, Codex, OMP) add the global core plus the current project's core (at most 350 words in total) to each new session's context, with one line telling the agent to run `everett learn` when it finds something other sessions should know. The hooks read local files only, take about 40 ms, and stay silent on any error.
 
 The project is the enclosing git repository's folder name, else the folder name. Your home folder is not a project. Default merge engine: `merge_llm` in the config, else `claude`.
+
+### Nightly auto-merge
+
+`everett trunk schedule` installs a macOS LaunchAgent so the shared core merges itself every night instead of waiting on someone to run `everett trunk merge`:
+
+```bash
+everett trunk schedule                       # print what would be installed (default 04:00, --llm claude)
+everett trunk schedule --apply               # write the LaunchAgent and launchctl bootstrap it
+everett trunk schedule --at 02:30 --llm codex --apply
+everett trunk schedule --remove --apply      # launchctl bootout it and delete the plist
+```
+
+`--apply` writes `~/Library/LaunchAgents/dev.everett.core-merge.plist` (label `dev.everett.core-merge`) and runs `launchctl bootstrap gui/<uid> <plist>`; without `--apply` it only prints the plist. The scheduled job runs `everett trunk merge --llm <x>` once a day and skips cleanly when the inbox is empty, same as running it by hand. Logs go to `~/.everett/logs/merge.log`. `everett doctor` reports whether it's currently scheduled. `everett onboard` offers the same thing as a "merge shared memory nightly" toggle next to the Jev step.
 
 ## For agents: MCP
 

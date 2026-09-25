@@ -45,7 +45,8 @@ class IsolatedHome(unittest.TestCase):
 
 
 def _args(**overrides):
-    ns = argparse.Namespace(yes=False, span_days=3, no_backfill=False, no_mcp=False)
+    ns = argparse.Namespace(yes=False, span_days=3, no_backfill=False, no_mcp=False,
+                             jev_key_env=None, schedule_merge=False)
     for k, v in overrides.items():
         setattr(ns, k, v)
     return ns
@@ -160,7 +161,7 @@ class QuittingWritesNothing(IsolatedHome):
         self.assertFalse(cards.card_path('c-quit').exists())
 
     def test_plain_prompt_no_to_apply_writes_nothing(self):
-        answers = iter(['', '', '', '', '', '', '', '', 'n'])  # hooks x4, mcp x1, backfill on, span default, decline apply
+        answers = iter(['', '', '', '', '', '', '', '', '', '', 'n'])  # hooks x4, mcp x1, jev paste-now, merge-nightly, backfill on, span default, decline apply
         with mock.patch('builtins.input', side_effect=lambda *_: next(answers)):
             out = io.StringIO()
             with redirect_stdout(out):
@@ -178,7 +179,8 @@ class PlainPromptFallback(IsolatedHome):
 
     def test_used_when_not_a_tty(self):
         with mock.patch('sys.stdin.isatty', return_value=False):
-            answers = iter(['y', 'y', 'y', 'y', 'y', 'y', 'y', '', 'y'])
+            # hooks x4, mcp x1, jev paste-now(no), merge-nightly(no), backfill on, span default, preview generate, apply
+            answers = iter(['y', 'y', 'y', 'y', 'y', '', '', 'y', '', 'y', 'y'])
             with mock.patch('builtins.input', side_effect=lambda *_: next(answers)):
                 out = io.StringIO()
                 with redirect_stdout(out):

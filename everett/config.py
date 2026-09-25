@@ -73,3 +73,45 @@ def get(key: str, env: str | None = None, default: str = '') -> str:
         return values().get(key, '').strip() or default
     except ConfigError:
         return default
+
+
+def set_value(key: str, value: str) -> Path:
+    """Set a top-level (no-section) key in ~/.everett/config.toml, preserving everything else.
+
+    Creates the file (chmod 600) if it does not exist yet; if it does, its permissions are left
+    as they are. Only ever touches the one line for `key`, never anything inside a `[section]`.
+    """
+    path = config_path()
+    try:
+        text = path.read_text(encoding='utf-8')
+    except FileNotFoundError:
+        text = ''
+    lines = text.splitlines()
+    quoted = f'{key} = {value!r}'.replace("'", '"') if not isinstance(value, str) else \
+        f'{key} = "{value}"'
+    in_section = False
+    replaced = False
+    insert_at = len(lines)
+    for i, raw in enumerate(lines):
+        stripped = raw.strip()
+        if stripped.startswith('[') and stripped.endswith(']'):
+            if not in_section:
+                insert_at = i  # first section header: new top-level keys go just before it
+            in_section = True
+            continue
+        if in_section:
+            continue
+        name = stripped.partition('=')[0].strip()
+        if name == key:
+            lines[i] = quoted
+            replaced = True
+            break
+    if not replaced:
+        lines.insert(insert_at, quoted)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_name(f'.{path.name}.tmp')
+    tmp.write_text('\n'.join(lines) + '\n', encoding='utf-8')
+    tmp.chmod(0o600)
+    tmp.replace(path)
+    path.chmod(0o600)
+    return path

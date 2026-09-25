@@ -361,6 +361,8 @@ def cmd_subscribe(args) -> int:
 def cmd_trunk(args) -> int:
     if args.action == 'merge':
         return cmd_merge(args)
+    if args.action == 'schedule':
+        return cmd_trunk_schedule(args)
     sessions = registry.scan(args.hours)
     if args.dry_run:
         print(trunk.render(sessions))
@@ -393,6 +395,34 @@ def cmd_merge(args) -> int:
         print(f'previous core and inbox saved to {result["history"]}')
     if result.get('mirror'):
         print(f'mirrored to {result["mirror"]}')
+    return 0
+
+
+def cmd_trunk_schedule(args) -> int:
+    from . import trunk_schedule
+    llm = args.llm or 'claude'
+    if args.remove:
+        if not args.apply:
+            print(f'would remove {trunk_schedule.plist_path()} (run again with --apply)')
+            return 0
+        result = trunk_schedule.remove()
+        print(f'removed {result["path"]}' if result['removed'] else f'not scheduled ({result["path"]})')
+        return 0
+    try:
+        trunk_schedule.plist_data(args.at, llm)  # validates --at / --llm before printing/writing anything
+    except ValueError as e:
+        print(f'everett: {e}', file=sys.stderr)
+        return 2
+    if not args.apply:
+        print(f'would write {trunk_schedule.plist_path()}, then `launchctl bootstrap` it:')
+        print(trunk_schedule.render_plist(args.at, llm).decode('utf-8', 'replace'))
+        print('# run again with --apply to install it')
+        return 0
+    result = trunk_schedule.install(args.at, llm)
+    print(f'wrote {result["path"]}')
+    print('launchctl bootstrap: ok' if result['launchctl_ok']
+          else f'launchctl bootstrap reported an issue (the plist is still installed): {result["stderr"]}')
+    print(f'logs: {trunk_schedule.log_path()}')
     return 0
 
 
@@ -535,11 +565,16 @@ def main(argv=None) -> int:
     ib.add_argument('--session', help='default: the calling session, else the human inbox')
     ib.add_argument('--peek', action='store_true', help='do not mark them delivered')
     ib.add_argument('--json', action='store_true'); ib.set_defaults(fn=cmd_inbox)
-    t = sub.add_parser('trunk', help='view: write the session list to your vault; merge: distill learnings into the core')
-    t.add_argument('action', nargs='?', choices=('view', 'merge'), default='view')
+    t = sub.add_parser('trunk', help='view: write the session list to your vault; merge: distill learnings into '
+                                      'the core; schedule: nightly auto-merge via launchd')
+    t.add_argument('action', nargs='?', choices=('view', 'merge', 'schedule'), default='view')
     t.add_argument('--dry-run', action='store_true', help='print instead of writing')
     t.add_argument('--llm', choices=('claude', 'codex', 'none'),
-                   help='merge engine (default: config merge_llm, else claude); none = deterministic append+dedupe')
+                   help='merge engine (default: config merge_llm, else claude; schedule always defaults to claude); '
+                        'none = deterministic append+dedupe')
+    t.add_argument('--at', default='04:00', help='schedule: time of day HH:MM (default 04:00)')
+    t.add_argument('--apply', action='store_true', help='schedule: write the LaunchAgent and launchctl bootstrap it')
+    t.add_argument('--remove', action='store_true', help='schedule: uninstall the LaunchAgent')
     t.set_defaults(fn=cmd_trunk)
     le = sub.add_parser('learn', help='push a fact to the shared core inbox (secrets are rejected)')
     le.add_argument('fact'); le.add_argument('--project'); le.add_argument('--scope', choices=('global', 'project'))
@@ -564,6 +599,9 @@ def main(argv=None) -> int:
     ob.add_argument('--span-days', type=int, default=3, help='backfill span in days, 1-30 (default 3)')
     ob.add_argument('--no-backfill', action='store_true', help='skip generating backfill cards')
     ob.add_argument('--no-mcp', action='store_true', help='skip registering the MCP server')
+    ob.add_argument('--jev-key-env', metavar='VAR', help='--yes mode: read a Jev key from this env var and save it')
+    ob.add_argument('--schedule-merge', action='store_true',
+                     help='--yes mode: also schedule nightly `everett trunk merge` via launchd')
     ob.set_defaults(fn=cmd_onboard)
     args = p.parse_args(argv)
     return args.fn(args)

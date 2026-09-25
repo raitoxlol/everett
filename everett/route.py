@@ -51,6 +51,16 @@ def find_api_key() -> str:
     return ''
 
 
+def verify_key(key: str, jev=None) -> bool:
+    """One cheap test route call (timeout 5s, via call_jev) to check a Jev key actually works."""
+    caller = jev or call_jev
+    try:
+        caller('ping', {'new': 'start a new session', 'none': 'ambiguous or too vague to place'}, key)
+        return True
+    except RouteError:
+        return False
+
+
 class RouteError(Exception):
     def __init__(self, code: int, message: str):
         super().__init__(message)

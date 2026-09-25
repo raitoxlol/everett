@@ -1,7 +1,8 @@
 """`everett onboard`: a friendly first-time-setup TUI.
 
-Six screens: welcome, detect, hooks, mcp, backfill (optional), summary. Nothing is written
-until the final "Apply" confirmation. `q` quits at any step with no changes.
+Seven screens: welcome, detect, hooks, mcp, jev (smarter routing + nightly merge, both optional),
+backfill (optional), summary. Nothing is written until the final "Apply" confirmation. `q` quits
+at any step with no changes.
 
 Uses stdlib `curses` when stdout/stdin are a TTY; falls back to plain sequential prompts
 otherwise (or if curses itself fails to start), and to `--yes` for scripts and tests.
@@ -9,14 +10,16 @@ otherwise (or if curses itself fails to start), and to `--yes` for scripts and t
 from __future__ import annotations
 
 import argparse
+import getpass
 import os
 import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from . import cards, install, registry
+from . import cards, config, install, registry
 from .doctor import STORES
 from .hooks import common
+from .route import verify_key
 from .session import home
 
 # "since forever": detection counts every session Everett can see, not just a recent window.
@@ -40,6 +43,11 @@ WELCOME_LINES = (
     'Everett sees every Claude Code, Codex, OMP, Pi, Hermes, and Grok session on this machine.',
     'It lets those sessions hand work to each other instead of you copy-pasting between them.',
     'It also gives every session a shared memory: one fact learned in one session reaches the rest.',
+)
+
+JEV_LINES = (
+    'Jev (typesafe.ai) picks the right session when many are running, instead of a lexical guess.',
+    'Without it, Everett falls back to local matching -- no key required, everything stays on this machine.',
 )
 
 
@@ -90,6 +98,11 @@ class OnboardConfig:
     mcp: dict = field(default_factory=dict)         # harness -> bool
     backfill_enabled: bool = True
     span_days: int = 3
+    jev_choice: str = 'skip'        # 'paste' or 'skip'
+    jev_key: str = ''               # only set when jev_choice == 'paste'; never logged or echoed
+    jev_found_source: str = ''      # 'env' | 'config' | 'hermes' | '' (not found)
+    jev_validated: bool | None = None  # None: not tested (found key, or skipped), else the test route result
+    trunk_schedule_enabled: bool = False
 
 
 @dataclass
@@ -98,6 +111,8 @@ class ApplyResult:
     mcp_lines: list
     backfill_written: int = 0
     backfill_skipped: int = 0
+    jev_line: str = ''
+    trunk_schedule_line: str = ''
 
 
 # ---- detection --------------------------------------------------------------------------------
@@ -129,6 +144,30 @@ def default_config() -> OnboardConfig:
     return cfg
 
 
+def find_jev_key_with_source() -> tuple[str, str]:
+    """Jev key sources, in order, with which one matched: env, config file, ~/.hermes/.env."""
+    key = os.environ.get('TYPESAFE_API_KEY', '').strip()
+    if key:
+        return key, 'env'
+    try:
+        key = config.values().get('typesafe_api_key', '').strip()
+    except config.ConfigError:
+        key = ''
+    if key:
+        return key, 'config'
+    try:
+        with (home() / '.hermes' / '.env').open(encoding='utf-8') as env_file:
+            for line in env_file:
+                name, sep, value = line.partition('=')
+                if sep and name.strip() == 'TYPESAFE_API_KEY':
+                    value = value.strip().strip('"\'')
+                    if value:
+                        return value, 'hermes'
+    except OSError:
+        pass
+    return '', ''
+
+
 def hook_change_lines(cfg: OnboardConfig) -> list:
     """(harness, file that will change, whether anything is selected there)."""
     lines = []
@@ -158,6 +197,23 @@ def apply_hooks(cfg: OnboardConfig) -> list:
 def apply_mcp(cfg: OnboardConfig) -> list:
     return [install.apply_mcp(harness) if on else f'{harness}: skipped (not selected)'
             for harness, on in cfg.mcp.items()]
+
+
+def apply_jev(cfg: OnboardConfig) -> str:
+    """Persist a pasted Jev key (never a found one -- it's already wherever it was found)."""
+    if cfg.jev_choice != 'paste' or not cfg.jev_key:
+        return 'jev: skipped (using local matching)'
+    path = config.set_value('typesafe_api_key', cfg.jev_key)
+    status = 'validated' if cfg.jev_validated else 'validation failed; kept anyway'
+    return f'jev: key saved to {path} ({status})'
+
+
+def apply_trunk_schedule(cfg: OnboardConfig) -> str:
+    if not cfg.trunk_schedule_enabled:
+        return 'trunk schedule: skipped (not selected)'
+    from . import trunk_schedule
+    result = trunk_schedule.install()
+    return f'trunk schedule: installed ({result["path"]}, nightly at 04:00, --llm claude)'
 
 
 def missing_card_sessions(span_days: int) -> list:
@@ -196,10 +252,12 @@ def generate_backfill_cards(sessions: list, progress=None) -> tuple:
 def run_apply(cfg: OnboardConfig, backfill_progress=None) -> ApplyResult:
     hook_lines = apply_hooks(cfg)
     mcp_lines = apply_mcp(cfg)
+    jev_line = apply_jev(cfg)
+    trunk_schedule_line = apply_trunk_schedule(cfg)
     written = skipped = 0
     if cfg.backfill_enabled:
         written, skipped = generate_backfill_cards(missing_card_sessions(cfg.span_days), backfill_progress)
-    return ApplyResult(hook_lines, mcp_lines, written, skipped)
+    return ApplyResult(hook_lines, mcp_lines, written, skipped, jev_line, trunk_schedule_line)
 
 
 def summary_lines(cfg: OnboardConfig, result: ApplyResult) -> list:
@@ -207,6 +265,8 @@ def summary_lines(cfg: OnboardConfig, result: ApplyResult) -> list:
     lines += [f'  {line}' for line in result.hook_lines] or ['  (none)']
     lines.append('MCP:')
     lines += [f'  {line}' for line in result.mcp_lines] or ['  (none)']
+    lines.append(f'Smarter routing: {result.jev_line}')
+    lines.append(f'Nightly merge: {result.trunk_schedule_line}')
     if cfg.backfill_enabled:
         lines.append(f'Backfill: {result.backfill_written} card(s) written, {result.backfill_skipped} skipped '
                      f'(last {cfg.span_days} day(s))')
@@ -225,10 +285,29 @@ def run_yes(args) -> int:
     cfg.backfill_enabled = not args.no_backfill
     if args.no_mcp:
         cfg.mcp = {harness: False for harness in cfg.mcp}
+    apply_jev_key_env(cfg, getattr(args, 'jev_key_env', None))
+    cfg.trunk_schedule_enabled = bool(getattr(args, 'schedule_merge', False))
     result = run_apply(cfg)
     for line in summary_lines(cfg, result):
         print(line)
     return 0
+
+
+def apply_jev_key_env(cfg: OnboardConfig, var: str | None) -> None:
+    """--yes mode: read a Jev key from the named env var (`--jev-key-env VAR`), validate, and stage
+    it for saving. A found key elsewhere (env/config/hermes) needs no action -- it already works."""
+    found_key, found_source = find_jev_key_with_source()
+    if found_key:
+        cfg.jev_found_source = found_source
+        cfg.jev_choice = 'skip'
+        return
+    if not var:
+        return
+    key = os.environ.get(var, '').strip()
+    if not key:
+        return
+    cfg.jev_validated = verify_key(key)
+    cfg.jev_key, cfg.jev_choice = key, 'paste'
 
 
 # ---- plain-prompt fallback (no TTY, or curses failed) --------------------------------------------
@@ -248,6 +327,28 @@ def _ask_yes(prompt: str, default: bool = True) -> bool:
             return True
         if raw in ('n', 'no'):
             return False
+
+
+def _plain_jev_entry(cfg: OnboardConfig) -> None:
+    """Prompt for a Jev key with getpass (masked, never echoed or logged), validate it with one
+    test route call, and either stage it for saving or ask to keep it anyway on failure."""
+    try:
+        key = getpass.getpass('  paste key (input hidden, enter to skip): ').strip()
+    except (EOFError, KeyboardInterrupt):
+        key = ''
+    if not key:
+        cfg.jev_choice = 'skip'
+        return
+    print('  validating...')
+    ok = verify_key(key)
+    print('  ok' if ok else '  failed')
+    if ok:
+        cfg.jev_key, cfg.jev_choice, cfg.jev_validated = key, 'paste', True
+        return
+    if _ask_yes('  keep it anyway?', default=False):
+        cfg.jev_key, cfg.jev_choice, cfg.jev_validated = key, 'paste', False
+    else:
+        cfg.jev_choice = 'skip'
 
 
 def run_plain(args) -> int:
@@ -290,6 +391,28 @@ def run_plain(args) -> int:
         cfg.mcp[harness] = on
     print()
 
+    print('Smarter routing (optional)')
+    for line in JEV_LINES:
+        print(f'  {line}')
+    found_key, found_source = find_jev_key_with_source()
+    if found_key:
+        cfg.jev_found_source = found_source
+        print(f'  Jev key found ✓ ({found_source})')
+        if _ask_yes('  paste a different key instead?', default=False):
+            _plain_jev_entry(cfg)
+        else:
+            cfg.jev_choice = 'skip'
+    elif _ask_yes('  paste a Jev key now?', default=False):
+        _plain_jev_entry(cfg)
+    else:
+        cfg.jev_choice = 'skip'
+    print()
+
+    cfg.trunk_schedule_enabled = _ask_yes(
+        'Merge shared memory nightly? (schedules `everett trunk merge` via launchd, 04:00, --llm claude)',
+        default=False)
+    print()
+
     cfg.backfill_enabled = _ask_yes('Make cards for your recent sessions without one? (optional, skippable)',
                                      default=cfg.backfill_enabled)
     if cfg.backfill_enabled:
@@ -330,7 +453,7 @@ def run_plain(args) -> int:
 # color support. All drawing goes through _put, which clips to the screen and never raises even
 # at the bottom-right corner or on a terminal too small to hold the frame.
 
-STEP_TITLES = ('Welcome', 'Detect', 'Hooks', 'MCP server', 'Backfill', 'Confirm')
+STEP_TITLES = ('Welcome', 'Detect', 'Hooks', 'MCP server', 'Smarter routing', 'Backfill', 'Confirm')
 TOTAL_STEPS = len(STEP_TITLES)
 MIN_COLS = 54
 MIN_ROWS = 14
@@ -541,12 +664,114 @@ def _screen_mcp(stdscr, colors, cfg: OnboardConfig):
     return _checklist(stdscr, colors, 4, 'MCP server', intro, items)
 
 
+def _text_entry(stdscr, colors, step, title, intro, mask=True):
+    """Minimal masked line editor. Returns the typed text (possibly empty). Enter submits,
+    backspace deletes, q/Esc quits onboarding entirely (no partial-entry 'back')."""
+    import curses
+    buf: list[str] = []
+    while True:
+        y = _draw_frame(stdscr, colors, step, title)
+        if y is not None:
+            for line in intro:
+                _put(stdscr, y, 2, line, colors['dim'])
+                y += 1
+            y += 1
+            shown = ('*' * len(buf)) if mask else ''.join(buf)
+            _put(stdscr, y, 2, '> ' + shown, curses.A_BOLD)
+            _footer(stdscr, colors, 'type the key   enter to submit (empty = skip)   q quit')
+            stdscr.refresh()
+        key = _wait_for_resize_or_key(stdscr)
+        if key in (ord('q'), 27):
+            raise QuitOnboarding()
+        if key in (curses.KEY_ENTER, 10, 13):
+            return ''.join(buf)
+        if key in (curses.KEY_BACKSPACE, 127, 8):
+            if buf:
+                buf.pop()
+        elif 32 <= key < 127:
+            buf.append(chr(key))
+
+
+def _screen_jev(stdscr, colors, cfg: OnboardConfig):
+    import curses
+    ascii_mode = _ascii_mode(stdscr)
+    found_key, found_source = find_jev_key_with_source()
+    if found_key and not cfg.jev_found_source:
+        cfg.jev_found_source = found_source
+    while True:
+        y = _draw_frame(stdscr, colors, 5, 'Smarter routing (optional)')
+        if y is not None:
+            for line in JEV_LINES:
+                _put(stdscr, y, 2, line, colors['dim'])
+                y += 1
+            y += 1
+            if cfg.jev_found_source:
+                _put(stdscr, y, 2, f'Jev key found ✓ ({cfg.jev_found_source})', colors['green'])
+                y += 2
+            paste_mark = glyph(cfg.jev_choice == 'paste', ascii_mode)
+            key_note = ' (key entered)' if cfg.jev_choice == 'paste' and cfg.jev_key else ''
+            _put(stdscr, y, 2, f'{paste_mark} paste a different key{key_note}'
+                 if cfg.jev_found_source else f'{paste_mark} paste a key', 0)
+            y += 1
+            _put(stdscr, y, 2, f'{glyph(cfg.jev_choice == "skip", ascii_mode)} use local matching', 0)
+            y += 2
+            merge_mark = glyph(cfg.trunk_schedule_enabled, ascii_mode)
+            _put(stdscr, y, 2, f'{merge_mark} merge shared memory nightly (launchd, 04:00, --llm claude)', 0)
+            _footer(stdscr, colors, 'p paste key   s skip   m toggle nightly merge   enter continue   b back   q quit')
+            stdscr.refresh()
+        key = _wait_for_resize_or_key(stdscr)
+        if key in (ord('q'), 27):
+            raise QuitOnboarding()
+        if key == ord('p'):
+            entered = _text_entry(stdscr, colors, 5, 'Smarter routing (optional)',
+                                   ['Paste the Jev key (typesafe.ai).'])
+            if not entered:
+                if cfg.jev_choice != 'paste':
+                    cfg.jev_choice = 'skip'
+                continue
+            lines = ['validating…']
+            _put(stdscr, 4, 2, lines[0], colors['dim'])
+            stdscr.refresh()
+            ok = verify_key(entered)
+            if ok:
+                cfg.jev_key, cfg.jev_choice, cfg.jev_validated = entered, 'paste', True
+                _pause(stdscr, colors, 5, 'Smarter routing (optional)', ['ok ✓ -- the key works.'],
+                       allow_back=False, key_hint='enter continue')
+            else:
+                keep = None
+                while keep is None:
+                    y2 = _draw_frame(stdscr, colors, 5, 'Smarter routing (optional)')
+                    if y2 is not None:
+                        _put(stdscr, y2, 2, 'failed -- Everett could not confirm this key.', colors['amber'])
+                        _footer(stdscr, colors, 'k keep it anyway   s or enter to skip   q quit')
+                        stdscr.refresh()
+                    k2 = _wait_for_resize_or_key(stdscr)
+                    if k2 in (ord('q'), 27):
+                        raise QuitOnboarding()
+                    if k2 == ord('k'):
+                        keep = True
+                    elif k2 in (ord('s'), curses.KEY_ENTER, 10, 13):
+                        keep = False
+                if keep:
+                    cfg.jev_key, cfg.jev_choice, cfg.jev_validated = entered, 'paste', False
+                else:
+                    cfg.jev_choice = 'skip'
+        elif key == ord('s'):
+            cfg.jev_choice = 'skip'
+        elif key == ord('m'):
+            cfg.trunk_schedule_enabled = not cfg.trunk_schedule_enabled
+        elif key in (curses.KEY_ENTER, 10, 13):
+            return 'forward'
+        elif key == ord('b'):
+            return 'back'
+
+
 def _screen_backfill(stdscr, colors, cfg: OnboardConfig):
     import curses
     ascii_mode = _ascii_mode(stdscr)
     while True:
         preview = missing_card_sessions(cfg.span_days) if cfg.backfill_enabled else []
-        y = _draw_frame(stdscr, colors, 5, 'Backfill cards (optional)')
+        y = _draw_frame(stdscr, colors, 6, 'Backfill cards (optional)')
         if y is not None:
             _put(stdscr, y, 2, 'Make cards for your recent sessions. This step is skippable.', colors['dim'])
             y += 2
@@ -587,13 +812,22 @@ def _confirm_lines(cfg: OnboardConfig) -> list:
     lines.append('MCP:')
     for harness, on in cfg.mcp.items():
         lines.append(f'  {"register" if on else "skip":<8} {harness:<7} {install.mcp_path(harness)}')
+    lines.append('Smarter routing (Jev):')
+    if cfg.jev_choice == 'paste' and cfg.jev_key:
+        lines.append(f'  save key ({"validated" if cfg.jev_validated else "validation failed, kept anyway"})')
+    elif cfg.jev_found_source:
+        lines.append(f'  skip (using found key: {cfg.jev_found_source})')
+    else:
+        lines.append('  skip (local matching)')
+    lines.append('Nightly merge:')
+    lines.append('  schedule `everett trunk merge` at 04:00 via launchd' if cfg.trunk_schedule_enabled else '  skip')
     lines.append('Backfill:')
     lines.append('  generate cards, last {} day(s)'.format(cfg.span_days) if cfg.backfill_enabled else '  skip')
     return lines
 
 
 def _screen_confirm(stdscr, colors, cfg: OnboardConfig):
-    direction = _pause(stdscr, colors, 6, 'Apply these changes?', _confirm_lines(cfg),
+    direction = _pause(stdscr, colors, TOTAL_STEPS, 'Apply these changes?', _confirm_lines(cfg),
                         key_hint='enter/a apply   b back   q quit')
     return 'apply' if direction == 'forward' else direction
 
@@ -602,7 +836,7 @@ def _screen_apply(stdscr, colors, cfg: OnboardConfig) -> ApplyResult:
     """Ticks off Hooks / MCP / Backfill as each finishes, with a progress bar for backfill."""
     import curses
     ascii_mode = _ascii_mode(stdscr)
-    steps = ['Hooks', 'MCP', 'Backfill'] if cfg.backfill_enabled else ['Hooks', 'MCP']
+    steps = ['Hooks', 'MCP', 'Jev', 'Merge schedule'] + (['Backfill'] if cfg.backfill_enabled else [])
     done = set()
 
     def draw(extra_line=None):
@@ -626,6 +860,12 @@ def _screen_apply(stdscr, colors, cfg: OnboardConfig) -> ApplyResult:
     mcp_lines = apply_mcp(cfg)
     done.add('MCP')
     draw()
+    jev_line = apply_jev(cfg)
+    done.add('Jev')
+    draw()
+    trunk_schedule_line = apply_trunk_schedule(cfg)
+    done.add('Merge schedule')
+    draw()
 
     written = skipped = 0
     if cfg.backfill_enabled:
@@ -639,7 +879,7 @@ def _screen_apply(stdscr, colors, cfg: OnboardConfig) -> ApplyResult:
         written, skipped = generate_backfill_cards(missing_card_sessions(cfg.span_days), progress)
         done.add('Backfill')
         draw()
-    return ApplyResult(hook_lines, mcp_lines, written, skipped)
+    return ApplyResult(hook_lines, mcp_lines, written, skipped, jev_line, trunk_schedule_line)
 
 
 def _try_this_box(stdscr, colors, y, w):
@@ -692,12 +932,13 @@ def _tui_main(stdscr, cfg: OnboardConfig):
     import curses
     curses.curs_set(0)
     colors = _init_colors()
-    steps = ('welcome', 'detect', 'hooks', 'mcp', 'backfill', 'confirm')
+    steps = ('welcome', 'detect', 'hooks', 'mcp', 'jev', 'backfill', 'confirm')
     screens = {
         'welcome': lambda: _screen_welcome(stdscr, colors),
         'detect': lambda: _screen_detect(stdscr, colors, cfg),
         'hooks': lambda: _screen_hooks(stdscr, colors, cfg),
         'mcp': lambda: _screen_mcp(stdscr, colors, cfg),
+        'jev': lambda: _screen_jev(stdscr, colors, cfg),
         'backfill': lambda: _screen_backfill(stdscr, colors, cfg),
         'confirm': lambda: _screen_confirm(stdscr, colors, cfg),
     }
@@ -731,6 +972,9 @@ def build_argparser() -> argparse.ArgumentParser:
     p.add_argument('--span-days', type=int, default=3, help='backfill span in days, 1-30 (default 3)')
     p.add_argument('--no-backfill', action='store_true', help='skip generating backfill cards')
     p.add_argument('--no-mcp', action='store_true', help='skip registering the MCP server')
+    p.add_argument('--jev-key-env', metavar='VAR', help='--yes mode: read a Jev key from this env var and save it')
+    p.add_argument('--schedule-merge', action='store_true',
+                    help='--yes mode: also schedule nightly `everett trunk merge` via launchd')
     return p
 
 
