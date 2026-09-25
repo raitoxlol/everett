@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "everett-sessions"
-version = "1.2.0.dev0"
+version = "1.2.0"
 description = "One layer above all your coding-agent sessions: list, route, and deliver work across Claude Code, Codex, OMP, Pi, Hermes Agent, and Grok CLI."
 readme = "README.md"
 requires-python = ">=3.10"

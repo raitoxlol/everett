@@ -1,6 +1,8 @@
 # Changelog
 
-## 1.2.0 (unreleased)
+## 1.2.0 — 2026-09-25
+
+Install: `brew install raitoxlol/tap/everett` or `pipx install git+https://github.com/raitoxlol/everett`
 
 ### Onboarding: Jev key + nightly merge
 - `everett onboard` adds a "Smarter routing (optional)" step (curses TUI, plain fallback, and `--yes`), between MCP and backfill: two lines explain that Jev (typesafe.ai) picks the right session when many are running, and that without it Everett uses local matching.
