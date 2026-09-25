@@ -11,9 +11,20 @@ Named after Hugh Everett (many worlds): every session branches from one origin b
 New to Everett? One command walks you through setup:
 
 ```bash
-pipx install everett-sessions   # or, from a checkout: pipx install .
+brew install raitoxlol/tap/everett
 everett onboard                 # friendly terminal setup wizard
 ```
+
+Other ways to install (all need Python 3.10+; Everett has no third-party dependencies):
+
+```bash
+pipx install git+https://github.com/raitoxlol/everett
+uv tool install git+https://github.com/raitoxlol/everett
+pip install git+https://github.com/raitoxlol/everett   # inside a virtualenv
+git clone https://github.com/raitoxlol/everett && cd everett && pipx install .   # from source
+```
+
+Then run `everett onboard`.
 
 It is a six-step terminal UI (welcome, detect, hooks, MCP, backfill, confirm) with a title bar,
 step indicator, and progress rail so you always know where you are, plus a live "Try this" panel
@@ -35,7 +46,7 @@ everett onboard --yes --no-mcp       # skip MCP registration
 ## Quickstart (60 seconds)
 
 ```bash
-pipx install everett-sessions   # or, from a checkout: pipx install .
+brew install raitoxlol/tap/everett   # or any method above
 everett doctor                  # what Everett can see on this machine
 everett ls                      # recent sessions, newest first
 everett route "add retries to the upload client"
