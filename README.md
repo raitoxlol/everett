@@ -1,41 +1,47 @@
 # Everett
 
-Everett is one layer above all your coding-agent sessions. It sees every Claude Code, Codex, OMP, Pi, Hermes Agent, and Grok CLI session on your machine (including the ones T3 Code drives), routes a new request to the session it belongs to, and delivers it there.
+Route requests, messages, and shared memory across your coding-agent sessions—from a CLI or MCP client.
 
-It is built mainly for agents: one agent can hand work to the right parallel session, even one that is running right now, and every session starts from the same shared core. Everett also knows which sessions are done, blocked, or waiting on you, and tells you. Humans get the same commands.
+> **Demo GIF/video placeholder:** the launch clip is being planned.
 
-Named after Hugh Everett (many worlds): every session branches from one origin but keeps its own history.
+**Works with:** Claude Code · Codex · OMP · Pi · Hermes Agent · Grok CLI.
+T3 Code threads are recognized through their underlying harness sessions.
 
-## Quickstart: `everett onboard`
+## Quickstart
 
-New to Everett? One command walks you through setup:
-
-```bash
-brew install raitoxlol/tap/everett
-everett onboard                 # friendly terminal setup wizard
-```
-
-Other ways to install (all need Python 3.10+; Everett has no third-party dependencies):
+Have Python 3.10+, pipx, and at least one harness CLI on your PATH. Everett supports macOS and Linux.
 
 ```bash
 pipx install git+https://github.com/raitoxlol/everett
-uv tool install git+https://github.com/raitoxlol/everett
-pip install git+https://github.com/raitoxlol/everett   # inside a virtualenv
-git clone https://github.com/raitoxlol/everett && cd everett && pipx install .   # from source
+everett onboard --yes --no-backfill
+everett doctor
 ```
 
-Then run `everett onboard`.
+Onboarding detects installed CLIs even before their first session. It backs up and registers
+hooks and MCP for detected Claude Code, Codex, OMP, and Grok installations. Restart those clients,
+then run `everett ls`. Doctor checks the registered launchers and lists your exact next steps.
+Pi and Hermes sessions can be listed/routed; they need manual MCP configuration and inbox polling.
+No router key or model call is needed for this setup. Codex may ask you to enable/trust its hooks.
 
-It is a seven-step terminal UI (welcome, detect, hooks, MCP, smarter routing, backfill, confirm)
-with a title bar, step indicator, and progress rail so you always know where you are, plus a live
-"Try this" panel with the exact first commands at the end: what Everett found on this machine,
-which hooks to install (and in which files -- a backup is made of each one first), whether to
-register the MCP server, an optional "smarter routing" step for a Jev key plus a nightly
-shared-core merge toggle (see below), and an optional "make cards for my recent sessions" backfill
-step -- pick the day span with an inline `‹ 3 days ›` stepper and watch a per-step checklist tick
-off with a progress bar as it runs. Nothing is written until you confirm at the end; `q` quits at
-any point with no changes. Not a TTY (or curses fails to start)? It falls back to the same steps as
-plain yes/no prompts. For scripts and CI, skip the UI entirely:
+Python 3.11+ uses the standard library at runtime. Python 3.10 also installs the small `tomli`
+parser. The package name is `everett-sessions`; install from GitHub, not an unpublished PyPI name.
+
+### Other install options
+
+```bash
+brew tap raitoxlol/tap
+brew install everett
+```
+
+The tap can lag GitHub: check `everett --version`, or use pipx for the latest source.
+You can also use `uv tool install git+https://github.com/raitoxlol/everett`,
+`pip install git+https://github.com/raitoxlol/everett` inside a venv, or `pipx install .` from a checkout.
+
+### Setup options
+
+`everett onboard` opens a seven-step wizard: welcome, detect, hooks, MCP, optional Jev/merge schedule,
+backfill, and final confirmation. `q` or EOF cancels without applying defaults. Non-TTY terminals
+use plain prompts. `--yes` explicitly applies defaults without prompting:
 
 ```bash
 everett onboard --yes                       # apply every default, non-interactively
@@ -43,12 +49,13 @@ everett onboard --yes --span-days 7         # backfill cards for the last 7 days
 everett onboard --yes --no-backfill         # skip card backfill
 everett onboard --yes --no-mcp              # skip MCP registration
 everett onboard --yes --jev-key-env MY_KEY  # save a Jev key from an env var (validated first)
-everett onboard --yes --schedule-merge      # also schedule nightly `everett trunk merge`
+everett onboard --yes --schedule-merge      # macOS: also schedule nightly `everett trunk merge`
 ```
 
 **Smarter routing (optional).** Jev ([typesafe.ai](https://typesafe.ai)) picks the right session
-when many are running; without it, Everett falls back to local BM25 matching and stays fully
-offline. The onboarding step offers "paste a key" or "skip" -- if a key is already found
+when many are running; without it, routing uses local BM25 matching without network calls.
+Harness resumes and LLM memory merges use their model providers. The onboarding step offers
+"paste a key" or "skip" -- if a key is already found
 (`TYPESAFE_API_KEY`, `~/.everett/config.toml`, or `~/.hermes/.env`), it shows "Jev key found ✓
 (source)" and defaults to skip. A pasted key is validated with one test route call (5 s timeout);
 on failure you can keep it anyway or skip. The key is masked while typing and never echoed or
@@ -56,17 +63,9 @@ logged, and is saved as `typesafe_api_key` in `~/.everett/config.toml` (created 
 preserving every other key). The same step has a "merge shared memory nightly" toggle -- see
 [Nightly auto-merge](#nightly-auto-merge) below.
 
-## Quickstart (60 seconds)
-
-```bash
-brew install raitoxlol/tap/everett   # or any method above
-everett doctor                  # what Everett can see on this machine
-everett ls                      # recent sessions, newest first
-everett route "add retries to the upload client"
-everett install-hooks           # prints the hook snippets; add --apply to merge them
-```
-
-Requires Python 3.10+ and no third-party packages. Everett reads the session stores the harnesses already write: `~/.claude/projects`, `~/.codex/sessions`, `~/.omp/agent/sessions`, `~/.pi/agent/sessions`, `~/.grok/sessions`, Hermes' `state.db` files, and T3 Code's `~/.t3/userdata/state.sqlite` (both databases opened read-only).
+Everett reads the session stores the harnesses already write: `~/.claude/projects`,
+`~/.codex/sessions`, `~/.omp/agent/sessions`, `~/.pi/agent/sessions`, `~/.grok/sessions`,
+Hermes' `state.db` files, and T3 Code's `~/.t3/userdata/state.sqlite`. Both databases are opened read-only.
 
 ## Demo
 
@@ -110,7 +109,7 @@ Done. MAX_RETRIES is now 5 and the backoff test covers the cap.
 | `everett install-hooks [--claude] [--codex] [--omp] [--grok] [--apply]` | Prints the hook registrations. `--apply` backs up the file, then merges idempotently. |
 | `everett mcp` | Runs the stdio MCP server (harnesses start it; see below). |
 | `everett install-mcp [--claude] [--codex] [--omp] [--grok] [--apply]` | Prints or registers the MCP server for each harness. |
-| `everett doctor` | Python version, session stores, hooks, card coverage, router, vault. |
+| `everett doctor` | Installed CLIs, stores, hooks, live stdio/MCP registration checks, cards, router, and exact next commands. |
 | `everett learn "<fact>" [--project P] [--scope global\|project]` | Pushes a fact to the shared core inbox. Secrets are rejected. |
 | `everett trunk merge [--llm claude\|codex\|none] [--dry-run]` | Distills the inbox into the shared core. |
 | `everett core [show\|edit-path\|history] [--project P]` | Shows the core a new session in this folder receives, the file to edit, or past merges. |
@@ -129,11 +128,14 @@ Global option: `--hours N` sets the look-back window (default 72).
 | Pi | `pi --session <file> -p <text>` | `pi -p <text>` |
 | Hermes Agent | `hermes -p <profile> chat --resume <id> -Q -q <text>` | `hermes chat -Q -q <text>` |
 | Grok CLI | `grok --resume <id> -p <text>` | `grok --session-id <new uuid> -p <text>` |
-| T3 Code | list/route only (see below) | not supported |
+| T3 Code | Inbox via underlying harness hooks; no CLI resume | not supported |
 
 The harness appends the request and the reply to that session's history. Hermes sessions that belong to a chat platform (Telegram, Discord, and so on) are listed and routable, but `send` refuses them, because a CLI resume would not reach that chat. Scripted Hermes runs (cron, oneshot, webhook) are hidden like other automated runs. Grok sessions are read from `~/.grok/sessions/<url-encoded cwd>/<id>/` (`summary.json` for id, folder, and title; `prompt_history.jsonl` for the typed requests). A Grok session counts as running while `~/.grok/active_sessions.json` names it with a live process id. Headless `grok -p` runs are hidden like other scripted runs.
 
-T3 Code is a desktop GUI that runs Codex, Claude Code, and Grok underneath. Each T3 thread is a normal session of one of those harnesses, so Everett does not list T3 threads separately: it marks the matching session with source `t3code` (`[t3code]` in `ls`), and the thread title becomes its headline when the session has none. `send` refuses these sessions, because T3 keeps its own resume point and a CLI resume would fork the thread; continue them in T3 Code.
+T3 Code is a desktop GUI that runs Codex, Claude Code, and Grok underneath. Everett marks the
+matching session with source `t3code` (`[t3code]` in `ls`) and uses the thread title when needed.
+Automatic sends use the inbox; delivery requires the underlying harness's hooks. CLI resume is
+refused because it would fork T3's own resume point. You can also continue the thread in T3 Code.
 
 Sessions that Everett spawns are recorded in `~/.everett/spawned.jsonl`, so they show in `ls` even though they ran headless.
 
@@ -218,7 +220,7 @@ everett install-hooks --apply    # back up, then merge into the real config file
 Parallel sessions each build their own context and drift apart. The shared core is the part they all have in common. Their context and actions differ, but the core is the same.
 
 1. **Push.** Any session (or you) runs `everett learn "Atlas deploys from main; staging is auto"`. The fact is checked by a secret filter (key and token patterns plus an entropy check), capped at 500 characters, and appended to `~/.everett/core/inbox.jsonl` with the time, session id, harness, folder, and project.
-2. **Merge (slow path).** `everett trunk merge` distills the inbox into `~/.everett/core/core.md` (global) and `~/.everett/core/projects/<project>.md`, at most 300 words each. It deduplicates, lets newer facts win over contradicted ones (noting the old value), and drops one-off items. With `--llm claude` or `--llm codex`, a headless `claude -p` or `codex exec` run does the merge under a strict prompt; invalid or secret-bearing output changes nothing. `--llm none` is a deterministic append and dedupe with no LLM. Before writing, the previous core files go to `~/.everett/core/history/<time>/`, and the processed inbox is archived there too. If a vault is configured, the merged core is mirrored to `<vault>/<vault_dir>/Core.md`.
+2. **Merge (slow path).** `everett trunk merge` distills the inbox into `~/.everett/core/core.md` (global) and `~/.everett/core/projects/<project>.md`, at most 300 words each. With `--llm claude` or `--llm codex`, a headless harness run is prompted to deduplicate and resolve contradictions; invalid or secret-bearing output changes nothing. `--llm none` appends and removes normalized duplicates with no LLM. Previous core files and the processed inbox are archived under `~/.everett/core/history/<time>/`. Facts learned during a merge stay pending for the next one; a second simultaneous merge is refused. A configured vault gets a generated `Core.md` mirror.
 3. **Pull.** The SessionStart hooks (Claude Code, Codex, OMP) add the global core plus the current project's core (at most 350 words in total) to each new session's context, with one line telling the agent to run `everett learn` when it finds something other sessions should know. The hooks read local files only, take about 40 ms, and stay silent on any error.
 
 The project is the enclosing git repository's folder name, else the folder name. Your home folder is not a project. Default merge engine: `merge_llm` in the config, else `claude`.
@@ -245,7 +247,7 @@ Everett is mostly used by agents. `everett mcp` is a stdio MCP server (JSON-RPC 
 | Tool | Arguments | Returns |
 |---|---|---|
 | `everett_ls` | `hours?`, `harness?` | Sessions with their cards (and `source`, such as `t3code`); your own session is marked `you`. Overview only -- not for picking a send target. |
-| `everett_route` | `text`, `router?` | `SESSION` / `NEW` / `ASK`, confidence, router used, candidates. Never sends. |
+| `everett_route` | `text`, `router?`, `session_id?` | `SESSION` / `NEW` / `ASK`, confidence, router used, candidates. Never sends; excludes the caller when known. |
 | `everett_send` | `text`, `to?`, `spawn?`, `dir?`, `harness?`, `timeout?`, `session_id?`, `mode?`, `wait?`, `reply_to?` | Without `to`, routes then delivers, reporting the route decision (router, session, confidence; `candidates` on `ASK`, nothing sent). The reply of a resumed session, or the queued message id for a live one (plus its reply when `wait` is set). `reply_to` answers a message you received. |
 | `everett_learn` | `fact`, `project?`, `scope?` | Queues a fact for the shared core (secret-filtered). |
 | `everett_core` | `project?` | The shared core this session's project sees. |
@@ -268,6 +270,9 @@ everett install-mcp --apply    # back up, then register (idempotent)
 - **Grok CLI**: `grok mcp add everett <python> -- -m everett mcp`, or `--apply` appends an `[mcp_servers.everett]` block to `~/.grok/config.toml`. Grok also imports Claude Code's servers by default. Included by default when `~/.grok` exists.
 
 The registration uses the Python interpreter and package path of the install you ran it from.
+For another MCP client, configure a stdio server with that interpreter as `command` and
+`["-m", "everett", "mcp"]` as `args`. `python -m everett mcp` is also a valid launcher when
+that Python has Everett installed. Restart clients after changing their registration.
 
 **Caller identity.** Everett reads the calling session from the environment the harness gives the server: `CLAUDE_CODE_SESSION_ID` (Claude Code), `CODEX_THREAD_ID` (Codex), `HERMES_SESSION_ID` (Hermes), `PI_SESSION_FILE` (Pi), or `GROK_SESSION_ID` (Grok documents it for hooks; for MCP servers it is unverified). `EVERETT_SESSION_ID` overrides all of them. OMP exposes none. When nothing is detected, agents pass `session_id` to `everett_send` and `everett_card`. An MCP server starts once per session, so after a harness switches sessions in place (for example `/clear`), pass `session_id` explicitly.
 
@@ -276,7 +281,7 @@ The registration uses the Python interpreter and package path of the install you
 - `EVERETT_HOPS` travels through every delivery, and a request that has already been forwarded 3 times is refused, so two agents cannot ping-pong.
 - A new session starts only with `spawn: true`.
 - `everett_learn` runs the secret filter.
-- Every call is logged to `~/.everett/mcp.log` (tool, arguments clipped to 200 characters, result status, duration). Replies are not logged.
+- Calls are logged to `~/.everett/mcp.log` with tool name, argument names, caller id, result status and duration. Argument values and replies are not logged. Existing log entries from older versions are preserved.
 
 Tool failures come back as `isError: true` with a message written for the agent. Malformed requests get standard JSON-RPC error codes.
 
@@ -287,7 +292,7 @@ Everything is optional. `~/.everett/config.toml`:
 ```toml
 vault = "~/Notes"             # enables `everett trunk`
 vault_dir = "Everett"         # folder inside the vault (default "Everett")
-default_harness = "claude"    # used in NEW suggestions: claude | codex | omp
+default_harness = "claude"    # NEW suggestions: claude | codex | omp | pi | hermes | grok
 router = "local"              # local | jev
 typesafe_api_key = "…"        # Jev key ([jev] api_key also works)
 merge_llm = "claude"          # trunk merge engine: claude | codex | none
@@ -300,9 +305,26 @@ Environment overrides: `EVERETT_VAULT`, `EVERETT_VAULT_DIR`, `EVERETT_HARNESS`, 
 
 ## Privacy
 
-Everything stays on your machine. Everett reads the harness session files and writes only under `~/.everett/` (plus the vault note if you configure one, and the harness config files if you run `install-hooks --apply` or `install-mcp --apply`). The only network call Everett makes is to Jev, and only when a Jev key is configured. Use `--router local` to keep routing offline. `send`, `--spawn`, and `trunk merge --llm claude|codex` run your installed harness CLI, which talks to its own model provider as usual. The shared core is plain Markdown in `~/.everett/core/`. Notifications use macOS `osascript` locally; a `notify_command` you configure is yours to run, and it can send events wherever you point it.
+Session indexing and state are local. Everett reads harness stores and writes its own state under
+`~/.everett/`, plus configured vault notes and explicitly applied harness registrations. Headless
+resumes let the harness append its own history. Local routing needs no network; optional Jev
+sends routing context to its API. `send`, `--spawn`, and LLM merges call your installed harness,
+which may contact its provider. `trunk merge --llm none` is local. Desktop notifications use macOS
+`osascript`; a custom `notify_command` can send events wherever you configure it.
 
-Everett reads only the first and last 64 KB of each session file.
+Transcript adapters generally inspect bounded slices; Grok prompt-history scans and automatic
+card backfills may read more. SQLite stores are opened read-only. No harness session data is copied
+to a cloud service for plain `ls`, local routing, or inbox delivery.
+
+## Troubleshooting
+
+| Symptom | Next step |
+| --- | --- |
+| `everett: command not found` | Run `pipx ensurepath`, open a new terminal, then `everett --version`. If needed, reinstall from the GitHub URL above. |
+| `No module named everett` | Use the Python from Everett's venv; a pipx install is isolated from your system Python. `everett install-mcp --apply` records the correct interpreter. |
+| MCP client shows zero tools | Run `everett doctor`. It must list **10 tools over stdio**. For a stale/disabled launcher, run `everett install-mcp --claude --repair --apply` (replace `--claude` with `--codex`, `--omp` or `--grok`), then restart/enable the server in the client. Fix malformed config before repair. |
+| No sessions or no live reply | Start one harness session, then `everett ls`. Hook injection needs supported, enabled/trusted hooks; Pi/Hermes poll `everett_inbox`. A queued message is not proof the agent has read it. |
+| Shared fact missing / scheduling unavailable | Run `everett trunk merge --llm none`, then `everett core`. Automatic launchd scheduling and default desktop notifications require macOS; manual merging works on Linux. |
 
 ## Development
 
@@ -312,6 +334,19 @@ bin/everett ls          # run from a checkout without installing
 ```
 
 Tests run against a temporary HOME and never read or write your real session stores.
+
+For a release, build a wheel and drive the installed CLI and every MCP tool:
+
+```bash
+python3 -m pip install . build
+python3 -m build
+python3 scripts/verify_release.py --source . --evidence .audit/source-journey.json
+```
+
+Use `--python /path/to/venv/bin/python --cli /path/to/venv/bin/everett` without `--source`
+for fresh artifact proof. The helper records commands/protocol output and checks routing, messages,
+replies, status subscriptions and global/project memory. See the [verification skill](.agents/skills/verify-everett/SKILL.md).
+GitHub Actions runs the suite and fresh wheel journey on macOS/Linux and Python 3.10/3.14, plus Linux 3.12.
 
 ## License
 
