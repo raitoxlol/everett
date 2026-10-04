@@ -242,7 +242,7 @@ class T3Code(TempHome):
         text = out.getvalue()
         self.assertIn('grok    ' + str(self.home / '.grok/sessions') + ' (found)', text)
         self.assertIn('t3code  ' + str(self.db) + ' (found); 4 thread(s) with a harness session id', text)
-        self.assertIn('grok    missing Stop, PostToolUse; run `everett install-hooks --grok`', text)
+        self.assertIn('grok    missing Stop, PostToolUse; run `everett install-hooks --grok --apply`', text)
 
 
 if __name__ == '__main__':

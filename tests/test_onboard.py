@@ -26,6 +26,9 @@ class IsolatedHome(unittest.TestCase):
         self._patch = mock.patch.dict(os.environ, {'HOME': self._tmp.name, 'EVERETT_HOME': self._tmp.name})
         self._patch.start()
         self.addCleanup(self._patch.stop)
+        executable = mock.patch('shutil.which', return_value=None)
+        executable.start()
+        self.addCleanup(executable.stop)
 
     def write_claude_session(self, sid: str, cwd: str, text: str, days_old: float = 0) -> Path:
         root = home() / '.claude' / 'projects' / cwd.strip('/').replace('/', '-')
