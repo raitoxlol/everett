@@ -18,6 +18,7 @@ import subprocess
 import tempfile
 import time
 from collections import Counter
+from contextlib import contextmanager
 from pathlib import Path
 
 from . import config
@@ -34,6 +35,24 @@ class CoreError(Exception):
     def __init__(self, message: str, code: int = 2):
         super().__init__(message)
         self.code = code
+
+
+@contextmanager
+def _locked(name: str, blocking: bool = True):
+    import fcntl
+    core_dir().mkdir(parents=True, exist_ok=True)
+    fd = os.open(core_dir() / name, os.O_CREAT | os.O_RDWR, 0o600)
+    try:
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | (0 if blocking else fcntl.LOCK_NB))
+        except BlockingIOError as exc:
+            raise CoreError('A memory merge is already running. Try again after it finishes.', 4) from exc
+        try:
+            yield
+        finally:
+            fcntl.flock(fd, fcntl.LOCK_UN)
+    finally:
+        os.close(fd)
 
 
 # ---- paths ---------------------------------------------------------------------------------
@@ -152,25 +171,29 @@ def learn(text: str, project: str | None = None, scope: str | None = None, cwd: 
         raise CoreError('No project: pass --project, or run from inside a project folder.')
     entry = {'ts': time.time(), 'session': caller_session_id(), 'harness': detect_harness(),
              'cwd': cwd, 'project': project, 'scope': scope, 'text': text}
-    inbox_path().parent.mkdir(parents=True, exist_ok=True)
-    with inbox_path().open('a', encoding='utf-8') as f:
-        f.write(json.dumps(entry, ensure_ascii=False) + '\n')
+    with _locked('.inbox.lock'):
+        fd = os.open(inbox_path(), os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
+        with os.fdopen(fd, 'a', encoding='utf-8') as f:
+            f.write(json.dumps(entry, ensure_ascii=False) + '\n')
     return entry
 
 
 def read_inbox() -> list[dict]:
-    items = []
     try:
-        with inbox_path().open(encoding='utf-8') as f:
-            for line in f:
-                try:
-                    item = json.loads(line)
-                except ValueError:
-                    continue
-                if isinstance(item, dict) and item.get('text'):
-                    items.append(item)
+        return _parse_inbox(inbox_path().read_bytes())
     except FileNotFoundError:
-        pass
+        return []
+
+
+def _parse_inbox(raw: bytes) -> list[dict]:
+    items = []
+    for line in raw.splitlines():
+        try:
+            item = json.loads(line)
+        except ValueError:
+            continue
+        if isinstance(item, dict) and item.get('text'):
+            items.append(item)
     return items
 
 
@@ -292,10 +315,11 @@ def merge_llm(current: dict[str, str], items: list[dict], llm: str, timeout: flo
         data = json.loads(match.group(0)) if match else None
     except ValueError:
         data = None
-    if not isinstance(data, dict) or not isinstance(data.get('global', ''), str):
+    if not isinstance(data, dict) or not isinstance(data.get('global', ''), str) or \
+            not isinstance(data.get('projects', {}), dict):
         raise CoreError(f'{llm} returned no valid JSON core; nothing was changed.', 6)
     merged = {'': data.get('global', '')}
-    for name, body in (data.get('projects') or {}).items():
+    for name, body in data.get('projects', {}).items():
         if isinstance(body, str) and slug(name):
             merged[slug(name)] = body
     for key, body in list(merged.items()):
@@ -323,7 +347,19 @@ def _write(path: Path, text: str) -> None:
 
 def merge(llm: str = 'none', dry_run: bool = False, runner=subprocess.run) -> dict:
     """Merge the inbox into the core. Returns {'merged': n, 'files': {...}, 'history': path|None}."""
-    items = read_inbox()
+    if dry_run:
+        return _merge(llm, True, runner)
+    with _locked('.merge.lock', blocking=False):
+        return _merge(llm, False, runner)
+
+
+def _merge(llm: str, dry_run: bool, runner) -> dict:
+    if dry_run:
+        snapshot = inbox_path().read_bytes() if inbox_path().exists() else b''
+    else:
+        with _locked('.inbox.lock'):
+            snapshot = inbox_path().read_bytes() if inbox_path().exists() else b''
+    items = _parse_inbox(snapshot)
     if not items:
         return {'merged': 0, 'files': {}, 'history': None}
     current = current_core()
@@ -347,9 +383,22 @@ def merge(llm: str = 'none', dry_run: bool = False, runner=subprocess.run) -> di
         shutil.copy2(global_path(), snap / 'core.md')
     if (core_dir() / 'projects').is_dir():
         shutil.copytree(core_dir() / 'projects', snap / 'projects')
-    for path, text in files.items():
-        _write(Path(path), text)
-    inbox_path().replace(snap / 'inbox.jsonl')
+    with _locked('.inbox.lock'):
+        pending = inbox_path().read_bytes() if inbox_path().exists() else b''
+        if not pending.startswith(snapshot):
+            raise CoreError('Pending facts changed during the merge. Nothing was consumed; retry the merge.', 4)
+        for path, text in files.items():
+            _write(Path(path), text)
+        (snap / 'inbox.jsonl').write_bytes(snapshot)
+        (snap / 'inbox.jsonl').chmod(0o600)
+        late = pending[len(snapshot):]
+        if late:
+            tmp = inbox_path().with_name('.inbox.jsonl.tmp')
+            tmp.write_bytes(late)
+            tmp.chmod(0o600)
+            tmp.replace(inbox_path())
+        else:
+            inbox_path().unlink(missing_ok=True)
     mirror = write_vault_mirror(result)
     return {'merged': len(items), 'files': files, 'history': str(snap), 'mirror': str(mirror) if mirror else None}
 
