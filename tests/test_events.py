@@ -275,8 +275,8 @@ class Surfaces(Base):
             with mock.patch('everett.registry.scan', return_value=[]):
                 r = mcp.call_tool({'name': 'everett_subscribe', 'arguments': {'target': 'project:web'}})
             self.assertEqual(r['structuredContent']['following'], ['project:web'])
-            r = mcp.call_tool({'name': 'everett_event', 'arguments': {'kind': 'bogus', 'message': 'x'}})
-            self.assertTrue(r['isError'])
+            with self.assertRaises(mcp.ParamsError):
+                mcp.call_tool({'name': 'everett_event', 'arguments': {'kind': 'bogus', 'message': 'x'}})
         s = Session('claude', 'mcp-1', str(self.project), '', '', time.time())
         events.apply([s])
         self.assertEqual(mcp._brief(s)['state_kind'], 'needs-input')

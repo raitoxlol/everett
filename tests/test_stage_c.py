@@ -186,6 +186,8 @@ class Safety(TempHome):
         inbox = (self.home / '.everett' / 'core' / 'inbox.jsonl').read_text().splitlines()
         self.assertEqual(len(inbox), 1)
         self.assertEqual(json.loads(inbox[0])['harness'], 'codex')
+        self.assertNotIn('abcdef123456', (self.home / '.everett' / 'mcp.log').read_text())
+        self.assertNotIn('Deploys go out from main only', (self.home / '.everett' / 'mcp.log').read_text())
 
     def test_card_needs_identity(self):
         s = self.start()
@@ -194,14 +196,14 @@ class Safety(TempHome):
         self.assertIn('session_id', result['content'][0]['text'])
         s.close()
 
-    def test_log_records_calls_with_clipped_bodies(self):
+    def test_log_records_metadata_without_bodies(self):
         s = self.start()
         s.call('everett_route', text='x' * 1000, router='local')
         s.close()
         lines = [json.loads(line) for line in (self.home / '.everett' / 'mcp.log').read_text().splitlines()]
         call = next(line for line in lines if line['event'] == 'call')
         self.assertEqual(call['tool'], 'everett_route')
-        self.assertLessEqual(len(call['args']), 201)
+        self.assertEqual(json.loads(call['args']), ['router', 'text'])
         self.assertTrue(any(line['event'] == 'result' for line in lines))
         self.assertTrue(all(len(json.dumps(line)) < 1000 for line in lines))
 
