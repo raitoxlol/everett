@@ -7,10 +7,11 @@ deliver it, and share one core. Protocol output goes to stdout only; diagnostics
 from __future__ import annotations
 
 import json
+import math
 import os
 import sys
 import time
-import traceback
+from contextlib import redirect_stdout
 
 from . import __version__, cards, core, registry
 from .hooks.common import _word_limit
@@ -60,6 +61,7 @@ TOOLS = [
         'inputSchema': {'type': 'object', 'properties': {
             'text': {**S, 'description': 'The request, as you would send it.'},
             'router': {'type': 'string', 'enum': ['local', 'jev'], 'description': 'Default: jev if configured, else local.'},
+            'session_id': {**S, 'description': 'Your own session id, to exclude it from routing.'},
         }, 'required': ['text'], 'additionalProperties': False},
     },
     {
@@ -106,8 +108,8 @@ TOOLS = [
         'name': 'everett_event',
         'description': ('Report what your session is doing so other sessions and the human stay aware: done (finished '
                         'a task), blocked (cannot continue; say on what), needs-input (waiting on the human), or '
-                        'info. blocked and needs-input notify the human. Subscribers get it in their inbox. Pass '
-                        'subscribe to also start following a session or project yourself.'),
+                        'info. blocked and needs-input notify the human. Subscribers get it in their inbox. Call '
+                        'everett_subscribe to start following a session or project yourself.'),
         'inputSchema': {'type': 'object', 'properties': {
             'kind': {'type': 'string', 'enum': ['done', 'blocked', 'needs-input', 'info']},
             'message': {**S, 'description': 'One line, e.g. "waiting on staging key".', 'maxLength': 300},
@@ -323,11 +325,12 @@ def tool_core(args):
 
 
 def tool_card(args):
+    from .inbox import valid_id
     parts = {k: ' '.join(_str(args, k, True).split()) for k in ('what', 'state', 'next')}
     sid = _str(args, 'session_id') or caller_identity()['session_id']
     if not sid:
         raise ToolError('Cannot tell which session you are. Pass session_id (your harness session id).')
-    if '/' in sid or sid in ('.', '..'):
+    if not valid_id(sid):
         raise ParamsError('"session_id" is not a valid session id')
     body = '\n'.join((f'What: {_word_limit(parts["what"], 16)}', f'State: {_word_limit(parts["state"], 14)}',
                       f'Next: {_word_limit(parts["next"], 14)}')) + '\n'
@@ -410,20 +413,41 @@ def _result(msg_id, result: dict) -> dict:
 
 def call_tool(params: dict) -> dict:
     name = params.get('name')
-    args = params.get('arguments') or {}
-    if name not in TOOL_NAMES:
+    args = params.get('arguments', {})
+    if not isinstance(name, str) or name not in TOOL_NAMES:
         raise ParamsError(f'unknown tool: {name}')
     if not isinstance(args, dict):
         raise ParamsError('"arguments" must be an object')
+    schema = next(t['inputSchema'] for t in TOOLS if t['name'] == name)
+    for key in schema.get('required', []):
+        if key not in args:
+            raise ParamsError(f'"{key}" is required')
+    for key, value in args.items():
+        spec = schema['properties'].get(key)
+        if spec is None:
+            raise ParamsError('unexpected argument; use the tool inputSchema')
+        kind = spec['type']
+        if kind == 'string' and not isinstance(value, str):
+            raise ParamsError(f'"{key}" must be a string')
+        if kind == 'boolean' and not isinstance(value, bool):
+            raise ParamsError(f'"{key}" must be a boolean')
+        if kind == 'number' and (not isinstance(value, (int, float)) or isinstance(value, bool) or
+                                 not math.isfinite(value)):
+            raise ParamsError(f'"{key}" must be a finite number')
+        if 'enum' in spec and value not in spec['enum']:
+            raise ParamsError(f'"{key}" must be one of {", ".join(spec["enum"])}')
+        if 'minimum' in spec and value < spec['minimum']:
+            raise ParamsError(f'"{key}" must be at least {spec["minimum"]}')
+        if 'maxLength' in spec and len(value) > spec['maxLength']:
+            raise ParamsError(f'"{key}" exceeds {spec["maxLength"]} characters')
     started = time.time()
-    log('call', tool=name, args=json.dumps(args, ensure_ascii=False), caller=caller_identity()['session_id'])
+    log('call', tool=name, args=json.dumps(sorted(args)), caller=caller_identity()['session_id'])
     try:
         data = HANDLERS[name](args)
         is_error = False
     except ToolError as e:
         data, is_error = {'error': str(e)}, True
-    log('result', tool=name, ok=not is_error, ms=int((time.time() - started) * 1000),
-        detail=data.get('error', '') if is_error else '')
+    log('result', tool=name, ok=not is_error, ms=int((time.time() - started) * 1000))
     text = data['error'] if is_error else json.dumps(data, ensure_ascii=False, indent=1)
     out = {'content': [{'type': 'text', 'text': text}], 'isError': is_error}
     if not is_error:
@@ -438,7 +462,7 @@ def handle(message) -> dict | None:
         return _error(msg_id, INVALID_REQUEST, 'Invalid Request')
     method, msg_id = message['method'], message.get('id')
     is_notification = 'id' not in message
-    params = message.get('params') or {}
+    params = message.get('params', {})
     if not isinstance(params, dict):
         return None if is_notification else _error(msg_id, INVALID_PARAMS, 'params must be an object')
     if is_notification:
@@ -447,7 +471,7 @@ def handle(message) -> dict | None:
         if method == 'initialize':
             asked = params.get('protocolVersion')
             version = asked if asked in PROTOCOL_VERSIONS else PROTOCOL_VERSIONS[0]
-            log('initialize', client=json.dumps(params.get('clientInfo') or {}), asked=str(asked), version=version)
+            log('initialize', version=version)
             return _result(msg_id, {'protocolVersion': version,
                                     'capabilities': {'tools': {'listChanged': False}},
                                     'serverInfo': {'name': 'everett', 'version': __version__},
@@ -462,14 +486,18 @@ def handle(message) -> dict | None:
     except ParamsError as e:
         return _error(msg_id, INVALID_PARAMS, str(e))
     except Exception as e:  # noqa: BLE001
-        log('internal_error', method=method, error=f'{e}', trace=traceback.format_exc()[-200:])
+        log('internal_error', method=method, error=type(e).__name__)
         return _error(msg_id, INTERNAL_ERROR, f'Internal error: {e}')
 
 
 def serve(stdin=None, stdout=None) -> int:
     stdin = stdin or sys.stdin
     stdout = stdout or sys.stdout
-    sys.stdout = sys.stderr  # stray prints from tool code must never corrupt the protocol stream
+    with redirect_stdout(sys.stderr):
+        return _serve(stdin, stdout)
+
+
+def _serve(stdin, stdout) -> int:
     log('start', pid=os.getpid(), cwd=os.getcwd(), hops=os.environ.get('EVERETT_HOPS', '0'))
     for line in stdin:
         line = line.strip()

@@ -12,7 +12,7 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from everett import doctor, install, onboard, send
+from everett import doctor, install, mcp, onboard, send
 from everett.cli import main
 from everett.session import Session
 
@@ -121,3 +121,38 @@ class FirstRun(unittest.TestCase):
         with redirect_stdout(io.StringIO()):
             self.assertEqual(main(['install-mcp', '--claude', '--repair']), 2)
         self.assertFalse(install.mcp_path('claude').exists())
+
+
+class ProtocolValidation(unittest.TestCase):
+    def test_cli_and_all_ten_tools_over_stdio(self):
+        repo = Path(__file__).resolve().parents[1]
+        with tempfile.TemporaryDirectory() as tmp:
+            evidence = Path(tmp) / 'proof.json'
+            result = subprocess.run([sys.executable, str(repo / 'scripts/verify_release.py'), '--source', str(repo),
+                                     '--evidence', str(evidence)], capture_output=True, text=True, timeout=45)
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            proof = json.loads(evidence.read_text())
+            self.assertEqual(proof['status'], 'passed')
+            self.assertEqual(set(proof['tools_exercised']), mcp.TOOL_NAMES)
+            self.assertTrue(proof['scratch_cleaned'])
+
+    def test_advertised_schemas_are_enforced_before_tool_execution(self):
+        invalid = [('everett_ls', {'hours': float('nan')}),
+                   ('everett_ls', {'hours': float('inf')}),
+                   ('everett_ls', {'harness': 'unsupported'}),
+                   ('everett_send', {'text': 'hello', 'timeout': 0.5}),
+                   ('everett_route', {'text': 'hello', 'router': 'unsupported'}),
+                   ('everett_whoami', {'extra': True}), ('everett_ls', []), ('everett_ls', None)]
+        for name, args in invalid:
+            with self.subTest(name=name, args=args), mock.patch.dict(mcp.HANDLERS, {name: mock.Mock()}) as handlers:
+                response = mcp.handle({'jsonrpc': '2.0', 'id': 1, 'method': 'tools/call',
+                                       'params': {'name': name, 'arguments': args}})
+                self.assertEqual(response['error']['code'], mcp.INVALID_PARAMS)
+                handlers[name].assert_not_called()
+
+    def test_serving_restores_stdout(self):
+        original = sys.stdout
+        output = io.StringIO()
+        mcp.serve(io.StringIO('{"jsonrpc":"2.0","id":1,"method":"ping"}\n'), output)
+        self.assertIs(sys.stdout, original)
+        self.assertEqual(json.loads(output.getvalue())['result'], {})
