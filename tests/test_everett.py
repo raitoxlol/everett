@@ -119,6 +119,9 @@ class Routing(unittest.TestCase):
 class Sending(unittest.TestCase):
     def setUp(self):
         self.session = Session('claude', 'c-1', '/work/app', '/tmp/c-1.jsonl', '', 0)
+        available = mock.patch('everett.send.require_harness')
+        available.start()
+        self.addCleanup(available.stop)
 
     def test_commands_for_each_harness(self):
         self.assertEqual(command_for(self.session, 'a request'), ['claude', '--resume', 'c-1', '--print', 'a request'])

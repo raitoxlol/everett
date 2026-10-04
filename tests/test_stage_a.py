@@ -188,6 +188,12 @@ class Safety(unittest.TestCase):
 
 
 class Spawn(TempHome):
+    def setUp(self):
+        super().setUp()
+        available = mock.patch('everett.send.require_harness')
+        available.start()
+        self.addCleanup(available.stop)
+
     def test_spawn_commands(self):
         self.assertEqual(spawn_command('claude', 'hi', 'u-1'), ['claude', '--session-id', 'u-1', '--print', 'hi'])
         self.assertEqual(spawn_command('codex', 'hi', out_file='/t/o'),
