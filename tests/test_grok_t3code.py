@@ -112,7 +112,7 @@ class GrokAdapter(TempHome):
 
     def test_spawn_preassigns_session_id(self):
         run = mock.Mock(return_value=SimpleNamespace(returncode=0, stdout='OK', stderr=''))
-        with mock.patch('everett.send.subprocess.run', run):
+        with mock.patch('everett.send.subprocess.run', run), mock.patch('everett.send.require_harness'):
             result = spawn('grok', 'reply OK', str(self.home))
         command = run.call_args.args[0]
         self.assertEqual(command[:2], ['grok', '--session-id'])

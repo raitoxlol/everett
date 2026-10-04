@@ -4,6 +4,7 @@ import math
 import os
 import re
 import shlex
+import shutil
 import subprocess
 import time
 from dataclasses import dataclass
@@ -95,19 +96,25 @@ def format_command(command: list[str]) -> str:
     return shlex.join(command)
 
 
+def require_harness(harness: str, env: dict | None = None) -> None:
+    path = (env or os.environ).get('PATH', os.defpath)
+    if shutil.which(harness, path=path) is None:
+        raise SendError(5, f'`{harness}` is not on PATH. Install its CLI, then run `everett doctor`.')
+
+
 def send(session: Session, text: str, timeout: float = 120, wait: float = IDLE_WAIT,
          env: dict | None = None) -> SendResult:
     """Wait for the session to go idle (up to `wait` s), resume it, capture its reply."""
+    command = command_for(session, text)
+    if not math.isfinite(timeout) or timeout <= 0:
+        raise SendError(2, '--timeout must be a finite number greater than zero.')
+    require_harness(session.harness, env)
     if not wait_idle(session, wait):
         raise SendError(
             4,
             f'Target session stayed busy for {wait:g}s; nothing was sent. '
             'Use `everett route` for a manual resume command.',
         )
-    if not math.isfinite(timeout) or timeout <= 0:
-        raise SendError(2, '--timeout must be a finite number greater than zero.')
-
-    command = command_for(session, text)
     try:
         result = subprocess.run(
             command,
@@ -262,20 +269,17 @@ def spawn(harness: str, text: str, cwd: str, timeout: float = 300, env: dict | N
     if not math.isfinite(timeout) or timeout <= 0:
         raise SendError(2, '--timeout must be a finite number greater than zero.')
     session_id = str(uuid.uuid4()) if harness in ('claude', 'grok') else ''
+    command = spawn_command(harness, text, session_id)
+    require_harness(harness, env)
     out_file = ''
     if harness == 'codex':
         fd, out_file = tempfile.mkstemp(prefix='everett-codex-', suffix='.txt')
         os.close(fd)
-    command = spawn_command(harness, text, session_id, out_file)
+        command = spawn_command(harness, text, session_id, out_file)
     started = time.time()
     try:
         result = subprocess.run(command, cwd=cwd, capture_output=True, text=True, timeout=timeout,
                                 check=False, env=env or child_env())
-    except subprocess.TimeoutExpired as exc:
-        raise SendError(5, f'{harness} did not reply within {timeout:g}s.') from exc
-    except OSError as exc:
-        raise SendError(5, f'Could not start {harness}: {exc}') from exc
-    try:
         if result.returncode:
             detail = (result.stderr or '').strip()[-2000:]
             raise SendError(6, f'{harness} exited {result.returncode}' + (f': {detail}' if detail else '.'))
@@ -285,6 +289,10 @@ def spawn(harness: str, text: str, cwd: str, timeout: float = 300, env: dict | N
                 reply = Path(out_file).read_text(encoding='utf-8').strip() or reply
             except OSError:
                 pass
+    except subprocess.TimeoutExpired as exc:
+        raise SendError(5, f'{harness} did not reply within {timeout:g}s.') from exc
+    except OSError as exc:
+        raise SendError(5, f'Could not start {harness}: {exc}') from exc
     finally:
         if out_file:
             Path(out_file).unlink(missing_ok=True)
