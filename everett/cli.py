@@ -486,11 +486,14 @@ def cmd_mcp(args) -> int:
 
 
 def cmd_install_mcp(args) -> int:
+    if args.repair and not args.apply:
+        print('everett: --repair requires --apply (backs up and refreshes the Everett entry).', file=sys.stderr)
+        return 2
     choices = ('claude', 'codex', 'omp') + (('grok',) if (home() / '.grok').is_dir() or getattr(args, 'grok', False) else ())
     for harness in _harnesses(args, choices):
         if args.apply:
             try:
-                print(install.apply_mcp(harness))
+                print(install.apply_mcp(harness, repair=args.repair))
             except (OSError, ValueError) as e:
                 print(f'everett: {harness}: {e}', file=sys.stderr)
                 return 1
@@ -509,7 +512,11 @@ def cmd_doctor(args) -> int:
 
 def cmd_onboard(args) -> int:
     from . import onboard
-    return onboard.run(args)
+    try:
+        return onboard.run(args)
+    except (OSError, ValueError) as exc:
+        print(f'everett onboard: {exc}', file=sys.stderr)
+        return 1
 
 
 def main(argv=None) -> int:
@@ -592,6 +599,7 @@ def main(argv=None) -> int:
     for h in ('claude', 'codex', 'omp', 'grok'):
         im.add_argument(f'--{h}', action='store_true')
     im.add_argument('--apply', action='store_true', help='back up, then register')
+    im.add_argument('--repair', action='store_true', help='with --apply: refresh a stale or disabled Everett registration')
     im.set_defaults(fn=cmd_install_mcp)
     d = sub.add_parser('doctor', help='check stores, hooks, cards, and router'); d.set_defaults(fn=cmd_doctor)
     ob = sub.add_parser('onboard', help='friendly first-time setup (TUI, or --yes for scripts)')

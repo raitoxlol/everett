@@ -6,10 +6,13 @@ never duplicates an Everett entry and never removes anyone else's hooks.
 from __future__ import annotations
 
 import json
+import os
+import re
 import shlex
 import shutil
 import sys
 import time
+from dataclasses import dataclass
 from pathlib import Path
 
 from .session import home
@@ -198,19 +201,121 @@ def codex_block() -> str:
     return '\n'.join(lines) + '\n'
 
 
-def mcp_installed(harness: str) -> bool:
+def _mcp_config(harness: str) -> dict:
     path = mcp_path(harness)
     if harness in TOML_MCP:
         try:
-            return any(line.strip() in ('[mcp_servers.everett]', '[mcp_servers."everett"]')
-                       for line in path.read_text(encoding='utf-8').splitlines())
-        except OSError:
-            return False
+            import tomllib
+        except ImportError:
+            import tomli as tomllib
+        try:
+            text = path.read_text(encoding='utf-8')
+        except FileNotFoundError:
+            return {}
+        return tomllib.loads(text)
+    return _load(path)
+
+
+def _mcp_entry(harness: str, data: dict) -> dict | None:
+    key = 'mcp_servers' if harness in TOML_MCP else 'mcpServers'
+    servers = data.get(key, {})
+    if not isinstance(servers, dict):
+        raise ValueError(f'{key} must be an object')
+    return servers.get('everett')
+
+
+def mcp_installed(harness: str) -> bool:
     try:
-        data = _load(path)
+        return _mcp_entry(harness, _mcp_config(harness)) is not None
     except (OSError, ValueError):
         return False
-    return isinstance(data.get('mcpServers'), dict) and 'everett' in data['mcpServers']
+
+
+@dataclass(frozen=True)
+class MCPStatus:
+    state: str
+    detail: str
+
+    @property
+    def ready(self) -> bool:
+        return self.state == 'ready'
+
+
+def mcp_status(harness: str) -> MCPStatus:
+    try:
+        entry = _mcp_entry(harness, _mcp_config(harness))
+    except (OSError, ValueError) as exc:
+        return MCPStatus('invalid', f'cannot read {mcp_path(harness)}: {exc}')
+    if entry is None:
+        return MCPStatus('missing', 'not registered')
+    if not isinstance(entry, dict):
+        return MCPStatus('invalid', 'Everett MCP entry must be an object')
+    if entry.get('disabled') or entry.get('enabled') is False:
+        return MCPStatus('stale', 'registration is disabled')
+    command, args = entry.get('command'), entry.get('args', [])
+    if not isinstance(command, str) or not command:
+        return MCPStatus('stale', 'registration has no executable')
+    if not (os.path.isfile(command) and os.access(command, os.X_OK)) and not shutil.which(command):
+        return MCPStatus('stale', 'registered executable is missing or not on PATH')
+    if args != ['-m', 'everett', 'mcp'] and not (Path(command).name == 'everett' and args == ['mcp']):
+        return MCPStatus('stale', 'registration does not launch Everett stdio MCP')
+    env = entry.get('env', {})
+    if not isinstance(env, dict):
+        return MCPStatus('invalid', 'registration env must be an object')
+    if any(not isinstance(v, str) for v in env.values()):
+        return MCPStatus('invalid', 'registration env values must be strings')
+    source = env.get('PYTHONPATH', '')
+    if source and not any((Path(p) / 'everett/__init__.py').is_file() for p in str(source).split(os.pathsep)):
+        return MCPStatus('stale', 'registered source checkout is missing')
+    return MCPStatus('ready', 'Everett stdio MCP registered')
+
+
+def _repaired_entry(old: dict) -> dict:
+    entry = {**old, **mcp_json_entry()}
+    env = old.get('env', {})
+    if not isinstance(env, dict):
+        raise ValueError('registration env must be an object')
+    env = {k: v for k, v in env.items() if k != 'PYTHONPATH'} | mcp_launch()[2]
+    if env:
+        entry['env'] = env
+    else:
+        entry.pop('env', None)
+    entry.pop('url', None)
+    if 'disabled' in entry:
+        entry['disabled'] = False
+    if 'enabled' in entry:
+        entry['enabled'] = True
+    return entry
+
+
+def _toml_value(value) -> str:
+    if isinstance(value, str):
+        return _toml_str(value)
+    if isinstance(value, bool):
+        return str(value).lower()
+    if isinstance(value, (int, float)):
+        return str(value)
+    if isinstance(value, list):
+        return '[' + ', '.join(_toml_value(v) for v in value) + ']'
+    if isinstance(value, dict):
+        return '{ ' + ', '.join(f'{_toml_str(k)} = {_toml_value(v)}' for k, v in value.items()) + ' }'
+    raise ValueError('unsupported value in Everett MCP entry; edit the entry manually')
+
+
+def _replace_toml_entry(text: str, entry: dict) -> str:
+    lines, removing, found = [], False, False
+    for line in text.splitlines(keepends=True):
+        if line.lstrip().startswith('['):
+            match = re.match(r'\s*\[([^\]]+)\]\s*(?:#.*)?$', line)
+            table = match[1].replace('"', '').replace("'", '').replace(' ', '') if match else ''
+            removing = table == 'mcp_servers.everett' or table.startswith('mcp_servers.everett.')
+            found |= removing
+        if not removing:
+            lines.append(line)
+    if not found:
+        raise ValueError('Everett uses an inline MCP table; edit it manually before retrying --repair --apply')
+    block = '[mcp_servers.everett]\n' + ''.join(f'{_toml_str(k)} = {_toml_value(v)}\n' for k, v in entry.items())
+    return ''.join(lines).rstrip() + '\n\n' + block
 
 
 def mcp_snippet(harness: str) -> str:
@@ -232,27 +337,41 @@ def mcp_snippet(harness: str) -> str:
             f'{json.dumps({"mcpServers": {"everett": mcp_json_entry()}}, indent=2)}\n')
 
 
-def apply_mcp(harness: str) -> str:
+def apply_mcp(harness: str, repair: bool = False) -> str:
     path = mcp_path(harness)
-    if mcp_installed(harness):
+    data = _mcp_config(harness)
+    old = _mcp_entry(harness, data)
+    if old is not None and not repair:
+        status = mcp_status(harness)
+        if not status.ready:
+            raise ValueError(f'{status.detail}; run `everett install-mcp --{harness} --repair --apply`')
         return f'{harness}: everett MCP server already registered ({path})'
+    if old is not None and not isinstance(old, dict):
+        raise ValueError('Everett MCP entry must be an object; correct it before retrying')
+    entry = _repaired_entry(old or {})
     if harness in TOML_MCP:
         try:
             text = path.read_text(encoding='utf-8')
         except FileNotFoundError:
             text = ''
+        if old is not None:
+            updated = _replace_toml_entry(text, entry)
+        else:
+            updated = text + ('' if not text or text.endswith('\n') else '\n') + ('\n' if text else '') + codex_block()
+        if updated == text:
+            return f'{harness}: everett MCP server already registered ({path})'
         saved = backup(path)
         path.parent.mkdir(parents=True, exist_ok=True)
         tmp = path.with_name(path.name + '.everett-tmp')
-        tmp.write_text(text + ('' if not text or text.endswith('\n') else '\n') + ('\n' if text else '')
-                       + codex_block(), encoding='utf-8')
+        tmp.write_text(updated, encoding='utf-8')
         tmp.replace(path)
     else:
-        data = _load(path)
         servers = data.setdefault('mcpServers', {})
         if not isinstance(servers, dict):
             raise ValueError(f'"mcpServers" in {path} is not an object')
-        servers['everett'] = mcp_json_entry()
+        if old == entry:
+            return f'{harness}: everett MCP server already registered ({path})'
+        servers['everett'] = entry
         saved = backup(path)
         write_json(path, data)
     return f'{harness}: registered everett MCP server in {path}' + (f' (backup {saved})' if saved else '')

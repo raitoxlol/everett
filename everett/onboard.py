@@ -17,7 +17,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from . import cards, config, install, registry
-from .doctor import STORES
+from .doctor import STORES, detected_harnesses
 from .hooks import common
 from .route import verify_key
 from .session import home
@@ -27,7 +27,7 @@ ALL_HOURS = 24 * 365 * 5
 
 # Harnesses whose hooks live in a settings file Everett can toggle event-by-event (see install.HOOKS).
 HOOK_HARNESSES = ('claude', 'codex', 'grok')
-MCP_HARNESSES = ('claude', 'codex', 'omp')
+MCP_HARNESSES = ('claude', 'codex', 'omp', 'grok')
 # everett/hooks/common._auto_card only knows how to build a fallback card for these harnesses.
 BACKFILL_HARNESSES = ('claude', 'codex', 'grok')
 
@@ -123,10 +123,11 @@ def store_exists(harness: str) -> bool:
 
 
 def detect_harnesses(hours: float = ALL_HOURS) -> dict:
-    """harness -> session count, for every harness whose session store exists."""
+    """harness -> session count, including CLIs that have not created a session yet."""
     found = {}
+    detected = detected_harnesses()
     for harness in registry.ADAPTERS:  # claude, codex, omp, pi, hermes, grok
-        if store_exists(harness):
+        if harness in detected:
             found[harness] = len(registry.scan(hours, include_auto=True, limit=None, harness=harness))
     return found
 
@@ -318,7 +319,7 @@ def _ask_yes(prompt: str, default: bool = True) -> bool:
         try:
             raw = input(prompt + suffix).strip().lower()
         except EOFError:
-            return default
+            raise QuitOnboarding() from None
         if raw in ('q', 'quit'):
             raise QuitOnboarding()
         if not raw:
@@ -994,7 +995,7 @@ def run(args) -> int:
             pass
     try:
         return run_plain(args)
-    except QuitOnboarding:
+    except (QuitOnboarding, EOFError, KeyboardInterrupt):
         print('Cancelled -- no changes were made.')
         return 0
 
