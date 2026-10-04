@@ -23,6 +23,12 @@ class IsolatedHome(unittest.TestCase):
         self._patch = mock.patch.dict(os.environ, {'HOME': self._tmp.name, 'EVERETT_HOME': self._tmp.name})
         self._patch.start()
         self.addCleanup(self._patch.stop)
+        platform = mock.patch('sys.platform', 'darwin')
+        platform.start()
+        self.addCleanup(platform.stop)
+        executable = mock.patch('shutil.which', return_value=None)
+        executable.start()
+        self.addCleanup(executable.stop)
 
 
 # ---- config.set_value -------------------------------------------------------------------------

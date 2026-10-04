@@ -40,9 +40,9 @@ EVENT_LABELS = {
 }
 
 WELCOME_LINES = (
-    'Everett sees every Claude Code, Codex, OMP, Pi, Hermes, and Grok session on this machine.',
+    'Everett lists recent Claude Code, Codex, OMP, Pi, Hermes, and Grok sessions on this machine.',
     'It lets those sessions hand work to each other instead of you copy-pasting between them.',
-    'It also gives every session a shared memory: one fact learned in one session reaches the rest.',
+    'It shares merged memory through supported hooks, or agents can read it with everett_core.',
 )
 
 JEV_LINES = (
@@ -409,7 +409,7 @@ def run_plain(args) -> int:
         cfg.jev_choice = 'skip'
     print()
 
-    cfg.trunk_schedule_enabled = _ask_yes(
+    cfg.trunk_schedule_enabled = sys.platform == 'darwin' and _ask_yes(
         'Merge shared memory nightly? (schedules `everett trunk merge` via launchd, 04:00, --llm claude)',
         default=False)
     print()
@@ -717,7 +717,9 @@ def _screen_jev(stdscr, colors, cfg: OnboardConfig):
             _put(stdscr, y, 2, f'{glyph(cfg.jev_choice == "skip", ascii_mode)} use local matching', 0)
             y += 2
             merge_mark = glyph(cfg.trunk_schedule_enabled, ascii_mode)
-            _put(stdscr, y, 2, f'{merge_mark} merge shared memory nightly (launchd, 04:00, --llm claude)', 0)
+            schedule_text = (f'{merge_mark} merge shared memory nightly (launchd, 04:00, --llm claude)'
+                             if sys.platform == 'darwin' else 'Automatic memory scheduling requires macOS.')
+            _put(stdscr, y, 2, schedule_text, 0)
             _footer(stdscr, colors, 'p paste key   s skip   m toggle nightly merge   enter continue   b back   q quit')
             stdscr.refresh()
         key = _wait_for_resize_or_key(stdscr)
@@ -759,7 +761,7 @@ def _screen_jev(stdscr, colors, cfg: OnboardConfig):
                     cfg.jev_choice = 'skip'
         elif key == ord('s'):
             cfg.jev_choice = 'skip'
-        elif key == ord('m'):
+        elif key == ord('m') and sys.platform == 'darwin':
             cfg.trunk_schedule_enabled = not cfg.trunk_schedule_enabled
         elif key in (curses.KEY_ENTER, 10, 13):
             return 'forward'
@@ -980,6 +982,9 @@ def build_argparser() -> argparse.ArgumentParser:
 
 
 def run(args) -> int:
+    if getattr(args, 'schedule_merge', False) and sys.platform != 'darwin':
+        print('everett onboard: --schedule-merge requires macOS; use `everett trunk merge --llm none`.', file=sys.stderr)
+        return 2
     if not (1 <= args.span_days <= 30):
         print('everett onboard: --span-days must be between 1 and 30.', file=sys.stderr)
         return 2

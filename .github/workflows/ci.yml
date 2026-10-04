@@ -1,0 +1,44 @@
+name: Tests and install
+
+on: [push, pull_request, workflow_dispatch]
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+        python: ['3.10', '3.14']
+        include:
+          - os: ubuntu-latest
+            python: '3.12'
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: ${{ matrix.python }}
+      - name: Install test and build tools
+        run: python -m pip install . build
+      - name: Run isolated unit and stdio tests
+        run: python -m unittest discover -s tests -v
+      - name: Build wheel and source distribution
+        run: python -m build
+      - name: Exercise a fresh wheel install outside the checkout
+        shell: bash
+        run: |
+          python -m venv "$RUNNER_TEMP/everett-install"
+          "$RUNNER_TEMP/everett-install/bin/python" -m pip install dist/*.whl
+          python scripts/verify_release.py \
+            --python "$RUNNER_TEMP/everett-install/bin/python" \
+            --cli "$RUNNER_TEMP/everett-install/bin/everett" \
+            --evidence .audit/installed-journey.json
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: install-proof-${{ matrix.os }}-python-${{ matrix.python }}
+          path: .audit/*.json
+          if-no-files-found: ignore

@@ -17,6 +17,7 @@ import os
 import re
 import subprocess
 import sys
+import threading
 import time
 import uuid
 from pathlib import Path
@@ -231,8 +232,9 @@ def notify(event: dict, reason: str = '', runner=None) -> list[list[str]]:
             if runner is not None:
                 runner(argv, env)
             else:
-                subprocess.Popen(argv, env=env, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
-                                 stderr=subprocess.DEVNULL, start_new_session=True)
+                process = subprocess.Popen(argv, env=env, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                                           stderr=subprocess.DEVNULL, start_new_session=True)
+                threading.Thread(target=process.wait, daemon=True).start()
         except OSError:
             continue
     return [argv for argv, _ in runs]

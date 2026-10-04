@@ -400,6 +400,10 @@ def cmd_merge(args) -> int:
 
 def cmd_trunk_schedule(args) -> int:
     from . import trunk_schedule
+    if sys.platform != 'darwin' and args.apply:
+        print('everett: automatic scheduling requires macOS. Run `everett trunk merge --llm none` manually.',
+              file=sys.stderr)
+        return 2
     llm = args.llm or 'claude'
     if args.remove:
         if not args.apply:
