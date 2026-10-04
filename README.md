@@ -9,7 +9,7 @@ T3 Code threads are recognized through their underlying harness sessions.
 
 ## Quickstart
 
-Have Python 3.10+, pipx, and at least one harness CLI on your PATH. Everett supports macOS and Linux.
+Have Python 3.10+, pipx, Git, and at least one harness CLI on your PATH. Everett supports macOS and Linux.
 
 ```bash
 pipx install git+https://github.com/raitoxlol/everett
