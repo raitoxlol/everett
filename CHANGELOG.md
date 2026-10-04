@@ -1,5 +1,29 @@
 # Changelog
 
+## 1.3.0 — 2026-10-04
+
+### First install and diagnosis
+
+- Detect installed harness CLIs before a session store exists. Onboarding includes Grok MCP setup, cancels on EOF, and rejects macOS scheduling on Linux before writing configuration.
+- `everett doctor` probes real stdio initialization and all 10 tools, checks registered launchers, detects disabled/stale/broken MCP entries, and prints concrete setup/repair commands.
+- `everett install-mcp --repair --apply` refreshes stale Everett registrations with backups while preserving unrelated servers. Malformed configuration is reported rather than overwritten.
+- Missing harnesses fail before idle waits with an installation hint. Failed Codex spawns clean their temporary output files.
+- Python 3.10 installs the small conditional `tomli` parser; Python 3.11+ still has no third-party runtime dependencies.
+
+### MCP, messages and memory
+
+- Declare caller identity in the route schema and enforce advertised argument types, enums and ranges across all tools. Restore stdout after an in-process server exits.
+- Log tool/argument names and status instead of argument values or error bodies. Existing older log entries remain untouched.
+- Keep facts learned during a merge pending for the next merge, prevent simultaneous mergers, and preserve queued facts on failed or invalid model output. Deterministic merges remain available with `--llm none`.
+- Reap detached notification subprocesses and preserve the harness PATH in generated macOS merge schedules.
+
+### Verification and documentation
+
+- Add routing, two-way inbox/reply, status subscription and global/project memory verification through real CLI commands and all 10 stdio tools, with disposable HOME directories and saved JSON evidence.
+- Add regression coverage for first-run setup, MCP repair/validation and concurrent memory operations. GitHub Actions runs unit tests and fresh wheel installs on macOS/Linux and Python 3.10/3.14, plus Linux 3.12.
+- Package tests, fixtures, the release verification helper and release documents in the source distribution. Verify installed metadata matches console/module versions.
+- Replace the README opening with a three-command pipx quickstart, demo placeholder, harness list and troubleshooting. Document manual inbox polling, hook trust, local/provider boundaries and macOS-only scheduling honestly.
+
 ## 1.2.0 — 2026-09-25
 
 Install: `brew install raitoxlol/tap/everett` or `pipx install git+https://github.com/raitoxlol/everett`

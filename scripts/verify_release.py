@@ -110,6 +110,14 @@ def journey(args, evidence):
         evidence['version'] = run([*cli, '--version']).strip()
         check(run([args.python, '-m', 'everett', '--version']).strip() == evidence['version'],
               'Console and module entry points disagree')
+        if not args.source:
+            installed = json.loads(run([args.python, '-c',
+                'import everett, importlib.metadata, json; '
+                'print(json.dumps({"version": importlib.metadata.version("everett-sessions"), '
+                '"module_version": everett.__version__, "module_file": everett.__file__}))']))
+            check(evidence['version'] == 'everett ' + installed['version'] ==
+                  'everett ' + installed['module_version'], 'Packaged metadata and runtime versions disagree')
+            evidence['installed'] = installed
         check('10 tools over stdio' in run([*cli, 'doctor']), 'doctor did not probe MCP')
         run([*cli, 'onboard', '--yes', '--no-backfill'])
         check((root / '.claude.json').is_file(), 'Onboarding missed the CLI without a session store')
