@@ -35,8 +35,8 @@ def command_for(session: Session, text: str) -> list[str]:
     if not text.strip():
         raise SendError(2, 'The request must not be empty.')
     if session.source == 't3code':
-        raise SendError(2, 'This session belongs to a T3 Code thread and is list/route only: T3 keeps its own '
-                           'resume point, so a CLI resume would fork it. Continue it in T3 Code.')
+        raise SendError(2, 'T3 Code owns this thread\'s resume point, so a CLI resume would fork it. '
+                           'Continue it in T3 Code, or use inbox delivery if that session has Everett hooks.')
     if session.harness == 'claude':
         return ['claude', '--resume', session.id, '--print', text]
     if session.harness == 'codex':
@@ -119,6 +119,7 @@ def send(session: Session, text: str, timeout: float = 120, wait: float = IDLE_W
         result = subprocess.run(
             command,
             cwd=session.cwd or None,
+            stdin=subprocess.DEVNULL,  # the parent may be reading the MCP protocol from stdin
             capture_output=True,
             text=True,
             timeout=timeout,
@@ -134,6 +135,10 @@ def send(session: Session, text: str, timeout: float = 120, wait: float = IDLE_W
         detail = (result.stderr or '').strip()
         if detail:
             detail = detail[-2000:]
+            if session.harness == 'codex' and ('interrupted system call' in detail.casefold() or
+                                               'os error 4' in detail.casefold()):
+                detail += ('. Delivery is unconfirmed; check the target session before retrying. '
+                           'For an open session with Everett hooks, use inbox delivery.')
             raise SendError(6, f'{session.harness} exited {result.returncode}: {detail}')
         raise SendError(6, f'{session.harness} exited with status {result.returncode}.')
     return SendResult(command, (result.stdout or '').strip())
@@ -279,7 +284,7 @@ def spawn(harness: str, text: str, cwd: str, timeout: float = 300, env: dict | N
     started = time.time()
     try:
         result = subprocess.run(command, cwd=cwd, capture_output=True, text=True, timeout=timeout,
-                                check=False, env=env or child_env())
+                                stdin=subprocess.DEVNULL, check=False, env=env or child_env())
         if result.returncode:
             detail = (result.stderr or '').strip()[-2000:]
             raise SendError(6, f'{harness} exited {result.returncode}' + (f': {detail}' if detail else '.'))
