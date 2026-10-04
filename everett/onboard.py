@@ -47,7 +47,7 @@ WELCOME_LINES = (
 
 JEV_LINES = (
     'Jev (typesafe.ai) picks the right session when many are running, instead of a lexical guess.',
-    'Without it, Everett falls back to local matching -- no key required, everything stays on this machine.',
+    'Without it, routing stays local. Harness calls and LLM merges use their configured providers.',
 )
 
 
