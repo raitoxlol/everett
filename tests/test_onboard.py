@@ -164,15 +164,20 @@ class QuittingWritesNothing(IsolatedHome):
         self.assertFalse(cards.card_path('c-quit').exists())
 
     def test_plain_prompt_no_to_apply_writes_nothing(self):
-        answers = iter(['', '', '', '', '', '', '', '', '', '', 'n'])  # hooks x4, mcp x1, jev paste-now, merge-nightly, backfill on, span default, decline apply
-        with mock.patch('builtins.input', side_effect=lambda *_: next(answers)):
-            out = io.StringIO()
-            with redirect_stdout(out):
-                rc = onboard.run_plain(_args())
-        self.assertEqual(rc, 0)
-        self.assertIn('Nothing was changed.', out.getvalue())
-        self.assertFalse(install.settings_path('claude').exists())
-        self.assertFalse(cards.card_path('c-quit').exists())
+        def answer(prompt):
+            return 'n' if prompt.startswith('Apply these changes now?') else ''
+
+        for platform in ('darwin', 'linux'):
+            with self.subTest(platform=platform), mock.patch('sys.platform', platform), \
+                    mock.patch('builtins.input', side_effect=answer):
+                out = io.StringIO()
+                with redirect_stdout(out):
+                    rc = onboard.run_plain(_args())
+                self.assertEqual(rc, 0)
+                self.assertIn('Nothing was changed.', out.getvalue())
+                self.assertFalse(install.settings_path('claude').exists())
+                self.assertFalse(install.mcp_installed('claude'))
+                self.assertFalse(cards.card_path('c-quit').exists())
 
 
 class PlainPromptFallback(IsolatedHome):
