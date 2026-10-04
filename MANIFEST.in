@@ -1,0 +1,4 @@
+include CHANGELOG.md RELEASE_NOTES.md RELEASING.md
+recursive-include scripts *.py
+recursive-include tests *.py *.jsonl
+recursive-include .agents/skills/verify-everett *.md
