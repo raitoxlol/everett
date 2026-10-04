@@ -40,5 +40,9 @@ jobs:
         if: always()
         with:
           name: install-proof-${{ matrix.os }}-python-${{ matrix.python }}
-          path: .audit/*.json
+          path: |
+            .audit/installed-journey.json
+            dist/*.whl
+            dist/*.tar.gz
+          include-hidden-files: true
           if-no-files-found: ignore
