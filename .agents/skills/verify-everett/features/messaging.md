@@ -2,7 +2,7 @@
 
 ## Sub-features
 
-Inbox delivery, replies, consumption, subscriptions, status events.
+Inbox delivery, replies, consumption, subscriptions, status events and headless child input.
 
 ## How to get to it (user POV)
 
@@ -12,6 +12,8 @@ Inbox delivery, replies, consumption, subscriptions, status events.
 
 An MCP request receives a CLI reply; a CLI request receives an MCP reply. Verify message ids, reply_to, text and destination. A second inbox read is empty after consumption. A done event must arrive in the subscriber's inbox and appear in session listing and CLI events.
 
+A fake Codex reads stdin during both resume and spawn over MCP. It must receive EOF, and the server must answer a subsequent ping. This catches a harness consuming or waiting on the parent's protocol pipe.
+
 ## Gotchas
 
-This proves file delivery; a live harness needs installed hooks to inject the inbox. Headless resumes are outside this no-model journey. Hop and self-send guards are tested by the unit suite.
+This proves file delivery and subprocess/stdio behavior; actual models and hook injection need separate live checks. The unit suite covers interrupted delivery guidance without retries, hop limits and self-send guards.

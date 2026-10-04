@@ -24,11 +24,11 @@ python3 scripts/verify_release.py --python /tmp/everett-check-venv/bin/python --
 
 For source changes, use `python3 scripts/verify_release.py --source . --evidence .audit/source-journey.json`.
 
-Read [the feature map](features/README.md). The helper runs all four mapped journeys with the real CLI and JSON-RPC pipes, and checks every advertised tool. It uses no model credentials or paid calls. Synthetic Claude transcripts stand in for external harness storage; the Claude executable stub is only for detection and exits 88 if invoked.
+Read [the feature map](features/README.md). The helper runs all four mapped journeys with the real CLI and JSON-RPC pipes, and checks every advertised tool. It uses no model credentials or paid calls. Synthetic Claude/Codex transcripts stand in for external storage. The Claude stub is detection-only and exits 88 if invoked. A Python Codex stub simulates resume/spawn and reads stdin; it must receive EOF while the MCP connection stays open.
 
 ## Evidence
 
-JSON includes commands, exit codes, stdout/stderr, protocol requests/responses, tool names, duration, and cleanup confirmation. Check `status: passed`, ten distinct `tools_exercised`, and `scratch_cleaned: true`. Assertions check actual cards, inbox consumption, returned replies, status visibility, and core files. This is CLI/protocol evidence; it does not prove GUI-client trust prompts or actual model resumes.
+JSON includes commands, exit codes, stdout/stderr, protocol requests/responses, tool names, duration, and cleanup confirmation. Check `status: passed`, ten distinct `tools_exercised`, `delivery_checks`, and `scratch_cleaned: true`. Assertions check cards, inbox consumption, replies, status, core files, older targets and child stdin. This is CLI/protocol evidence; GUI-client trust prompts and actual model resumes need separate checks.
 
 ## Cleanup
 

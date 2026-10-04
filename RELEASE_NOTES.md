@@ -22,9 +22,9 @@ No router key or model call is needed for setup. The package is not published on
 
 - **First-run setup:** detect installed CLIs before any session exists; include Grok MCP; cancel safely on EOF; explain missing harnesses before waiting.
 - **MCP diagnosis:** doctor checks actual stdio initialization and all 10 tools, then probes registered launchers. Stale or disabled registrations get exact repair commands with backups.
+- **Delivery:** isolate harness stdin from the MCP connection, resolve exact titles, and let MCP routing/sending use a larger session window. Interrupted Codex delivery gets a check-before-retry hint.
 - **Memory reliability:** new facts stay pending while a merge is running, simultaneous mergers are refused, and failed merges retain queued facts. Use `everett trunk merge --llm none` for a local deterministic merge.
-- **Protocol and logging:** validate advertised tool arguments, declare route caller identity, and keep argument values out of new MCP log entries.
-- **Release checks:** isolated routing, two-way messages, session status and shared memory journeys; a macOS/Linux CI matrix; fresh wheel verification; a shorter quickstart and troubleshooting guide.
+- **Release checks and protocol:** isolated routing, two-way messages, status and memory journeys; a macOS/Linux CI matrix; fresh wheel verification; validated arguments and logs without their values; a shorter quickstart.
 
 The server advertises 10 tools: `everett_ls`, `everett_route`, `everett_send`, `everett_inbox`,
 `everett_event`, `everett_subscribe`, `everett_learn`, `everett_core`, `everett_card`, and `everett_whoami`.
@@ -57,12 +57,17 @@ Local routing needs no network. Jev routing and harness resumes/LLM merges use t
 providers. Fresh-install verification uses synthetic stores and no paid model calls; it does not
 claim live model-resume or GUI hook/trust verification for every harness.
 
+Codex's `Interrupted system call (os error 4)` means delivery is unconfirmed. Check the target
+before retrying, or use inbox delivery for an open session with Everett hooks. The cause of
+reported interruptions remains unconfirmed; failed resumes are not retried automatically.
+
 ## Verification
 
-275 tests pass on macOS with Python 3.10 and 3.14. Fresh Python 3.10/3.14 wheel installs,
+281 tests pass on macOS with Python 3.10 and 3.14. Fresh Python 3.10/3.14 wheel installs,
 a source-distribution install, pipx, and a locally staged Homebrew recipe all pass the real CLI
-and 10-tool stdio journey. The local source-package pipx install → onboarding → doctor took
-10.0 seconds with Python, pipx and a detection-only harness stub already available.
+and 10-tool stdio journey. Local source-package pipx install → onboarding → doctor completes
+in under two minutes with Python, pipx and a detection-only harness stub already available.
+The refreshed journey uses a fake Codex to verify resume/spawn stdin and continued MCP traffic.
 
 The public Homebrew tap still points to 1.2.0 during preparation; it needs the published 1.3.0
 tag/archive before updating. GitHub Actions has been added and will run after the prepared
