@@ -684,7 +684,8 @@ class StopHooks(unittest.TestCase):
                 result = self._run_stop(harness, payload, {**os.environ, 'EVERETT_HOME': d})
                 elapsed = __import__('time').perf_counter() - start
                 self.assertEqual(result.returncode, 0)
-                self.assertLess(elapsed, 0.3, f'{harness} Stop hook took {elapsed:.3f}s')
+                self.assertLess(elapsed, 1.0 if os.environ.get('CI') else 0.3,
+                                f'{harness} Stop hook took {elapsed:.3f}s')
 
 
 class Misc(unittest.TestCase):

@@ -122,6 +122,13 @@ class FirstRun(unittest.TestCase):
             self.assertEqual(main(['install-mcp', '--claude', '--repair']), 2)
         self.assertFalse(install.mcp_path('claude').exists())
 
+    def test_linux_scheduling_refuses_before_writing_configuration(self):
+        with mock.patch('sys.platform', 'linux'):
+            for argv in (['trunk', 'schedule', '--apply'], ['onboard', '--yes', '--schedule-merge']):
+                with self.subTest(argv=argv):
+                    self.assertEqual(main(argv), 2)
+        self.assertEqual(list(self.home.iterdir()), [])
+
 
 class ProtocolValidation(unittest.TestCase):
     def test_cli_and_all_ten_tools_over_stdio(self):

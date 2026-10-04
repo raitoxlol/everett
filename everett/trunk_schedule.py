@@ -45,11 +45,13 @@ def _parse_at(at: str) -> tuple[int, int]:
 
 
 def plist_data(at: str = '04:00', llm: str = 'claude') -> dict:
+    from .install import mcp_launch
     hour, minute = _parse_at(at)
     log = str(log_path())
     return {
         'Label': LABEL,
         'ProgramArguments': everett_command() + ['trunk', 'merge', '--llm', llm],
+        'EnvironmentVariables': {'PATH': os.environ.get('PATH', os.defpath), **mcp_launch()[2]},
         'StartCalendarInterval': {'Hour': hour, 'Minute': minute},
         'StandardOutPath': log,
         'StandardErrorPath': log,
