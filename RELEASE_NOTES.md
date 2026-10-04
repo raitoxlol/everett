@@ -7,7 +7,7 @@ Everett is MIT licensed and supports Claude Code, Codex, OMP, Pi, Hermes Agent, 
 
 ## Get started
 
-Have Python 3.10+, pipx and at least one harness CLI installed on macOS or Linux:
+Have Python 3.10+, pipx, Git and at least one harness CLI installed on macOS or Linux:
 
 ```bash
 pipx install git+https://github.com/raitoxlol/everett
@@ -69,6 +69,12 @@ and 10-tool stdio journey. Local source-package pipx install → onboarding → 
 in under two minutes with Python, pipx and a detection-only harness stub already available.
 The refreshed journey uses a fake Codex to verify resume/spawn stdin and continued MCP traffic.
 
+A separate approved live check used Codex 0.160.0 with its configured model in a read-only sandbox.
+Both creation and resume ran through the installed stdio server; the resumed session recalled
+its marker, both children received EOF on stdin, and MCP answered pings after each call.
+The temporary workspace was unchanged. This verifies current Codex delivery; the cause of the
+previous interruption errors remains unconfirmed.
+
 The public Homebrew tap still points to 1.2.0 during preparation; it needs the published 1.3.0
 tag/archive before updating. GitHub Actions has been added and will run after the prepared
-commits are pushed. Live model resumes and GUI client trust prompts remain separate checks.
+commits are pushed. Other harness model resumes and GUI client trust prompts remain separate checks.
