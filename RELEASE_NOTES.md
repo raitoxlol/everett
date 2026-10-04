@@ -75,6 +75,6 @@ its marker, both children received EOF on stdin, and MCP answered pings after ea
 The temporary workspace was unchanged. This verifies current Codex delivery; the cause of the
 previous interruption errors remains unconfirmed.
 
-The public Homebrew tap still points to 1.2.0 during preparation; it needs the published 1.3.0
-tag/archive before updating. GitHub Actions has been added and will run after the prepared
-commits are pushed. Other harness model resumes and GUI client trust prompts remain separate checks.
+The Homebrew recipe needs the published 1.3.0 tag/archive before it can be updated.
+Publication requires passing macOS/Linux unit tests and fresh wheel checks in GitHub Actions
+at the release head. Other harness model resumes and GUI client trust prompts remain separate checks.

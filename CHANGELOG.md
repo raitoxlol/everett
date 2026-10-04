@@ -25,6 +25,7 @@
 - Add regression coverage for first-run setup, MCP repair/validation, child stdin, older/title-based targets and concurrent memory operations. GitHub Actions runs unit tests and fresh wheel installs on macOS/Linux and Python 3.10/3.14, plus Linux 3.12.
 - Package tests, fixtures, the release verification helper and release documents in the source distribution. Verify installed metadata matches console/module versions.
 - Replace the README opening with a three-command pipx quickstart, demo placeholder, harness list and troubleshooting. Document manual inbox polling, hook trust, local/provider boundaries and macOS-only scheduling honestly.
+- Clarify local routing versus provider calls in onboarding. Verify declining its final confirmation on both macOS and Linux without assuming a fixed number of prompts.
 
 ## 1.2.0 — 2026-09-25
 
