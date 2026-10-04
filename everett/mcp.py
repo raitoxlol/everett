@@ -62,6 +62,7 @@ TOOLS = [
             'text': {**S, 'description': 'The request, as you would send it.'},
             'router': {'type': 'string', 'enum': ['local', 'jev'], 'description': 'Default: jev if configured, else local.'},
             'session_id': {**S, 'description': 'Your own session id, to exclude it from routing.'},
+            'hours': {'type': 'number', 'description': 'Look-back window in hours (default 72).', 'minimum': 0},
         }, 'required': ['text'], 'additionalProperties': False},
     },
     {
@@ -69,7 +70,7 @@ TOOLS = [
         'description': ('Deliver a request to another session. This is the default way to hand off work: pass '
                         'just `text` describing the task and Everett routes it for you (jev when configured, else '
                         'the local matcher) -- do not call everett_ls and pick a target by hand. Only pass `to` '
-                        '(session id prefix, card name, or project folder) when the user named a specific session, '
+                        '(session id prefix, exact title, card name, or project folder) when the user named a specific session, '
                         'or when replying to one; it skips routing entirely. The response always reports the route '
                         'decision -- which router decided (jev/local), the chosen session, and its confidence -- so '
                         'you can tell the user e.g. "jev picked ...". A SESSION decision is delivered. On ASK '
@@ -82,7 +83,8 @@ TOOLS = [
                         'to send to your own session and refuses requests forwarded more than 3 times.'),
         'inputSchema': {'type': 'object', 'properties': {
             'text': {**S, 'description': 'The request for the other session. Make it self-contained.'},
-            'to': {**S, 'description': 'Target session: id prefix, card name, or project folder name.'},
+            'to': {**S, 'description': 'Target session: id prefix, exact title, card name, or project folder name.'},
+            'hours': {'type': 'number', 'description': 'Look-back window in hours (default 72).', 'minimum': 0},
             'spawn': {'type': 'boolean', 'description': 'Allow starting a NEW session when routing says NEW.', 'default': False},
             'dir': {**S, 'description': 'Working directory for a spawned session.'},
             'harness': {'type': 'string', 'enum': list(SPAWNABLE), 'description': 'Harness for a spawned session.'},
@@ -212,11 +214,16 @@ def _str(args: dict, key: str, required: bool = False) -> str:
     return value
 
 
-def tool_ls(args):
+def _hours(args):
     hours = args.get('hours', 72)
-    if not isinstance(hours, (int, float)) or isinstance(hours, bool) or hours < 0:
-        raise ParamsError('"hours" must be a non-negative number')
-    sessions = registry.scan(float(hours), harness=_str(args, 'harness'))
+    if (not isinstance(hours, (int, float)) or isinstance(hours, bool) or
+            not math.isfinite(hours) or hours < 0):
+        raise ParamsError('"hours" must be a finite non-negative number')
+    return float(hours)
+
+
+def tool_ls(args):
+    sessions = registry.scan(_hours(args), harness=_str(args, 'harness'))
     me = caller_identity()['session_id']
     return {'sessions': [{**_brief(s), **({'you': True} if me and s.id == me else {})} for s in sessions]}
 
@@ -226,7 +233,7 @@ def tool_route(args):
     router = _str(args, 'router') or None
     caller = _str(args, 'session_id') or caller_identity()['session_id']
     try:
-        r = route(text, registry.scan(72), router=router, caller_id=caller or None)
+        r = route(text, registry.scan(_hours(args)), router=router, caller_id=caller or None)
     except RouteError as e:
         raise ToolError(str(e)) from e
     out = {k: r.get(k) for k in ('decision', 'confidence', 'router', 'suggested', 'candidates', 'command')
@@ -239,6 +246,7 @@ def tool_route(args):
 def tool_send(args):
     text = _str(args, 'text', True)
     to = _str(args, 'to')
+    hours = _hours(args)
     spawn_ok = args.get('spawn', False)
     if not isinstance(spawn_ok, bool):
         raise ParamsError('"spawn" must be a boolean')
@@ -264,12 +272,13 @@ def tool_send(args):
             if spawn_ok:
                 raise ParamsError('"to" and "spawn" are exclusive')
             try:
-                session = registry.find(to, registry.scan(72, include_auto=True, limit=None))
+                session = registry.find(to, registry.scan(hours, include_auto=True, limit=None))
             except registry.SessionLookupError as e:
-                raise ToolError(str(e)) from e
+                raise ToolError(f'{e} In MCP, use everett_ls with a larger hours window (e.g. 168), '
+                                'then pass its exact session id and the same hours to everett_send.') from e
             decision = {'decision': 'SESSION', 'router': 'direct', 'confidence': 1.0}
         else:
-            sessions = registry.scan(72)
+            sessions = registry.scan(hours)
             try:
                 r = route(text, sessions, caller_id=caller or None)
             except RouteError as e:

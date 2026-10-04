@@ -139,7 +139,8 @@ class Sending(unittest.TestCase):
         self.assertEqual(result.reply, 'answer')
         self.assertEqual(result.command[-1], 'review; rm -rf /')
         runner.assert_called_once_with(
-            result.command, cwd='/work/app', capture_output=True, text=True, timeout=120, check=False, env=mock.ANY
+            result.command, cwd='/work/app', stdin=subprocess.DEVNULL, capture_output=True,
+            text=True, timeout=120, check=False, env=mock.ANY
         )
         self.assertEqual(runner.call_args.kwargs['env']['EVERETT_SEND'], '1')  # card hooks skip headless resumes
 

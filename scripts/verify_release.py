@@ -179,6 +179,36 @@ def journey(args, evidence):
             check(shared['pending_learnings'] == 0, 'Merged facts remained pending')
             check((root / '.everett/core/core.md').is_file(), 'Global core was not written')
             check((root / '.everett/core/projects/verification.md').is_file(), 'Project core was not written')
+
+            # A child that reads stdin must see EOF while the MCP pipe remains open.
+            codex = bin_dir / 'codex'
+            codex.write_text('#!' + str(Path(args.python).resolve()) + '\nimport json,sys\n'
+                             'print(json.dumps({"stdin":sys.stdin.read(),"thread_id":"verify-spawned"}))\n')
+            codex.chmod(0o755)
+            peer = root / '.codex/sessions/2026/01/01/verify-codex.jsonl'
+            peer.parent.mkdir(parents=True)
+            codex_task = 'Repair sqlite backup restoration'
+            peer.write_text(json.dumps({'type': 'session_meta', 'payload': {
+                'id': 'verify-codex', 'cwd': str(worker_dir), 'source': 'cli'}}) + '\n' +
+                json.dumps({'type': 'response_item', 'payload': {'type': 'message', 'role': 'user',
+                    'content': [{'type': 'input_text', 'text': codex_task}]}}) + '\n')
+            old = time.time() - 96 * 3600
+            os.utime(peer, (old, old))
+            (root / '.codex/session_index.jsonl').write_text(json.dumps({
+                'id': 'verify-codex', 'thread_name': 'Backup restoration'}) + '\n')
+            check(not wire.call('everett_ls', harness='codex')['sessions'], 'Default window included an old peer')
+            older = wire.call('everett_route', text=codex_task, router='local', hours=168)
+            check(older['session']['id'] == 'verify-codex', 'MCP route ignored the larger window')
+            resumed = wire.call('everett_send', text='Check stdin', to='Backup restoration', hours=168, mode='resume')
+            check(json.loads(resumed['reply'])['stdin'] == '', 'Resumed child consumed MCP stdin')
+            spawned = wire.call('everett_send', text='Calibrate neutrino spectrometer', spawn=True,
+                                harness='codex', dir=str(worker_dir))
+            check(spawned.get('spawned') and json.loads(spawned['reply'])['stdin'] == '',
+                  'Spawned child consumed MCP stdin')
+            wire.request('ping')
+            evidence['delivery_checks'] = {'resume_stdin': 'isolated', 'spawn_stdin': 'isolated',
+                                           'older_session_hours': 168, 'exact_title': 'verified',
+                                           'ping_after_delivery': 'passed'}
             check(wire.seen == EXPECTED_TOOLS, 'Not every advertised MCP tool was exercised')
             evidence['tools_exercised'] = sorted(wire.seen)
         finally:

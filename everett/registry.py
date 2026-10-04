@@ -97,7 +97,7 @@ def _name(s: Session) -> str:
 
 
 def find(target: str, sessions: list[Session]) -> Session:
-    """Resolve `send --to`: exact id, unique id prefix, or unique card/title name or project folder."""
+    """Resolve `send --to`: exact id, unique id prefix, exact title, card name or project folder."""
     target = target.strip()
     if not target:
         raise SessionLookupError('--to needs a session id prefix or name.')
@@ -105,6 +105,7 @@ def find(target: str, sessions: list[Session]) -> Session:
     if exact:
         return exact[0]
     for matcher in (lambda s: s.id.startswith(target),
+                    lambda s: s.title.strip().casefold() == target.casefold(),
                     lambda s: _name(s) == target.casefold(),
                     lambda s: (s.cwd.rstrip('/').rsplit('/', 1)[-1].casefold() == target.casefold())):
         hits = [s for s in sessions if matcher(s)]
