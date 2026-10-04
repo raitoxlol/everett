@@ -13,6 +13,8 @@
 ### MCP, messages and memory
 
 - Declare caller identity in the route schema and enforce advertised argument types, enums and ranges across all tools. Restore stdout after an in-process server exits.
+- Close resume/spawn child stdin so harnesses cannot consume the MCP protocol stream. Codex interruption errors report unconfirmed delivery and advise checking the target before retrying; the cause of reported interruptions remains unconfirmed.
+- Allow a larger `hours` window in MCP routing/sending and resolve exact session titles case-insensitively. Duplicate titles still require an id. T3 Code's resume guard explains the supported inbox path.
 - Log tool/argument names and status instead of argument values or error bodies. Existing older log entries remain untouched.
 - Keep facts learned during a merge pending for the next merge, prevent simultaneous mergers, and preserve queued facts on failed or invalid model output. Deterministic merges remain available with `--llm none`.
 - Reap detached notification subprocesses and preserve the harness PATH in generated macOS merge schedules.
@@ -20,7 +22,7 @@
 ### Verification and documentation
 
 - Add routing, two-way inbox/reply, status subscription and global/project memory verification through real CLI commands and all 10 stdio tools, with disposable HOME directories and saved JSON evidence.
-- Add regression coverage for first-run setup, MCP repair/validation and concurrent memory operations. GitHub Actions runs unit tests and fresh wheel installs on macOS/Linux and Python 3.10/3.14, plus Linux 3.12.
+- Add regression coverage for first-run setup, MCP repair/validation, child stdin, older/title-based targets and concurrent memory operations. GitHub Actions runs unit tests and fresh wheel installs on macOS/Linux and Python 3.10/3.14, plus Linux 3.12.
 - Package tests, fixtures, the release verification helper and release documents in the source distribution. Verify installed metadata matches console/module versions.
 - Replace the README opening with a three-command pipx quickstart, demo placeholder, harness list and troubleshooting. Document manual inbox polling, hook trust, local/provider boundaries and macOS-only scheduling honestly.
 
