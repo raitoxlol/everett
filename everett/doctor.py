@@ -9,6 +9,7 @@ import subprocess
 import sys
 
 from . import config, install, registry, trunk, trunk_schedule
+from .adapters import devin as devin_adapter
 from .adapters import t3code
 from .route import find_api_key
 from .session import home
@@ -20,6 +21,7 @@ STORES = {
     'pi': '.pi/agent/sessions',
     'hermes': '.hermes',
     'grok': '.grok/sessions',
+    'devin': devin_adapter.DEFAULT_REL,  # sessions.db + transcripts/; $DEVIN_HOME overrides
     't3code': '.t3/userdata/state.sqlite',  # a database; its threads annotate codex/claude/grok sessions
 }
 
@@ -29,7 +31,8 @@ WARNINGS = []
 
 def detected_harnesses() -> list[str]:
     return [h for h, rel in STORES.items() if h != 't3code' and
-            (shutil.which(h) or (home() / rel).exists())]
+            (shutil.which(h) or (home() / rel).exists() or
+             (h == 'devin' and any(d.is_dir() for d in devin_adapter.data_dirs())))]
 
 
 def probe_mcp(launch: tuple | None = None) -> tuple[bool, str]:
@@ -90,7 +93,7 @@ def run(hours: float = 72) -> int:
     seen = detected_harnesses()
     print('harnesses:')
     for harness, rel in STORES.items():
-        path = home() / rel
+        path = devin_adapter.data_dir() if harness == 'devin' else home() / rel
         found = path.exists()
         state = 'found' if found else 'not found'
         if harness == 't3code':
