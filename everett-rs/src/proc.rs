@@ -161,7 +161,8 @@ pub fn pid_alive(pid: i32) -> bool {
     if pid <= 1 {
         return false;
     }
-    unsafe { libc::kill(pid, 0) == 0 || *libc::__error() == libc::EPERM }
+    let alive = unsafe { libc::kill(pid, 0) } == 0;
+    alive || std::io::Error::last_os_error().raw_os_error() == Some(libc::EPERM)
 }
 
 /// Parent pid and comm of a process, via `ps -o ppid=,comm= -p`.

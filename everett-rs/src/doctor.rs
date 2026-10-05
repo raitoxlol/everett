@@ -64,7 +64,9 @@ fn probe_mcp(launch: Option<(String, Vec<String>, std::collections::HashMap<Stri
         .collect();
     let mut cmd = vec![command.clone()];
     cmd.extend(args.clone());
-    let result = match crate::proc::run_capture_stdin(&cmd, None, &env, 5.0, Some(&input)) {
+    let mut child_env: std::collections::HashMap<String, String> = std::env::vars().collect();
+    child_env.extend(env);
+    let result = match crate::proc::run_capture_stdin(&cmd, None, &child_env, 5.0, Some(&input)) {
         Ok(r) => r,
         Err(e) => {
             return (false, format!(

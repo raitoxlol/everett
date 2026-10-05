@@ -353,13 +353,25 @@ python3 scripts/verify_release.py --source . --evidence .audit/source-journey.js
 Use `--python /path/to/venv/bin/python --cli /path/to/venv/bin/everett` without `--source`
 for fresh artifact proof. The helper records commands/protocol output and checks routing, messages,
 replies, status subscriptions and global/project memory. See the [verification skill](.agents/skills/verify-everett/SKILL.md).
-GitHub Actions runs the suite and fresh wheel journey on macOS/Linux and Python 3.10/3.14, plus Linux 3.12.
+GitHub Actions runs the suite and fresh wheel journey on macOS/Linux and Python 3.10/3.14, plus Linux 3.12,
+and `cargo test` for the Rust binary on macOS/Linux.
 
 ## Rust port (`everett-rs/`)
 
 A single-binary Rust rewrite lives alongside the Python tree: one `everett` binary, no
-Python interpreter needed, fast startup. The Python package remains the reference and is
-untouched; install the Rust build yourself while the port is under review.
+Python interpreter needed, fast startup. The Python package remains the reference.
+
+Release tags publish prebuilt binaries for macOS (arm64, x86_64) and Linux (static musl,
+x86_64, aarch64), each with a `.sha256`, plus a rendered Homebrew formula (`everett.rb`).
+Rerun either command to update:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/raitoxlol/everett/main/install.sh | sh   # ~/.local/bin
+cargo install --git https://github.com/raitoxlol/everett everett                         # from source
+```
+
+`install.sh` verifies the checksum; `EVERETT_VERSION=vX.Y.Z` pins a release and
+`EVERETT_INSTALL_DIR` changes the target directory. To build and test locally:
 
 ```bash
 cd everett-rs
