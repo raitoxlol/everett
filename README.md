@@ -355,6 +355,34 @@ for fresh artifact proof. The helper records commands/protocol output and checks
 replies, status subscriptions and global/project memory. See the [verification skill](.agents/skills/verify-everett/SKILL.md).
 GitHub Actions runs the suite and fresh wheel journey on macOS/Linux and Python 3.10/3.14, plus Linux 3.12.
 
+## Rust port (`everett-rs/`)
+
+A single-binary Rust rewrite lives alongside the Python tree: one `everett` binary, no
+Python interpreter needed, fast startup. The Python package remains the reference and is
+untouched; install the Rust build yourself while the port is under review.
+
+```bash
+cd everett-rs
+cargo build --release            # binary at target/release/everett
+cargo test                       # fixture-store suite (temp HOME, never touches real stores)
+```
+
+Parity status (Rust vs Python):
+
+| Area | Status |
+|---|---|
+| `ls`, `cards`, `route`, `send`, `event`, `events`, `subscribe`, `reply`, `inbox` | Same output shapes and exit codes |
+| `trunk view` / `merge` / `schedule` (plist + launchctl) | Same; schedule is macOS-only as before |
+| `learn`, `core` | Same; secret filter and file locking identical |
+| `install-hooks`, `install-mcp`, `doctor`, `onboard --yes` | Same; hooks read `EVERETT_HOME` |
+| `onboard` interactive | Plain prompts only (no curses TUI; the Python TUI already falls back to plain prompts off a TTY) |
+| `mcp` | Same 10 tools, same schemas, newline-delimited JSON-RPC 2.0 |
+| Session stores | Read-only for all harnesses (claude/codex/omp/pi/hermes/grok/devin + t3code overlay); sqlite opened `mode=ro` |
+| Send/resume argv | `claude --resume`, `codex exec resume`, `omp -r`, `pi --session`, `hermes chat --resume`, `grok --resume`, `devin --resume --print` |
+| Python-only surface | `everett` console_script entry points and `python -m everett` |
+
+Tests: `cargo test` runs the fixture suite — `ls`/`route`/`send --dry-run`/`cards`/`trunk`/`learn`/`event`/`inbox` journeys plus an MCP `initialize`/`tools/list`/`tools/call` stdio round-trip, all against synthetic stores in a temp HOME.
+
 ## License
 
 MIT. See [LICENSE](LICENSE).
