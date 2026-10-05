@@ -91,3 +91,24 @@ git -C "$everett_tap" commit -m "everett 1.3.0"
 git -C "$everett_tap" push
 )
 ```
+
+## 5. Rust binaries and the binary Homebrew formula
+
+Pushing the tag runs the `Rust binary` workflow (`.github/workflows/rust.yml`). It fails unless the
+tag equals `v` + `everett-rs/Cargo.toml`'s version, so bump that with `pyproject.toml`. After
+`cargo test` passes on macOS and Linux, it builds the four targets and uploads
+`everett-<target>.tar.gz`, `.sha256` and a rendered `everett.rb` to the release; it creates the
+release from `RELEASE_NOTES.md` only if step 3 has not already. `install.sh` users get the new
+binary on their next run.
+
+To move Homebrew users onto the binary, replace the tap's Python formula with the rendered one:
+
+```bash
+(
+set -e
+everett_tap="$(brew --repository raitoxlol/tap)"
+gh release download vX.Y.Z --repo raitoxlol/everett --pattern everett.rb --dir "$everett_tap/Formula" --clobber
+brew install raitoxlol/tap/everett && brew test raitoxlol/tap/everett
+git -C "$everett_tap" commit -am "everett X.Y.Z (prebuilt binary)" && git -C "$everett_tap" push
+)
+```
