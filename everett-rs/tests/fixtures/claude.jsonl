@@ -1,0 +1,7 @@
+{"type":"queue-operation","sessionId":"c-1","timestamp":"2026-09-23T00:00:00Z"}
+{"type":"user","sessionId":"c-1","cwd":"/work/app","timestamp":"2026-09-23T00:00:01Z","message":{"role":"user","content":"<command-name>/clear</command-name>"}}
+{"type":"user","sessionId":"c-1","cwd":"/work/app","timestamp":"2026-09-23T00:00:02Z","message":{"role":"user","content":"fix the login bug"}}
+{"type":"user","isSidechain":true,"sessionId":"c-1","message":{"role":"user","content":"subagent chatter"}}
+{"type":"user","sessionId":"c-1","message":{"role":"user","content":[{"type":"tool_result","content":"x"}]}}
+{"type":"user","sessionId":"c-1","message":{"role":"user","content":[{"type":"text","text":"now add tests"}]}}
+{"type":"ai-title","aiTitle":"Login bug fix","sessionId":"c-1"}
