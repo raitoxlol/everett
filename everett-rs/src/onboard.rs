@@ -1,6 +1,6 @@
-//! `everett onboard`: friendly first-time setup. The Rust port ships the non-interactive
-//! `--yes` path and the plain sequential-prompt flow; the curses TUI is Python-only
-//! (its plain fallback produces the identical prompts, so nothing user-facing is lost).
+//! `everett onboard`: friendly first-time setup. On a TTY the ratatui wizard in `tui.rs`
+//! runs the same seven steps as the Python curses TUI; `--yes` is the non-interactive path
+//! and the plain sequential prompts are the fallback when no usable terminal exists.
 
 use std::collections::HashMap;
 use std::io::Write;
@@ -17,7 +17,7 @@ pub const MCP_HARNESSES: &[&str] = &["claude", "codex", "omp", "grok"];
 /// `hooks_common::auto_card` only knows how to build a fallback card for these harnesses.
 pub const BACKFILL_HARNESSES: &[&str] = &["claude", "codex", "grok"];
 
-fn event_label(event: &str) -> &str {
+pub fn event_label(event: &str) -> &str {
     match event {
         "SessionStart" => "session cards + shared core (SessionStart)",
         "Stop" => "automatic fallback cards + done/blocked/needs-input events (Stop)",
@@ -28,13 +28,13 @@ fn event_label(event: &str) -> &str {
     }
 }
 
-const WELCOME_LINES: &[&str] = &[
+pub const WELCOME_LINES: &[&str] = &[
     "Everett lists recent Claude Code, Codex, OMP, Pi, Hermes, and Grok sessions on this machine.",
     "It lets those sessions hand work to each other instead of you copy-pasting between them.",
     "It shares merged memory through supported hooks, or agents can read it with everett_core.",
 ];
 
-const JEV_LINES: &[&str] = &[
+pub const JEV_LINES: &[&str] = &[
     "Jev (typesafe.ai) picks the right session when many are running, instead of a lexical guess.",
     "Without it, routing stays local. Harness calls and LLM merges use their configured providers.",
 ];
@@ -539,7 +539,15 @@ pub fn run(args: &crate::cli::Args) -> i32 {
     if args.onboard_yes {
         return run_yes(args);
     }
-    // The curses TUI is Python-only; the plain prompt flow asks the same questions in order.
+    if let Ok(result) = crate::tui::run(args, default_config()) {
+        match result {
+            Some(()) => return 0,
+            None => {
+                println!("Cancelled -- no changes were made.");
+                return 0;
+            }
+        }
+    }
     match run_plain(args) {
         Ok(code) => code,
         Err(QuitOnboarding) => {

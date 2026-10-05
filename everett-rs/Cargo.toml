@@ -26,11 +26,16 @@ libc = "0.2"
 rpassword = "7"
 terminal_size = "0.4"
 
+ratatui = "0.29"
+crossterm = "0.28"
+
 [dev-dependencies]
 assert_cmd = "2"
 serde_json = { version = "1", features = ["preserve_order"] }
 rusqlite = { version = "0.32", features = ["bundled"] }
 tempfile = "3"
+expectrl = "0.7"
+vt100 = "0.15"
 
 [profile.release]
 lto = true

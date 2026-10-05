@@ -249,3 +249,114 @@ fn events_json_lists_recorded_event() {
     let events = parse(&out);
     assert!(events.as_array().unwrap().iter().any(|e| e["text"] == "checkpoint"));
 }
+
+#[cfg(unix)]
+struct TuiProc {
+    session: expectrl::Session,
+    vt: vt100::Parser,
+}
+
+#[cfg(unix)]
+impl TuiProc {
+    fn drain(&mut self) {
+        let mut buf = [0u8; 8192];
+        while let Ok(n) = self.session.try_read(&mut buf) {
+            if n == 0 {
+                break;
+            }
+            self.vt.process(&buf[..n]);
+        }
+    }
+
+    fn screen(&mut self) -> String {
+        self.drain();
+        self.vt.screen().contents()
+    }
+
+    fn see(&mut self, needle: &str) {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        loop {
+            let screen = self.screen();
+            if screen.contains(needle) {
+                return;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "never saw {needle:?} on screen:\n{screen}"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
+    }
+
+    fn send(&mut self, keys: &str) {
+        self.session.send(keys).unwrap();
+    }
+}
+
+#[cfg(unix)]
+fn spawn_tui(fx: &common::Fixture) -> TuiProc {
+    let home = fx.home().to_path_buf();
+    let mut cmd = std::process::Command::new(env!("CARGO_BIN_EXE_everett"));
+    cmd.arg("onboard")
+        .env("HOME", &home)
+        .env("EVERETT_HOME", &home)
+        .env("EVERETT_NO_ANIM", "1")
+        .env("TERM", "xterm");
+    let mut session = expectrl::Session::spawn(cmd).unwrap();
+    session.get_process_mut().set_window_size(100, 30).unwrap();
+    TuiProc {
+        session,
+        vt: vt100::Parser::new(30, 100, 0),
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn onboard_tui_quit_makes_no_changes() {
+    let fx = fixture();
+    let mut p = spawn_tui(&fx);
+    p.see("Welcome to Everett");
+    p.send("q");
+    p.see("Cancelled -- no changes were made");
+    assert!(!fx.home().join(".claude.json").exists());
+}
+
+#[cfg(unix)]
+#[test]
+fn onboard_tui_full_wizard_applies() {
+    let fx = fixture();
+    plant(&fx, "claude.jsonl", ".claude/projects/app/claude.jsonl");
+    let mut p = spawn_tui(&fx);
+    p.see("Welcome to Everett");
+    for screen in [
+        "What Everett found",
+        "Hooks",
+        "MCP server",
+        "Smarter routing",
+        "Backfill",
+        "Apply these changes",
+    ] {
+        p.send("\r");
+        p.see(screen);
+    }
+    p.send("a");
+    p.see("onboarding complete");
+    p.see("Try this");
+    p.send("\r");
+    for _ in 0..100 {
+        p.drain();
+        if !p.session.is_alive().unwrap() {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
+    assert!(!p.session.is_alive().unwrap(), "wizard did not exit");
+    let settings: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(fx.home().join(".claude/settings.json")).unwrap())
+            .unwrap();
+    assert!(settings["hooks"]["SessionStart"].is_array());
+    let claude_json: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(fx.home().join(".claude.json")).unwrap())
+            .unwrap();
+    assert!(claude_json["mcpServers"]["everett"].is_object());
+}
