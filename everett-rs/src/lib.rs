@@ -21,3 +21,4 @@ pub mod session;
 pub mod timefmt;
 pub mod trunk;
 pub mod trunk_schedule;
+pub mod tui;

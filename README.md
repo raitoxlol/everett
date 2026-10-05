@@ -375,13 +375,13 @@ Parity status (Rust vs Python):
 | `trunk view` / `merge` / `schedule` (plist + launchctl) | Same; schedule is macOS-only as before |
 | `learn`, `core` | Same; secret filter and file locking identical |
 | `install-hooks`, `install-mcp`, `doctor`, `onboard --yes` | Same; hooks read `EVERETT_HOME` |
-| `onboard` interactive | Plain prompts only (no curses TUI; the Python TUI already falls back to plain prompts off a TTY) |
+| `onboard` interactive | Same seven-step wizard as the Python curses TUI (ratatui); falls back to plain prompts off a TTY |
 | `mcp` | Same 10 tools, same schemas, newline-delimited JSON-RPC 2.0 |
 | Session stores | Read-only for all harnesses (claude/codex/omp/pi/hermes/grok/devin + t3code overlay); sqlite opened `mode=ro` |
 | Send/resume argv | `claude --resume`, `codex exec resume`, `omp -r`, `pi --session`, `hermes chat --resume`, `grok --resume`, `devin --resume --print` |
 | Python-only surface | `everett` console_script entry points and `python -m everett` |
 
-Tests: `cargo test` runs the fixture suite — `ls`/`route`/`send --dry-run`/`cards`/`trunk`/`learn`/`event`/`inbox` journeys plus an MCP `initialize`/`tools/list`/`tools/call` stdio round-trip, all against synthetic stores in a temp HOME.
+Tests: `cargo test` runs the fixture suite — `ls`/`route`/`send --dry-run`/`cards`/`trunk`/`learn`/`event`/`inbox` journeys, an MCP `initialize`/`tools/list`/`tools/call` stdio round-trip, and pty-driven onboarding wizard runs (rendered-screen assertions via vt100), all against synthetic stores in a temp HOME.
 
 ## License
 
