@@ -47,7 +47,7 @@ TOOLS = [
                         'routing decision.'),
         'inputSchema': {'type': 'object', 'properties': {
             'hours': {'type': 'number', 'description': 'Look-back window in hours (default 72).', 'minimum': 0},
-            'harness': {'type': 'string', 'enum': ['claude', 'codex', 'omp', 'pi', 'hermes', 'grok'],
+            'harness': {'type': 'string', 'enum': ['claude', 'codex', 'omp', 'pi', 'hermes', 'grok', 'devin'],
                         'description': 'Only this harness.'},
         }, 'additionalProperties': False},
     },

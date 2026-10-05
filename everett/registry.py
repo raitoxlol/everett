@@ -5,10 +5,11 @@ import subprocess
 import time
 
 from . import cards
-from .adapters import claude, codex, grok, hermes, omp, pi, t3code
+from .adapters import claude, codex, devin, grok, hermes, omp, pi, t3code
 from .session import Session, home
 
-ADAPTERS = {'claude': claude, 'codex': codex, 'omp': omp, 'pi': pi, 'hermes': hermes, 'grok': grok}
+ADAPTERS = {'claude': claude, 'codex': codex, 'omp': omp, 'pi': pi, 'hermes': hermes, 'grok': grok,
+            'devin': devin}
 LIVE_WINDOW = 600  # seconds
 CAP = 40
 AUTO_PREFIXES = ('You are ', 'Automation:')  # scheduled/scripted runs
