@@ -139,6 +139,8 @@ def resume_command(session: Session, text: str) -> str:
                 f'{shlex.quote(session.id)}   # then paste the text')
     if session.harness == 'grok':
         return f'{cd} && grok --resume {shlex.quote(session.id)}   # then paste the text'
+    if session.harness == 'devin':
+        return f'{cd} && devin --resume {shlex.quote(session.id)}   # then paste the text'
     return f'{cd} && omp -r {shlex.quote(session.id)}   # then paste the text'
 
 

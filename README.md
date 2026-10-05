@@ -4,7 +4,7 @@ Route requests, messages, and shared memory across your coding-agent sessions—
 
 > **Demo GIF/video placeholder:** the launch clip is being planned.
 
-**Works with:** Claude Code · Codex · OMP · Pi · Hermes Agent · Grok CLI.
+**Works with:** Claude Code · Codex · OMP · Pi · Hermes Agent · Grok CLI · Devin CLI.
 T3 Code threads are recognized through their underlying harness sessions.
 
 ## Quickstart
@@ -20,7 +20,7 @@ everett doctor
 Onboarding detects installed CLIs even before their first session. It backs up and registers
 hooks and MCP for detected Claude Code, Codex, OMP, and Grok installations. Restart those clients,
 then run `everett ls`. Doctor checks the registered launchers and lists your exact next steps.
-Pi and Hermes sessions can be listed/routed; they need manual MCP configuration and inbox polling.
+Pi, Hermes, and Devin sessions can be listed/routed; they need manual MCP configuration and inbox polling.
 No router key or model call is needed for this setup. Codex may ask you to enable/trust its hooks.
 
 Python 3.11+ uses the standard library at runtime. Python 3.10 also installs the small `tomli`
@@ -65,7 +65,8 @@ preserving every other key). The same step has a "merge shared memory nightly" t
 
 Everett reads the session stores the harnesses already write: `~/.claude/projects`,
 `~/.codex/sessions`, `~/.omp/agent/sessions`, `~/.pi/agent/sessions`, `~/.grok/sessions`,
-Hermes' `state.db` files, and T3 Code's `~/.t3/userdata/state.sqlite`. Both databases are opened read-only.
+Hermes' `state.db` files, the Devin CLI's `sessions.db` (plus `transcripts/*.json`),
+and T3 Code's `~/.t3/userdata/state.sqlite`. Every database is opened read-only.
 
 ## Demo
 
@@ -128,9 +129,10 @@ Global option: `--hours N` sets the look-back window (default 72).
 | Pi | `pi --session <file> -p <text>` | `pi -p <text>` |
 | Hermes Agent | `hermes -p <profile> chat --resume <id> -Q -q <text>` | `hermes chat -Q -q <text>` |
 | Grok CLI | `grok --resume <id> -p <text>` | `grok --session-id <new uuid> -p <text>` |
+| Devin CLI | `devin --resume <id> --print <text>` | `devin -p <text>` |
 | T3 Code | Inbox via underlying harness hooks; no CLI resume | not supported |
 
-The harness appends the request and the reply to that session's history. Hermes sessions that belong to a chat platform (Telegram, Discord, and so on) are listed and routable, but `send` refuses them, because a CLI resume would not reach that chat. Scripted Hermes runs (cron, oneshot, webhook) are hidden like other automated runs. Grok sessions are read from `~/.grok/sessions/<url-encoded cwd>/<id>/` (`summary.json` for id, folder, and title; `prompt_history.jsonl` for the typed requests). A Grok session counts as running while `~/.grok/active_sessions.json` names it with a live process id. Headless `grok -p` runs are hidden like other scripted runs.
+The harness appends the request and the reply to that session's history. Hermes sessions that belong to a chat platform (Telegram, Discord, and so on) are listed and routable, but `send` refuses them, because a CLI resume would not reach that chat. Scripted Hermes runs (cron, oneshot, webhook) are hidden like other automated runs. Grok sessions are read from `~/.grok/sessions/<url-encoded cwd>/<id>/` (`summary.json` for id, folder, and title; `prompt_history.jsonl` for the typed requests). A Grok session counts as running while `~/.grok/active_sessions.json` names it with a live process id. Headless `grok -p` runs are hidden like other scripted runs. Devin CLI sessions are read from `sessions.db` under `$DEVIN_HOME`, else the platform data dir (`~/Library/Application Support/devin/cli` on macOS, `~/.local/share/devin/cli` on Linux): the `sessions` table gives id, folder, title, and activity; `message_nodes` gives the user asks when the CLI build has it, otherwise `transcripts/<id>.json` carries the listing. Hidden sessions are skipped. Devin has no Everett hooks, so delivery is a headless `devin --resume <id>` run.
 
 T3 Code is a desktop GUI that runs Codex, Claude Code, and Grok underneath. Everett marks the
 matching session with source `t3code` (`[t3code]` in `ls`) and uses the thread title when needed.
@@ -162,7 +164,7 @@ Headless resume only works on a session nobody has open. When a session is runni
 | Codex (0.155+) | `UserPromptSubmit` | `PostToolUse` | the same contract (checked against the hook schemas embedded in the 0.155.1 binary) |
 | Grok CLI | no | `PostToolUse` | Grok discards an allowing `UserPromptSubmit` hook's context, so messages wait for the next tool call. A Grok session that runs no tool before stopping reads them with `everett_inbox`, or at its next tool call. |
 | OMP | `before_agent_start` | `tool_result` (steered in with `pi.sendMessage(…, {deliverAs: "steer"})`) | the Everett extension |
-| Pi, Hermes | no hooks | no hooks | messages wait in the inbox; the agent reads them with `everett_inbox` |
+| Pi, Hermes, Devin | no hooks | no hooks | messages wait in the inbox; the agent reads them with `everett_inbox` |
 
 Grok also runs the hooks in `~/.claude/settings.json`. Everett's Claude delivery hook recognizes Grok's camelCase input and leaves a Grok session's messages alone on `UserPromptSubmit`, so nothing is marked delivered that Grok would drop.
 
@@ -278,7 +280,7 @@ For another MCP client, configure a stdio server with that interpreter as `comma
 `["-m", "everett", "mcp"]` as `args`. `python -m everett mcp` is also a valid launcher when
 that Python has Everett installed. Restart clients after changing their registration.
 
-**Caller identity.** Everett reads the calling session from the environment the harness gives the server: `CLAUDE_CODE_SESSION_ID` (Claude Code), `CODEX_THREAD_ID` (Codex), `HERMES_SESSION_ID` (Hermes), `PI_SESSION_FILE` (Pi), or `GROK_SESSION_ID` (Grok documents it for hooks; for MCP servers it is unverified). `EVERETT_SESSION_ID` overrides all of them. OMP exposes none. When nothing is detected, agents pass `session_id` to `everett_send` and `everett_card`. An MCP server starts once per session, so after a harness switches sessions in place (for example `/clear`), pass `session_id` explicitly.
+**Caller identity.** Everett reads the calling session from the environment the harness gives the server: `CLAUDE_CODE_SESSION_ID` (Claude Code), `CODEX_THREAD_ID` (Codex), `HERMES_SESSION_ID` (Hermes), `PI_SESSION_FILE` (Pi), or `GROK_SESSION_ID` (Grok documents it for hooks; for MCP servers it is unverified). `EVERETT_SESSION_ID` overrides all of them. OMP and the Devin CLI expose none. When nothing is detected, agents pass `session_id` to `everett_send` and `everett_card`. An MCP server starts once per session, so after a harness switches sessions in place (for example `/clear`), pass `session_id` explicitly.
 
 **Safety.**
 - The server never sends to the caller's own session.
