@@ -353,7 +353,47 @@ python3 scripts/verify_release.py --source . --evidence .audit/source-journey.js
 Use `--python /path/to/venv/bin/python --cli /path/to/venv/bin/everett` without `--source`
 for fresh artifact proof. The helper records commands/protocol output and checks routing, messages,
 replies, status subscriptions and global/project memory. See the [verification skill](.agents/skills/verify-everett/SKILL.md).
-GitHub Actions runs the suite and fresh wheel journey on macOS/Linux and Python 3.10/3.14, plus Linux 3.12.
+GitHub Actions runs the suite and fresh wheel journey on macOS/Linux and Python 3.10/3.14, plus Linux 3.12,
+and `cargo test` for the Rust binary on macOS/Linux.
+
+## Rust port (`everett-rs/`)
+
+A single-binary Rust rewrite lives alongside the Python tree: one `everett` binary, no
+Python interpreter needed, fast startup. The Python package remains the reference.
+
+Release tags publish prebuilt binaries for macOS (arm64, x86_64) and Linux (static musl,
+x86_64, aarch64), each with a `.sha256`, plus a rendered Homebrew formula (`everett.rb`).
+Rerun either command to update:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/raitoxlol/everett/main/install.sh | sh   # ~/.local/bin
+cargo install --git https://github.com/raitoxlol/everett everett                         # from source
+```
+
+`install.sh` verifies the checksum; `EVERETT_VERSION=vX.Y.Z` pins a release and
+`EVERETT_INSTALL_DIR` changes the target directory. To build and test locally:
+
+```bash
+cd everett-rs
+cargo build --release            # binary at target/release/everett
+cargo test                       # fixture-store suite (temp HOME, never touches real stores)
+```
+
+Parity status (Rust vs Python):
+
+| Area | Status |
+|---|---|
+| `ls`, `cards`, `route`, `send`, `event`, `events`, `subscribe`, `reply`, `inbox` | Same output shapes and exit codes |
+| `trunk view` / `merge` / `schedule` (plist + launchctl) | Same; schedule is macOS-only as before |
+| `learn`, `core` | Same; secret filter and file locking identical |
+| `install-hooks`, `install-mcp`, `doctor`, `onboard --yes` | Same; hooks read `EVERETT_HOME` |
+| `onboard` interactive | Same seven-step wizard as the Python curses TUI (ratatui); falls back to plain prompts off a TTY |
+| `mcp` | Same 10 tools, same schemas, newline-delimited JSON-RPC 2.0 |
+| Session stores | Read-only for all harnesses (claude/codex/omp/pi/hermes/grok/devin + t3code overlay); sqlite opened `mode=ro` |
+| Send/resume argv | `claude --resume`, `codex exec resume`, `omp -r`, `pi --session`, `hermes chat --resume`, `grok --resume`, `devin --resume --print` |
+| Python-only surface | `everett` console_script entry points and `python -m everett` |
+
+Tests: `cargo test` runs the fixture suite — `ls`/`route`/`send --dry-run`/`cards`/`trunk`/`learn`/`event`/`inbox` journeys, an MCP `initialize`/`tools/list`/`tools/call` stdio round-trip, and pty-driven onboarding wizard runs (rendered-screen assertions via vt100), all against synthetic stores in a temp HOME.
 
 ## License
 
