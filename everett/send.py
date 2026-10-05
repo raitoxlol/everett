@@ -53,10 +53,12 @@ def command_for(session: Session, text: str) -> list[str]:
         return ['hermes', '-p', session.profile or 'default', 'chat', '--resume', session.id, '-Q', '-q', text]
     if session.harness == 'grok':
         return ['grok', '--resume', session.id, '-p', text]
+    if session.harness == 'devin':
+        return ['devin', '--resume', session.id, '--print', text]
     raise SendError(2, f'Unsupported harness: {session.harness}')
 
 
-HARNESS_BIN = re.compile(r'(^|/)(claude|codex|omp|pi|hermes|grok)(\s|$)')  # only harness processes count, not greps/scripts
+HARNESS_BIN = re.compile(r'(^|/)(claude|codex|omp|pi|hermes|grok|devin)(\s|$)')  # only harness processes count, not greps/scripts
 IDLE_QUIET = 60   # session file untouched this long = not mid-turn
 IDLE_WAIT = 120   # how long send waits for a busy session before refusing
 POLL = 5
@@ -66,7 +68,7 @@ def is_busy(session: Session, ps_out: str, now: float) -> bool:
     """Busy = its id is in a live process, or its session file was written in the last IDLE_QUIET s."""
     if session.id and any(session.id in line and HARNESS_BIN.search(line) for line in ps_out.splitlines()):
         return True
-    if session.harness == 'hermes':
+    if session.harness == 'hermes' or (session.harness == 'devin' and session.path.endswith('.db')):
         mtime = session.last_active  # the path is a shared database, not this session's file
     elif session.harness == 'grok':
         try:
@@ -146,7 +148,7 @@ def send(session: Session, text: str, timeout: float = 120, wait: float = IDLE_W
 
 # ---- spawning a NEW session ------------------------------------------------------------
 
-SPAWNABLE = ('claude', 'codex', 'omp', 'pi', 'hermes', 'grok')
+SPAWNABLE = ('claude', 'codex', 'omp', 'pi', 'hermes', 'grok', 'devin')
 
 
 @dataclass
@@ -174,6 +176,8 @@ def spawn_command(harness: str, text: str, session_id: str = '', out_file: str =
         return ['hermes', 'chat', '-Q', '-q', text]
     if harness == 'grok':
         return ['grok', '--session-id', session_id, '-p', text] if session_id else ['grok', '-p', text]
+    if harness == 'devin':
+        return ['devin', '-p', text]
     raise SendError(2, f'Cannot spawn harness {harness!r}; choose one of {", ".join(SPAWNABLE)}.')
 
 

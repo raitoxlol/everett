@@ -4,7 +4,7 @@ Supported keys (all optional):
 
     vault = "~/Notes"                # enables `trunk view` and the core mirror
     vault_dir = "Everett"            # folder inside the vault (default "Everett")
-    default_harness = "claude"       # harness for new sessions: claude | codex | omp | pi
+    default_harness = "claude"       # harness for new sessions: claude | codex | omp | pi | hermes | grok | devin
     router = "local"                 # default router: local | jev
     typesafe_api_key = "..."         # Jev key ([jev] api_key also works)
     merge_llm = "claude"             # `trunk merge` default: claude | codex | none

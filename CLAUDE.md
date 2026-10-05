@@ -27,6 +27,6 @@ Read this before working in Everett so another agent can pick up the same state.
 - `everett/trunk.py` — generated vault session view.
 - `everett/core.py` — shared core: learn, merge, context injected by SessionStart hooks.
 - `everett/mcp.py` — stdio MCP server (tools for agents).
-- `everett/adapters/` — one module per harness: claude, codex, omp, pi, hermes, grok, plus the t3code overlay (all read-only).
+- `everett/adapters/` — one module per harness: claude, codex, omp, pi, hermes, grok, devin, plus the t3code overlay (all read-only).
 - `tests/` — tests; every module imports `sandbox` first so HOME is a temp dir.
 

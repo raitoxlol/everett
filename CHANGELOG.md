@@ -1,5 +1,23 @@
 # Changelog
 
+## Unreleased
+
+### Devin CLI adapter
+
+- `everett ls` and routing now include Devin CLI sessions, read from `sessions.db` under
+  `$DEVIN_HOME` or the platform data dir (`~/Library/Application Support/devin/cli` on macOS,
+  `~/.local/share/devin/cli` on Linux; both candidates are scanned). The database opens
+  read-only like every other store.
+- Sessions come from the `sessions` table (id, `working_directory`, title, created/last-activity;
+  hidden and archived rows skipped). User asks come from `message_nodes` when the CLI build has
+  it; otherwise `transcripts/<id>.json` (ATIF) carries the listing and enriches database rows.
+  Epoch seconds, milliseconds, and ISO 8601 timestamps are all accepted.
+- `send` resumes a Devin session headless with `devin --resume <id> --print <text>`; `--spawn`
+  starts one with `devin -p <text>`. Devin has no Everett hooks, so there is no inbox delivery
+  yet; `everett_ls`'s `harness` filter accepts `devin`, and `doctor` reports the store.
+- The Devin CLI sets no caller session env var for MCP servers; callers pass `session_id` or set
+  `EVERETT_SESSION_ID`, same as OMP.
+
 ## 1.3.0 — 2026-10-04
 
 ### First install and diagnosis
