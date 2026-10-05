@@ -1,0 +1,83 @@
+name: Rust binary
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    defaults:
+      run:
+        working-directory: everett-rs
+    steps:
+      - uses: actions/checkout@v7
+      - run: cargo test --locked
+
+  build:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: test
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { target: x86_64-unknown-linux-musl, os: ubuntu-latest }
+          - { target: aarch64-unknown-linux-musl, os: ubuntu-24.04-arm }
+          - { target: aarch64-apple-darwin, os: macos-latest }
+          - { target: x86_64-apple-darwin, os: macos-latest }
+    steps:
+      - uses: actions/checkout@v7
+      - name: Check tag matches the crate version
+        shell: bash
+        run: |
+          crate="$(sed -n 's/^version = "\(.*\)"/\1/p' everett-rs/Cargo.toml | head -1)"
+          test "v$crate" = "$GITHUB_REF_NAME" || { echo "tag $GITHUB_REF_NAME != crate v$crate"; exit 1; }
+      - if: contains(matrix.target, 'musl')
+        run: sudo apt-get update && sudo apt-get install -y musl-tools
+      - run: rustup target add ${{ matrix.target }}
+      - working-directory: everett-rs
+        run: cargo build --release --locked --target ${{ matrix.target }}
+      - name: Package
+        shell: bash
+        run: |
+          name="everett-${{ matrix.target }}"
+          mkdir -p "dist/$name"
+          cp "everett-rs/target/${{ matrix.target }}/release/everett" LICENSE README.md "dist/$name/"
+          tar -C dist -czf "dist/$name.tar.gz" "$name"
+          (cd dist && shasum -a 256 "$name.tar.gz" > "$name.tar.gz.sha256")
+      - uses: actions/upload-artifact@v7
+        with:
+          name: everett-${{ matrix.target }}
+          path: dist/everett-*.tar.gz*
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/download-artifact@v7
+        with:
+          path: dist
+          merge-multiple: true
+      - name: Render the Homebrew formula
+        run: scripts/render_formula.sh "${GITHUB_REF_NAME#v}" dist > dist/everett.rb
+      - name: Publish binaries to the GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1 ||
+            gh release create "$GITHUB_REF_NAME" --verify-tag --title "Everett ${GITHUB_REF_NAME#v}" --notes-file RELEASE_NOTES.md
+          gh release upload "$GITHUB_REF_NAME" dist/* --clobber

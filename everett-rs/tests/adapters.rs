@@ -79,7 +79,7 @@ fn hermes_db_listed() {
 #[test]
 fn devin_db_and_transcript_listed() {
     let fx = fixture();
-    let base = fx.home().join("Library/Application Support/devin/cli");
+    let base = fx.home().join(".local/share/devin/cli");
     std::fs::create_dir_all(base.join("transcripts")).unwrap();
     let db = base.join("sessions.db");
     let con = rusqlite::Connection::open(&db).unwrap();
@@ -101,7 +101,7 @@ fn devin_db_and_transcript_listed() {
     // Without message_nodes the ATIF transcripts are read directly, and fill in
     // user text for sessions the DB already knows.
     fx.write(
-        "Library/Application Support/devin/cli/transcripts/d-2.json",
+        ".local/share/devin/cli/transcripts/d-2.json",
         &json!({
             "session_id": "d-2",
             "title": "Transcript task",
@@ -123,7 +123,7 @@ fn devin_db_and_transcript_listed() {
 #[test]
 fn devin_message_nodes_supply_user_text() {
     let fx = fixture();
-    let base = fx.home().join("Library/Application Support/devin/cli");
+    let base = fx.home().join(".local/share/devin/cli");
     std::fs::create_dir_all(base.join("transcripts")).unwrap();
     let con = rusqlite::Connection::open(base.join("sessions.db")).unwrap();
     let now = std::time::SystemTime::now()
@@ -149,7 +149,7 @@ fn devin_message_nodes_supply_user_text() {
     drop(con);
     // With message_nodes present, transcripts must not double-list sessions.
     fx.write(
-        "Library/Application Support/devin/cli/transcripts/d-9.json",
+        ".local/share/devin/cli/transcripts/d-9.json",
         &json!({
             "session_id": "d-9",
             "title": "Should be skipped",

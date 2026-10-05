@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+### Rust binary releases
+
+- Tags `vX.Y.Z` build the Rust `everett` for macOS arm64/x86_64 and static Linux musl
+  x86_64/aarch64, attach `everett-<target>.tar.gz` + `.sha256` to the GitHub release, and render
+  a binary Homebrew formula (`everett.rb`). The tag must match `everett-rs/Cargo.toml`'s version.
+- `install.sh` installs or updates the binary into `~/.local/bin` with checksum verification;
+  `cargo install --git https://github.com/raitoxlol/everett everett` builds from source.
+- CI runs `cargo test` on macOS and Linux. The crate now builds on Linux (`pid_alive` used the
+  macOS-only `libc::__error`), and `doctor`'s MCP probe inherits the caller's environment like
+  Python's, so it no longer writes `.everett/mcp.log` into the working directory.
+
 ### Devin CLI adapter
 
 - `everett ls` and routing now include Devin CLI sessions, read from `sessions.db` under
