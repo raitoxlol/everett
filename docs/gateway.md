@@ -37,7 +37,8 @@ and destination IDs with absolute paths and complete authorized session IDs:
 ```
 
 Keep the configuration and executable writable only by the trusted local owner.
-`agent_id` must match `[A-Za-z0-9_-]{1,100}`; `harness` is `openai-dot` or
+`agent_id` must match `[A-Za-z0-9_-]{1,100}` and cannot be `human` or `live`
+(case-insensitive); `harness` is `openai-dot` or
 `grok-bot`. The fixed project slug is lowercase, begins with a letter or digit,
 and contains only letters, digits, `_`, or `-`, up to 64 characters.
 Destinations are exact, complete IDs, not titles, folder names, or prefixes.
@@ -70,9 +71,10 @@ The external-session registration contract is:
 
 Registration/listing/inbound routing belongs to the Rust external-session
 integration. The gateway does not write registrations, invent local CLI
-transcripts, refresh registration timestamps, or resume either cloud Bot. Register
-the same ID and arrange any registration refresh separately before end-to-end
-handoffs. A connector alone does not make a session discoverable to local agents.
+transcripts, or resume either cloud Bot. Register the same ID before end-to-end
+handoffs. External registration is durable, requires no periodic timestamp refresh,
+and is not filtered by local session age. A connector alone does not make a session
+discoverable to local agents.
 
 ## Allowed tools and delivery
 
@@ -91,10 +93,10 @@ events, and subscriptions are not exposed. No cloud-boundary text is routed to
 Jev. Replies require one unique message addressed to this binding in its own
 durable inbox, with the original sender in the destination allowlist.
 
-**Direct sends fail closed with the current unmodified backend.** Older Rust
+**Direct sends require an enforced exact-ID backend capability.** Older Rust
 `everett_send(to=...)` can fall back to prefix/title matching when an exact ID
 disappears. To permit direct sends, the backend must advertise
-`capabilities.experimental.everettExactDestinationIds: true` on initialize and
+`capabilities.experimental.everettExactDestinationIds: {"enforced": true}` on initialize and
 actually enforce exact-ID-only delivery for gateway processes. The gateway sets
 `EVERETT_GATEWAY_EXACT_IDS=1` for this integration. A preflight listing alone
 cannot eliminate that disappearance race. Owned-message replies, memory, inbox,

@@ -16,8 +16,11 @@ def main():
         method = message["method"]
         if method == "initialize":
             capabilities = {"tools": {}}
-            if "--legacy" not in sys.argv:
-                capabilities["experimental"] = {"everettExactDestinationIds": True}
+            if "--legacy" not in sys.argv and os.environ.get("EVERETT_GATEWAY_EXACT_IDS") == "1":
+                exact_ids = {"enforced": True}
+                if "--capability" in sys.argv:
+                    exact_ids = json.loads(sys.argv[sys.argv.index("--capability") + 1])
+                capabilities["experimental"] = {"everettExactDestinationIds": exact_ids}
             result = {"protocolVersion": "2025-06-18", "capabilities": capabilities,
                       "serverInfo": {"name": "synthetic-everett", "version": "0"}}
         elif method == "tools/list":

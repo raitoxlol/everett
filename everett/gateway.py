@@ -16,6 +16,8 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit
 
+from .inbox import HUMAN
+
 AGENT_ID = re.compile(r"[A-Za-z0-9_-]{1,100}\Z")
 DESTINATION_ID = re.compile(r"[A-Za-z0-9._-]{1,128}\Z")
 PROJECT = re.compile(r"[a-z0-9][a-z0-9_-]{0,63}\Z")
@@ -48,6 +50,8 @@ class Binding:
     def __post_init__(self):
         if not isinstance(self.agent_id, str) or not AGENT_ID.fullmatch(self.agent_id):
             raise BoundaryError("agent_id must match [A-Za-z0-9_-]{1,100}")
+        if self.agent_id.lower() in (HUMAN.lower(), "live"):
+            raise BoundaryError("agent_id cannot bind a reserved human or live inbox")
         if self.harness not in ("openai-dot", "grok-bot"):
             raise BoundaryError("harness must be openai-dot or grok-bot")
         if not isinstance(self.project, str) or not PROJECT.fullmatch(self.project):
@@ -259,7 +263,8 @@ class Gateway:
                             initialized = await session.initialize()
                             if name == "everett_send" and "to" in args:
                                 capabilities = initialized.capabilities.experimental or {}
-                                if capabilities.get(EXACT_DELIVERY_CAPABILITY) is not True:
+                                exact_ids = capabilities.get(EXACT_DELIVERY_CAPABILITY)
+                                if not isinstance(exact_ids, dict) or exact_ids.get("enforced") is not True:
                                     raise BoundaryError("backend lacks strict exact-ID delivery; owned-message replies remain available")
                             if name == "everett_send" and "reply_to" in args:
                                 self.binding.reply_destination(args["reply_to"])
