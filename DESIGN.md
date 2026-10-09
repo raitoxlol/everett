@@ -122,7 +122,9 @@ monogram has one tighter corner. Keep shapes subordinate to information.
   motion removes this movement and smooth scrolling.
 - **Filters.** Search matches project, card, ID, harness, and status. Harness and
   state selects compose with search. A no-match state offers reset.
-- **Commands.** Buttons copy commands only. The UI describes inbox pickup as
+- **Commands.** Buttons copy inbox-send, local-route, and events commands only.
+  T3 details identify the underlying provider separately from the T3 source.
+  The UI describes inbox pickup as
   dependent on hooks or polling; it never claims agent delivery or wake-up.
 - **Empty state.** Explain how to create a session and diagnose discovery.
 

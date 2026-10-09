@@ -5,16 +5,17 @@ const rows = [...document.querySelectorAll('[data-session]')];
 const visibleCount = document.querySelector('#visible-count');
 const filteredEmpty = document.querySelector('#filtered-empty');
 
-document.querySelectorAll('nav a').forEach((link) => {
-  link.addEventListener('click', () => {
-    document.querySelectorAll('nav a').forEach((item) => {
-      item.classList.remove('active');
-      item.removeAttribute('aria-current');
-    });
-    link.classList.add('active');
-    link.setAttribute('aria-current', 'location');
+function syncNavigation() {
+  const target = location.hash && location.hash !== '#top' ? location.hash : '#sessions';
+  document.querySelectorAll('nav a').forEach((link) => {
+    const selected = link.getAttribute('href') === target;
+    link.classList.toggle('active', selected);
+    if (selected) link.setAttribute('aria-current', 'location');
+    else link.removeAttribute('aria-current');
   });
-});
+}
+window.addEventListener('hashchange', syncNavigation);
+syncNavigation();
 
 function applyFilters() {
   const previousPositions = new Map(rows.map((row) => [row, row.getBoundingClientRect().top]));
@@ -57,8 +58,8 @@ document.addEventListener('toggle', (event) => {
 }, true);
 
 document.querySelectorAll('[data-copy]').forEach((button) => {
+  const label = button.textContent;
   button.addEventListener('click', async () => {
-    const label = button.textContent;
     try {
       await navigator.clipboard.writeText(button.dataset.copy);
       button.textContent = 'Copied';

@@ -35,7 +35,18 @@ fn dashboard_serves_local_sessions_without_mutating_stores() {
         ".claude/projects/app/claude.jsonl",
     );
     let before = std::fs::read(&transcript).unwrap();
-    fixture.write(".everett/cards/c-1.md", "API: repair the login retry path");
+    let card = format!(
+        "API: repair the login retry path\n\n{}\nEND-OF-FULL-CARD & <safe>",
+        "Long card line\n".repeat(60)
+    );
+    fixture.write(".everett/cards/c-1.md", &card);
+    let listed = fixture.run(&["ls", "--json"]);
+    assert!(listed.status.success());
+    let sessions: serde_json::Value = serde_json::from_slice(&listed.stdout).unwrap();
+    assert!(!sessions[0]["card"]
+        .as_str()
+        .unwrap()
+        .contains("END-OF-FULL-CARD"));
     let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
     let port = listener.local_addr().unwrap().port();
     drop(listener);
@@ -62,6 +73,10 @@ fn dashboard_serves_local_sessions_without_mutating_stores() {
     let page = request(port, "GET", "/", &host).unwrap();
     assert!(page.starts_with("HTTP/1.1 200"));
     assert!(page.contains("API: repair the login retry path"));
+    assert!(page.contains("API: repair the login retry path\n\nLong card line\n"));
+    assert!(page.contains("END-OF-FULL-CARD &amp; &lt;safe&gt;"));
+    assert!(page.contains("Copy route command"));
+    assert!(page.contains("everett events --session c-1"));
     assert!(page.contains("Claude Code"));
     assert!(page.contains("Content-Security-Policy:"));
     assert!(request(port, "POST", "/", &host)
@@ -74,6 +89,10 @@ fn dashboard_serves_local_sessions_without_mutating_stores() {
         .unwrap()
         .starts_with("HTTP/1.1 404"));
     assert_eq!(std::fs::read(transcript).unwrap(), before);
+    assert_eq!(
+        std::fs::read_to_string(fixture.home().join(".everett/cards/c-1.md")).unwrap(),
+        card
+    );
 }
 
 #[test]

@@ -81,8 +81,10 @@ everett --hours 168 dashboard --port 7347 --no-open
 The Mac-first dashboard opens automatically on macOS and prints its loopback URL
 on other platforms. It reads the same provider stores and Everett cards as
 `everett ls`, showing up to 80 recent non-automated sessions. Search by project,
-card, or session ID; filter by harness or state; expand a row for card details
-and a copyable inbox-send command. Refresh rescans local data.
+card, or session ID; filter by harness or state; expand a row for the full card
+body, provider/source details, and copyable inbox-send, local-route, and events
+commands. Refresh rescans local data. CLI listings retain their compact card
+summaries.
 
 It is read-only: copying a command does not execute it, deliver a message, or
 wake an agent. “Active” is Everett's existing process/recency heuristic, not a
