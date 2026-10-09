@@ -5,7 +5,7 @@ import sqlite3
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-from everett import inbox, registry
+from everett import core, inbox, registry
 from everett.adapters import t3code
 from everett.route import resume_command
 from everett.send import SendError, command_for, delivery_mode, send_inbox
@@ -152,6 +152,10 @@ class T3V2(TempHome):
         learned = receiver.call('everett_learn', fact='T3 messages require explicit inbox polling', project='/work/tree')
         self.assertFalse(learned['isError'])
         self.assertEqual(receiver.call('everett_core', project='/work/tree')['structuredContent']['pending_learnings'], 1)
+        self.assertEqual(core.merge(llm='none')['merged'], 1)
+        shared = server.call('everett_core', project='/work/tree')['structuredContent']
+        self.assertEqual(shared['pending_learnings'], 0)
+        self.assertIn('T3 messages require explicit inbox polling', shared['core'])
         self.assertEqual(server.close(), '')
         self.assertEqual(receiver.close(), '')
 
