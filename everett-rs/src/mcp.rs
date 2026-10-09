@@ -331,6 +331,10 @@ fn tool_send(args: &Map<String, Value>) -> std::result::Result<Map<String, Value
         return Err(ToolFailure::Params("\"wait\" must be a non-negative number".to_string()));
     }
     let reply_to = str_arg(args, "reply_to", false)?;
+    let exact_ids = std::env::var("EVERETT_GATEWAY_EXACT_IDS").as_deref() == Ok("1");
+    if exact_ids && (spawn_ok || mode != "inbox" || (to.is_empty() && reply_to.is_empty())) {
+        return Err(err2(2, "Gateway delivery requires inbox mode and an explicit exact destination or reply."));
+    }
     if !reply_to.is_empty() {
         let result = crate::send::reply(&reply_to, &text, if caller.is_empty() { None } else { Some(&caller) }).map_err(ToolFailure::Tool)?;
         let mut out = Map::new();
@@ -348,7 +352,15 @@ fn tool_send(args: &Map<String, Value>) -> std::result::Result<Map<String, Value
             return Err(ToolFailure::Params("\"to\" and \"spawn\" are exclusive".to_string()));
         }
         let sessions = crate::registry::scan(hours, true, None, "");
-        let found = crate::registry::find(&to, &sessions).map_err(|e| {
+        let found = if exact_ids {
+            let mut matches = sessions.iter().filter(|s| s.id == to);
+            match (matches.next(), matches.next()) {
+                (Some(s), None) => Ok(s.clone()),
+                _ => Err(crate::error::EverettError::new(2, "Gateway destination must match one exact session id.")),
+            }
+        } else {
+            crate::registry::find(&to, &sessions)
+        }.map_err(|e| {
             err2(2, format!(
                 "{} In MCP, use everett_ls with a larger hours window (e.g. 168), then pass its exact session id and the same hours to everett_send.",
                 e.message
@@ -826,9 +838,13 @@ pub fn handle(message: &Value) -> Option<Value> {
             let mut f = Map::new();
             f.insert("version".into(), json!(version));
             log("initialize", f);
+            let mut capabilities = json!({"tools": {"listChanged": false}});
+            if std::env::var("EVERETT_GATEWAY_EXACT_IDS").as_deref() == Ok("1") {
+                capabilities["experimental"] = json!({"everettExactDestinationIds": {"enforced": true}});
+            }
             Some(result(&msg_id, json!({
                 "protocolVersion": version,
-                "capabilities": {"tools": {"listChanged": false}},
+                "capabilities": capabilities,
                 "serverInfo": {"name": "everett", "version": env!("CARGO_PKG_VERSION")},
                 "instructions": INSTRUCTIONS,
             })))

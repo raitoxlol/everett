@@ -1,5 +1,13 @@
 # Changelog
 
+## Unreleased
+
+- Register OpenAI dots and Grok Bot as durable external sessions, with inbox-only delivery,
+  explicit polling, correlated replies, and no local provider resume or spawn.
+- Add an optional owner-bound MCP SDK gateway with fixed identity, destination and project
+  permissions, private stdio or authenticated loopback HTTP, and exact-ID-only backend delivery.
+  Live account connections, automatic wake-up, and cross-device transport are not included.
+
 ## 1.4.0 — 2026-10-05
 
 ### Rust binary releases
