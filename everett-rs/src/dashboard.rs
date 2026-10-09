@@ -59,7 +59,14 @@ pub fn serve(hours: f64, port: u16, no_open: bool) -> i32 {
             } else {
                 match request.url().split('?').next().unwrap_or("/") {
                     "/" => {
-                        let sessions = registry::scan(hours, false, Some(80), "");
+                        let mut sessions = registry::scan(hours, false, Some(80), "");
+                        for session in &mut sessions {
+                            if let Some((body, mtime)) = crate::cards::read_card_body(&session.id) {
+                                if session.last_active - mtime <= crate::cards::STALE_AFTER {
+                                    session.card = body;
+                                }
+                            }
+                        }
                         (
                             200,
                             "text/html; charset=utf-8",
@@ -222,9 +229,26 @@ fn session_row(session: &Session, index: usize, at: f64) -> String {
         "everett send \"Your message\" --to {} --mode inbox",
         crate::proc::shlex_quote(&session.id)
     );
+    let events = format!(
+        "everett events --session {}",
+        crate::proc::shlex_quote(&session.id)
+    );
+    let commands = [
+        ("Copy send command", command.as_str()),
+        ("Copy route command", "everett route \"Your task\" --router local"),
+        ("Copy events command", events.as_str()),
+    ].iter().map(|(label, command)| format!(
+        r#"<div class="command"><code>{}</code><button type="button" data-copy="{}">{}</button></div>"#,
+        html(command), attr(command), html(label),
+    )).collect::<String>();
     let search = format!(
-        "{} {} {} {} {}",
-        label, project, summary, session.id, status
+        "{} {} {} {} {} {}",
+        label,
+        harness_name(&session.harness),
+        project,
+        summary,
+        session.id,
+        status
     )
     .to_lowercase();
     format!(
@@ -237,9 +261,9 @@ fn session_row(session: &Session, index: usize, at: f64) -> String {
     </summary>
     <div class="session-detail">
       <div class="card-copy"><span>Everett card · {}</span><p>{}</p></div>
-      <dl><div><dt>Harness</dt><dd>{}</dd></div><div><dt>Session ID</dt><dd>{}</dd></div><div><dt>Working directory</dt><dd>{}</dd></div><div><dt>Source</dt><dd>{}</dd></div><div><dt>Latest event</dt><dd>{}</dd></div></dl>
-      <div class="command"><code>{}</code><button type="button" data-copy="{}">Copy send command</button></div>
-      <p class="command-note">Run in your terminal to queue an inbox message. Pickup depends on hooks or polling.</p>
+      <dl><div><dt>Provider harness</dt><dd>{}</dd></div><div><dt>Session ID</dt><dd>{}</dd></div><div><dt>Working directory</dt><dd>{}</dd></div><div><dt>Source</dt><dd>{}</dd></div><div><dt>Latest event</dt><dd>{}</dd></div></dl>
+      {commands}
+      <p class="command-note">The send command queues an inbox message when you run it. Pickup depends on hooks or polling. Route and events commands are read-only.</p>
     </div>
   </details>
 </article>"#,
@@ -254,7 +278,7 @@ fn session_row(session: &Session, index: usize, at: f64) -> String {
         html(&ago(session.last_active, at)),
         html(card_source),
         html(summary),
-        html(label),
+        html(harness_name(&session.harness)),
         html(&session.id),
         html(&session.cwd),
         html(if session.source.is_empty() {
@@ -267,8 +291,6 @@ fn session_row(session: &Session, index: usize, at: f64) -> String {
         } else {
             &session.state
         }),
-        html(&command),
-        attr(&command),
     )
 }
 
@@ -292,11 +314,15 @@ fn harness_key(session: &Session) -> &str {
 }
 
 fn harness_label(session: &Session) -> &str {
+    harness_name(harness_key(session))
+}
+
+fn harness_name(harness: &str) -> &str {
     HARNESSES
         .iter()
-        .find(|(key, _)| *key == harness_key(session))
+        .find(|(key, _)| *key == harness)
         .map(|(_, label)| *label)
-        .unwrap_or(&session.harness)
+        .unwrap_or(harness)
 }
 
 fn state_class(session: &Session) -> &'static str {
@@ -428,5 +454,26 @@ mod tests {
             assert!(page.contains(label));
         }
         assert!(page.contains("data-harness=\"t3code\""));
+        assert!(page.contains("<dt>Provider harness</dt><dd>Codex</dd>"));
+        assert!(page.contains("<dt>Source</dt><dd>t3code</dd>"));
+    }
+
+    #[test]
+    fn full_cards_and_copy_only_commands_preserve_safe_content() {
+        let mut session = Session::new("codex", "session 'quoted' <id>", "/work/app", "", "", 0.0);
+        session.card = format!(
+            "First line\n\n{}\nEND-OF-FULL-CARD <script>",
+            "Long card body. ".repeat(60)
+        );
+        let page = render(&[session], 72.0, 900.0);
+        assert!(page.contains("First line\n\n"));
+        assert!(page.contains("END-OF-FULL-CARD &lt;script&gt;"));
+        assert!(page.contains("Copy send command"));
+        assert!(page.contains("Copy route command"));
+        assert!(page.contains("Copy events command"));
+        assert!(page.contains("everett route &quot;Your task&quot; --router local"));
+        assert!(page.contains("everett events --session"));
+        assert!(!page.contains("<id>"));
+        assert!(page.contains("Route and events commands are read-only."));
     }
 }

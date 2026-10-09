@@ -107,6 +107,7 @@ code { font: .76rem/1.45 ui-monospace, SFMono-Regular, Menlo, monospace; }
 .command code { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .command button { flex: 0 0 auto; padding: 6px 9px; color: var(--ink); background: transparent; border: 1px solid #a99f92; border-radius: 5px; font-size: .69rem; font-weight: 720; }
 .command button:hover { background: #fffaf1; }
+.command + .command { margin-top: 8px; }
 .command-note { margin: 10px 0 0 128px; color: var(--ink-soft); font-size: .78rem; line-height: 1.5; }
 .empty-state, .filtered-empty { min-height: 220px; display: flex; align-items: center; justify-content: center; gap: 18px; padding: 34px; text-align: left; }
 .empty-state p, .filtered-empty p { max-width: 54ch; margin: 0; color: var(--ink-soft); line-height: 1.55; font-size: .84rem; }
