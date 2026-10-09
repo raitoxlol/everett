@@ -304,4 +304,16 @@ fn synthetic_t3_mcp_routes_polls_replies_and_learns_without_provider_resume() {
         "native-1",
     );
     assert_eq!(core["structuredContent"]["pending_learnings"], 1);
+    run(&fx, &["trunk", "merge", "--llm", "none"], "", "");
+    let shared = tool(
+        &fx,
+        "everett_core",
+        json!({"project":"/work/tree"}),
+        "sender",
+    );
+    assert_eq!(shared["structuredContent"]["pending_learnings"], 0);
+    assert!(shared["structuredContent"]["core"]
+        .as_str()
+        .unwrap()
+        .contains("T3 messages require explicit inbox polling"));
 }

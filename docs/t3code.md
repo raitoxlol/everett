@@ -63,5 +63,5 @@ enqueue alone does not immediately update every agent's injected context.
 
 Synthetic Python and Rust tests cover provider-ID discovery, read-only access,
 deduplication, route guidance, explicit inbox pickup, replies, self-send rejection
-with known identity, and pending shared-core learnings. They do not establish
+with known identity, and learning/merge/peer shared-core reads. They do not establish
 real T3 SDK MCP registration, hook execution, automatic wakeup, or cross-device delivery.
