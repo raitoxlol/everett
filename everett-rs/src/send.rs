@@ -28,7 +28,8 @@ pub fn command_for(session: &Session, text: &str) -> Result<Vec<String>> {
         return Err(EverettError::new(
             2,
             "T3 Code owns this thread's resume point, so a CLI resume would fork it. \
-             Continue it in T3 Code, or use inbox delivery if that session has Everett hooks.",
+             Continue it in T3 Code, or queue inbox delivery and explicitly poll everett_inbox \
+             with the provider session_id.",
         ));
     }
     match session.harness.as_str() {
@@ -605,6 +606,14 @@ pub fn send_inbox(session: &Session, text: &str, wait: f64, caller: Option<&str>
     result.insert("reply_inbox".into(), json!(sender));
     result.insert("reply".into(), Value::Null);
     result.insert("hooked".into(), json!(INBOX_HARNESSES.contains(&session.harness.as_str())));
+    if session.source == "t3code" {
+        result.insert("hooked".into(), json!(false));
+        result.insert("pickup".into(), json!("poll"));
+        result.insert("poll_session_id".into(), json!(session.id));
+        result.insert("pickup_note".into(), json!(
+            "Queued only. In T3 Code, call everett_inbox with this provider session_id; reply with everett_send(reply_to=<message id>, text=..., session_id=...)."
+        ));
+    }
     if wait > 0.0 {
         let mid = message.get("id").and_then(|v| v.as_str()).unwrap_or("");
         if let Some(reply) = inbox::wait_reply(sender, mid, wait, poll) {
