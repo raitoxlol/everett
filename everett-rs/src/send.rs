@@ -5,7 +5,7 @@ use std::sync::OnceLock;
 use regex::Regex;
 use serde_json::{json, Map, Value};
 
-use crate::adapters::{grok as grok_adapter, hermes};
+use crate::adapters::{external, grok as grok_adapter, hermes};
 use crate::error::{EverettError, Result};
 use crate::proc::{ps_commands, run_capture, shlex_join, which, RunOutput};
 use crate::session::{file_mtime, now, Session};
@@ -23,6 +23,13 @@ pub fn command_for(session: &Session, text: &str) -> Result<Vec<String>> {
     }
     if text.trim().is_empty() {
         return Err(EverettError::new(2, "The request must not be empty."));
+    }
+    if external::is_external(&session.harness) {
+        return Err(EverettError::new(
+            2,
+            "Registered external sessions are inbox-only; use --mode inbox. \
+             No provider CLI resume or wake-up is available.",
+        ));
     }
     if session.source == "t3code" {
         return Err(EverettError::new(
@@ -244,6 +251,12 @@ pub struct SpawnResult {
 
 /// Headless command that starts a NEW session with this request.
 pub fn spawn_command(harness: &str, text: &str, session_id: &str, out_file: &str) -> Result<Vec<String>> {
+    if external::is_external(harness) {
+        return Err(EverettError::new(
+            2,
+            "External agents must be registered explicitly and are inbox-only; Everett cannot spawn them.",
+        ));
+    }
     if text.trim().is_empty() {
         return Err(EverettError::new(2, "The request must not be empty."));
     }
@@ -540,6 +553,16 @@ pub fn delivery_mode(session: &Session, mode: &str, ps_out: Option<&str>) -> Res
     if !MODES.contains(&mode) {
         return Err(EverettError::new(2, format!("--mode must be one of {}.", MODES.join(", "))));
     }
+    if external::is_external(&session.harness) {
+        if mode == "resume" {
+            return Err(EverettError::new(
+                2,
+                "Registered external sessions are inbox-only; use --mode inbox. \
+                 No provider CLI resume or wake-up is available.",
+            ));
+        }
+        return Ok("inbox".to_string());
+    }
     if mode != "auto" {
         return Ok(mode.to_string());
     }
@@ -605,6 +628,9 @@ pub fn send_inbox(session: &Session, text: &str, wait: f64, caller: Option<&str>
     result.insert("reply_inbox".into(), json!(sender));
     result.insert("reply".into(), Value::Null);
     result.insert("hooked".into(), json!(INBOX_HARNESSES.contains(&session.harness.as_str())));
+    if external::is_external(&session.harness) {
+        result.insert("queued".into(), json!(true));
+    }
     if wait > 0.0 {
         let mid = message.get("id").and_then(|v| v.as_str()).unwrap_or("");
         if let Some(reply) = inbox::wait_reply(sender, mid, wait, poll) {

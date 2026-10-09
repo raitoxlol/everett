@@ -47,7 +47,7 @@ pub fn tools() -> &'static Vec<Value> {
                 "description": "List recent coding-agent sessions on this machine (all harnesses), newest first, each with its card: what it is working on, state, next step. For overview only -- to see what the parallel sessions are doing. Do not use it to hand-pick a target session to send to; call everett_send with just the task text and let it route, or use everett_route to preview the routing decision.",
                 "inputSchema": {"type": "object", "properties": {
                     "hours": hours_prop(),
-                    "harness": {"type": "string", "enum": ["claude", "codex", "omp", "pi", "hermes", "grok", "devin"], "description": "Only this harness."},
+                    "harness": {"type": "string", "enum": ["claude", "codex", "omp", "pi", "hermes", "grok", "devin", "openai-dot", "grok-bot"], "description": "Only this harness."},
                 }, "additionalProperties": false},
             }),
             json!({
@@ -422,14 +422,19 @@ fn tool_send(args: &Map<String, Value>) -> std::result::Result<Map<String, Value
     refuse_self(&session, if caller.is_empty() { None } else { Some(&caller) }).map_err(ToolFailure::Tool)?;
     if delivery_mode(&session, &mode, None)? == "inbox" {
         let result = send_inbox(&session, &text, wait, if caller.is_empty() { None } else { Some(&caller) }, 1.0).map_err(ToolFailure::Tool)?;
-        let note = format!(
-            "Queued; it is injected into that live session at its next turn or tool call.{}",
-            if result.get("reply").map(|r| !r.is_null()).unwrap_or(false) {
-                ""
-            } else {
-                " Its reply will arrive in your inbox (injected by your hooks, or read it with everett_inbox)."
-            }
-        );
+        let note = if crate::adapters::external::is_external(&session.harness) {
+            "Queued for the external agent to poll through MCP. \
+             No provider wake-up or consumption is confirmed. Read replies with everett_inbox.".to_string()
+        } else {
+            format!(
+                "Queued; it is injected into that live session at its next turn or tool call.{}",
+                if result.get("reply").map(|r| !r.is_null()).unwrap_or(false) {
+                    ""
+                } else {
+                    " Its reply will arrive in your inbox (injected by your hooks, or read it with everett_inbox)."
+                }
+            )
+        };
         let mut out = decision.clone();
         out.insert("delivered".into(), json!(true));
         out.insert("session".into(), Value::Object(brief(&session)));
