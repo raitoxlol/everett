@@ -133,7 +133,7 @@ def journey(args, evidence):
         routed = json.loads(run([*cli, 'route', task, '--router', 'local', '--json']))
         check(routed['decision'] == 'SESSION' and routed['session']['id'] == 'verify-worker', 'CLI route failed')
 
-        wire = Wire([args.python, '-m', 'everett', 'mcp'],
+        wire = Wire([*cli, 'mcp'],
                     {**env, 'EVERETT_SESSION_ID': 'verify-sender', 'EVERETT_HARNESS_NAME': 'claude'}, tmp, evidence['mcp'])
         try:
             evidence['server'] = wire.initialize()
