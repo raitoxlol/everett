@@ -72,6 +72,8 @@ Cloud agents use explicit local registrations and the optional restricted MCP ga
 provider transcripts or API-model substitutes. See [OpenAI dots setup](docs/openai-dots.md),
 [Grok Bot registration and polling](docs/grok-bot.md), and [gateway permissions](docs/gateway.md).
 Owner-side connector setup is required; queued messages do not prove pickup or wake-up.
+The native binary manages local bindings with `everett external add`, `list`, and `remove`;
+the Python package uses `python -m everett.external`. Both write the same records.
 
 ## Demo
 

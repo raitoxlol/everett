@@ -104,6 +104,89 @@ fn data(result: &Value) -> &Value {
 }
 
 #[test]
+fn native_registration_roundtrip_preserves_the_shared_store_and_inbox() {
+    let fx = fixture();
+    let path = fx.home().join(".everett/external/ext-dot.json");
+    let add = run(
+        &fx,
+        &["external", "add", "--id", "ext-dot", "--harness", "openai-dot", "--title", "Owner dot", "--cwd", "/work/dot"],
+        None,
+        "fixture-owner",
+        "",
+    );
+    assert!(add.status.success(), "{}", String::from_utf8_lossy(&add.stderr));
+    let record: Value = serde_json::from_slice(&add.stdout).unwrap();
+    assert_eq!(record["id"], "ext-dot");
+    assert_eq!(record["harness"], "openai-dot");
+    assert_eq!(record["title"], "Owner dot");
+    assert_eq!(record["cwd"], "/work/dot");
+    assert!(record["updated"].as_f64().unwrap().is_finite());
+    assert_eq!(serde_json::from_str::<Value>(&std::fs::read_to_string(&path).unwrap()).unwrap(), record);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        assert_eq!(std::fs::metadata(&path).unwrap().permissions().mode() & 0o077, 0);
+        assert_eq!(std::fs::metadata(path.parent().unwrap()).unwrap().permissions().mode() & 0o077, 0);
+    }
+
+    let listed = run(&fx, &["external", "list"], None, "fixture-owner", "");
+    assert!(listed.status.success());
+    assert_eq!(serde_json::from_slice::<Value>(&listed.stdout).unwrap(), json!([record]));
+    let filtered = run(&fx, &["ls", "--harness", "openai-dot", "--json"], None, "fixture-owner", "");
+    assert!(filtered.status.success(), "{}", String::from_utf8_lossy(&filtered.stderr));
+    assert_eq!(serde_json::from_slice::<Value>(&filtered.stdout).unwrap()[0]["id"], "ext-dot");
+    let empty = run(&fx, &["ls", "--harness", "grok-bot", "--json"], None, "fixture-owner", "");
+    assert!(empty.status.success(), "{}", String::from_utf8_lossy(&empty.stderr));
+    assert_eq!(serde_json::from_slice::<Value>(&empty.stdout).unwrap(), json!([]));
+
+    let send = run(&fx, &["send", "Pending task", "--to", "ext-dot", "--mode", "inbox", "--json"], None, "fixture-owner", "");
+    assert!(send.status.success(), "{}", String::from_utf8_lossy(&send.stderr));
+    let queued = mcp(&fx, &[("everett_inbox", json!({"peek":true}))], "ext-dot", "openai-dot");
+    assert_eq!(data(&queued[0])["messages"][0]["text"], "Pending task");
+
+    let add_again = run(&fx, &["external", "add", "--id", "ext-dot", "--harness", "openai-dot"], None, "fixture-owner", "");
+    assert_eq!(add_again.status.code(), Some(2));
+    assert_eq!(serde_json::from_str::<Value>(&std::fs::read_to_string(&path).unwrap()).unwrap(), record);
+    let wrong_harness = run(&fx, &["external", "add", "--id", "ext-dot", "--harness", "grok-bot", "--replace"], None, "fixture-owner", "");
+    assert_eq!(wrong_harness.status.code(), Some(2));
+    let updated = run(&fx, &["external", "add", "--id", "ext-dot", "--harness", "openai-dot", "--replace", "--title", "New scope"], None, "fixture-owner", "");
+    assert!(updated.status.success(), "{}", String::from_utf8_lossy(&updated.stderr));
+    assert_eq!(serde_json::from_slice::<Value>(&updated.stdout).unwrap()["title"], "New scope");
+    assert_eq!(external::load(&path).unwrap().title, "New scope");
+
+    let removed = run(&fx, &["external", "remove", "--id", "ext-dot"], None, "fixture-owner", "");
+    assert!(removed.status.success());
+    assert!(!path.exists());
+    let queued = mcp(&fx, &[("everett_inbox", json!({"peek":true}))], "ext-dot", "openai-dot");
+    assert_eq!(data(&queued[0])["messages"][0]["text"], "Pending task");
+    assert_eq!(run(&fx, &["external", "remove", "--id", "ext-dot"], None, "fixture-owner", "").status.code(), Some(2));
+}
+
+#[test]
+fn registration_refuses_unsafe_ids_and_existing_symlinks() {
+    let fx = fixture();
+    for id in ["human", "HUMAN", "live", "../outside", "x/y", "a.b", "é", ""] {
+        let output = run(&fx, &["external", "add", "--id", id, "--harness", "grok-bot"], None, "fixture-owner", "");
+        assert_eq!(output.status.code(), Some(2), "{id}");
+    }
+    assert!(!fx.home().join(".everett/external").exists());
+    let outside = fx.write("outside.json", "untouched");
+    #[cfg(unix)]
+    {
+        let folder = fx.home().join(".everett/external");
+        std::fs::create_dir_all(&folder).unwrap();
+        let link = folder.join("ext-link.json");
+        std::os::unix::fs::symlink(&outside, &link).unwrap();
+        for extra in [vec![], vec!["--replace"]] {
+            let mut args = vec!["external", "add", "--id", "ext-link", "--harness", "grok-bot"];
+            args.extend(extra);
+            assert_eq!(run(&fx, &args, None, "fixture-owner", "").status.code(), Some(2));
+        }
+        assert_eq!(std::fs::read_to_string(outside).unwrap(), "untouched");
+    }
+}
+
+#[test]
 fn gateway_requires_exact_unambiguous_destinations_and_inbox_only_delivery() {
     let fx = fixture();
     let path = registration(&fx, "ext-peer-long", "grok-bot", 0.0);
