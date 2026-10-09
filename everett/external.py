@@ -22,7 +22,7 @@ def is_external(harness: str) -> bool:
     return harness in HARNESSES
 
 
-def valid_id(session_id: str) -> bool:
+def valid_id(session_id: object) -> bool:
     return (isinstance(session_id, str) and bool(_ID.fullmatch(session_id))
             and session_id.casefold() not in RESERVED_IDS)
 

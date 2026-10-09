@@ -15,6 +15,7 @@ from everett.gateway import Binding, BoundaryError, Gateway, MAX_BODY, build_htt
 from everett.inbox import HUMAN
 
 SDK_AVAILABLE = importlib.util.find_spec("mcp") is not None
+NATIVE_BACKEND = os.environ.get("EVERETT_GATEWAY_TEST_BINARY", "")
 FIXTURE = Path(__file__).parent / "fixtures" / "gateway_backend.py"
 TOKEN = "synthetic-gateway-test-token-not-a-real-secret"
 
@@ -145,6 +146,55 @@ class GatewayPolicy(GatewaySandbox):
 
 @unittest.skipUnless(SDK_AVAILABLE, "optional gateway MCP SDK not installed")
 class GatewaySDK(GatewaySandbox):
+    @unittest.skipUnless(NATIVE_BACKEND, "set EVERETT_GATEWAY_TEST_BINARY to a built Rust binary")
+    def test_native_backend_poll_reply_card_core_and_exact_destination_guard(self):
+        from everett import cards, core, external, inbox
+
+        external.register("agent-two", "grok-bot", cwd=str(self.home))
+        core.learn("Synthetic global convention for native peers", scope="global")
+        core.learn("Synthetic project convention for native peers", project="everett")
+        core.merge(llm="none")
+
+        async def journey():
+            for harness in ("openai-dot", "grok-bot"):
+                agent_id = "ext-native-" + harness
+                external.register(agent_id, harness, cwd=str(self.home))
+                binding = replace(self.binding, agent_id=agent_id, harness=harness,
+                                  backend_command=(NATIVE_BACKEND, "mcp"))
+                gateway = Gateway(binding)
+                incoming = inbox.post(agent_id, "Synthetic native handoff", sender="agent-two")
+                who = await gateway.call("everett_whoami", {})
+                self.assertEqual(who["session_id"], agent_id)
+                self.assertEqual(who["harness"], harness)
+                shared = await gateway.call("everett_core", {})
+                self.assertIn("Synthetic global convention", shared["core"])
+                self.assertIn("Synthetic project convention", shared["core"])
+                await gateway.call("everett_card", {"what": "Synthetic work", "state": "done", "next": "Poll"})
+                self.assertIn("Synthetic work", cards.card_path(agent_id).read_text())
+                self.assertFalse(cards.card_path("agent-two").exists())
+                peek = await gateway.call("everett_inbox", {"peek": True})
+                self.assertEqual(peek["messages"][0]["id"], incoming["id"])
+                consumed = await gateway.call("everett_inbox", {})
+                self.assertEqual(consumed["messages"][0]["id"], incoming["id"])
+                self.assertEqual((await gateway.call("everett_inbox", {}))["messages"], [])
+                answer = await gateway.call("everett_send", {"reply_to": incoming["id"], "text": "Synthetic native reply"})
+                self.assertEqual(answer["to"], "agent-two")
+                reply = inbox.pending("agent-two")[-1]
+                self.assertEqual(reply["from"], agent_id)
+                self.assertEqual(reply["from_harness"], harness)
+                self.assertEqual(reply["reply_to"], incoming["id"])
+                queued = await gateway.call("everett_send", {"to": "agent-two", "text": "Synthetic direct task"})
+                self.assertTrue(queued["queued"])
+                self.assertFalse(queued["hooked"])
+
+            external.remove("agent-two")
+            external.register("agent-two-suffix", "grok-bot", title="agent-two")
+            with self.assertRaises(BoundaryError):
+                await gateway.call("everett_send", {"to": "agent-two", "text": "Must not route to a suffix/title"})
+            self.assertEqual(inbox.pending("agent-two-suffix"), [])
+
+        asyncio.run(journey())
+
     def test_separate_worker_per_binding_and_no_secret_inheritance(self):
         async def journey():
             dot = Gateway(self.binding)
