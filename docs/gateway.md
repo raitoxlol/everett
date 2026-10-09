@@ -69,9 +69,10 @@ The external-session registration contract is:
 {id, harness: "openai-dot" | "grok-bot", title, cwd, updated: epoch_seconds}
 ```
 
-Registration/listing/inbound routing belongs to the Rust external-session
-integration. The gateway does not write registrations, invent local CLI
-transcripts, or resume either cloud Bot. Register the same ID before end-to-end
+Use the native `everett external add`, `list`, and `remove` commands to manage
+registrations (or `python -m everett.external` with the Python package). The
+gateway does not write registrations, invent local CLI transcripts, or resume
+either cloud Bot. Register the same ID before end-to-end
 handoffs. External registration is durable, requires no periodic timestamp refresh,
 and is not filtered by local session age. A connector alone does not make a session
 discoverable to local agents.

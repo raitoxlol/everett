@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Add native `everett external add`, `list`, and `remove` for durable cloud-agent registrations,
+  with shared Python/Rust records and cloud harness filters in `everett ls`.
 - Register OpenAI dots and Grok Bot as durable external sessions, with inbox-only delivery,
   explicit polling, correlated replies, and no local provider resume or spawn.
 - Add an optional owner-bound MCP SDK gateway with fixed identity, destination and project

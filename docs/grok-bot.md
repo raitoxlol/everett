@@ -8,19 +8,18 @@ discover cloud conversations, or prove a vendor-issued identity.
 
 ## Register explicitly
 
-Use the Python package's standalone registration module; the Rust executable
-reads the same files. If you only installed the Rust binary, install the matching
-Python package or run these commands from the Everett source checkout.
+Use the native Rust executable to register the inbox. If you installed only the
+Python package, use `python -m everett.external` for the same commands and files.
 
 ```sh
-python -m everett.external add \
+everett external add \
   --id ext-grok-wright --harness grok-bot \
   --title 'Grok Bot: database backup reports' --cwd /work/backups
 
-python -m everett.external add \
+everett external add \
   --id ext-dot-wright --harness openai-dot --title 'Owner-authorized Dot'
 
-python -m everett.external list
+everett external list
 everett ls --json
 everett send 'Report backup status' --to ext-grok-wright --mode inbox --json
 ```
@@ -54,17 +53,17 @@ when set). Example:
 
 Both readers validate the ID, supported harness, string `title`/`cwd`, finite
 non-negative epoch `updated`, and filename matching the ID. Scans skip malformed,
-symlinked, and non-regular records. The Python module writes registrations
-atomically and refuses accidental replacement. External session listings have
+symlinked, and non-regular records. Both registration commands write atomically
+and refuse accidental replacement. External session listings have
 `source: "external"`, no fabricated transcript path/start time, and `running:
 false`; Everett has no provider liveness evidence.
 
 Update an existing binding explicitly, or remove it before changing harness:
 
 ```sh
-python -m everett.external add --id ext-grok-wright --harness grok-bot \
+everett external add --id ext-grok-wright --harness grok-bot \
   --title 'Grok Bot: revised backup scope' --replace
-python -m everett.external remove --id ext-grok-wright
+everett external remove --id ext-grok-wright
 ```
 
 Removal deletes the registration, **not its inbox**. Re-registering the same
