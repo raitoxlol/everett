@@ -1,5 +1,17 @@
 # Changelog
 
+## Unreleased
+
+### Local dashboard
+
+- Add `everett dashboard` to the Rust binary: a Mac-first, loopback-only HTML
+  dashboard with recent sessions, Everett cards, harness/state/search filters,
+  inline details, and copyable CLI actions.
+- Use a restrained orange dispatch-desk identity with responsive desktop and
+  narrow-window layouts, keyboard focus, and reduced-motion support.
+- Keep provider stores read-only and reject write methods and foreign Host
+  headers. Account-backed hosted/cross-device access remains future scope.
+
 ## 1.4.0 — 2026-10-05
 
 ### Rust binary releases
