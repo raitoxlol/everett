@@ -68,7 +68,7 @@ Everett reads the session stores the harnesses already write: `~/.claude/project
 Hermes' `state.db` files, the Devin CLI's `sessions.db` (plus `transcripts/*.json`),
 and T3 Code's `~/.t3/userdata/state.sqlite`. Every database is opened read-only.
 
-Cloud agents use explicit local registrations and the optional restricted MCP gateway, not fabricated
+Cloud agents use explicit local registrations and the native restricted MCP gateway, not fabricated
 provider transcripts or API-model substitutes. See [OpenAI dots setup](docs/openai-dots.md),
 [Grok Bot registration and polling](docs/grok-bot.md), and [gateway permissions](docs/gateway.md).
 Owner-side connector setup is required; queued messages do not prove pickup or wake-up.
@@ -369,6 +369,11 @@ and `cargo test` for the Rust binary on macOS/Linux.
 A single-binary Rust rewrite lives alongside the Python tree: one `everett` binary, no
 Python interpreter needed, fast startup. The Python package remains the reference.
 
+The Rust binary also provides `everett external add/list/remove` and `everett gateway`.
+The gateway uses the official Rust MCP SDK for private stdio and authenticated loopback HTTP.
+See the [owner-bound gateway setup](docs/gateway.md). The Python gateway and its optional SDK
+dependency have been removed; the remaining Python CLI is retained as a reference.
+
 Release tags publish prebuilt binaries for macOS (arm64, x86_64) and Linux (static musl,
 x86_64, aarch64), each with a `.sha256`, plus a rendered Homebrew formula (`everett.rb`).
 Rerun either command to update:
@@ -397,6 +402,8 @@ Parity status (Rust vs Python):
 | `install-hooks`, `install-mcp`, `doctor`, `onboard --yes` | Same; hooks read `EVERETT_HOME` |
 | `onboard` interactive | Same seven-step wizard as the Python curses TUI (ratatui); falls back to plain prompts off a TTY |
 | `mcp` | Same 10 tools, same schemas, newline-delimited JSON-RPC 2.0 |
+| `external add`, `list`, `remove` | Native registration commands with shared Python/Rust storage |
+| `gateway` | Rust-only owner-bound MCP server; Python gateway removed |
 | Session stores | Read-only for all harnesses (claude/codex/omp/pi/hermes/grok/devin + t3code overlay); sqlite opened `mode=ro` |
 | Send/resume argv | `claude --resume`, `codex exec resume`, `omp -r`, `pi --session`, `hermes chat --resume`, `grok --resume`, `devin --resume --print` |
 | Python-only surface | `everett` console_script entry points and `python -m everett` |

@@ -6,7 +6,8 @@
   with shared Python/Rust records and cloud harness filters in `everett ls`.
 - Register OpenAI dots and Grok Bot as durable external sessions, with inbox-only delivery,
   explicit polling, correlated replies, and no local provider resume or spawn.
-- Add an optional owner-bound MCP SDK gateway with fixed identity, destination and project
+- Add native `everett gateway` using the official Rust MCP SDK, replacing the Python gateway
+  and its optional SDK dependency. The gateway has fixed identity, destination and project
   permissions, private stdio or authenticated loopback HTTP, and exact-ID-only backend delivery.
   Live account connections, automatic wake-up, and cross-device transport are not included.
 

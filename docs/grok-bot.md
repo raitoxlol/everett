@@ -101,6 +101,11 @@ publish the unrestricted stdio tools as an anonymous HTTP endpoint. Registration
 alone does not provide Remote HTTPS transport, TLS, credential provisioning,
 or cross-device synchronization.
 
+Use the native [`everett gateway`](gateway.md) command for the restricted stdio
+or authenticated loopback HTTP connection. It defaults to the same binary's MCP
+backend and does not need Python. The owner must provide TLS and reachability
+for a Remote HTTPS connector.
+
 ## Poll and reply through MCP
 
 With the connection bound to `ext-grok-wright`, the Bot calls:
