@@ -70,6 +70,32 @@ and T3 Code's `~/.t3/userdata/state.sqlite`. Every database is opened read-only.
 
 ## Demo
 
+### Local dashboard (Rust binary)
+
+```bash
+cargo install --path everett-rs
+everett dashboard
+everett --hours 168 dashboard --port 7347 --no-open
+```
+
+The Mac-first dashboard opens automatically on macOS and prints its loopback URL
+on other platforms. It reads the same provider stores and Everett cards as
+`everett ls`, showing up to 80 recent non-automated sessions. Search by project,
+card, or session ID; filter by harness or state; expand a row for card details
+and a copyable inbox-send command. Refresh rescans local data.
+
+It is read-only: copying a command does not execute it, deliver a message, or
+wake an agent. “Active” is Everett's existing process/recency heuristic, not a
+verified agent heartbeat. The server binds only to `127.0.0.1`, rejects foreign
+Host headers and write methods, and sends no session data to a hosted service.
+Stop it with Ctrl-C. This command is not in the Python CLI.
+
+**Future direction:** an Everett account could connect CLI installations across
+devices and expose their local activity through either a self-hosted or hosted
+dashboard. Account auth, peer transport, and hosting (including a custom-domain
+frontend on Vercel) are not implemented here. A Rust local-data service would
+still be required; a static website cannot read another device's session stores.
+
 This is example output (paths and ids are shortened):
 
 ```text
@@ -95,6 +121,7 @@ Done. MAX_RETRIES is now 5 and the backoff test covers the cap.
 | Command | What it does |
 |---|---|
 | `everett ls [--json] [--all] [--harness H]` | Recent sessions from every harness, one line each. `--all` includes scripted runs. |
+| `everett dashboard [--port 7347] [--no-open]` | Native Rust binary only: read-only local browser dashboard with session cards, filters, activity state, and copyable CLI actions. |
 | `everett route "<text>" [--router local\|jev] [--json]` | Picks the session a request continues: `SESSION`, `NEW`, or `ASK`, with a confidence and the resume command. It never sends. |
 | `everett send "<text>" [--dry-run] [--timeout S] [--router …]` | Routes the request (jev when a key is configured, else local) and delivers it, printing `routed by jev → [claude] ~/src/api — … (0.87)` before sending. A session with a live harness process gets it in its inbox, injected at its next turn or tool call (see [Live delivery](#live-delivery)). An idle one is resumed headless after it goes quiet (up to 2 min), and the reply is printed. `NEW` and `ASK` send nothing (`ASK` prints its candidates; resend with `--to`). |
 | `everett send … [--mode auto\|resume\|inbox] [--wait S]` | `--mode` forces headless resume or inbox delivery (default `auto`). `--wait S` waits up to S seconds for an inbox reply; without it the reply arrives in your inbox later. |

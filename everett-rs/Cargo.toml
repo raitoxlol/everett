@@ -25,6 +25,7 @@ wait-timeout = "0.2"
 libc = "0.2"
 rpassword = "7"
 terminal_size = "0.4"
+tiny_http = "0.12"
 
 ratatui = "0.29"
 crossterm = "0.28"

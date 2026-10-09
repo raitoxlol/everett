@@ -44,6 +44,15 @@ enum Cmd {
         #[arg(long)]
         hours: Option<f64>,
     },
+    /// open a read-only local dashboard in your browser
+    Dashboard {
+        /// loopback port
+        #[arg(long, default_value_t = 7347)]
+        port: u16,
+        /// print the URL without opening a browser
+        #[arg(long)]
+        no_open: bool,
+    },
     /// pick the session a request belongs to (prints, never sends)
     Route {
         text: String,
@@ -252,6 +261,7 @@ fn main() {
             a.regen_hours = hours;
             cli::cmd_cards(&a)
         }
+        Cmd::Dashboard { port, no_open } => everett::dashboard::serve(a.hours, port, no_open),
         Cmd::Route { text, json, router } => {
             a.text = Some(text);
             a.json = json;
