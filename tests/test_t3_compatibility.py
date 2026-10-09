@@ -139,6 +139,8 @@ class T3V2(TempHome):
         queued = server.call('everett_send', to='native-1', text='Review the T3 task')['structuredContent']
         self.assertEqual(queued['pickup'], 'poll')
         self.assertFalse(queued['hooked'])
+        self.assertIn('Queued only', queued['note'])
+        self.assertNotIn('it is injected', queued['note'])
         with_self = receiver.call('everett_send', to='native-1', text='loop', session_id='native-1')
         self.assertTrue(with_self['isError'])
         received = receiver.call('everett_inbox', session_id='native-1')['structuredContent']

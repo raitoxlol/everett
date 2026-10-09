@@ -245,6 +245,8 @@ fn synthetic_t3_mcp_routes_polls_replies_and_learns_without_provider_resume() {
     assert_eq!(queued["pickup"], "poll");
     assert_eq!(queued["hooked"], false);
     assert_eq!(queued["poll_session_id"], "native-1");
+    assert!(queued["note"].as_str().unwrap().contains("Queued only"));
+    assert!(!queued["note"].as_str().unwrap().contains("it is injected"));
     let self_send = tool(
         &fx,
         "everett_send",

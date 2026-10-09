@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+- **Current T3 discovery** — read active v2 projections or the legacy store, map driver/native provider IDs, and fill missing-transcript sessions without fabricating transcripts. Filter deleted/archived projects and threads, deduplicate provider sessions, and apply the look-back/harness filters before listing limits.
+- **T3 continuation** — keep sends inbox-only, report explicit polling instead of claiming hook pickup, and guide routes back to T3 rather than provider CLI resume. Synthetic Python/Rust journeys cover polling, replies, and shared memory after merge; real T3 MCP inheritance remains unverified.
+- **Verification accuracy** — exercise the selected CLI's MCP launcher in the release journey; freeze the synthetic Devin ISO fixture's clock so its 72-hour window cannot expire.
+
 ## 1.4.0 — 2026-10-05
 
 ### Rust binary releases
