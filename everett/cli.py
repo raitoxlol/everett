@@ -494,6 +494,8 @@ def cmd_install_mcp(args) -> int:
         print('everett: --repair requires --apply (backs up and refreshes the Everett entry).', file=sys.stderr)
         return 2
     choices = ('claude', 'codex', 'omp') + (('grok',) if (home() / '.grok').is_dir() or getattr(args, 'grok', False) else ())
+    if getattr(args, 'devin', False) or install.mcp_path('devin').parent.is_dir() or shutil.which('devin'):
+        choices += ('devin',)
     for harness in _harnesses(args, choices):
         if args.apply:
             try:
@@ -600,7 +602,7 @@ def main(argv=None) -> int:
     ih.set_defaults(fn=cmd_install_hooks)
     m = sub.add_parser('mcp', help='run the stdio MCP server (for harnesses; see install-mcp)'); m.set_defaults(fn=cmd_mcp)
     im = sub.add_parser('install-mcp', help='print (or --apply) the MCP server registration')
-    for h in ('claude', 'codex', 'omp', 'grok'):
+    for h in ('claude', 'codex', 'omp', 'grok', 'devin'):
         im.add_argument(f'--{h}', action='store_true')
     im.add_argument('--apply', action='store_true', help='back up, then register')
     im.add_argument('--repair', action='store_true', help='with --apply: refresh a stale or disabled Everett registration')

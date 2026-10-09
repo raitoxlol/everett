@@ -43,6 +43,7 @@ pub fn detected_harnesses() -> Vec<String> {
             which(h).is_some()
                 || home().join(rel).exists()
                 || (*h == "devin" && devin_adapter::data_dirs().iter().any(|d| d.is_dir()))
+                || (*h == "devin" && crate::install::mcp_path(h).exists())
         })
         .map(|(h, _)| h.to_string())
         .collect()
@@ -238,7 +239,7 @@ pub fn run(hours: f64) -> i32 {
         problems += 1;
     }
     line(&mut warnings, Some(ok), &format!("  server: {}", detail));
-    let mcp_harnesses: Vec<&str> = ["claude", "codex", "omp", "grok"]
+    let mcp_harnesses: Vec<&str> = ["claude", "codex", "omp", "grok", "devin"]
         .iter()
         .filter(|h| seen.iter().any(|s| s == *h) || crate::install::mcp_path(*h).exists())
         .cloned()
