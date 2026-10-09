@@ -142,6 +142,13 @@ pub fn criteria(sessions: &[Session]) -> (Map<String, Value>, HashMap<String, Se
 }
 
 pub fn resume_command(session: &Session, text: &str) -> String {
+    if crate::adapters::external::is_external(&session.harness) {
+        return format!(
+            "everett send {} --to {} --mode inbox   # queues only; the external agent must poll Everett through MCP",
+            shlex_quote(text),
+            shlex_quote(&session.id)
+        );
+    }
     let cwd = if session.cwd.is_empty() { "." } else { &session.cwd };
     let cd = format!("cd {}", shlex_quote(cwd));
     match session.harness.as_str() {
