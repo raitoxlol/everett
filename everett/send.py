@@ -10,7 +10,7 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 
-from . import registry
+from . import external, registry
 from .adapters import grok as grok_adapter
 from .adapters.hermes import INTERACTIVE as HERMES_RESUMABLE
 from .session import Session
@@ -34,6 +34,9 @@ def command_for(session: Session, text: str) -> list[str]:
         raise SendError(2, 'The selected session has no session id.')
     if not text.strip():
         raise SendError(2, 'The request must not be empty.')
+    if external.is_external(session.harness):
+        raise SendError(2, 'Registered external sessions are inbox-only; use --mode inbox. '
+                           'No provider CLI resume or wake-up is available.')
     if session.source == 't3code':
         raise SendError(2, 'T3 Code owns this thread\'s resume point, so a CLI resume would fork it. '
                            'Continue it in T3 Code, or use inbox delivery if that session has Everett hooks.')
@@ -164,6 +167,9 @@ def spawn_command(harness: str, text: str, session_id: str = '', out_file: str =
     """Headless command that starts a NEW session with this request."""
     if not text.strip():
         raise SendError(2, 'The request must not be empty.')
+    if external.is_external(harness):
+        raise SendError(2, 'External agents must be registered explicitly and are inbox-only; '
+                           'Everett cannot spawn them.')
     if harness == 'claude':
         return ['claude', '--session-id', session_id, '--print', text] if session_id else ['claude', '--print', text]
     if harness == 'codex':
@@ -332,6 +338,11 @@ def attached(session: Session, ps_out: str | None = None) -> bool:
 def delivery_mode(session: Session, mode: str = 'auto', ps_out: str | None = None) -> str:
     if mode not in MODES:
         raise SendError(2, f'--mode must be one of {", ".join(MODES)}.')
+    if external.is_external(session.harness):
+        if mode == 'resume':
+            raise SendError(2, 'Registered external sessions are inbox-only; use --mode inbox. '
+                               'No provider CLI resume or wake-up is available.')
+        return 'inbox'
     if mode != 'auto':
         return mode
     if session.source == 't3code':
@@ -376,6 +387,8 @@ def send_inbox(session: Session, text: str, wait: float = 0, caller: str | None 
         raise SendError(e.code, str(e)) from e
     result = {'mode': 'inbox', 'message_id': message['id'], 'reply_inbox': who['sender'], 'reply': None,
               'hooked': session.harness in INBOX_HARNESSES}
+    if external.is_external(session.harness):
+        result['queued'] = True
     if wait > 0:
         reply = inbox.wait_reply(who['sender'], message['id'], wait, poll=poll)
         if reply:
