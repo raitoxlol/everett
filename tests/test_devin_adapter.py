@@ -125,7 +125,8 @@ class DevinDb(TempHome):
         alt = self.data / 'alt/sessions.db'
         make_db(alt, [('iso-1', '/w', 'iso times', 'm', '2026-10-01T00:00:00Z',
                        '2026-10-04T00:00:00+00:00', 0)], [])
-        sessions, _ = devin.read_db(alt, 72)
+        with mock.patch('everett.adapters.devin.time.time', return_value=1791158400):
+            sessions, _ = devin.read_db(alt, 72)
         self.assertEqual(sessions[0].title, 'iso times')
         self.assertTrue(sessions[0].started.startswith('2026-10-01'))
         self.assertAlmostEqual(devin._epoch(now * 1000), now, places=3)
