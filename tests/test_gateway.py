@@ -206,7 +206,16 @@ class GatewaySDK(GatewaySandbox):
         self.assertEqual([r["session_id"] for r in results], ["dot-one", "grok-one"])
         records = self.records()
         self.assertEqual(len({r["pid"] for r in records}), 2)
-        self.assertTrue(all(not r["has_secret"] and r["cwd"] == str(self.home) for r in records))
+        self.assertTrue(all(not r["has_secret"] for r in records))
+        self.assertTrue(all(Path(r["cwd"]).resolve() == self.home.resolve() for r in records))
+
+    def test_worker_resolves_symlinked_working_directory(self):
+        alias = self.home / "alias"
+        alias.symlink_to(self.home, target_is_directory=True)
+        binding = replace(self.binding, cwd=alias)
+        asyncio.run(Gateway(binding).call("everett_whoami", {}))
+        self.assertEqual(len(self.records()), 1)
+        self.assertEqual(Path(self.records()[0]["cwd"]).resolve(), alias.resolve())
 
     def test_backend_without_enforced_exact_id_capability_refuses_direct_send(self):
         async def journey():
