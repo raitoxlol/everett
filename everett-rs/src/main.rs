@@ -22,6 +22,15 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Cmd {
+    /// serve restricted owner-bound MCP for external agents
+    Gateway {
+        #[arg(long)]
+        config: std::path::PathBuf,
+        #[arg(long, default_value = "stdio", value_parser = ["stdio", "http"])]
+        transport: String,
+        #[arg(long, default_value_t = 8788)]
+        port: u16,
+    },
     /// register and manage owner-authorized external inboxes
     External {
         #[command(subcommand)]
@@ -369,6 +378,7 @@ fn main() {
             cli::cmd_install_hooks(&a)
         }
         Cmd::Mcp => cli::cmd_mcp(&a),
+        Cmd::Gateway { config, transport, port } => everett::gateway::run(&config, &transport, port),
         Cmd::InstallMcp { claude, codex, omp, grok, apply, repair } => {
             a.claude = claude;
             a.codex = codex;

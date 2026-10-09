@@ -7,7 +7,7 @@ dot wake-ups**.
 
 ## Before connecting
 
-1. Install the [optional gateway](gateway.md) on the host containing Everett's
+1. Build the [native Rust gateway](gateway.md) on the host containing Everett's
    Rust binary and shared stores. Create one owner-controlled binding with
    `harness: "openai-dot"`, a stable agent ID, a fixed project slug and explicit
    destination IDs. Decide whether to grant global plus project shared core.
@@ -50,7 +50,7 @@ tunnel-client init \
   --sample sample_mcp_stdio_local \
   --profile everett-dot \
   --tunnel-id YOUR_TUNNEL_ID \
-  --mcp-command "/absolute/path/to/.gateway-venv/bin/python -m everett.gateway --config /absolute/path/to/dot.json"
+  --mcp-command "/absolute/path/to/everett gateway --config /absolute/path/to/dot.json"
 tunnel-client doctor --profile everett-dot --explain
 tunnel-client run --profile everett-dot
 ```

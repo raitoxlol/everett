@@ -55,6 +55,20 @@ def main():
                 data = {"session_id": own, "written": True}
             result = {"content": [{"type": "text", "text": json.dumps(data)}],
                       "structuredContent": data, "isError": False}
+            if "--result-mode" in sys.argv:
+                mode = sys.argv[sys.argv.index("--result-mode") + 1]
+                if mode == "text-only":
+                    result.pop("structuredContent")
+                elif mode == "oversized":
+                    result = {"content": [], "structuredContent": {"core": "x" * (256 * 1024 + 1)}}
+                elif mode == "amplified":
+                    result = {"content": [], "structuredContent": {"core": "x" * (140 * 1024)}}
+                elif mode == "wrong-identity":
+                    result["structuredContent"]["session_id"] = "foreign"
+                elif mode == "wrong-harness":
+                    result["structuredContent"]["harness"] = "foreign"
+                elif mode == "non-object":
+                    result["structuredContent"] = ["invalid"]
         else:
             result = {}
         print(json.dumps({"jsonrpc": "2.0", "id": message["id"], "result": result}), flush=True)

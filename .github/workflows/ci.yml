@@ -17,9 +17,9 @@ jobs:
       - uses: actions/setup-python@v7
         with:
           python-version: '3.12'
-      - name: Install optional gateway SDK
-        run: python -m pip install '.[gateway]'
-      - name: Build native MCP backend
+      - name: Install Python reference package for storage compatibility tests
+        run: python -m pip install .
+      - name: Build native gateway and MCP backend
         run: cargo build --locked --manifest-path everett-rs/Cargo.toml
       - name: Exercise restricted gateway and native handoffs
         env:

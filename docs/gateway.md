@@ -1,19 +1,22 @@
-# Optional owner-bound MCP gateway
+# Owner-bound Rust MCP gateway
 
-This gateway lets an existing cloud agent call Everett's **Rust stdio backend**.
-It does not create an OpenAI or xAI model instance. Normal Everett installs do
-not import or require the gateway SDK.
+The native `everett gateway` command lets an existing cloud agent call Everett's
+Rust stdio backend. The official Rust MCP SDK is compiled into the binary.
+No Python interpreter or optional Python SDK is needed. The gateway does not
+create an OpenAI or xAI model instance.
 
-Install the optional official MCP Python SDK integration in a separate environment:
+Build the native binary from this branch:
 
 ```sh
-python3 -m venv .gateway-venv
-.gateway-venv/bin/python -m pip install '.[gateway]'
+cargo build --locked --manifest-path everett-rs/Cargo.toml
+everett-rs/target/debug/everett gateway --help
 ```
 
-Use Python 3.10+ and an installed Rust Everett binary. Do not point
-`backend_command` at the Python fallback or at the gateway itself. The executable
-and its arguments are trusted owner configuration, never tool-call arguments.
+Use an installed Rust Everett binary that supports `gateway`. If `backend_command`
+is omitted, the gateway starts the same binary with `mcp`. An explicit override
+must use an absolute executable path. Do not point it at the Python fallback or
+at the gateway itself. The executable and its arguments are trusted owner
+configuration, never tool-call arguments.
 
 ## One process, one logical identity
 
@@ -103,10 +106,15 @@ actually enforce exact-ID-only delivery for gateway processes. The gateway sets
 cannot eliminate that disappearance race. Owned-message replies, memory, inbox,
 identity, and cards do not require this capability.
 
+Backend responses must follow MCP's schema. The SDK rejects malformed initialize
+responses, including non-object experimental capability values, before any tool
+call. Missing or false exact-ID enforcement in a valid capability object blocks
+direct sends but still permits owned replies.
+
 ## Private stdio / OpenAI Secure MCP Tunnel
 
 ```sh
-.gateway-venv/bin/python -m everett.gateway --config /absolute/path/to/dot.json
+/absolute/path/to/everett gateway --config /absolute/path/to/dot.json
 ```
 
 This has no HTTP listener. The owner-authorized tunnel runs this command inside
@@ -124,13 +132,14 @@ configuration examples, or logs. There is no token issuance or OAuth service her
 
 ```sh
 # Set EVERETT_GATEWAY_TOKEN securely in this process's environment first.
-.gateway-venv/bin/python -m everett.gateway \
+/absolute/path/to/everett gateway \
   --config /absolute/path/to/grok.json --transport http --port 8788
 ```
 
 The listener is always `127.0.0.1`; there is no public-bind override. `/mcp` uses the
-official SDK's stateless Streamable HTTP transport and SDK bearer authentication
-middleware. Missing or invalid authentication fails; there is no HTTP no-auth mode.
+official Rust SDK's stateless Streamable HTTP transport. The gateway verifies a
+SHA-256 digest of the bearer token with a constant-time comparison before SDK
+dispatch. Missing or invalid authentication fails; there is no HTTP no-auth mode.
 The gateway does not serve OAuth metadata, authorization, or token endpoints.
 
 For Grok, the owner must supply a trusted HTTPS reverse proxy/tunnel, a valid TLS
@@ -150,24 +159,34 @@ HTTPS requiring OAuth is **not implemented**; use the Secure MCP Tunnel stdio pa
 
 ## Bounds and verification
 
-Configuration is capped at 16 KiB; HTTP request bodies and tool arguments at
-64 KiB; returned tool results at 256 KiB. HTTP body reads time out after five
-seconds. Each backend operation including startup times out at 1–30 seconds,
+Configuration is capped at 16 KiB; HTTP request bodies, tool arguments, and stdio
+request frames at 64 KiB; returned tool results at 256 KiB. HTTP headers are capped
+at 16 KiB and 64 fields. Header and body reads each time out after five seconds.
+Each backend operation including startup times out at 1–30 seconds,
 and each process permits 1–8 workers (defaults: 20 seconds and two workers).
 Excess work fails immediately rather than creating an unbounded queue. HTTP is
-stateless and does not accumulate client sessions. Reply authorization scans only
+stateless and does not accumulate client sessions. The listener allows twice the
+worker count in concurrent connections, with one request per connection and a
+45-second total deadline. It checks duplicate security headers before the HTTP
+parser can combine them. Reply authorization scans only
 this binding's inbox, capped at 8 MiB; oversized or malformed inboxes fail closed.
-SDK backend transport assumes trusted local Rust output before the result cap.
+Backend frames are bounded before SDK buffering, and tool results are checked
+again after SDK encoding.
 
-The isolated tests use a synthetic subprocess backend and in-process HTTP client;
-they invoke no model, live bot, tunnel, or production credentials:
+The isolated tests drive the native CLI and real loopback HTTP sockets. Both
+external harness journeys run with Python absent from the native process's PATH.
+Adversarial worker tests use a synthetic subprocess backend. No test invokes a
+model, live bot, tunnel, or production credentials:
 
 ```sh
-python -m unittest discover -s tests -p test_gateway.py -v
+cargo test --locked --manifest-path everett-rs/Cargo.toml
+EVERETT_GATEWAY_TEST_BINARY="$PWD/everett-rs/target/debug/everett" \
+  python3 -m unittest discover -s tests -p test_gateway.py -v
 ```
 
-SDK-specific cases skip without the optional extra; policy cases still run. Test
-execution was deferred until the parent creates the integration PR. Tests do not
+The Python standard library runs the test harness only; it is not part of the
+native gateway runtime. Gateway process tests skip unless the binary environment
+variable is set. Rust policy tests always run with `cargo test`. Tests do not
 prove actual dot/Grok plan availability, TLS deployment, or runtime approval flow.
 
 **No automatic dot wake-ups, MCP2 Events, webhook engine, Slack bridge, or external
