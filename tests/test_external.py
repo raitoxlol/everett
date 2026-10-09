@@ -90,6 +90,40 @@ class ExternalSessions(unittest.TestCase):
         external.register(record.id, 'grok-bot')
         self.assertEqual(inbox.pending(record.id)[0]['id'], message['id'])
 
+    def test_gateway_exact_destinations_reject_prefix_title_and_missing_ids(self):
+        self.env['EVERETT_GATEWAY_EXACT_IDS'] = '1'
+        self.plant(self.record(id='ext-peer-long', title='ext-missing'))
+        denied = self.mcp([('everett_send', {'to': to, 'text': 'Blocked', 'mode': 'inbox'})
+                           for to in ('ext-peer', 'ext-missing', 'missing')])
+        self.assertTrue(all(result['isError'] for result in denied))
+        self.assertEqual(inbox.pending('ext-peer-long'), [])
+        accepted = self.data(self.mcp([('everett_send', {
+            'to': 'ext-peer-long', 'text': 'Exact', 'mode': 'inbox'})])[0])
+        self.assertTrue(accepted['queued'])
+        self.assertEqual(inbox.pending('ext-peer-long')[0]['text'], 'Exact')
+
+    def test_gateway_backend_rejects_routing_resume_and_spawn(self):
+        self.env['EVERETT_GATEWAY_EXACT_IDS'] = '1'
+        self.plant(self.record())
+        calls = [{'text': 'Blocked'}, {'to': 'ext-grok', 'text': 'Blocked'},
+                 {'to': 'ext-grok', 'text': 'Blocked', 'mode': 'resume'},
+                 {'text': 'Blocked', 'spawn': True, 'mode': 'inbox'}]
+        self.assertTrue(all(result['isError'] for result in self.mcp(
+            [('everett_send', args) for args in calls])))
+        self.assertEqual(inbox.pending('ext-grok'), [])
+        self.assertFalse((self.home / 'provider-invoked').exists())
+
+    def test_gateway_backend_duplicate_ids_fail_closed(self):
+        from everett import mcp
+        from everett.session import Session
+
+        peer = Session('grok-bot', 'ext-peer', '', '', '', 0)
+        with mock.patch.dict(os.environ, {'EVERETT_GATEWAY_EXACT_IDS': '1'}), \
+                mock.patch.object(registry, 'scan', return_value=[peer, peer]):
+            with self.assertRaisesRegex(mcp.ToolError, 'one exact session id'):
+                mcp.tool_send({'to': 'ext-peer', 'text': 'Blocked', 'mode': 'inbox'})
+        self.assertEqual(inbox.pending('ext-peer'), [])
+
     def test_registration_module_add_list_replace_remove(self):
         result = self.module('add', '--id', 'ext-dot', '--harness', 'openai-dot', '--title', 'Owner dot')
         self.assertEqual(result.returncode, 0, result.stderr)

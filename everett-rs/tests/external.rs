@@ -19,6 +19,17 @@ fn registration(fx: &Fixture, id: &str, harness: &str, updated: f64) -> std::pat
 }
 
 fn run(fx: &Fixture, args: &[&str], input: Option<&str>, caller: &str, harness: &str) -> Output {
+    run_gateway(fx, args, input, caller, harness, false)
+}
+
+fn run_gateway(
+    fx: &Fixture,
+    args: &[&str],
+    input: Option<&str>,
+    caller: &str,
+    harness: &str,
+    gateway: bool,
+) -> Output {
     let mut command = Command::new(env!("CARGO_BIN_EXE_everett"));
     command
         .args(args)
@@ -31,12 +42,18 @@ fn run(fx: &Fixture, args: &[&str], input: Option<&str>, caller: &str, harness: 
         .env("EVERETT_ROUTER", "local")
         .env("EVERETT_SESSION_ID", caller)
         .env("EVERETT_HARNESS_NAME", harness)
+        .env("EVERETT_GATEWAY_EXACT_IDS", if gateway { "1" } else { "" })
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
     if let Some(input) = input {
         command.stdin(Stdio::piped());
         let mut child = command.spawn().unwrap();
-        child.stdin.take().unwrap().write_all(input.as_bytes()).unwrap();
+        child
+            .stdin
+            .take()
+            .unwrap()
+            .write_all(input.as_bytes())
+            .unwrap();
         child.wait_with_output().unwrap()
     } else {
         command.stdin(Stdio::null()).output().unwrap()
@@ -44,16 +61,34 @@ fn run(fx: &Fixture, args: &[&str], input: Option<&str>, caller: &str, harness: 
 }
 
 fn mcp(fx: &Fixture, calls: &[(&str, Value)], caller: &str, harness: &str) -> Vec<Value> {
-    let mut requests = vec![json!({"jsonrpc": "2.0", "id": 0, "method": "initialize", "params": {
+    mcp_gateway(fx, calls, caller, harness, false)
+}
+
+fn mcp_gateway(
+    fx: &Fixture,
+    calls: &[(&str, Value)],
+    caller: &str,
+    harness: &str,
+    gateway: bool,
+) -> Vec<Value> {
+    let mut requests = vec![
+        json!({"jsonrpc": "2.0", "id": 0, "method": "initialize", "params": {
         "protocolVersion": "2024-11-05", "capabilities": {},
-        "clientInfo": {"name": "external-fixture", "version": "1"}}})];
+        "clientInfo": {"name": "external-fixture", "version": "1"}}}),
+    ];
     for (i, (name, arguments)) in calls.iter().enumerate() {
-        requests.push(json!({"jsonrpc": "2.0", "id": i + 1, "method": "tools/call",
-                            "params": {"name": name, "arguments": arguments}}));
+        requests.push(
+            json!({"jsonrpc": "2.0", "id": i + 1, "method": "tools/call",
+                            "params": {"name": name, "arguments": arguments}}),
+        );
     }
     let input: String = requests.iter().map(|r| r.to_string() + "\n").collect();
-    let output = run(fx, &["mcp"], Some(&input), caller, harness);
-    assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+    let output = run_gateway(fx, &["mcp"], Some(&input), caller, harness, gateway);
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
     let responses: Vec<Value> = String::from_utf8_lossy(&output.stdout)
         .lines()
         .map(|line| serde_json::from_str(line).unwrap())
@@ -66,6 +101,62 @@ fn mcp(fx: &Fixture, calls: &[(&str, Value)], caller: &str, harness: &str) -> Ve
 fn data(result: &Value) -> &Value {
     assert_eq!(result["isError"], false, "{result}");
     &result["structuredContent"]
+}
+
+#[test]
+fn gateway_requires_exact_unambiguous_destinations_and_inbox_only_delivery() {
+    let fx = fixture();
+    let path = registration(&fx, "ext-peer-long", "grok-bot", 0.0);
+    let mut record: Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+    record["title"] = json!("ext-missing");
+    std::fs::write(&path, record.to_string()).unwrap();
+    let calls = [
+        (
+            "everett_send",
+            json!({"to":"ext-peer","text":"Blocked","mode":"inbox"}),
+        ),
+        (
+            "everett_send",
+            json!({"to":"ext-missing","text":"Blocked","mode":"inbox"}),
+        ),
+        ("everett_send", json!({"text":"Blocked","mode":"inbox"})),
+        (
+            "everett_send",
+            json!({"to":"ext-peer-long","text":"Blocked","mode":"resume"}),
+        ),
+        (
+            "everett_send",
+            json!({"text":"Blocked","spawn":true,"mode":"inbox"}),
+        ),
+        (
+            "everett_send",
+            json!({"to":"ext-peer-long","text":"Exact","mode":"inbox"}),
+        ),
+    ];
+    let results = mcp_gateway(&fx, &calls, "ext-owner", "openai-dot", true);
+    assert!(results[..5].iter().all(|r| r["isError"] == true));
+    assert_eq!(data(&results[5])["queued"], true);
+    let polled = mcp(
+        &fx,
+        &[("everett_inbox", json!({}))],
+        "ext-peer-long",
+        "grok-bot",
+    );
+    assert_eq!(data(&polled[0])["messages"].as_array().unwrap().len(), 1);
+    assert_eq!(data(&polled[0])["messages"][0]["text"], "Exact");
+
+    fx.write(
+        ".claude/projects/p/ext-peer-long.jsonl",
+        &json!({"type":"user", "sessionId":"ext-peer-long",
+        "cwd":"/work/native", "message":{"role":"user","content":"Native duplicate"}})
+        .to_string(),
+    );
+    let duplicate = mcp_gateway(&fx, &[calls[5].clone()], "ext-owner", "openai-dot", true);
+    assert_eq!(duplicate[0]["isError"], true);
+    assert!(duplicate[0]["content"][0]["text"]
+        .as_str()
+        .unwrap()
+        .contains("one exact session id"));
 }
 
 #[test]
@@ -120,7 +211,11 @@ fn registered_sessions_bypass_the_default_local_cap() {
         registration(&fx, &format!("ext-grok-{index}"), "grok-bot", 0.0);
     }
     let output = run(&fx, &["ls", "--json"], None, "fixture-owner", "");
-    assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
     let sessions: Vec<Value> = serde_json::from_slice(&output.stdout).unwrap();
     assert_eq!(sessions.len(), 45);
 }
@@ -130,8 +225,18 @@ fn persistent_listing_and_routes_do_not_expose_transcript_or_resume_ids() {
     let fx = fixture();
     registration(&fx, "ext-grok", "grok-bot", 0.0);
     registration(&fx, "ext-dot", "openai-dot", 1.0);
-    let output = run(&fx, &["ls", "--hours", "0", "--json"], None, "fixture-owner", "");
-    assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+    let output = run(
+        &fx,
+        &["ls", "--hours", "0", "--json"],
+        None,
+        "fixture-owner",
+        "",
+    );
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
     let sessions: Vec<Value> = serde_json::from_slice(&output.stdout).unwrap();
     assert_eq!(sessions.len(), 2);
     for session in sessions {
@@ -142,8 +247,13 @@ fn persistent_listing_and_routes_do_not_expose_transcript_or_resume_ids() {
         assert_eq!(session["running"], false);
     }
     std::fs::remove_file(fx.home().join(".everett/external/ext-dot.json")).unwrap();
-    let output =
-        run(&fx, &["route", "Database backup reports", "--hours", "0", "--json"], None, "fixture-owner", "");
+    let output = run(
+        &fx,
+        &["route", "Database backup reports", "--hours", "0", "--json"],
+        None,
+        "fixture-owner",
+        "",
+    );
     let result: Value = serde_json::from_slice(&output.stdout).unwrap();
     assert_eq!(result["decision"], "SESSION", "{result}");
     assert_eq!(result["session"]["id"], "ext-grok");
@@ -158,15 +268,30 @@ fn external_delivery_refuses_resume_and_spawn_even_with_live_process_evidence() 
     for harness in external::HARNESSES {
         let session = Session::new(harness, "ext-agent", "/work/backups", "", "", 0.0);
         for mode in ["auto", "inbox"] {
-            assert_eq!(send::delivery_mode(&session, mode, Some("")).unwrap(), "inbox");
+            assert_eq!(
+                send::delivery_mode(&session, mode, Some("")).unwrap(),
+                "inbox"
+            );
         }
-        assert!(send::delivery_mode(&session, "resume", Some("grok --resume ext-agent"))
+        assert!(
+            send::delivery_mode(&session, "resume", Some("grok --resume ext-agent"))
+                .unwrap_err()
+                .message
+                .contains("inbox-only")
+        );
+        assert!(send::command_for(&session, "Task")
             .unwrap_err()
             .message
             .contains("inbox-only"));
-        assert!(send::command_for(&session, "Task").unwrap_err().message.contains("inbox-only"));
-        assert!(send::spawn_command(harness, "Task", "", "").unwrap_err().message.contains("cannot spawn"));
-        assert!(!everett::registry::session_running(&session, Some("grok --resume ext-agent"), Some(0.0)));
+        assert!(send::spawn_command(harness, "Task", "", "")
+            .unwrap_err()
+            .message
+            .contains("cannot spawn"));
+        assert!(!everett::registry::session_running(
+            &session,
+            Some("grok --resume ext-agent"),
+            Some(0.0)
+        ));
     }
 }
 
@@ -180,8 +305,14 @@ fn stdio_mcp_queues_polls_and_replies_for_both_external_harnesses() {
             &fx,
             &[
                 ("everett_ls", json!({"hours": 0, "harness": harness})),
-                ("everett_send", json!({"to": id, "text": "Report backups", "mode": "auto"})),
-                ("everett_send", json!({"to": id, "text": "Do not resume", "mode": "resume"})),
+                (
+                    "everett_send",
+                    json!({"to": id, "text": "Report backups", "mode": "auto"}),
+                ),
+                (
+                    "everett_send",
+                    json!({"to": id, "text": "Do not resume", "mode": "resume"}),
+                ),
             ],
             "fixture-owner",
             "",
@@ -191,16 +322,25 @@ fn stdio_mcp_queues_polls_and_replies_for_both_external_harnesses() {
         assert_eq!(queued["mode"], "inbox");
         assert_eq!(queued["queued"], true);
         assert_eq!(queued["hooked"], false);
-        assert!(queued["note"].as_str().unwrap().contains("No provider wake-up or consumption is confirmed"));
+        assert!(queued["note"]
+            .as_str()
+            .unwrap()
+            .contains("No provider wake-up or consumption is confirmed"));
         assert_eq!(results[2]["isError"], true);
-        assert!(results[2]["content"][0]["text"].as_str().unwrap().contains("inbox-only"));
+        assert!(results[2]["content"][0]["text"]
+            .as_str()
+            .unwrap()
+            .contains("inbox-only"));
         let mid = queued["message_id"].as_str().unwrap();
         let results = mcp(
             &fx,
             &[
                 ("everett_inbox", json!({"peek": true})),
                 ("everett_inbox", json!({})),
-                ("everett_send", json!({"text": "Backups complete", "reply_to": mid})),
+                (
+                    "everett_send",
+                    json!({"text": "Backups complete", "reply_to": mid}),
+                ),
                 ("everett_inbox", json!({})),
             ],
             &id,

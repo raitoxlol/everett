@@ -262,6 +262,9 @@ def tool_send(args):
     if not isinstance(wait, (int, float)) or isinstance(wait, bool) or wait < 0:
         raise ParamsError('"wait" must be a non-negative number')
     reply_to = _str(args, 'reply_to')
+    exact_ids = os.environ.get('EVERETT_GATEWAY_EXACT_IDS') == '1'
+    if exact_ids and (spawn_ok or mode != 'inbox' or not (to or reply_to)):
+        raise ToolError('Gateway delivery requires inbox mode and an explicit exact destination or reply.')
     if reply_to:
         try:
             return {'delivered': True, **reply(reply_to, text, caller=caller)}
@@ -273,7 +276,14 @@ def tool_send(args):
             if spawn_ok:
                 raise ParamsError('"to" and "spawn" are exclusive')
             try:
-                session = registry.find(to, registry.scan(hours, include_auto=True, limit=None))
+                sessions = registry.scan(hours, include_auto=True, limit=None)
+                if exact_ids:
+                    matches = [s for s in sessions if s.id == to]
+                    if len(matches) != 1:
+                        raise registry.SessionLookupError('Gateway destination must match one exact session id.')
+                    session = matches[0]
+                else:
+                    session = registry.find(to, sessions)
             except registry.SessionLookupError as e:
                 raise ToolError(f'{e} In MCP, use everett_ls with a larger hours window (e.g. 168), '
                                 'then pass its exact session id and the same hours to everett_send.') from e
@@ -486,8 +496,11 @@ def handle(message) -> dict | None:
             asked = params.get('protocolVersion')
             version = asked if asked in PROTOCOL_VERSIONS else PROTOCOL_VERSIONS[0]
             log('initialize', version=version)
+            capabilities = {'tools': {'listChanged': False}}
+            if os.environ.get('EVERETT_GATEWAY_EXACT_IDS') == '1':
+                capabilities['experimental'] = {'everettExactDestinationIds': {'enforced': True}}
             return _result(msg_id, {'protocolVersion': version,
-                                    'capabilities': {'tools': {'listChanged': False}},
+                                    'capabilities': capabilities,
                                     'serverInfo': {'name': 'everett', 'version': __version__},
                                     'instructions': INSTRUCTIONS})
         if method == 'ping':
