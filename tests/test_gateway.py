@@ -12,6 +12,7 @@ from pathlib import Path
 from unittest import mock
 
 from everett.gateway import Binding, BoundaryError, Gateway, MAX_BODY, build_http_app, tool_definitions
+from everett.inbox import HUMAN
 
 SDK_AVAILABLE = importlib.util.find_spec("mcp") is not None
 FIXTURE = Path(__file__).parent / "fixtures" / "gateway_backend.py"
@@ -110,6 +111,13 @@ class GatewayPolicy(GatewaySandbox):
         with self.assertRaises(BoundaryError):
             self.binding.authorize("everett_send", {"text": "x" * MAX_BODY, "to": "agent-two"})
 
+    def test_reserved_agent_ids_are_rejected_case_insensitively(self):
+        for agent_id in (HUMAN, HUMAN.upper(), "HuMaN", "live", "LIVE", "LiVe"):
+            with self.subTest(agent_id=agent_id), self.assertRaises(BoundaryError):
+                replace(self.binding, agent_id=agent_id)
+        for agent_id in (HUMAN + "-one", "live-one"):
+            self.assertEqual(replace(self.binding, agent_id=agent_id).agent_id, agent_id)
+
     def test_backend_environment_does_not_mutate_or_forward_credentials(self):
         with mock.patch.dict(os.environ, {"OPENAI_API_KEY": "synthetic", "EVERETT_GATEWAY_TOKEN": TOKEN}):
             before = dict(os.environ)
@@ -150,11 +158,13 @@ class GatewaySDK(GatewaySandbox):
         self.assertEqual(len({r["pid"] for r in records}), 2)
         self.assertTrue(all(not r["has_secret"] and r["cwd"] == str(self.home) for r in records))
 
-    def test_legacy_backend_refuses_direct_send_without_worker_tool_call(self):
-        binding = replace(self.binding, backend_command=(*self.binding.backend_command, "--legacy"))
+    def test_backend_without_enforced_exact_id_capability_refuses_direct_send(self):
         async def journey():
-            with self.assertRaises(BoundaryError):
-                await Gateway(binding).call("everett_send", {"to": "agent-two", "text": "task"})
+            for flags in (("--legacy",), ("--capability", "true"), ("--capability", "{}"),
+                          ("--capability", '{"enforced": false}'), ("--capability", '{"enforced": 1}')):
+                with self.subTest(flags=flags), self.assertRaises(BoundaryError):
+                    binding = replace(self.binding, backend_command=(*self.binding.backend_command, *flags))
+                    await Gateway(binding).call("everett_send", {"to": "agent-two", "text": "task"})
         asyncio.run(journey())
         self.assertEqual(self.records(), [])
 
