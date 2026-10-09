@@ -145,18 +145,20 @@ class DevinMCP(unittest.TestCase):
 
     def test_doctor_reports_missing_ready_stale_without_hooks(self):
         (self.root / 'session-data').mkdir()
-        with mock.patch.object(doctor, 'probe_mcp', return_value=(True, 'mock stdio probe')):
+        with mock.patch.object(doctor, 'probe_mcp', return_value=(True, 'mock stdio probe')) as probe:
             out = io.StringIO()
             with redirect_stdout(out):
                 doctor.run()
             self.assertIn('everett install-mcp --devin --apply', out.getvalue())
             self.assertNotIn('install-hooks --devin', out.getvalue())
             install.apply_mcp('devin')
+            probe.reset_mock()
             out = io.StringIO()
             with redirect_stdout(out):
                 doctor.run()
-            self.assertIn('Everett stdio MCP registered', out.getvalue())
-            self.assertIn(str(self.path), out.getvalue())
+            self.assertIn('[ok  ]   devin   mock stdio probe', out.getvalue())
+            probe.assert_any_call((sys.executable, ['-m', 'everett', 'mcp'], {}))
+            self.assertNotIn('everett install-mcp --devin', out.getvalue())
             data = json.loads(self.path.read_text())
             data['mcpServers']['everett']['disabled'] = True
             self.write_config(data)

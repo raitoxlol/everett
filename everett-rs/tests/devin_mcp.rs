@@ -217,8 +217,11 @@ fn devin_doctor_reports_missing_ready_stale_without_hooks() {
     assert!(!text.contains("install-hooks --devin"));
     success(&run(&fx, &["install-mcp", "--devin", "--apply"]));
     let text = fx.stdout(&run(&fx, &["doctor"]));
-    assert!(text.contains("Everett stdio MCP registered"), "{text}");
-    assert!(text.contains(config_path(&fx).to_str().unwrap()), "{text}");
+    assert!(
+        text.contains("[ok  ]   devin   10 tools over stdio (initialize + tools/list passed)"),
+        "{text}"
+    );
+    assert!(!text.contains("everett install-mcp --devin"), "{text}");
     let mut data = config(&fx);
     data["mcpServers"]["everett"]["disabled"] = json!(true);
     write_config(&fx, &data.to_string());
