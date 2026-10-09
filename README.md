@@ -66,7 +66,7 @@ preserving every other key). The same step has a "merge shared memory nightly" t
 Everett reads the session stores the harnesses already write: `~/.claude/projects`,
 `~/.codex/sessions`, `~/.omp/agent/sessions`, `~/.pi/agent/sessions`, `~/.grok/sessions`,
 Hermes' `state.db` files, the Devin CLI's `sessions.db` (plus `transcripts/*.json`),
-and T3 Code's `~/.t3/userdata/state.sqlite`. Every database is opened read-only.
+and T3 Code's `~/.t3/userdata/statev2.sqlite` (legacy `state.sqlite` fallback). Every database is opened read-only.
 
 ## Demo
 
@@ -136,6 +136,9 @@ The harness appends the request and the reply to that session's history. Hermes 
 
 T3 Code is a desktop GUI that runs Codex, Claude Code, and Grok underneath. Everett marks the
 matching session with source `t3code` (`[t3code]` in `ls`) and uses the thread title when needed.
+Active projections with a real provider ID also supply sessions when the local provider
+transcript is absent. Current v2 and legacy stores are supported; see the
+[T3 discovery and polling guide](docs/t3code.md).
 Automatic sends queue work in the inbox. Hooks can inject it only if T3's provider runtime
 actually loads and runs them; queuing alone does not prove pickup. Otherwise the receiving
 thread calls `everett_inbox(session_id="<underlying-provider-session-id>")` and answers with
