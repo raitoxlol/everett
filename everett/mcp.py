@@ -13,7 +13,7 @@ import sys
 import time
 from contextlib import redirect_stdout
 
-from . import __version__, cards, core, registry
+from . import __version__, cards, core, external, registry
 from .hooks.common import _word_limit
 from .route import MIN_CONFIDENCE, RouteError, best_dir, default_harness, route
 from .send import (MODES, SPAWNABLE, SendError, caller_identity, command_for, delivery_mode, hop_env, refuse_self,
@@ -47,7 +47,8 @@ TOOLS = [
                         'routing decision.'),
         'inputSchema': {'type': 'object', 'properties': {
             'hours': {'type': 'number', 'description': 'Look-back window in hours (default 72).', 'minimum': 0},
-            'harness': {'type': 'string', 'enum': ['claude', 'codex', 'omp', 'pi', 'hermes', 'grok', 'devin'],
+            'harness': {'type': 'string', 'enum': ['claude', 'codex', 'omp', 'pi', 'hermes', 'grok', 'devin',
+                                                'openai-dot', 'grok-bot'],
                         'description': 'Only this harness.'},
         }, 'additionalProperties': False},
     },
@@ -305,6 +306,10 @@ def tool_send(args):
             note = ('Queued; it is injected into that live session at its next turn or tool call.' +
                     ('' if result['reply'] is not None else
                      ' Its reply will arrive in your inbox (injected by your hooks, or read it with everett_inbox).'))
+            if external.is_external(session.harness):
+                note = ('Queued for the external agent to poll through MCP. '
+                        'No provider wake-up or consumption is confirmed. '
+                        'Read replies with everett_inbox.')
             return {**decision, 'delivered': True, 'session': _brief(session), **result, 'note': note}
         command_for(session, text)  # validates the harness can be resumed before waiting
         result = send(session, text, timeout=float(timeout), env=env)
