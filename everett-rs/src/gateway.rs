@@ -552,10 +552,9 @@ async fn http_boundary(
         Err(_) => return StatusCode::SERVICE_UNAVAILABLE.into_response(),
     };
     if headers.get("content-length").is_some_and(|h| {
-        !h.to_str()
+        h.to_str()
             .ok()
-            .and_then(|h| h.parse::<usize>().ok())
-            .is_some_and(|size| size <= MAX_BODY)
+            .and_then(|h| h.parse::<usize>().ok()).is_none_or(|size| size > MAX_BODY)
     }) {
         return StatusCode::PAYLOAD_TOO_LARGE.into_response();
     }

@@ -240,7 +240,7 @@ pub fn run(hours: f64) -> i32 {
     line(&mut warnings, Some(ok), &format!("  server: {}", detail));
     let mcp_harnesses: Vec<&str> = ["claude", "codex", "omp", "grok", "devin"]
         .iter()
-        .filter(|h| seen.iter().any(|s| s == *h) || crate::install::mcp_path(*h).exists())
+        .filter(|h| seen.iter().any(|s| s == *h) || crate::install::mcp_path(h).exists())
         .cloned()
         .collect();
     let mut missing_mcp: Vec<&str> = Vec::new();
