@@ -97,15 +97,14 @@ def clean(text: str, limit: int = 200) -> str:
 
 USER_WRAPPERS = ('<pasted_content',)  # tags that wrap text the user typed or pasted
 
-# Tags harnesses inject into user-position transcript rows (never typed by the user).
-# Anything else starting with '<' — pasted HTML/XML like '<div>…' — is real user text.
-INJECTED_TAGS = (
-    'system-reminder', 'system_reminder', 'environment_context', 'user_info', 'user_query',
-    'command-name', 'command-message', 'command-args',
-    'local-command-stdout', 'local-command-caveat', 'local-command-stderr',
-    'recommended_plugins',
+# Real HTML/XML document tags a user might paste. Anything else starting with '<' is
+# treated as harness-injected (harnesses inject far more tags than we can enumerate).
+PASTEABLE_TAGS = frozenset(
+    '!doctype ?xml html head body div span p a img svg path script style link meta table tr td th '
+    'ul ol li section article header footer nav main form input button label select textarea '
+    'h1 h2 h3 h4 h5 h6 br hr pre code iframe video canvas template slot'.split()
 )
-INJECTED_PREFIXES = ('ide_',)  # IDE-injected wrappers: <ide_opened_file>, <ide_selection>, …
+_FIRST_TAG = re.compile(r'</?([^\s>/]*)')
 
 
 def is_injected(text: str) -> bool:
@@ -114,12 +113,9 @@ def is_injected(text: str) -> bool:
         return not t
     if not t.startswith('<'):
         return False
-    if t[1:].startswith(INJECTED_PREFIXES):
-        return True
-    for tag in INJECTED_TAGS:
-        if t.startswith(f'<{tag}') and (len(t) == len(tag) + 1 or t[len(tag) + 1] in ' \t\r\n>/'):
-            return True
-    return False
+    m = _FIRST_TAG.match(t)
+    tag = m[1].lower() if m else ''
+    return tag not in PASTEABLE_TAGS
 
 
 def recent_files(paths, since_hours: float):

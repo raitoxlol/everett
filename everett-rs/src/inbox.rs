@@ -353,16 +353,24 @@ pub fn live_path(session_id: &str) -> PathBuf {
 }
 
 /// The highest message hop count take() has delivered to this session (0 if none).
+/// A live session inherits received hop counts for 15 minutes, not forever.
+pub const HOP_MEMORY_SECONDS: f64 = 900.0;
+
+/// The highest hop count take() delivered to this session within HOP_MEMORY_SECONDS.
 pub fn session_hops(session_id: &str) -> i64 {
     if !valid_id(session_id) {
         return 0;
     }
-    fs::read_to_string(live_path(session_id))
+    let data = fs::read_to_string(live_path(session_id))
         .ok()
         .and_then(|t| serde_json::from_str::<Value>(&t).ok())
-        .and_then(|v| v.get("hops").and_then(|h| h.as_i64()))
-        .unwrap_or(0)
-        .max(0)
+        .unwrap_or(Value::Null);
+    let hops = data.get("hops").and_then(|h| h.as_i64()).unwrap_or(0).max(0);
+    let stamp = data.get("hops_ts").and_then(|h| h.as_f64()).unwrap_or(0.0);
+    if hops <= 0 || now() - stamp > HOP_MEMORY_SECONDS {
+        return 0;
+    }
+    hops
 }
 
 /// Remember the highest hops delivered to this session in its live record (best effort).
@@ -378,6 +386,7 @@ pub fn record_hops(session_id: &str, hops: i64) {
         .unwrap_or_default();
     let prev = current.get("hops").and_then(|v| v.as_i64()).unwrap_or(0);
     current.insert("hops".into(), json!(prev.max(hops)));
+    current.insert("hops_ts".into(), json!(now()));
     if let Some(parent) = target.parent() {
         let _ = fs::create_dir_all(parent);
     }

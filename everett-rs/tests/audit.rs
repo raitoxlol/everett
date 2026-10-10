@@ -93,6 +93,17 @@ fn live_session_hop_guard_holds_without_env() {
         String::from_utf8_lossy(&out.stderr)
     );
     assert!(String::from_utf8_lossy(&out.stderr).contains("Hop limit"));
+    // The memory expires: after HOP_MEMORY_SECONDS the session sends again.
+    let live = fx.home().join(".everett/inbox/live/b-live.json");
+    let mut data: Value = serde_json::from_str(&std::fs::read_to_string(&live).unwrap()).unwrap();
+    data["hops_ts"] = json!(now_ts() - 901.0);
+    std::fs::write(&live, data.to_string()).unwrap();
+    let out = fx.run_stdin(
+        &["send", "onward", "--to", "c-1", "--mode", "inbox", "--json"],
+        "",
+        &[("EVERETT_SESSION_ID", "b-live")],
+    );
+    assert_eq!(out.status.code(), Some(0), "{}", String::from_utf8_lossy(&out.stderr));
 }
 
 fn mcp_call_inbox(home_session: &str) -> String {

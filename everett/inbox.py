@@ -216,13 +216,20 @@ def live_path(session_id: str) -> Path:
     return inbox_dir() / 'live' / f'{session_id}.json'
 
 
+HOP_MEMORY_SECONDS = 900  # a live session inherits received hop counts for 15 min, not forever
+
+
 def session_hops(session_id: str) -> int:
-    """The highest message hop count take() has delivered to this session (0 if none)."""
+    """The highest hop count take() delivered to this session within HOP_MEMORY_SECONDS."""
     try:
         data = json.loads(live_path(session_id).read_text(encoding='utf-8'))
-        return max(0, int((data or {}).get('hops') or 0))
+        hops = max(0, int((data or {}).get('hops') or 0))
+        stamp = float((data or {}).get('hops_ts') or 0)
     except (OSError, ValueError, TypeError, AttributeError):
         return 0
+    if hops <= 0 or time.time() - stamp > HOP_MEMORY_SECONDS:
+        return 0
+    return hops
 
 
 def record_hops(session_id: str, hops: int) -> None:
@@ -240,6 +247,7 @@ def record_hops(session_id: str, hops: int) -> None:
         current['hops'] = max(int(current.get('hops') or 0), int(hops))
     except (TypeError, ValueError):
         current['hops'] = int(hops)
+    current['hops_ts'] = time.time()
     try:
         target.parent.mkdir(parents=True, exist_ok=True)
         tmp = target.with_name(f'.{target.name}.{os.getpid()}.tmp')

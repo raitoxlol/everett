@@ -10,24 +10,16 @@ use serde_json::{Map, Value};
 pub const CHUNK: usize = 64 * 1024;
 pub const USER_WRAPPERS: &[&str] = &["<pasted_content"];
 
-/// Tags harnesses inject into user-position transcript rows (never typed by the user).
-/// Anything else starting with '<' — pasted HTML/XML like '<div>…' — is real user text.
-pub const INJECTED_TAGS: &[&str] = &[
-    "system-reminder",
-    "system_reminder",
-    "environment_context",
-    "user_info",
-    "user_query",
-    "command-name",
-    "command-message",
-    "command-args",
-    "local-command-stdout",
-    "local-command-caveat",
-    "local-command-stderr",
-    "recommended_plugins",
+/// Real HTML/XML document tags a user might paste. Anything else starting with
+/// '<' is treated as harness-injected (harnesses inject far more tags than we
+/// can enumerate).
+pub const PASTEABLE_TAGS: &[&str] = &[
+    "!doctype", "?xml", "html", "head", "body", "div", "span", "p", "a", "img", "svg", "path",
+    "script", "style", "link", "meta", "table", "tr", "td", "th", "ul", "ol", "li", "section",
+    "article", "header", "footer", "nav", "main", "form", "input", "button", "label", "select",
+    "textarea", "h1", "h2", "h3", "h4", "h5", "h6", "br", "hr", "pre", "code", "iframe", "video",
+    "canvas", "template", "slot",
 ];
-/// IDE-injected wrappers: <ide_opened_file>, <ide_selection>, …
-pub const INJECTED_PREFIXES: &[&str] = &["ide_"];
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Session {
@@ -201,17 +193,14 @@ pub fn is_injected(text: &str) -> bool {
         return false;
     }
     let Some(rest) = stripped.strip_prefix('<') else { return false };
-    if INJECTED_PREFIXES.iter().any(|p| rest.starts_with(p)) {
+    let rest = rest.strip_prefix('/').unwrap_or(rest);
+    let end = rest
+        .find(|c: char| c.is_whitespace() || c == '>' || c == '/')
+        .unwrap_or(rest.len());
+    if end == 0 {
         return true;
     }
-    INJECTED_TAGS.iter().any(|tag| {
-        rest.starts_with(tag)
-            && rest[tag.len()..]
-                .chars()
-                .next()
-                .map(|c| matches!(c, ' ' | '\t' | '\r' | '\n' | '>' | '/'))
-                .unwrap_or(true)
-    })
+    !PASTEABLE_TAGS.contains(&rest[..end].to_lowercase().as_str())
 }
 
 pub fn recent_files(paths: Vec<PathBuf>, since_hours: f64) -> Vec<PathBuf> {
