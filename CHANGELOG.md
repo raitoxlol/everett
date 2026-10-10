@@ -1,5 +1,10 @@
 # Changelog
 
+## Unreleased
+
+- **Devin MCP registration** — `install-mcp --devin` supports the dedicated CLI MCP config on Linux/macOS and Windows, with existing dry-run, backup, repair, and idempotency behavior. Doctor and onboarding recognize the registration without adding native hooks or assuming a caller-id variable.
+- **Stable Devin timestamp regression** — freeze the synthetic ISO timestamp fixture's clock so the default 72-hour look-back does not expire it.
+
 ## 1.4.0 — 2026-10-05
 
 ### Rust binary releases
