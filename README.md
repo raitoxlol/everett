@@ -66,7 +66,7 @@ preserving every other key). The same step has a "merge shared memory nightly" t
 Everett reads the session stores the harnesses already write: `~/.claude/projects`,
 `~/.codex/sessions`, `~/.omp/agent/sessions`, `~/.pi/agent/sessions`, `~/.grok/sessions`,
 Hermes' `state.db` files, the Devin CLI's `sessions.db` (plus `transcripts/*.json`),
-and T3 Code's `~/.t3/userdata/state.sqlite`. Every database is opened read-only.
+and T3 Code's `~/.t3/userdata/statev2.sqlite` (legacy `state.sqlite` fallback). Every database is opened read-only.
 
 Cloud agents use explicit local registrations and the native restricted MCP gateway, not fabricated
 provider transcripts or API-model substitutes. See [OpenAI dots setup](docs/openai-dots.md),
@@ -76,6 +76,34 @@ The native binary manages local bindings with `everett external add`, `list`, an
 the Python package uses `python -m everett.external`. Both write the same records.
 
 ## Demo
+
+### Local dashboard (Rust binary)
+
+```bash
+cargo install --path everett-rs
+everett dashboard
+everett --hours 168 dashboard --port 7347 --no-open
+```
+
+The Mac-first dashboard opens automatically on macOS and prints its loopback URL
+on other platforms. It reads the same provider stores and Everett cards as
+`everett ls`, showing up to 80 recent non-automated sessions. Search by project,
+card, or session ID; filter by harness or state; expand a row for the full card
+body, provider/source details, and copyable inbox-send, local-route, and events
+commands. Refresh rescans local data. CLI listings retain their compact card
+summaries.
+
+It is read-only: copying a command does not execute it, deliver a message, or
+wake an agent. “Active” is Everett's existing process/recency heuristic, not a
+verified agent heartbeat. The server binds only to `127.0.0.1`, rejects foreign
+Host headers and write methods, and sends no session data to a hosted service.
+Stop it with Ctrl-C. This command is not in the Python CLI.
+
+**Future direction:** an Everett account could connect CLI installations across
+devices and expose their local activity through either a self-hosted or hosted
+dashboard. Account auth, peer transport, and hosting (including a custom-domain
+frontend on Vercel) are not implemented here. A Rust local-data service would
+still be required; a static website cannot read another device's session stores.
 
 This is example output (paths and ids are shortened):
 
@@ -102,6 +130,7 @@ Done. MAX_RETRIES is now 5 and the backoff test covers the cap.
 | Command | What it does |
 |---|---|
 | `everett ls [--json] [--all] [--harness H]` | Recent sessions from every harness, one line each. `--all` includes scripted runs. |
+| `everett dashboard [--port 7347] [--no-open]` | Native Rust binary only: read-only local browser dashboard with session cards, filters, activity state, and copyable CLI actions. |
 | `everett route "<text>" [--router local\|jev] [--json]` | Picks the session a request continues: `SESSION`, `NEW`, or `ASK`, with a confidence and the resume command. It never sends. |
 | `everett send "<text>" [--dry-run] [--timeout S] [--router …]` | Routes the request (jev when a key is configured, else local) and delivers it, printing `routed by jev → [claude] ~/src/api — … (0.87)` before sending. A session with a live harness process gets it in its inbox, injected at its next turn or tool call (see [Live delivery](#live-delivery)). An idle one is resumed headless after it goes quiet (up to 2 min), and the reply is printed. `NEW` and `ASK` send nothing (`ASK` prints its candidates; resend with `--to`). |
 | `everett send … [--mode auto\|resume\|inbox] [--wait S]` | `--mode` forces headless resume or inbox delivery (default `auto`). `--wait S` waits up to S seconds for an inbox reply; without it the reply arrives in your inbox later. |
@@ -116,7 +145,7 @@ Done. MAX_RETRIES is now 5 and the backoff test covers the cap.
 | `everett onboard [--yes] [--span-days N] [--no-backfill] [--no-mcp]` | Friendly first-time setup TUI (welcome, detect, hooks, MCP, optional Jev key + nightly merge, optional card backfill, summary); `--yes` runs it non-interactively for scripts. |
 | `everett install-hooks [--claude] [--codex] [--omp] [--grok] [--apply]` | Prints the hook registrations. `--apply` backs up the file, then merges idempotently. |
 | `everett mcp` | Runs the stdio MCP server (harnesses start it; see below). |
-| `everett install-mcp [--claude] [--codex] [--omp] [--grok] [--apply]` | Prints or registers the MCP server for each harness. |
+| `everett install-mcp [--claude] [--codex] [--omp] [--grok] [--devin] [--apply]` | Prints or registers the MCP server for each harness. |
 | `everett doctor` | Installed CLIs, stores, hooks, live stdio/MCP registration checks, cards, router, and exact next commands. |
 | `everett learn "<fact>" [--project P] [--scope global\|project]` | Pushes a fact to the shared core inbox. Secrets are rejected. |
 | `everett trunk merge [--llm claude\|codex\|none] [--dry-run]` | Distills the inbox into the shared core. |
@@ -137,15 +166,22 @@ Global option: `--hours N` sets the look-back window (default 72).
 | Hermes Agent | `hermes -p <profile> chat --resume <id> -Q -q <text>` | `hermes chat -Q -q <text>` |
 | Grok CLI | `grok --resume <id> -p <text>` | `grok --session-id <new uuid> -p <text>` |
 | Devin CLI | `devin --resume <id> --print <text>` | `devin -p <text>` |
-| T3 Code | Inbox via underlying harness hooks; no CLI resume | not supported |
+| T3 Code | Inbox; hooks where supported, otherwise explicit MCP polling; no CLI resume | not supported |
 | OpenAI dots / Grok Bot | Registered external inbox via owner-authorized MCP; no provider resume | not supported |
 
 The harness appends the request and the reply to that session's history. Hermes sessions that belong to a chat platform (Telegram, Discord, and so on) are listed and routable, but `send` refuses them, because a CLI resume would not reach that chat. Scripted Hermes runs (cron, oneshot, webhook) are hidden like other automated runs. Grok sessions are read from `~/.grok/sessions/<url-encoded cwd>/<id>/` (`summary.json` for id, folder, and title; `prompt_history.jsonl` for the typed requests). A Grok session counts as running while `~/.grok/active_sessions.json` names it with a live process id. Headless `grok -p` runs are hidden like other scripted runs. Devin CLI sessions are read from `sessions.db` under `$DEVIN_HOME`, else the platform data dir (`~/Library/Application Support/devin/cli` on macOS, `~/.local/share/devin/cli` on Linux): the `sessions` table gives id, folder, title, and activity; `message_nodes` gives the user asks when the CLI build has it, otherwise `transcripts/<id>.json` carries the listing. Hidden sessions are skipped. Devin has no Everett hooks, so delivery is a headless `devin --resume <id>` run.
 
 T3 Code is a desktop GUI that runs Codex, Claude Code, and Grok underneath. Everett marks the
 matching session with source `t3code` (`[t3code]` in `ls`) and uses the thread title when needed.
-Automatic sends use the inbox; delivery requires the underlying harness's hooks. CLI resume is
-refused because it would fork T3's own resume point. You can also continue the thread in T3 Code.
+Active projections with a real provider ID also supply sessions when the local provider
+transcript is absent. Current v2 and legacy stores are supported; see the
+[T3 discovery and polling guide](docs/t3code.md).
+Automatic sends queue work in the inbox. Hooks can inject it only if T3's provider runtime
+actually loads and runs them; queuing alone does not prove pickup. Otherwise the receiving
+thread calls `everett_inbox(session_id="<underlying-provider-session-id>")` and answers with
+`everett_send(reply_to="<message-id>", text="…", session_id="<underlying-provider-session-id>")`.
+Verify the Everett tools are available inside that T3 thread, and use `everett_core` for shared
+memory. CLI resume is refused because it would fork T3's own resume point.
 
 Sessions that Everett spawns are recorded in `~/.everett/spawned.jsonl`, so they show in `ls` even though they ran headless.
 
@@ -160,7 +196,7 @@ Exit codes: 2 bad input, 3 no Jev key with `--router jev`, 4 session stayed busy
 
 Headless resume only works on a session nobody has open. When a session is running, Everett delivers into it instead: the request goes to the session's inbox, and the session's own hooks inject it at its next turn or, if it is busy, right after its next tool call.
 
-1. **Which path.** `send --mode auto` (the default) uses the inbox when a harness process is attached to the target: Everett's hooks recorded a live process for it (`~/.everett/inbox/live/<id>.json`), or its id is on a running harness command line. T3 Code sessions always use the inbox, because a CLI resume would fork the thread. Everything else is resumed headless, as before. `--mode resume` and `--mode inbox` force a path.
+1. **Which path.** `send --mode auto` (the default) uses the inbox when a harness process is attached to the target: Everett's hooks recorded a live process for it (`~/.everett/inbox/live/<id>.json`), or its id is on a running harness command line. T3 Code sessions always use the inbox, because a CLI resume would fork the thread. Everything else is resumed headless, as before. `--mode inbox` forces inbox delivery; `--mode resume` forces headless resume except for T3, where it is refused.
 2. **Inbox.** `~/.everett/inbox/<session-id>.jsonl`, one message per line: `id`, `from` (the sender's session id, or `human` from a terminal), `from_harness`, `from_card`, `text`, `ts`, `reply_to`, `hops`, `kind` (`message`, `reply`, or `event`). Delivered ids go to `<session-id>.done`. Undelivered messages expire after 7 days.
 3. **Injection.** The hook adds at most 5 messages (2,000 characters each, 6,000 in total) as context, marked as coming from Everett with the sender's session and card, and marks exactly those delivered. The rest arrive at the next hook. The hook reads local files only, takes about 40 ms, and prints nothing on any error.
 4. **Replies.** The receiving agent answers with `everett_send(reply_to="<id>", text=…)` or `everett reply <id> "<text>"`. The reply lands in the sender's inbox and is injected there the same way. A sender can instead block on it: `everett send --wait 120 …` or `everett_send(wait=120)`. `everett inbox` / `everett_inbox` read an inbox directly.
@@ -282,16 +318,17 @@ everett install-mcp --apply    # back up, then register (idempotent)
 - **Codex**: an `[mcp_servers.everett]` block in `~/.codex/config.toml`.
 - **OMP**: `mcpServers.everett` in `~/.omp/agent/mcp.json`. OMP also imports Claude Code's servers.
 - **Grok CLI**: `grok mcp add everett <python> -- -m everett mcp`, or `--apply` appends an `[mcp_servers.everett]` block to `~/.grok/config.toml`. Grok also imports Claude Code's servers by default. Included by default when `~/.grok` exists.
+- **Devin CLI (v3000.3+)**: `everett install-mcp --devin --apply` merges `mcpServers.everett` into `~/.config/devin/mcp_config.json` (Windows: `%APPDATA%/devin/mcp_config.json`). This is separate from the session store configured by `DEVIN_HOME`. Existing servers and unrelated environment values are preserved; use `--repair --apply` to back up and refresh a stale registration. Doctor and onboarding recognize Devin MCP, but no native hook or automatic caller-id environment variable is assumed.
 
-The registration uses the Python interpreter and package path of the install you ran it from.
-For another MCP client, configure a stdio server with that interpreter as `command` and
-`["-m", "everett", "mcp"]` as `args`. `python -m everett mcp` is also a valid launcher when
+The registration uses the install you ran it from: the Rust executable with `["mcp"]`, or
+the Python interpreter and package path with `["-m", "everett", "mcp"]`. For another MCP
+client, copy the launcher printed by a dry run. `python -m everett mcp` is also valid when
 that Python has Everett installed. Restart clients after changing their registration.
 
 **Caller identity.** Everett reads the calling session from the environment the harness gives the server: `CLAUDE_CODE_SESSION_ID` (Claude Code), `CODEX_THREAD_ID` (Codex), `HERMES_SESSION_ID` (Hermes), `PI_SESSION_FILE` (Pi), or `GROK_SESSION_ID` (Grok documents it for hooks; for MCP servers it is unverified). `EVERETT_SESSION_ID` overrides all of them. OMP and the Devin CLI expose none. When nothing is detected, agents pass `session_id` to `everett_send` and `everett_card`. An MCP server starts once per session, so after a harness switches sessions in place (for example `/clear`), pass `session_id` explicitly.
 
 **Safety.**
-- The server never sends to the caller's own session.
+- The server refuses self-send when the caller's identity is known. If `everett_whoami` cannot identify you, pass your own `session_id`; do not guess another session's identity from its folder or recency.
 - `EVERETT_HOPS` travels through every delivery, and a request that has already been forwarded 3 times is refused, so two agents cannot ping-pong.
 - A new session starts only with `spawn: true`.
 - `everett_learn` runs the secret filter.
@@ -336,7 +373,7 @@ to a cloud service for plain `ls`, local routing, or inbox delivery.
 | --- | --- |
 | `everett: command not found` | Run `pipx ensurepath`, open a new terminal, then `everett --version`. If needed, reinstall from the GitHub URL above. |
 | `No module named everett` | Use the Python from Everett's venv; a pipx install is isolated from your system Python. `everett install-mcp --apply` records the correct interpreter. |
-| MCP client shows zero tools | Run `everett doctor`. It must list **10 tools over stdio**. For a stale/disabled launcher, run `everett install-mcp --claude --repair --apply` (replace `--claude` with `--codex`, `--omp` or `--grok`), then restart/enable the server in the client. Fix malformed config before repair. |
+| MCP client shows zero tools | Run `everett doctor`. It must list **10 tools over stdio**. For a stale/disabled launcher, run `everett install-mcp --claude --repair --apply` (replace `--claude` with `--codex`, `--omp`, `--grok` or `--devin`), then restart/enable the server in the client. Fix malformed config before repair. |
 | Session not found / no live reply | Start a harness session or run `everett --hours 168 ls` for older ones; send to its exact id or title. In MCP, pass `hours: 168` to listing and sending. Hook injection needs enabled/trusted hooks; Pi/Hermes poll `everett_inbox`. A queued message is not a read receipt. |
 | Codex reports `Interrupted system call (os error 4)` | Delivery is unconfirmed. Check the target session before retrying; for an open session with Everett hooks, use `--mode inbox` (MCP: `mode: "inbox"`). Failed resumes are not retried automatically. |
 | Shared fact missing / scheduling unavailable | Run `everett trunk merge --llm none`, then `everett core`. Automatic launchd scheduling and default desktop notifications require macOS; manual merging works on Linux. |

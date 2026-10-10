@@ -379,6 +379,70 @@ fn external_delivery_refuses_resume_and_spawn_even_with_live_process_evidence() 
 }
 
 #[test]
+fn replies_resolve_inside_the_bound_inbox_not_any_inbox() {
+    let fx = fixture();
+    let ts = everett::session::now();
+    let inbound = |from: &str| {
+        json!({"id":"dup-1","from":from,"from_harness":"","from_card":"","to":"dot-bound",
+               "text":"ping","ts":ts,"reply_to":"","hops":1,"kind":"message"})
+        .to_string()
+            + "\n"
+    };
+    fx.write(".everett/inbox/dot-bound.jsonl", &inbound("agent-two"));
+    fx.write(
+        ".everett/inbox/attacker.jsonl",
+        &inbound("attacker").replace("\"to\":\"dot-bound\"", "\"to\":\"attacker\""),
+    );
+    let results = mcp(
+        &fx,
+        &[(
+            "everett_send",
+            json!({"text": "bound reply", "reply_to": "dup-1"}),
+        )],
+        "dot-bound",
+        "openai-dot",
+    );
+    assert_eq!(data(&results[0])["to"], "agent-two");
+    let results = mcp(&fx, &[("everett_inbox", json!({}))], "agent-two", "");
+    assert_eq!(data(&results[0])["messages"][0]["text"], "bound reply");
+    assert!(!std::fs::read_to_string(fx.home().join(".everett/inbox/attacker.jsonl"))
+        .unwrap()
+        .contains("bound reply"));
+}
+
+#[test]
+fn oversized_inbox_polls_deliver_everything_without_loss() {
+    let fx = fixture();
+    let ts = everett::session::now();
+    let body: String = (0..6)
+        .map(|i| {
+            json!({"id":format!("big-{i}"),"from":"agent-two","from_harness":"","from_card":"",
+                   "to":"dot-bound","text":"x".repeat(60_000),"ts":ts,"reply_to":"",
+                   "hops":1,"kind":"message"})
+            .to_string()
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+        + "\n";
+    fx.write(".everett/inbox/dot-bound.jsonl", &body);
+    let mut seen: Vec<String> = Vec::new();
+    for _ in 0..2 {
+        let results = mcp(&fx, &[("everett_inbox", json!({}))], "dot-bound", "openai-dot");
+        let messages = data(&results[0])["messages"].as_array().unwrap();
+        seen.extend(
+            messages
+                .iter()
+                .map(|m| m["id"].as_str().unwrap().to_string()),
+        );
+    }
+    seen.sort();
+    assert_eq!(
+        seen,
+        (0..6).map(|i| format!("big-{i}")).collect::<Vec<_>>()
+    );
+}
+
+#[test]
 fn stdio_mcp_queues_polls_and_replies_for_both_external_harnesses() {
     let fx = fixture();
     for harness in external::HARNESSES {

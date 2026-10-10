@@ -18,6 +18,9 @@ const INVALID_REQUEST: i64 = -32600;
 const METHOD_NOT_FOUND: i64 = -32601;
 const INVALID_PARAMS: i64 = -32602;
 const INTERNAL_ERROR: i64 = -32603;
+/// Largest encoded tool result the gateway forwards; bigger replies would be
+/// dropped after delivery, so batch under it instead of consuming the inbox.
+const MAX_TOOL_RESULT: usize = 240 * 1024;
 
 const INSTRUCTIONS: &str =
     "Everett is the layer above every coding-agent session on this machine (Claude Code, Codex, OMP, Pi, Hermes). \
@@ -438,14 +441,14 @@ fn tool_send(args: &Map<String, Value>) -> std::result::Result<Map<String, Value
             "Queued for the external agent to poll through MCP. \
              No provider wake-up or consumption is confirmed. Read replies with everett_inbox.".to_string()
         } else {
-            format!(
+            result.get("pickup_note").and_then(Value::as_str).map(str::to_string).unwrap_or_else(|| format!(
                 "Queued; it is injected into that live session at its next turn or tool call.{}",
                 if result.get("reply").map(|r| !r.is_null()).unwrap_or(false) {
                     ""
                 } else {
                     " Its reply will arrive in your inbox (injected by your hooks, or read it with everett_inbox)."
                 }
-            )
+            ))
         };
         let mut out = decision.clone();
         out.insert("delivered".into(), json!(true));
@@ -574,26 +577,30 @@ fn tool_inbox(args: &Map<String, Value>) -> std::result::Result<Map<String, Valu
         return Err(ToolFailure::Params("\"peek\" must be a boolean".to_string()));
     }
     let items = crate::inbox::pending(&sid, None);
+    let mut messages: Vec<Value> = Vec::new();
+    let mut out = Map::new();
+    out.insert("session".into(), json!(sid));
+    out.insert("messages".into(), json!(messages));
+    for m in &items {
+        let mut msg = Map::new();
+        for k in ["id", "kind", "from", "from_harness", "from_card", "text", "reply_to", "hops", "ts"] {
+            msg.insert(k.to_string(), m.get(k).cloned().unwrap_or(Value::Null));
+        }
+        messages.push(Value::Object(msg));
+        out.insert("messages".into(), json!(messages));
+        if serde_json::to_vec(&out).map(|v| v.len()).unwrap_or(usize::MAX) > MAX_TOOL_RESULT {
+            messages.pop();
+            out.insert("messages".into(), json!(messages));
+            break;
+        }
+    }
     if !peek {
-        let ids: Vec<&str> = items
+        let ids: Vec<&str> = messages
             .iter()
             .filter_map(|m| m.get("id").and_then(|v| v.as_str()))
             .collect();
         crate::inbox::mark_done(&sid, &ids);
     }
-    let messages: Vec<Value> = items
-        .iter()
-        .map(|m| {
-            let mut msg = Map::new();
-            for k in ["id", "kind", "from", "from_harness", "from_card", "text", "reply_to", "hops", "ts"] {
-                msg.insert(k.to_string(), m.get(k).cloned().unwrap_or(Value::Null));
-            }
-            Value::Object(msg)
-        })
-        .collect();
-    let mut out = Map::new();
-    out.insert("session".into(), json!(sid));
-    out.insert("messages".into(), json!(messages));
     Ok(out)
 }
 

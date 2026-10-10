@@ -13,7 +13,7 @@ pub const ALL_HOURS: f64 = 24.0 * 365.0 * 5.0;
 
 /// Harnesses whose hooks live in a settings file Everett can toggle event-by-event.
 pub const HOOK_HARNESSES: &[&str] = &["claude", "codex", "grok"];
-pub const MCP_HARNESSES: &[&str] = &["claude", "codex", "omp", "grok"];
+pub const MCP_HARNESSES: &[&str] = &["claude", "codex", "omp", "grok", "devin"];
 /// `hooks_common::auto_card` only knows how to build a fallback card for these harnesses.
 pub const BACKFILL_HARNESSES: &[&str] = &["claude", "codex", "grok"];
 
