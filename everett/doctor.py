@@ -32,7 +32,8 @@ WARNINGS = []
 def detected_harnesses() -> list[str]:
     return [h for h, rel in STORES.items() if h != 't3code' and
             (shutil.which(h) or (home() / rel).exists() or
-             (h == 'devin' and any(d.is_dir() for d in devin_adapter.data_dirs())))]
+             (h == 'devin' and (install.mcp_path(h).exists() or
+                               any(d.is_dir() for d in devin_adapter.data_dirs()))))]
 
 
 def probe_mcp(launch: tuple | None = None) -> tuple[bool, str]:
@@ -128,7 +129,7 @@ def run(hours: float = 72) -> int:
     ok, detail = probe_mcp()
     problems += not ok
     _line(ok, f'  server: {detail}')
-    mcp_harnesses = [h for h in ('claude', 'codex', 'omp', 'grok') if h in seen or install.mcp_path(h).exists()]
+    mcp_harnesses = [h for h in ('claude', 'codex', 'omp', 'grok', 'devin') if h in seen or install.mcp_path(h).exists()]
     missing_mcp, stale_mcp = [], []
     for harness in mcp_harnesses:
         status = install.mcp_status(harness)

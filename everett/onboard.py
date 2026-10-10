@@ -27,7 +27,7 @@ ALL_HOURS = 24 * 365 * 5
 
 # Harnesses whose hooks live in a settings file Everett can toggle event-by-event (see install.HOOKS).
 HOOK_HARNESSES = ('claude', 'codex', 'grok')
-MCP_HARNESSES = ('claude', 'codex', 'omp', 'grok')
+MCP_HARNESSES = ('claude', 'codex', 'omp', 'grok', 'devin')
 # everett/hooks/common._auto_card only knows how to build a fallback card for these harnesses.
 BACKFILL_HARNESSES = ('claude', 'codex', 'grok')
 

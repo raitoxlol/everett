@@ -76,7 +76,7 @@ pub fn scan(since_hours: f64, include_auto: bool, limit: Option<usize>, harness:
         }
     }
     sessions.extend(external::scan(harness));
-    t3code::annotate(&mut sessions, None);
+    t3code::overlay(&mut sessions, since_hours, harness);
     for s in sessions.iter_mut() {
         if s.first_user.is_empty() {
             s.first_user = s.last_user.clone();

@@ -35,7 +35,8 @@ pub fn command_for(session: &Session, text: &str) -> Result<Vec<String>> {
         return Err(EverettError::new(
             2,
             "T3 Code owns this thread's resume point, so a CLI resume would fork it. \
-             Continue it in T3 Code, or use inbox delivery if that session has Everett hooks.",
+             Continue it in T3 Code, or queue inbox delivery and explicitly poll everett_inbox \
+             with the provider session_id.",
         ));
     }
     match session.harness.as_str() {
@@ -631,6 +632,14 @@ pub fn send_inbox(session: &Session, text: &str, wait: f64, caller: Option<&str>
     if external::is_external(&session.harness) {
         result.insert("queued".into(), json!(true));
     }
+    if session.source == "t3code" {
+        result.insert("hooked".into(), json!(false));
+        result.insert("pickup".into(), json!("poll"));
+        result.insert("poll_session_id".into(), json!(session.id));
+        result.insert("pickup_note".into(), json!(
+            "Queued only. In T3 Code, call everett_inbox with this provider session_id; reply with everett_send(reply_to=<message id>, text=..., session_id=...)."
+        ));
+    }
     if wait > 0.0 {
         let mid = message.get("id").and_then(|v| v.as_str()).unwrap_or("");
         if let Some(reply) = inbox::wait_reply(sender, mid, wait, poll) {
@@ -642,11 +651,27 @@ pub fn send_inbox(session: &Session, text: &str, wait: f64, caller: Option<&str>
 }
 
 /// Answer an inbox message: the reply goes to the original sender's inbox.
+/// A session caller resolves the message inside its own inbox only, so a
+/// colliding id in another inbox can never reroute the reply.
 pub fn reply(message_id: &str, text: &str, caller: Option<&str>) -> Result<Map<String, Value>> {
-    let Some(original) = inbox::find(message_id.trim()) else {
+    let caller_id = caller.map(str::trim).unwrap_or("");
+    let message_id = message_id.trim();
+    let original = if caller_id.is_empty() {
+        inbox::find(message_id)
+    } else {
+        inbox::find_in(caller_id, message_id)
+    };
+    let Some(original) = original else {
         return Err(EverettError::new(
             2,
-            format!("No message with id {:?} in any Everett inbox.", message_id),
+            if caller_id.is_empty() {
+                format!("No message with id {:?} in any Everett inbox.", message_id)
+            } else {
+                format!(
+                    "No message with id {:?} addressed to this session in its Everett inbox.",
+                    message_id
+                )
+            },
         ));
     };
     let hops = inbox::reply_hops(&original, current_hops())?;

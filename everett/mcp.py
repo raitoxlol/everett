@@ -313,7 +313,7 @@ def tool_send(args):
         refuse_self(session, caller)
         if delivery_mode(session, mode) == 'inbox':
             result = send_inbox(session, text, wait=float(wait), caller=caller)
-            note = ('Queued; it is injected into that live session at its next turn or tool call.' +
+            note = result.get('pickup_note') or ('Queued; it is injected into that live session at its next turn or tool call.' +
                     ('' if result['reply'] is not None else
                      ' Its reply will arrive in your inbox (injected by your hooks, or read it with everett_inbox).'))
             if external.is_external(session.harness):

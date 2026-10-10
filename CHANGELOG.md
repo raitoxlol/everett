@@ -11,6 +11,22 @@
   permissions, private stdio or authenticated loopback HTTP, and exact-ID-only backend delivery.
   Live account connections, automatic wake-up, and cross-device transport are not included.
 
+### Local dashboard
+
+- Add `everett dashboard` to the Rust binary: a Mac-first, loopback-only HTML
+  dashboard with recent sessions, Everett cards, harness/state/search filters,
+  inline details, and copyable CLI actions.
+- Use a restrained orange dispatch-desk identity with responsive desktop and
+  narrow-window layouts, keyboard focus, and reduced-motion support.
+- Keep provider stores read-only and reject write methods and foreign Host
+  headers. Account-backed hosted/cross-device access remains future scope.
+
+- **Current T3 discovery** — read active v2 projections or the legacy store, map driver/native provider IDs, and fill missing-transcript sessions without fabricating transcripts. Filter deleted/archived projects and threads, deduplicate provider sessions, and apply the look-back/harness filters before listing limits.
+- **T3 continuation** — keep sends inbox-only, report explicit polling instead of claiming hook pickup, and guide routes back to T3 rather than provider CLI resume. Synthetic Python/Rust journeys cover polling, replies, and shared memory after merge; real T3 MCP inheritance remains unverified.
+- **Verification accuracy** — exercise the selected CLI's MCP launcher in the release journey; freeze the synthetic Devin ISO fixture's clock so its 72-hour window cannot expire.
+- **Devin MCP registration** — `install-mcp --devin` supports the dedicated CLI MCP config on Linux/macOS and Windows, with existing dry-run, backup, repair, and idempotency behavior. Doctor and onboarding recognize the registration without adding native hooks or assuming a caller-id variable.
+- **Stable Devin timestamp regression** — freeze the synthetic ISO timestamp fixture's clock so the default 72-hour look-back does not expire it.
+
 ## 1.4.0 — 2026-10-05
 
 ### Rust binary releases

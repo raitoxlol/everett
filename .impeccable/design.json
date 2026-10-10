@@ -1,0 +1,76 @@
+{
+  "schemaVersion": 2,
+  "generatedAt": "2026-10-09T10:52:04Z",
+  "title": "Design System: Everett dispatch desk",
+  "extensions": {
+    "colorMeta": {
+      "orange": { "role": "primary", "displayName": "Oxide orange" },
+      "paper": { "role": "neutral", "displayName": "Warm paper" },
+      "carbon": { "role": "neutral", "displayName": "Carbon rail" }
+    },
+    "typographyMeta": {
+      "title": { "displayName": "Operational title", "purpose": "Compact page titles, not marketing display type." },
+      "code": { "displayName": "Command and metadata", "purpose": "Commands, IDs, paths, and measurements only." }
+    },
+    "shadows": [
+      { "name": "manifest", "value": "0 12px 30px rgba(48,37,24,.07)", "purpose": "Separate the primary manifest from paper." },
+      { "name": "summary", "value": "0 8px 24px rgba(48,37,24,.06)", "purpose": "Lift the compact summary strip." }
+    ],
+    "motion": [
+      { "name": "route-duration", "value": "180ms", "purpose": "Reposition activity stops after filters change." },
+      { "name": "ease-out", "value": "cubic-bezier(.2,.8,.2,1)", "purpose": "Route movement and details chevron; removed for reduced motion." }
+    ],
+    "breakpoints": [
+      { "name": "compact", "value": "1080px" },
+      { "name": "narrow", "value": "760px" }
+    ]
+  },
+  "components": [
+    {
+      "name": "Primary command", "kind": "button", "refersTo": "button-primary",
+      "description": "Refresh or copy an explicitly named command.",
+      "html": "<button class=\"ds-primary\">Refresh</button>",
+      "css": ".ds-primary{background:var(--orange-deep);color:var(--paper-raised);border:1px solid var(--orange-deep);border-radius:7px;padding:8px 14px;min-height:38px;font:700 .82rem ui-sans-serif,system-ui;cursor:pointer}.ds-primary:hover{background:#742b0d}.ds-primary:focus-visible{outline:3px solid var(--focus);outline-offset:3px}.ds-primary:active{transform:translateY(1px)}"
+    },
+    {
+      "name": "Session search", "kind": "input", "refersTo": "input-search",
+      "description": "Search project, card, or session ID.",
+      "html": "<input class=\"ds-search\" type=\"search\" aria-label=\"Search sessions\" placeholder=\"Search project, card, or ID\">",
+      "css": ".ds-search{height:38px;padding:0 12px;background:#fffdf8;color:var(--ink);border:1px solid #bdb2a4;border-radius:7px;caret-color:var(--orange-deep);font:14px ui-sans-serif,system-ui}.ds-search::placeholder{color:#646961}.ds-search:focus-visible{outline:3px solid var(--focus);outline-offset:3px}"
+    },
+    {
+      "name": "Rail navigation", "kind": "nav",
+      "description": "Standard section links on charcoal.",
+      "html": "<nav class=\"ds-nav\"><a href=\"#sessions\" aria-current=\"location\">Sessions</a><a href=\"#core\">Shared core</a></nav>",
+      "css": ".ds-nav{display:grid;gap:5px;padding:12px;background:var(--carbon)}.ds-nav a{padding:8px 10px;min-height:26px;color:#cbd0ca;border-radius:7px;text-decoration:none;font:620 .9rem ui-sans-serif,system-ui}.ds-nav a:hover{color:#fffaf1;background:#303632}.ds-nav a[aria-current]{color:#fffaf1;background:#3b332d}.ds-nav a:focus-visible{outline:3px solid #e6a175;outline-offset:3px}"
+    },
+    {
+      "name": "Harness label", "kind": "chip", "refersTo": "harness-tag",
+      "description": "Provider identity, not a control or status signal.",
+      "html": "<span class=\"ds-harness\">Claude Code</span>",
+      "css": ".ds-harness{display:inline-block;padding:4px 7px;color:#4c453d;background:#ece4d8;border:1px solid #d2c7b9;border-radius:5px;font:760 .67rem ui-sans-serif,system-ui}"
+    },
+    {
+      "name": "Activity stop", "kind": "custom",
+      "description": "A recent-activity marker beside a session summary.",
+      "html": "<div class=\"ds-stop\"><span aria-hidden=\"true\">1</span><strong>Active</strong></div>",
+      "css": ".ds-stop{display:flex;align-items:center;gap:12px;padding:12px;color:var(--orange-deep);background:var(--paper-raised);font:750 .75rem ui-sans-serif,system-ui}.ds-stop span{display:grid;place-items:center;width:25px;height:25px;border:2px solid var(--orange);border-radius:50%;background:var(--orange);color:white;box-shadow:0 3px 12px rgba(182,79,26,.25);font-size:.61rem}"
+    }
+  ],
+  "narrative": {
+    "northStar": "Everett dispatch desk",
+    "overview": "The dashboard borrows the compact information structure and routing marks of parcel labels. It remains a standard browser interface for inspecting existing coding-agent sessions. The manifest, not decoration, owns the first viewport.",
+    "keyCharacteristics": [
+      "Warm paper surfaces against a charcoal navigation rail.",
+      "Restrained orange on live activity and primary actions.",
+      "A vertical activity route beside compact session rows.",
+      "Native details disclosure with cards and copyable CLI commands."
+    ],
+    "rules": [
+      { "name": "The Signal Rule", "body": "Orange marks activity and action. Red marks attention. Green marks a detected harness. Status always has a text label as well as color.", "section": "colors" },
+      { "name": "The Manifest Rule", "body": "Filters sit directly above sessions. Details expand in place. The dashboard never uses a modal for session inspection.", "section": "layout" }
+    ],
+    "dos": ["Do keep real session content primary.", "Do keep provider stores and commands read-only in the dashboard.", "Do show status text, visible focus, and reduced-motion behavior."],
+    "donts": ["Don't imply a heartbeat from Everett's recency heuristic.", "Don't imply that copying a command executes it.", "Don't add accounts, remote sync, or hosted storage to this local surface."]
+  }
+}

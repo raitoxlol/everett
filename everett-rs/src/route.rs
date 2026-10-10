@@ -149,6 +149,12 @@ pub fn resume_command(session: &Session, text: &str) -> String {
             shlex_quote(&session.id)
         );
     }
+    if session.source == "t3code" {
+        return format!(
+            "# Continue in T3 Code; poll everett_inbox(session_id={}). Do not resume this thread with the provider CLI.",
+            json!(session.id)
+        );
+    }
     let cwd = if session.cwd.is_empty() { "." } else { &session.cwd };
     let cd = format!("cd {}", shlex_quote(cwd));
     match session.harness.as_str() {

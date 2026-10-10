@@ -130,6 +130,9 @@ def resume_command(session: Session, text: str) -> str:
     if external.is_external(session.harness):
         return (f'everett send {shlex.quote(text)} --to {shlex.quote(session.id)} --mode inbox'
                 '   # queues only; the external agent must poll Everett through MCP')
+    if session.source == 't3code':
+        return (f'# Continue in T3 Code; poll everett_inbox(session_id={json.dumps(session.id)}). '
+                'Do not resume this thread with the provider CLI.')
     cd = f'cd {shlex.quote(session.cwd or ".")}'
     if session.harness == 'claude':
         return f'{cd} && claude --resume {shlex.quote(session.id)} {shlex.quote(text)}'
