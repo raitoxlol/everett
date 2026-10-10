@@ -48,6 +48,28 @@
 - Keep user text that merely starts with `<` visible by allowlisting the known
   injected tag names.
 - `launchctl bootout` before `bootstrap` when re-applying the merge schedule.
+
+### Audit hardening (2)
+
+- Lock inbox reads and writes per session and compact the inbox, `.done`, and
+  stale live/state records on take; live records now expire after 24 h so a
+  recycled PID cannot keep a dead session attached.
+- Lock and atomically replace `subscriptions.json`; lock and atomically write
+  `config.toml` with proper TOML escaping and non-NotFound read errors surfaced.
+- Embed the absolute binary path in the generated OMP extension (basename
+  fallback), bound its card-context spawn with the same 3 s timeout, and guard
+  `markSession` so malformed hook context cannot break OMP.
+- Contain MCP tool panics behind a JSON-RPC internal error; hooks write through
+  a fallible writer, run under `catch_unwind`, and treat only a non-empty
+  `EVERETT_SEND` as set.
+- Parse naive ISO timestamps as local time like Python, escape `|` in the trunk
+  cwd column, share the harness-binary check between `ls` and `send`, reject
+  Grok pids ≤ 1, keep tail-window records that start on a line boundary, list
+  Hermes databases that lack a `messages` table, kill the process group on send
+  timeout, wrap spawn `mkstemp` failures, refuse a Pi resume without a session
+  file, extract the resumable UUID from Codex rollout filenames, show the real
+  `--session-id` shape in Grok dry-run output, and honor an empty OMP hook-event
+  selection before the OMP early return.
 - Honor `everett cards --hours` without `--regenerate-auto`.
 
 ## 1.4.0 — 2026-10-05
