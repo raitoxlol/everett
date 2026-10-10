@@ -6,6 +6,7 @@ use std::rc::Rc;
 
 const ASK: &str = "what's the status of atlas";
 
+#[allow(clippy::too_many_arguments)]
 fn session(harness: &str, id: &str, cwd: &str, age: f64, title: &str, card: &str, first: &str, last: &str) -> Session {
     let mut s = Session::new(harness, id, cwd, &format!("/tmp/{}.jsonl", id), "", now() - age);
     s.title = title.into();

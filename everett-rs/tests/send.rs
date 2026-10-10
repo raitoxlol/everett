@@ -10,7 +10,10 @@ use std::collections::HashMap;
 use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
 
-fn make_db(path: &Path, rows: &[(&str, &str, f64, &str, &str, Option<&str>, Option<&str>, i64, f64)], messages: &[(&str, &str, &str, f64)]) {
+/// (id, harness, started, cwd, title, model, parent, turns, last_active) for the synthetic T3 db.
+type Row<'a> = (&'a str, &'a str, f64, &'a str, &'a str, Option<&'a str>, Option<&'a str>, i64, f64);
+
+fn make_db(path: &Path, rows: &[Row], messages: &[(&str, &str, &str, f64)]) {
     std::fs::create_dir_all(path.parent().unwrap()).unwrap();
     let con = rusqlite::Connection::open(path).unwrap();
     con.execute_batch(

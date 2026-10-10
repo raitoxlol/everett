@@ -17,6 +17,13 @@ everett onboard --yes --no-backfill
 everett doctor
 ```
 
+Or via Homebrew or Cargo:
+
+```bash
+brew tap raitoxlol/tap && brew install everett
+cargo install --git https://github.com/raitoxlol/everett everett   # from source
+```
+
 Onboarding detects installed CLIs even before their first session. It backs up and registers
 hooks and MCP for detected Claude Code, Codex, OMP, and Grok installations. Restart those clients,
 then run `everett ls`. Doctor checks the registered launchers and lists your exact next steps.
@@ -25,13 +32,6 @@ No router key or model call is needed for this setup. Codex may ask you to enabl
 
 `install.sh` verifies the release checksum; `EVERETT_VERSION=vX.Y.Z` pins a release and
 `EVERETT_INSTALL_DIR` changes the target directory. Rerun it to update.
-
-### Other install options
-
-```bash
-brew tap raitoxlol/tap
-brew install everett
-```
 
 From source (needs a Rust toolchain): `cargo install --git https://github.com/raitoxlol/everett everett`,
 or `cargo install --path everett-rs` from a checkout.
@@ -155,6 +155,9 @@ Done. MAX_RETRIES is now 5 and the backoff test covers the cap.
 | `everett core [show\|edit-path\|history] [--project P]` | Shows the core a new session in this folder receives, the file to edit, or past merges. |
 | `everett trunk [view] [--dry-run]` | Writes the session list as a Markdown note into your notes vault (optional). |
 | `everett trunk schedule [--at HH:MM] [--remove] [--llm claude\|codex\|none] [--apply]` | Prints (default) or, with `--apply`, installs/removes a macOS LaunchAgent that runs `everett trunk merge` nightly (default 04:00, `--llm claude`). See [Nightly auto-merge](#nightly-auto-merge). |
+| `everett login [--device NAME] [--open] [--force] [--json]` | Native Rust binary only: signs this device in to an Everett account with the OAuth device-code flow (see [Accounts](#accounts)). |
+| `everett whoami [--json]` | Prints the signed-in account (email, issuer, device); refreshes a stale token first. |
+| `everett logout [--json]` | Revokes this device's refresh token and deletes the local credential. |
 
 Global option: `--hours N` sets the look-back window (default 72).
 
@@ -331,7 +334,7 @@ For another MCP client, copy the launcher printed by a dry run. Restart clients 
 
 **Safety.**
 - The server refuses self-send when the caller's identity is known. If `everett_whoami` cannot identify you, pass your own `session_id`; do not guess another session's identity from its folder or recency.
-- `EVERETT_HOPS` travels through every delivery, and a request that has already been forwarded 3 times is refused, so two agents cannot ping-pong.
+- `EVERETT_HOPS` travels through every delivery, and a request that has already been forwarded 3 times is refused, so two agents cannot ping-pong. A live session also inherits the hop count of messages delivered to it within the last 15 minutes (older deliveries no longer count against it).
 - A new session starts only with `spawn: true`.
 - `everett_learn` runs the secret filter.
 - Calls are logged to `~/.everett/mcp.log` with tool name, argument names, caller id, result status and duration. Argument values and replies are not logged. Existing log entries from older versions are preserved.
@@ -352,9 +355,25 @@ merge_llm = "claude"          # trunk merge engine: claude | codex | none
 notify = "osascript"          # blocked/needs-input: osascript | command | both | none
 notify_command = "…"          # e.g. a push-notification command; gets the summary as $1 (sets notify default to both)
 escalate_minutes = 30         # re-notify once when a session stays blocked this long (0 = never)
+
+[auth]
+issuer = "https://login.example.com/"   # OIDC issuer for `everett login` (EVERETT_AUTH_ISSUER)
+client_id = "…"                         # public client id (EVERETT_AUTH_CLIENT_ID)
 ```
 
-Environment overrides: `EVERETT_VAULT`, `EVERETT_VAULT_DIR`, `EVERETT_HARNESS`, `EVERETT_ROUTER`, `TYPESAFE_API_KEY`, `EVERETT_NOTIFY`, `EVERETT_NOTIFY_COMMAND`, `EVERETT_ESCALATE_MINUTES`, and `EVERETT_HOME` (the root used in place of `~`).
+Environment overrides: `EVERETT_VAULT`, `EVERETT_VAULT_DIR`, `EVERETT_HARNESS`, `EVERETT_ROUTER`, `TYPESAFE_API_KEY`, `EVERETT_NOTIFY`, `EVERETT_NOTIFY_COMMAND`, `EVERETT_ESCALATE_MINUTES`, `EVERETT_AUTH_ISSUER`, `EVERETT_AUTH_CLIENT_ID`, and `EVERETT_HOME` (the root used in place of `~`).
+
+## Accounts
+
+Sign-in is optional — nothing in the local product requires it. `everett login`
+runs the OAuth 2.0 device-authorization grant (RFC 8628) against any OIDC
+issuer that supports it: approve on any device, and the terminal session is
+signed in, no browser or port needed. Tokens live in `~/.everett/auth.json`
+(mode 0600); `whoami` refreshes them when stale and `logout` revokes the
+refresh token at the provider. Point `auth.issuer` + `auth.client_id` at your
+own issuer (Auth0, Keycloak, Hydra, …) or the hosted Everett tenant once it
+exists. Accounts carry identity only — sessions, inboxes, and shared core stay
+local. Details: `docs/auth.md`.
 
 ## Privacy
 

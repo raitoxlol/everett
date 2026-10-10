@@ -16,7 +16,8 @@ use crate::session::home;
 use crate::timefmt::strftime_local;
 
 // harness -> [(event, hook subcommand, timeout)]
-pub const HOOKS: &[(&str, &[(&str, &str, i64)])] = &[
+type HookSpec = (&'static str, &'static str, i64);
+pub const HOOKS: &[(&str, &[HookSpec])] = &[
     (
         "claude",
         &[
@@ -71,13 +72,60 @@ pub fn omp_extension_path() -> PathBuf {
     home().join(".omp").join("agent").join("extensions").join("everett.ts")
 }
 
-/// The OMP extension body, adapted to shell out to this binary instead of python3 scripts.
+/// The OMP extension body, with this binary's absolute path baked in so OMP
+/// still finds it when its PATH differs from ours (basename is the fallback).
 pub fn omp_extension_source() -> String {
-    include_str!("omp_session_start.mjs").to_string()
+    include_str!("omp_session_start.mjs").replace("__EVERETT_BIN__", &exe())
 }
 
-fn is_native_hook(command: &str, script: &str) -> bool {
-    command.contains("everett") && command.trim_end().ends_with(&format!(" hook {}", script))
+/// `shlex.split`: whitespace-separated tokens honoring 'single'/"double" quotes
+/// and backslash escapes. None on an unterminated quote.
+fn command_tokens(command: &str) -> Option<Vec<String>> {
+    let mut tokens = Vec::new();
+    let mut cur = String::new();
+    let mut quote: Option<char> = None;
+    let mut started = false;
+    let mut chars = command.chars();
+    while let Some(c) = chars.next() {
+        match quote {
+            Some(q) => {
+                if c == q {
+                    quote = None;
+                } else {
+                    cur.push(c);
+                }
+            }
+            None => match c {
+                '\'' | '"' => {
+                    quote = Some(c);
+                    started = true;
+                }
+                '\\' => {
+                    if let Some(n) = chars.next() {
+                        cur.push(n);
+                    }
+                    started = true;
+                }
+                _ if c.is_whitespace() => {
+                    if started || !cur.is_empty() {
+                        tokens.push(std::mem::take(&mut cur));
+                    }
+                    started = false;
+                }
+                _ => {
+                    cur.push(c);
+                    started = true;
+                }
+            },
+        }
+    }
+    if quote.is_some() {
+        return None;
+    }
+    if started || !cur.is_empty() {
+        tokens.push(cur);
+    }
+    Some(tokens)
 }
 
 /// A hook registered by the retired Python package: `<python> <...>/everett/hooks/<script>.py`.
@@ -90,34 +138,61 @@ fn is_legacy_hook(command: &str) -> bool {
             .any(|(_, script, _)| command.ends_with(&format!("everett/hooks/{}.py", script)))
 }
 
-fn has_script(entries: &Value, script: &str) -> bool {
-    let Some(entries) = entries.as_array() else { return false };
-    entries
-        .iter()
-        .filter_map(|entry| entry.get("hooks").and_then(|h| h.as_array()))
-        .flatten()
-        .filter_map(|hook| hook.get("command").and_then(|c| c.as_str()))
-        .any(|command| is_native_hook(command, script))
+/// Some(true)=ok / Some(false)=stale for an Everett hook command registered for
+/// `script`, else None. A registration that still mentions Everett + the script
+/// but whose Everett binary is gone or non-executable is stale: it fails silently.
+fn hook_state(command: &str, script: &str) -> Option<bool> {
+    if !command.contains(script) || !command.contains("everett") {
+        return None;
+    }
+    if is_legacy_hook(command) {
+        return Some(false);
+    }
+    match command_tokens(command).and_then(|t| t.first().cloned()) {
+        Some(first) => Some(crate::proc::executable_ok(&first)),
+        None => Some(false),
+    }
 }
 
-/// Drop legacy Python hooks (and entries left empty); returns whether anything changed.
-fn remove_legacy_hooks(entries: &mut Vec<Value>) -> bool {
-    let before = entries.clone();
-    for entry in entries.iter_mut() {
-        if let Some(hooks) = entry.get_mut("hooks").and_then(|h| h.as_array_mut()) {
-            hooks.retain(|hook| !hook.get("command").and_then(|c| c.as_str()).map(is_legacy_hook).unwrap_or(false));
+/// 'ok' | 'stale' | 'missing' for Everett's registration of `script` in one event's entries.
+fn script_state(entries: &Value, script: &str) -> &'static str {
+    let mut stale = false;
+    if let Some(entries) = entries.as_array() {
+        for entry in entries {
+            let Some(hooks) = entry.get("hooks").and_then(|h| h.as_array()) else { continue };
+            for hook in hooks {
+                let command = hook.get("command").and_then(|c| c.as_str()).unwrap_or("");
+                match hook_state(command, script) {
+                    Some(true) => return "ok",
+                    Some(false) => stale = true,
+                    None => {}
+                }
+            }
         }
     }
-    entries.retain(|entry| entry.get("hooks").and_then(|h| h.as_array()).map(|h| !h.is_empty()).unwrap_or(true));
-    *entries != before
+    if stale { "stale" } else { "missing" }
 }
 
-/// Which of Everett's hook events are registered for a harness.
-pub fn installed(harness: &str, data: Option<&Map<String, Value>>) -> std::result::Result<HashMap<String, bool>, String> {
-    use std::collections::HashMap;
+/// 'ok' | 'stale' | 'missing' for the OMP extension file (the bundled extension
+/// shells out to `everett` on PATH, so a moved binary leaves it dead).
+fn omp_extension_state() -> &'static str {
+    let Ok(text) = fs::read_to_string(omp_extension_path()) else {
+        return "missing";
+    };
+    if text.contains("python3") {
+        return "stale";
+    }
+    if crate::proc::executable_ok("everett") {
+        "ok"
+    } else {
+        "stale"
+    }
+}
+
+/// Per-event 'ok' | 'stale' | 'missing' so doctor/apply can repair dead registrations.
+pub fn installed(harness: &str, data: Option<&Map<String, Value>>) -> std::result::Result<HashMap<String, String>, String> {
     if harness == "omp" {
-        let current = fs::read_to_string(omp_extension_path()).map(|text| !text.contains("python3")).unwrap_or(false);
-        return Ok(HashMap::from([("extension".to_string(), current)]));
+        return Ok(HashMap::from([("extension".to_string(), omp_extension_state().to_string())]));
     }
     let owned;
     let data = match data {
@@ -136,18 +211,16 @@ pub fn installed(harness: &str, data: Option<&Map<String, Value>>) -> std::resul
     let mut out = HashMap::new();
     for (event, script, _) in hooks_for(harness) {
         let entries = hooks.get(*event).cloned().unwrap_or(Value::Null);
-        out.insert(event.to_string(), has_script(&entries, script));
+        out.insert(event.to_string(), script_state(&entries, script).to_string());
     }
     Ok(out)
 }
 
-/// Return (merged settings, events added, events whose legacy Python hooks were replaced).
+/// (merged settings, events added, events whose legacy Python hooks were replaced)
+pub type Merged = (Map<String, Value>, Vec<String>, Vec<String>);
+
 /// Pure: does not touch the input.
-pub fn merge(
-    data: &Map<String, Value>,
-    harness: &str,
-    events: Option<&[String]>,
-) -> std::result::Result<(Map<String, Value>, Vec<String>, Vec<String>), String> {
+pub fn merge(data: &Map<String, Value>, harness: &str, events: Option<&[String]>) -> std::result::Result<Merged, String> {
     let mut data = data.clone();
     if !data.get("hooks").map(|h| h.is_object()).unwrap_or(true) {
         return Err("\"hooks\" is not an object".to_string());
@@ -165,13 +238,31 @@ pub fn merge(
         if hooks.get(*event).map(|e| !e.is_array()).unwrap_or(false) {
             return Err(format!("\"hooks.{}\" is not a list", event));
         }
+        let state = script_state(hooks.get(*event).unwrap_or(&Value::Null), script);
+        if state == "ok" {
+            continue;
+        }
         let entries = hooks.entry(event.to_string()).or_insert(Value::Array(Vec::new()));
         let entries = entries.as_array_mut().unwrap();
-        if remove_legacy_hooks(entries) && !migrated.iter().any(|e| e == event) {
-            migrated.push(event.to_string());
-        }
-        if has_script(&Value::Array(entries.clone()), script) {
-            continue;
+        if state == "stale" {
+            let legacy = entries.iter().any(|e| {
+                e.get("hooks").and_then(|h| h.as_array()).is_some_and(|list| {
+                    list.iter().any(|h| is_legacy_hook(h.get("command").and_then(|c| c.as_str()).unwrap_or("")))
+                })
+            });
+            if legacy {
+                migrated.push(event.to_string());
+            }
+            // Replace only Everett's own dead hooks; other hooks in this event stay.
+            for entry in entries.iter_mut() {
+                if let Some(list) = entry.get_mut("hooks").and_then(|h| h.as_array_mut()) {
+                    list.retain(|h| {
+                        hook_state(h.get("command").and_then(|c| c.as_str()).unwrap_or(""), script)
+                            != Some(false)
+                    });
+                }
+            }
+            entries.retain(|e| e.get("hooks").and_then(|h| h.as_array()).map(|h| !h.is_empty()).unwrap_or(true));
         }
         entries.push(json!({
             "hooks": [{"type": "command", "command": hook_command(script), "timeout": timeout}]
@@ -252,6 +343,9 @@ pub fn snippet(harness: &str) -> String {
 
 /// Install for one harness; returns a one-line report.
 pub fn apply(harness: &str, events: Option<&[String]>) -> std::result::Result<String, String> {
+    if events.map(|e| e.is_empty()).unwrap_or(false) {
+        return Ok(format!("{}: skipped (no hooks selected)", harness));
+    }
     if harness == "omp" {
         let path = omp_extension_path();
         let source = omp_extension_source();
@@ -268,9 +362,6 @@ pub fn apply(harness: &str, events: Option<&[String]>) -> std::result::Result<St
             path.display(),
             saved.map(|s| format!(" (backup {})", s.display())).unwrap_or_default()
         ));
-    }
-    if events.map(|e| e.is_empty()).unwrap_or(false) {
-        return Ok(format!("{}: skipped (no hooks selected)", harness));
     }
     let path = settings_path(harness);
     let data = load(&path)?;
@@ -416,18 +507,21 @@ pub fn mcp_status(harness: &str) -> (String, String) {
     {
         return ("stale".into(), "registration is not Everett stdio".to_string());
     }
-    let args: Vec<String> = entry
-        .get("args")
-        .and_then(|v| v.as_array())
-        .map(|a| a.iter().filter_map(|x| x.as_str().map(|s| s.to_string())).collect())
-        .unwrap_or_default();
+    let args: Vec<String> = match entry.get("args") {
+        None => Vec::new(),
+        Some(Value::Array(items)) => {
+            if items.iter().any(|x| !x.is_string()) {
+                return ("invalid".into(), "registration args must be strings".to_string());
+            }
+            items.iter().map(|x| x.as_str().unwrap_or_default().to_string()).collect()
+        }
+        Some(_) => return ("invalid".into(), "registration args must be a list of strings".to_string()),
+    };
     if command.is_empty() {
         return ("stale".into(), "registration has no executable".to_string());
     }
-    let is_exec = PathBuf::from(command).is_file();
-    let path_env = std::env::var("PATH").unwrap_or_default();
-    if !is_exec && crate::proc::which(command, &path_env).is_none() {
-        return ("stale".into(), "registered executable is missing or not on PATH".to_string());
+    if !crate::proc::executable_ok(command) {
+        return ("stale".into(), "registered executable is missing, not executable, or not on PATH".to_string());
     }
     if is_legacy_mcp(entry) {
         return ("stale".into(), "registration launches the retired Python package".to_string());
@@ -516,7 +610,7 @@ fn replace_toml_entry(text: &str, entry: &Map<String, Value>) -> std::result::Re
         if line.trim_start().starts_with('[') {
             let table = table_re
                 .captures(line)
-                .map(|m| m[1].replace('"', "").replace('\'', "").replace(' ', ""))
+                .map(|m| m[1].replace(['"', '\'', ' '], ""))
                 .unwrap_or_default();
             removing = table == "mcp_servers.everett" || table.starts_with("mcp_servers.everett.");
             found |= removing;

@@ -97,10 +97,10 @@ fn card_hard_cap_and_word_safe_ellipsis() {
 fn regen_setup(dir: &Path) -> (Vec<Session>, PathBuf, PathBuf) {
     let transcript = dir.join("x-auto.jsonl");
     write_jsonl(&transcript, &[codex("user", "Fix the retry logic.", "input_text"), codex("assistant", "Retries are fixed. Next: run the suite.", "output_text")]);
-    let auto = card_path("x-auto");
+    let auto = card_path("x-auto").unwrap();
     std::fs::create_dir_all(auto.parent().unwrap()).unwrap();
     std::fs::write(&auto, format!("{AUTO_MARKER}\nWhat: stale text\nState: stale\nNext: stale\n")).unwrap();
-    let agent = card_path("x-agent");
+    let agent = card_path("x-agent").unwrap();
     std::fs::write(&agent, "Hand-written agent card, never touched.\n").unwrap();
     let agent_transcript = dir.join("x-agent.jsonl");
     write_jsonl(&agent_transcript, &[codex("user", "Unrelated request.", "input_text")]);
@@ -117,9 +117,9 @@ fn regenerate_auto_cards_dry_run_and_real_run() {
     let h = lib_home();
     let (sessions, auto, agent) = regen_setup(&h.path());
     let before = std::fs::read_to_string(&auto).unwrap();
-    assert_eq!(regenerate_auto_cards(&sessions, true), (1, 2));
+    assert_eq!(regenerate_auto_cards(&sessions, true).unwrap(), (1, 2));
     assert_eq!(std::fs::read_to_string(&auto).unwrap(), before);
-    assert_eq!(regenerate_auto_cards(&sessions, false), (1, 2));
+    assert_eq!(regenerate_auto_cards(&sessions, false).unwrap(), (1, 2));
     let content = std::fs::read_to_string(&auto).unwrap();
     assert!(content.contains("Atlas: Fix the retry logic.") && !content.contains("stale"), "{content}");
     assert_eq!(std::fs::read_to_string(&agent).unwrap(), "Hand-written agent card, never touched.\n");
