@@ -211,6 +211,8 @@ def snippet(harness: str) -> str:
 def apply(harness: str, events: list[str] | None = None) -> str:
     """Install for one harness; returns a one-line report. `events` restricts which hook events
     are merged (see `merge`); omitted or None installs every event Everett knows for the harness."""
+    if events is not None and not events:
+        return f'{harness}: skipped (no hooks selected)'
     if harness == 'omp':
         path = omp_extension_path()
         source = omp_extension_source()
@@ -220,8 +222,6 @@ def apply(harness: str, events: list[str] | None = None) -> str:
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(source, encoding='utf-8')
         return f'omp: wrote {path}' + (f' (backup {saved})' if saved else '')
-    if events is not None and not events:
-        return f'{harness}: skipped (no hooks selected)'
     path = settings_path(harness)
     data = _load(path)
     merged, added = merge(data, harness, events=events)
