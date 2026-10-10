@@ -1,7 +1,7 @@
 use std::collections::HashSet;
 use std::fs::{self, OpenOptions};
 use std::io::Write;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 
 use regex::Regex;
@@ -16,6 +16,7 @@ pub const MAX_BATCH: usize = 5;
 pub const MAX_TEXT: usize = 2000;
 pub const MAX_INJECT: usize = 6000;
 pub const TTL: f64 = 7.0 * 24.0 * 3600.0;
+pub const LIVE_TTL: f64 = 24.0 * 3600.0;
 pub const MAX_HOPS: i64 = 3;
 pub const HUMAN: &str = "human";
 
@@ -43,7 +44,28 @@ fn done_path(session_id: &str) -> PathBuf {
     inbox_dir().join(format!("{}.done", session_id))
 }
 
-fn append(target: &PathBuf, line: &str) -> Result<()> {
+/// <sid>.jsonl and <sid>.done share <sid>.lock.
+fn lock_path(target: &Path) -> PathBuf {
+    target.with_extension("lock")
+}
+
+fn lock_file(target: &Path) -> Result<fs::File> {
+    use fs2::FileExt;
+    if let Some(parent) = lock_path(target).parent().map(|p| p.to_path_buf()) {
+        fs::create_dir_all(&parent).ok();
+    }
+    let file = OpenOptions::new()
+        .create(true)
+        .write(true)
+        .truncate(true)
+        .open(lock_path(target))
+        .map_err(|e| EverettError::new(2, format!("cannot lock {}: {}", target.display(), e)))?;
+    file.lock_exclusive()
+        .map_err(|e| EverettError::new(2, format!("cannot lock {}: {}", target.display(), e)))?;
+    Ok(file)
+}
+
+fn append_locked(target: &PathBuf, line: &str) -> Result<()> {
     if let Some(parent) = target.parent() {
         fs::create_dir_all(parent).map_err(|e| {
             EverettError::new(2, format!("cannot create {}: {}", parent.display(), e))
@@ -57,6 +79,11 @@ fn append(target: &PathBuf, line: &str) -> Result<()> {
     let _ = f.set_permissions(std::os::unix::fs::PermissionsExt::from_mode(0o600));
     f.write_all(line.as_bytes())
         .map_err(|e| EverettError::new(2, format!("cannot write {}: {}", target.display(), e)))
+}
+
+fn append(target: &PathBuf, line: &str) -> Result<()> {
+    let _guard = lock_file(target)?;
+    append_locked(target, line)
 }
 
 pub fn new_id() -> String {
@@ -207,7 +234,7 @@ pub fn reply_hops(original: &Map<String, Value>, env_hops: i64) -> Result<i64> {
 
 /// Poll the sender's inbox for a reply to message_id; consume and return it, or None on timeout.
 pub fn wait_reply(sender: &str, message_id: &str, wait: f64, poll: f64) -> Option<Map<String, Value>> {
-    wait_reply_with(sender, message_id, wait, poll, || now(), |d| std::thread::sleep(std::time::Duration::from_secs_f64(d)))
+    wait_reply_with(sender, message_id, wait, poll, now, |d| std::thread::sleep(std::time::Duration::from_secs_f64(d)))
 }
 
 pub fn wait_reply_with(
@@ -328,11 +355,81 @@ pub fn render(messages: &[Map<String, Value>], at: Option<f64>) -> (String, Vec<
 
 /// Render pending messages for injection, mark exactly those delivered, and
 /// record the highest hop count seen so the session can't forward forever.
+/// Shrink this session's files under its lock: drop delivered+expired records
+/// from the inbox, prune .done to ids still on disk, reap stale live/state.
+fn compact(session_id: &str) {
+    let now = now();
+    let kept: Vec<Map<String, Value>> = read(session_id)
+        .into_iter()
+        .filter(|m| {
+            let ts = m.get("ts").and_then(|v| v.as_f64()).unwrap_or(0.0);
+            now - ts < TTL
+        })
+        .collect();
+    let keep_ids: HashSet<&str> = kept
+        .iter()
+        .filter_map(|m| m.get("id").and_then(|v| v.as_str()))
+        .collect();
+    let done = done_ids(session_id);
+    if let Ok(target) = path(session_id) {
+        let body: String = kept
+            .iter()
+            .filter(|m| {
+                !m.get("id").and_then(|v| v.as_str()).map(|id| done.contains(id)).unwrap_or(false)
+            })
+            .filter_map(|m| serde_json::to_string(&Value::Object(m.clone())).ok())
+            .map(|s| s + "\n")
+            .collect();
+        let tmp = target.with_extension("jsonl.tmp");
+        if fs::write(&tmp, &body).and_then(|_| fs::rename(&tmp, &target)).is_err() {
+            return;
+        }
+    }
+    let live_done: Vec<String> = done.iter().filter(|id| keep_ids.contains(id.as_str())).cloned().collect();
+    if live_done.len() != done.len() {
+        let done_target = done_path(session_id);
+        let tmp = done_target.with_extension("done.tmp");
+        let body: String = live_done.iter().map(|i| format!("{i}\n")).collect();
+        let _ = fs::write(&tmp, body).and_then(|_| fs::rename(&tmp, &done_target));
+    }
+    reap_stale(now);
+}
+
+fn reap_stale(now: f64) {
+    for folder in [inbox_dir().join("live"), crate::events::state_dir()] {
+        if !folder.is_dir() {
+            continue;
+        }
+        for file in paths::glob(&folder, "*.json") {
+            let stale = file
+                .metadata()
+                .and_then(|m| m.modified())
+                .ok()
+                .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                .map(|d| now - d.as_secs_f64() > LIVE_TTL)
+                .unwrap_or(false);
+            if stale {
+                let _ = fs::remove_file(&file);
+            }
+        }
+    }
+}
+
+/// Render pending messages for injection and mark exactly those delivered.
+/// Select-and-mark is atomic under the session lock so two hooks on the same
+/// session can't inject the same message twice.
 pub fn take(session_id: &str) -> String {
+    let Ok(target) = path(session_id) else {
+        return String::new();
+    };
+    let Ok(_guard) = lock_file(&target) else {
+        return String::new();
+    };
     let pending_msgs = pending(session_id, None);
     let (text, ids) = render(&pending_msgs, None);
     if !ids.is_empty() {
-        mark_done(session_id, &ids.iter().map(|s| s.as_str()).collect::<Vec<_>>());
+        let body: String = ids.iter().map(|i| format!("{i}\n")).collect();
+        let _ = append_locked(&done_path(session_id), &body);
         let max_hops = ids
             .iter()
             .filter_map(|id| {
@@ -345,6 +442,7 @@ pub fn take(session_id: &str) -> String {
             .unwrap_or(0);
         record_hops(session_id, max_hops);
     }
+    compact(session_id);
     text
 }
 
@@ -485,6 +583,10 @@ pub fn live(session_id: &str) -> Option<Map<String, Value>> {
     let pid = data.get("pid").and_then(|v| v.as_i64()).unwrap_or(0) as i32;
     if !pid_alive(pid) {
         return None;
+    }
+    let ts = data.get("ts").and_then(|v| v.as_f64()).unwrap_or(0.0);
+    if now() - ts > LIVE_TTL {
+        return None; // a recycled PID can't keep a dead session "attached" forever
     }
     Some(data)
 }
