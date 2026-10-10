@@ -835,8 +835,20 @@ class Misc(unittest.TestCase):
                 break
             time.sleep(0.05)
         grandchild = int(marker.read_text())
-        with self.assertRaises(OSError):
-            os.kill(grandchild, 0)  # the whole group went down, not just the shell
+        # The whole group went down, not just the shell. The orphan may linger as
+        # a zombie until init reaps it, so accept "gone" or "zombie".
+        for _ in range(100):
+            try:
+                os.kill(grandchild, 0)
+            except OSError:
+                break
+            stat = subprocess.run(['ps', '-o', 'stat=', '-p', str(grandchild)],
+                                  capture_output=True, text=True).stdout.strip()
+            if not stat or stat.startswith('Z'):
+                break
+            time.sleep(0.05)
+        else:
+            self.fail(f'grandchild {grandchild} still running after the timeout')
 
     def test_spawn_mkstemp_error_is_senderror(self):
         import tempfile as tf
