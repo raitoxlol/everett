@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- Add optional account sign-in to the Rust binary: `everett login` (OIDC
+  device-code flow, RFC 8628), `everett whoami` with transparent token
+  refresh, and `everett logout` with RFC 7009 revocation. Tokens live in
+  `~/.everett/auth.json` (mode 0600); the issuer and client id come from
+  `[auth]` config or `EVERETT_AUTH_ISSUER`/`EVERETT_AUTH_CLIENT_ID`. See
+  `docs/auth.md`.
 - Add native `everett external add`, `list`, and `remove` for durable cloud-agent registrations,
   with shared Python/Rust records and cloud harness filters in `everett ls`.
 - Register OpenAI dots and Grok Bot as durable external sessions, with inbox-only delivery,
