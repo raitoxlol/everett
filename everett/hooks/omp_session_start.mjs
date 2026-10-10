@@ -22,6 +22,7 @@ function inboxText(sessionId) {
 function cardContext(sessionId) {
   const result = spawnSync("python3", [contextScript, sessionId], {
     encoding: "utf8",
+    timeout: 3000,
   });
   if (result.error) {
     throw result.error;
@@ -38,8 +39,12 @@ export default function registerEverettCardHook(pi) {
   const pendingSessions = new Set();
   const injectedSessions = new Set();
   const markSession = (_event, ctx) => {
-    const sessionId = ctx.sessionManager.getSessionId();
-    if (typeof sessionId === "string" && sessionId) pendingSessions.add(sessionId);
+    try {
+      const sessionId = ctx.sessionManager.getSessionId();
+      if (typeof sessionId === "string" && sessionId) pendingSessions.add(sessionId);
+    } catch {
+      // never break the OMP session over Everett
+    }
   };
 
   pi.on("session_start", markSession);

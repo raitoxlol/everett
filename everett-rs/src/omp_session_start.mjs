@@ -4,12 +4,14 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 
 const inboxDir = join(process.env.EVERETT_HOME || homedir(), ".everett", "inbox");
+// Baked at install time; falls back to PATH when the binary moved.
+const EVERETT_BIN = existsSync("__EVERETT_BIN__") ? "__EVERETT_BIN__" : "everett";
 
 // Pending Everett messages for a live session ("" when none). The file check keeps tool calls cheap.
 function inboxText(sessionId) {
   try {
     if (!/^[A-Za-z0-9._-]{1,128}$/.test(sessionId) || !existsSync(join(inboxDir, `${sessionId}.jsonl`))) return "";
-    const result = spawnSync("everett", ["hook", "omp_inbox", sessionId], { encoding: "utf8", timeout: 3000 });
+    const result = spawnSync(EVERETT_BIN, ["hook", "omp_inbox", sessionId], { encoding: "utf8", timeout: 3000 });
     return result.status === 0 ? (result.stdout || "").trim() : "";
   } catch {
     return "";
@@ -17,8 +19,9 @@ function inboxText(sessionId) {
 }
 
 function cardContext(sessionId) {
-  const result = spawnSync("everett", ["hook", "omp_card_context", sessionId], {
+  const result = spawnSync(EVERETT_BIN, ["hook", "omp_card_context", sessionId], {
     encoding: "utf8",
+    timeout: 3000,
   });
   if (result.error) {
     throw result.error;
@@ -35,8 +38,12 @@ export default function registerEverettCardHook(pi) {
   const pendingSessions = new Set();
   const injectedSessions = new Set();
   const markSession = (_event, ctx) => {
-    const sessionId = ctx.sessionManager.getSessionId();
-    if (typeof sessionId === "string" && sessionId) pendingSessions.add(sessionId);
+    try {
+      const sessionId = ctx.sessionManager.getSessionId();
+      if (typeof sessionId === "string" && sessionId) pendingSessions.add(sessionId);
+    } catch {
+      // never break the OMP session over Everett
+    }
   };
 
   pi.on("session_start", markSession);
