@@ -31,7 +31,7 @@ class InstallationErrors(unittest.TestCase):
             with self.subTest(error=type(error).__name__), tempfile.TemporaryDirectory() as tmp:
                 with mock.patch('everett.send.shutil.which', return_value='/bin/codex'), \
                         mock.patch('tempfile.tempdir', tmp), \
-                        mock.patch('everett.send.subprocess.run', side_effect=error):
+                        mock.patch('everett.send._run_capture', side_effect=error):
                     with self.assertRaises(send.SendError):
                         send.spawn('codex', 'review', tmp)
                 self.assertEqual(list(Path(tmp).iterdir()), [])

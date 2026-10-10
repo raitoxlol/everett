@@ -14,6 +14,8 @@ only and imports nothing heavy at module level.
 """
 from __future__ import annotations
 
+import contextlib
+import fcntl
 import json
 import os
 import re
@@ -27,6 +29,7 @@ MAX_BATCH = 5            # messages injected per hook run
 MAX_TEXT = 2000          # characters kept per message in the injection
 MAX_INJECT = 6000        # characters per injection in total
 TTL = 7 * 24 * 3600      # undelivered messages older than this are dropped
+LIVE_TTL = 24 * 3600     # a live/state record older than this is stale
 MAX_HOPS = 3
 HUMAN = 'human'          # inbox for senders outside any session (a terminal)
 _SID = re.compile(r'[A-Za-z0-9._-]{1,128}')
@@ -56,6 +59,23 @@ def _done_path(session_id: str) -> Path:
     return inbox_dir() / f'{session_id}.done'
 
 
+def _lock_path(target: Path) -> Path:
+    """<sid>.jsonl and <sid>.done share <sid>.lock."""
+    return target.parent / f'{target.stem}.lock'
+
+
+@contextlib.contextmanager
+def _locked(target: Path):
+    """Exclusive lock serializing readers (hooks taking messages) and writers."""
+    target.parent.mkdir(parents=True, exist_ok=True)
+    fd = os.open(_lock_path(target), os.O_WRONLY | os.O_CREAT, 0o600)
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX)
+        yield
+    finally:
+        os.close(fd)
+
+
 def _append(target: Path, line: str) -> None:
     target.parent.mkdir(parents=True, exist_ok=True)
     fd = os.open(target, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
@@ -78,7 +98,9 @@ def post(to: str, text: str, sender: str = '', kind: str = 'message', reply_to: 
     message = {'id': new_id(), 'from': sender or HUMAN, 'from_harness': from_harness,
                'from_card': (from_card or '')[:160], 'to': to, 'text': text, 'ts': time.time(),
                'reply_to': reply_to, 'hops': int(hops), 'kind': kind, **(extra or {})}
-    _append(path(to), json.dumps(message, ensure_ascii=False) + '\n')
+    target = path(to)
+    with _locked(target):
+        _append(target, json.dumps(message, ensure_ascii=False) + '\n')
     return message
 
 
@@ -115,7 +137,9 @@ def pending(session_id: str, now: float | None = None) -> list[dict]:
 def mark_done(session_id: str, ids) -> None:
     ids = [i for i in ids if i]
     if ids:
-        _append(_done_path(session_id), ''.join(f'{i}\n' for i in ids))
+        target = _done_path(session_id)
+        with _locked(target):
+            _append(target, ''.join(f'{i}\n' for i in ids))
 
 
 def find(message_id: str) -> dict | None:
@@ -198,15 +222,65 @@ def render(messages: list[dict], now: float | None = None) -> tuple[str, list[st
     return header + '\n' + '\n'.join(parts) + tail, ids
 
 
+def _compact(session_id: str, now: float) -> None:
+    """Shrink this session's files: drop delivered+expired records from the
+    inbox, prune .done to ids still on disk, and reap stale live/state records.
+    Runs under the session lock from take(); best effort."""
+    now = time.time() if now is None else now
+    try:
+        keep_ids = set()
+        kept = []
+        for m in read(session_id):
+            if m['id'] in keep_ids or now - float(m.get('ts') or 0) >= TTL:
+                continue
+            keep_ids.add(m['id'])
+            kept.append(m)
+        done = done_ids(session_id)
+        target = path(session_id)
+        live_done = {i for i in done if i in keep_ids}
+        # Delivered records stay so reply_to lookups still resolve; only expiry shrinks the file.
+        body = ''.join(json.dumps(m, ensure_ascii=False) + '\n' for m in kept)
+        tmp = target.with_name(f'.{target.name}.{os.getpid()}.tmp')
+        tmp.write_text(body, encoding='utf-8')
+        tmp.replace(target)
+        if live_done != done:
+            done_target = _done_path(session_id)
+            tmp = done_target.with_name(f'.{done_target.name}.{os.getpid()}.tmp')
+            tmp.write_text(''.join(f'{i}\n' for i in sorted(done & keep_ids)), encoding='utf-8')
+            tmp.replace(done_target)
+        _reap_stale(now)
+    except (OSError, ValueError):
+        pass
+
+
+def _reap_stale(now: float) -> None:
+    """Remove live/ records older than LIVE_TTL. ~/.everett/state is event/escalation
+    state — a session can legitimately stay blocked longer than a day."""
+    for folder in (inbox_dir() / 'live',):
+        if not folder.is_dir():
+            continue
+        for file in folder.glob('*.json'):
+            try:
+                if now - file.stat().st_mtime > LIVE_TTL:
+                    file.unlink()
+            except OSError:
+                continue
+
+
 def take(session_id: str) -> str:
     """Render pending messages for injection, mark exactly those delivered, and
-    record the highest hop count seen so the session can't forward forever."""
-    messages = pending(session_id)
-    text, ids = render(messages)
-    if ids:
-        mark_done(session_id, ids)
-        by_id = {m['id']: m for m in messages}
-        record_hops(session_id, max(int(by_id[i].get('hops') or 0) for i in ids))
+    record the highest hop count seen so the session can't forward forever.
+    The select-and-mark is atomic under the session lock so two hooks on the
+    same session can't inject the same message twice."""
+    target = path(session_id)
+    with _locked(target):
+        messages = pending(session_id)
+        text, ids = render(messages)
+        if ids:
+            _append(_done_path(session_id), ''.join(f'{i}\n' for i in ids))
+            by_id = {m['id']: m for m in messages}
+            record_hops(session_id, max(int(by_id[i].get('hops') or 0) for i in ids))
+        _compact(session_id, time.time())
     return text
 
 
@@ -338,4 +412,6 @@ def live(session_id: str) -> dict | None:
         return None
     if not isinstance(data, dict) or not pid_alive(int(data.get('pid') or 0)):
         return None
+    if time.time() - float(data.get('ts') or 0) > LIVE_TTL:
+        return None  # a recycled PID can't keep a dead session "attached" forever
     return data

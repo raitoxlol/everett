@@ -1,5 +1,8 @@
 use std::collections::HashSet;
 use std::fs;
+use std::sync::OnceLock;
+
+use regex::Regex;
 
 use serde_json::Value;
 
@@ -57,6 +60,13 @@ pub fn mark_running(sessions: &mut [Session], ps_out: &str, at: f64) {
     }
 }
 
+/// Only harness binaries count as "running", not greps/scripts mentioning the id.
+/// Shared with send::is_busy so ls and send agree.
+pub fn harness_bin() -> &'static Regex {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    RE.get_or_init(|| Regex::new(r"(^|/)(claude|codex|omp|pi|hermes|grok|devin)(\s|$)").unwrap())
+}
+
 /// Recheck one session's running state immediately before a send.
 pub fn session_running(s: &Session, ps_out: Option<&str>, at: Option<f64>) -> bool {
     if external::is_external(&s.harness) {
@@ -64,7 +74,9 @@ pub fn session_running(s: &Session, ps_out: Option<&str>, at: Option<f64>) -> bo
     }
     let ps = ps_out.map(|p| p.to_string()).unwrap_or_else(ps_commands);
     let now = at.unwrap_or_else(now);
-    (!s.id.is_empty() && ps.contains(&s.id)) || (now - s.last_active) < LIVE_WINDOW
+    (!s.id.is_empty()
+        && ps.lines().any(|line| line.contains(&s.id) && harness_bin().is_match(line)))
+        || (now - s.last_active) < LIVE_WINDOW
 }
 
 /// Recent local and durable external sessions; `harness` filters before the local cap.

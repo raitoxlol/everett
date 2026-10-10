@@ -115,6 +115,55 @@ class Inbox(Base):
         inbox.live_path('s1').write_text(json.dumps({'pid': 999999, 'harness': 'claude'}))
         self.assertIsNone(inbox.live('s1'))
 
+    def test_live_record_expires_after_ttl(self):
+        with mock.patch('everett.inbox.harness_pid', return_value=os.getpid()):
+            inbox.touch_live('s1', 'claude')
+        data = json.loads(inbox.live_path('s1').read_text())
+        data['ts'] = time.time() - inbox.LIVE_TTL - 1
+        inbox.live_path('s1').write_text(json.dumps(data))
+        self.assertIsNone(inbox.live('s1'))  # a recycled pid can't keep it attached forever
+
+    def test_take_compacts_inbox_done_and_stale_live_state(self):
+        m = inbox.post('s1', 'fresh', sender='s0')
+        old = inbox.post('s1', 'old', sender='s0')
+        rows = [json.loads(l) for l in inbox.path('s1').read_text().splitlines()]
+        for r in rows:
+            if r['id'] == old['id']:
+                r['ts'] = time.time() - inbox.TTL - 10
+        inbox.path('s1').write_text(''.join(json.dumps(r) + '\n' for r in rows))
+        self.assertIn('fresh', inbox.take('s1'))
+        on_disk = [json.loads(l)['id'] for l in
+                   inbox.path('s1').read_text().splitlines()] if inbox.path('s1').exists() else []
+        # Delivered records stay (reply_to resolution needs them); only the expired one is dropped.
+        self.assertEqual(on_disk, [m['id']])
+        inbox._append(inbox._done_path('s1'), 'ghost-id\n')
+        live = inbox.live_path('stale')
+        live.parent.mkdir(parents=True, exist_ok=True)
+        live.write_text('{"pid": 1, "ts": 0}')
+        old_t = time.time() - inbox.LIVE_TTL - 10
+        os.utime(live, (old_t, old_t))
+        inbox.take('s1')
+        self.assertNotIn('ghost-id', inbox.done_ids('s1'))  # .done pruned to ids still present
+        self.assertFalse(live.exists())
+
+    def test_reply_still_resolves_after_take_compacts(self):
+        m = inbox.post('s1', 'question?', sender='s0')
+        inbox.take('s1')  # delivers + compacts
+        result = reply(m['id'], 'the answer')
+        self.assertEqual(result['reply_to'], m['id'])
+        self.assertEqual([r['reply_to'] for r in inbox.pending('s0')], [m['id']])
+
+    def test_concurrent_take_delivers_once(self):
+        import threading
+        inbox.post('s1', 'once', sender='s0')
+        results = []
+        threads = [threading.Thread(target=lambda: results.append(inbox.take('s1'))) for _ in range(4)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+        self.assertEqual(sum('once' in r for r in results), 1)
+
 
 class DeliverHook(Base):
     def hook(self, harness, payload):
@@ -145,8 +194,12 @@ class DeliverHook(Base):
         # Grok runs ~/.claude/settings.json hooks too; its input is camelCase and discards this context.
         self.assertIsNone(self.hook('claude', {'sessionId': 'g1', 'hook_event_name': 'UserPromptSubmit'}))
         self.assertEqual(len(inbox.pending('g1')), 1)
-        out = self.hook('grok', {'sessionId': 'g1', 'hook_event_name': 'PostToolUse', 'hookEventName': 'post_tool_use'})
+        # Grok sends camelCase hookEventName with a snake_case value — one key at a time.
+        out = self.hook('grok', {'sessionId': 'g1', 'hookEventName': 'post_tool_use'})
         self.assertIn('for grok', out['hookSpecificOutput']['additionalContext'])
+        inbox.post('g1', 'again')
+        out = self.hook('grok', {'sessionId': 'g1', 'hook_event_name': 'PostToolUse'})
+        self.assertIn('again', out['hookSpecificOutput']['additionalContext'])
 
     def test_silent_cases(self):
         inbox.post('c1', 'queued')

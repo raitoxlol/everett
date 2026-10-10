@@ -5,6 +5,7 @@ import os
 import re
 import shlex
 import shutil
+import signal
 import subprocess
 import time
 from dataclasses import dataclass
@@ -49,6 +50,8 @@ def command_for(session: Session, text: str) -> list[str]:
         return ['omp', '-r', session.id, '-p', text]
     if session.harness == 'pi':
         # Pi's -r opens a picker; --session takes the exact session file.
+        if not session.path:
+            raise SendError(2, 'This Pi session has no session file to resume from.')
         return ['pi', '--session', session.path, '-p', text]
     if session.harness == 'hermes':
         if session.source and session.source not in HERMES_RESUMABLE:
@@ -62,10 +65,35 @@ def command_for(session: Session, text: str) -> list[str]:
     raise SendError(2, f'Unsupported harness: {session.harness}')
 
 
-HARNESS_BIN = re.compile(r'(^|/)(claude|codex|omp|pi|hermes|grok|devin)(\s|$)')  # only harness processes count, not greps/scripts
+HARNESS_BIN = registry.HARNESS_BIN  # shared with registry.session_running so ls and send agree
 IDLE_QUIET = 60   # session file untouched this long = not mid-turn
 IDLE_WAIT = 120   # how long send waits for a busy session before refusing
 POLL = 5
+
+
+def _run_capture(command: list[str], timeout: float, cwd: str | None, env: dict):
+    """subprocess.run with a real process-group kill on timeout: the direct
+    child is a session leader, so os.killpg takes grandchildren down too."""
+    proc = subprocess.Popen(
+        command,
+        cwd=cwd or None,
+        stdin=subprocess.DEVNULL,  # the parent may be reading the MCP protocol from stdin
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        env=env or child_env(),  # card hooks stay silent for headless resumes
+        start_new_session=True,
+    )
+    try:
+        stdout, stderr = proc.communicate(timeout=timeout)
+    except subprocess.TimeoutExpired:
+        try:
+            os.killpg(proc.pid, signal.SIGKILL)
+        except OSError:
+            proc.kill()
+        proc.communicate()
+        raise
+    return proc.returncode, stdout, stderr
 
 
 def is_busy(session: Session, ps_out: str, now: float) -> bool:
@@ -122,32 +150,23 @@ def send(session: Session, text: str, timeout: float = 120, wait: float = IDLE_W
             'Use `everett route` for a manual resume command.',
         )
     try:
-        result = subprocess.run(
-            command,
-            cwd=session.cwd or None,
-            stdin=subprocess.DEVNULL,  # the parent may be reading the MCP protocol from stdin
-            capture_output=True,
-            text=True,
-            timeout=timeout,
-            check=False,
-            env=env or child_env(),  # card hooks stay silent for headless resumes
-        )
+        code, stdout, stderr = _run_capture(command, timeout, session.cwd or None, env)
     except subprocess.TimeoutExpired as exc:
         raise SendError(5, f'{session.harness} did not reply within {timeout:g}s.') from exc
     except OSError as exc:
         raise SendError(5, f'Could not start {session.harness}: {exc}') from exc
 
-    if result.returncode:
-        detail = (result.stderr or '').strip()
+    if code:
+        detail = (stderr or '').strip()
         if detail:
             detail = detail[-2000:]
             if session.harness == 'codex' and ('interrupted system call' in detail.casefold() or
                                                'os error 4' in detail.casefold()):
                 detail += ('. Delivery is unconfirmed; check the target session before retrying. '
                            'For an open session with Everett hooks, use inbox delivery.')
-            raise SendError(6, f'{session.harness} exited {result.returncode}: {detail}')
-        raise SendError(6, f'{session.harness} exited with status {result.returncode}.')
-    return SendResult(command, (result.stdout or '').strip())
+            raise SendError(6, f'{session.harness} exited {code}: {detail}')
+        raise SendError(6, f'{session.harness} exited with status {code}.')
+    return SendResult(command, (stdout or '').strip())
 
 
 # ---- spawning a NEW session ------------------------------------------------------------
@@ -286,17 +305,20 @@ def spawn(harness: str, text: str, cwd: str, timeout: float = 300, env: dict | N
     require_harness(harness, env)
     out_file = ''
     if harness == 'codex':
-        fd, out_file = tempfile.mkstemp(prefix='everett-codex-', suffix='.txt')
-        os.close(fd)
+        try:
+            fd, out_file = tempfile.mkstemp(prefix='everett-codex-', suffix='.txt')
+            os.close(fd)
+        except OSError as exc:
+            raise SendError(5, f'Could not create the codex output file: {exc}') from exc
         command = spawn_command(harness, text, session_id, out_file)
     started = time.time()
+    code, stdout, stderr = 0, '', ''
     try:
-        result = subprocess.run(command, cwd=cwd, capture_output=True, text=True, timeout=timeout,
-                                stdin=subprocess.DEVNULL, check=False, env=env or child_env())
-        if result.returncode:
-            detail = (result.stderr or '').strip()[-2000:]
-            raise SendError(6, f'{harness} exited {result.returncode}' + (f': {detail}' if detail else '.'))
-        reply = (result.stdout or '').strip()
+        code, stdout, stderr = _run_capture(command, timeout, cwd, env)
+        if code:
+            detail = (stderr or '').strip()[-2000:]
+            raise SendError(6, f'{harness} exited {code}' + (f': {detail}' if detail else '.'))
+        reply = (stdout or '').strip()
         if out_file:
             try:
                 reply = Path(out_file).read_text(encoding='utf-8').strip() or reply
@@ -309,7 +331,7 @@ def spawn(harness: str, text: str, cwd: str, timeout: float = 300, env: dict | N
     finally:
         if out_file:
             Path(out_file).unlink(missing_ok=True)
-    session_id = session_id or _new_session_id(harness, cwd, started, (result.stdout or '') + (result.stderr or ''))
+    session_id = session_id or _new_session_id(harness, cwd, started, (stdout or '') + (stderr or ''))
     if session_id:
         record_spawn(harness, session_id, cwd, text)
     return SpawnResult(command, reply, session_id, harness, cwd)

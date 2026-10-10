@@ -283,7 +283,7 @@ pub fn read_db(path: &Path, since_hours: f64) -> Result<(Vec<Session>, bool), St
             },
             &row
                 .get("created_at")
-                .map(|v| epoch(v))
+                .map(epoch)
                 .map(|ts| if ts != 0.0 { iso_from_epoch(ts) } else { String::new() })
                 .unwrap_or_default(),
             last_ts,

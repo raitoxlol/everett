@@ -8,8 +8,17 @@ from __future__ import annotations
 
 import json
 import os
+import re
 
 EVENTS = ('UserPromptSubmit', 'PostToolUse')
+_EVENT_ALIASES = {re.sub(r'[^a-z0-9]', '', e.lower()): e for e in EVENTS}
+
+
+def _event_name(data: dict) -> str:
+    """Harnesses send hook_event_name (Claude), hookEventName (Grok), or snake_case values."""
+    raw = data.get('hook_event_name') or data.get('hookEventName') or ''
+    key = re.sub(r'[^a-z0-9]', '', str(raw).lower())
+    return _EVENT_ALIASES.get(key, '')
 
 
 def output(raw: str, harness: str) -> str:
@@ -26,8 +35,8 @@ def output(raw: str, harness: str) -> str:
         return ''
     grok = harness == 'grok' or 'sessionId' in data  # Grok also runs ~/.claude/settings.json hooks
     session_id = data.get('session_id') or data.get('sessionId') or ''
-    event = data.get('hook_event_name') or ''
-    if event not in EVENTS or not isinstance(session_id, str):
+    event = _event_name(data)
+    if not event or not isinstance(session_id, str):
         return ''
     from everett import inbox
     if not inbox.valid_id(session_id):

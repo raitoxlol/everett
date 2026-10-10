@@ -168,7 +168,7 @@ def _spawn(args, r: dict, sessions) -> int:
     harness = args.harness or default_harness()
     cwd = os.path.abspath(os.path.expanduser(args.dir)) if args.dir else (best_dir(args.text, sessions) or os.getcwd())
     if args.dry_run:
-        command = spawn_command(harness, args.text, '<new-session-id>' if harness == 'claude' else '')
+        command = spawn_command(harness, args.text, '<new-session-id>' if harness in ('claude', 'grok') else '')
         _emit(args, {**r, 'delivered': False, 'dry_run': True, 'spawn': True, 'harness': harness,
                      'cwd': cwd, 'command': command},
               [f'DRY RUN  spawn NEW [{harness}] {cwd}', f'  {format_command(command)}'])

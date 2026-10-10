@@ -40,7 +40,7 @@ def render(sessions: list[Session], now: float | None = None) -> str:
         work = (session.card or session.title or session.first_user[:90]).replace('|', '/')
         last = session.last_user[:90].replace('|', '/')
         when = time.strftime('%m-%d %H:%M', time.localtime(session.last_active))
-        lines.append(f'| {dot} | {session.harness} | `{session.cwd}` | {work} | {last} | {when} |')
+        lines.append(f'| {dot} | {session.harness} | `{session.cwd.replace("|", "/")}` | {work} | {last} | {when} |')
     lines += ['', '']
     return '\n'.join(lines)
 

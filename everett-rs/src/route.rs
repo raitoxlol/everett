@@ -118,7 +118,7 @@ pub fn relevant_sessions(text: &str, sessions: &[Session], caller_id: Option<&st
         .filter(|s| {
             let proj = project_name(s);
             let named = !proj.is_empty() && query_tokens.contains(&proj);
-            !(is_coordinator(s) && !named)
+            !is_coordinator(s) || named
         })
         .cloned()
         .collect();
@@ -431,7 +431,7 @@ fn normalize(text: &str, answer: &Map<String, Value>, options: &HashMap<String, 
         base.insert("command".into(), json!(new_command(text)));
         return Ok(base);
     }
-    let mut candidates: Vec<String> = options.get(choice).map(|s| describe(s)).into_iter().collect();
+    let mut candidates: Vec<String> = options.get(choice).map(describe).into_iter().collect();
     if candidates.is_empty() {
         let pool: Vec<Session> = {
             let mut keys: Vec<&String> = options.keys().collect();

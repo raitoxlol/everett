@@ -16,7 +16,8 @@ use crate::session::home;
 use crate::timefmt::strftime_local;
 
 // harness -> [(event, hook subcommand, timeout)]
-pub const HOOKS: &[(&str, &[(&str, &str, i64)])] = &[
+type HookSpec = (&'static str, &'static str, i64);
+pub const HOOKS: &[(&str, &[HookSpec])] = &[
     (
         "claude",
         &[
@@ -71,9 +72,10 @@ pub fn omp_extension_path() -> PathBuf {
     home().join(".omp").join("agent").join("extensions").join("everett.ts")
 }
 
-/// The OMP extension body, adapted to shell out to this binary instead of python3 scripts.
+/// The OMP extension body, with this binary's absolute path baked in so OMP
+/// still finds it when its PATH differs from ours (basename is the fallback).
 pub fn omp_extension_source() -> String {
-    include_str!("omp_session_start.mjs").to_string()
+    include_str!("omp_session_start.mjs").replace("__EVERETT_BIN__", &exe())
 }
 
 /// `shlex.split`: whitespace-separated tokens honoring 'single'/"double" quotes
@@ -315,6 +317,9 @@ pub fn snippet(harness: &str) -> String {
 
 /// Install for one harness; returns a one-line report.
 pub fn apply(harness: &str, events: Option<&[String]>) -> std::result::Result<String, String> {
+    if events.map(|e| e.is_empty()).unwrap_or(false) {
+        return Ok(format!("{}: skipped (no hooks selected)", harness));
+    }
     if harness == "omp" {
         let path = omp_extension_path();
         let source = omp_extension_source();
@@ -331,9 +336,6 @@ pub fn apply(harness: &str, events: Option<&[String]>) -> std::result::Result<St
             path.display(),
             saved.map(|s| format!(" (backup {})", s.display())).unwrap_or_default()
         ));
-    }
-    if events.map(|e| e.is_empty()).unwrap_or(false) {
-        return Ok(format!("{}: skipped (no hooks selected)", harness));
     }
     let path = settings_path(harness);
     let data = load(&path)?;
@@ -493,7 +495,7 @@ pub fn mcp_status(harness: &str) -> (String, String) {
         .file_name()
         .map(|n| n.to_string_lossy().to_string())
         .unwrap_or_default();
-    if !is_python_form && !(name == "everett" && args == ["mcp"].map(String::from)) {
+    if !(is_python_form || (name == "everett" && args == ["mcp"].map(String::from))) {
         return ("stale".into(), "registration does not launch Everett stdio MCP".to_string());
     }
     if let Some(env) = entry.get("env") {
@@ -577,7 +579,7 @@ fn replace_toml_entry(text: &str, entry: &Map<String, Value>) -> std::result::Re
         if line.trim_start().starts_with('[') {
             let table = table_re
                 .captures(line)
-                .map(|m| m[1].replace('"', "").replace('\'', "").replace(' ', ""))
+                .map(|m| m[1].replace(['"', '\'', ' '], ""))
                 .unwrap_or_default();
             removing = table == "mcp_servers.everett" || table.starts_with("mcp_servers.everett.");
             found |= removing;

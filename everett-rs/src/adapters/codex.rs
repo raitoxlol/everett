@@ -1,13 +1,15 @@
 use std::collections::HashMap;
 use std::fs;
 use std::path::Path;
+use std::sync::OnceLock;
 
+use regex::Regex;
 use serde_json::{Map, Value};
 
 use crate::paths;
 use crate::session::{clean, file_mtime, home, is_injected, read_edges, recent_files, Session};
 
-fn payload<'a>(d: &'a Map<String, Value>) -> Option<&'a Map<String, Value>> {
+fn payload(d: &Map<String, Value>) -> Option<&Map<String, Value>> {
     if d.get("type").and_then(|v| v.as_str()) != Some("response_item") {
         return None;
     }
@@ -92,7 +94,17 @@ pub fn parse(path: &Path, names: &HashMap<String, String>) -> Option<Session> {
         .and_then(|v| v.as_str())
         .or_else(|| meta.get("session_id").and_then(|v| v.as_str()))
         .map(|s| s.to_string())
-        .unwrap_or_else(|| path.file_stem().unwrap_or_default().to_string_lossy().to_string());
+        .or_else(|| {
+            // `codex exec resume` needs the uuid, not the rollout-<ts>-<uuid> filename.
+            static RE: OnceLock<Regex> = OnceLock::new();
+            let stem = path.file_stem().unwrap_or_default().to_string_lossy();
+            RE.get_or_init(|| {
+                Regex::new(r"([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})$")
+                    .unwrap()
+            })
+            .captures(&stem)
+            .map(|c| c[1].to_string())
+        })?;
     let mut s = Session::new(
         "codex",
         &sid,
