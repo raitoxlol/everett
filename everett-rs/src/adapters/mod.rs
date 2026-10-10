@@ -1,6 +1,7 @@
 pub mod claude;
 pub mod codex;
 pub mod devin;
+pub mod external;
 pub mod grok;
 pub mod hermes;
 pub mod omp;

@@ -8,6 +8,7 @@ pub mod doctor;
 pub mod error;
 pub mod events;
 pub mod fmt;
+pub mod gateway;
 pub mod hooks_common;
 pub mod inbox;
 pub mod install;

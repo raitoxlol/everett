@@ -3,7 +3,7 @@ use std::fs;
 
 use serde_json::Value;
 
-use crate::adapters::{claude, codex, devin, grok, hermes, omp, pi, t3code};
+use crate::adapters::{claude, codex, devin, external, grok, hermes, omp, pi, t3code};
 use crate::error::{EverettError, Result};
 use crate::proc::ps_commands;
 use crate::session::{home, now, Session};
@@ -59,12 +59,15 @@ pub fn mark_running(sessions: &mut [Session], ps_out: &str, at: f64) {
 
 /// Recheck one session's running state immediately before a send.
 pub fn session_running(s: &Session, ps_out: Option<&str>, at: Option<f64>) -> bool {
+    if external::is_external(&s.harness) {
+        return false;
+    }
     let ps = ps_out.map(|p| p.to_string()).unwrap_or_else(ps_commands);
     let now = at.unwrap_or_else(now);
     (!s.id.is_empty() && ps.contains(&s.id)) || (now - s.last_active) < LIVE_WINDOW
 }
 
-/// Recent sessions, newest first; `harness` filters before the cap, not after.
+/// Recent local and durable external sessions; `harness` filters before the local cap.
 pub fn scan(since_hours: f64, include_auto: bool, limit: Option<usize>, harness: &str) -> Vec<Session> {
     let mut sessions: Vec<Session> = Vec::new();
     for name in ADAPTERS {
@@ -72,6 +75,7 @@ pub fn scan(since_hours: f64, include_auto: bool, limit: Option<usize>, harness:
             sessions.extend(adapter_scan(name, since_hours));
         }
     }
+    sessions.extend(external::scan(harness));
     t3code::overlay(&mut sessions, since_hours, harness);
     for s in sessions.iter_mut() {
         if s.first_user.is_empty() {
@@ -84,7 +88,14 @@ pub fn scan(since_hours: f64, include_auto: bool, limit: Option<usize>, harness:
     }
     sessions.sort_by(|a, b| b.last_active.partial_cmp(&a.last_active).unwrap_or(std::cmp::Ordering::Equal));
     if let Some(limit) = limit {
-        sessions.truncate(limit);
+        let mut local_count = 0;
+        sessions.retain(|s| {
+            if external::is_external(&s.harness) {
+                return true;
+            }
+            local_count += 1;
+            local_count <= limit
+        });
     }
     let ps = ps_commands();
     mark_running(&mut sessions, &ps, now());

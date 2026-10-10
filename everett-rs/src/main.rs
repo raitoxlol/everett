@@ -8,7 +8,7 @@ const EVENT_KINDS: &[&str] = &["done", "blocked", "needs-input", "info"];
 const SCOPES: &[&str] = &["global", "project"];
 const MODES: &[&str] = &["auto", "inbox", "resume"];
 const LLMS: &[&str] = &["claude", "codex", "none"];
-const HARNESSES: &[&str] = &["claude", "codex", "omp", "pi", "hermes", "grok", "devin"];
+const HARNESSES: &[&str] = &["claude", "codex", "omp", "pi", "hermes", "grok", "devin", "openai-dot", "grok-bot"];
 
 #[derive(Parser)]
 #[command(name = "everett", version = env!("CARGO_PKG_VERSION"), about = "See and reach parallel coding-agent sessions.")]
@@ -22,6 +22,20 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Cmd {
+    /// serve restricted owner-bound MCP for external agents
+    Gateway {
+        #[arg(long)]
+        config: std::path::PathBuf,
+        #[arg(long, default_value = "stdio", value_parser = ["stdio", "http"])]
+        transport: String,
+        #[arg(long, default_value_t = 8788)]
+        port: u16,
+    },
+    /// register and manage owner-authorized external inboxes
+    External {
+        #[command(subcommand)]
+        action: ExternalCmd,
+    },
     /// list recent sessions
     Ls {
         #[arg(long)]
@@ -244,6 +258,31 @@ enum Cmd {
     },
 }
 
+#[derive(Subcommand)]
+enum ExternalCmd {
+    /// add an inbox registration (does not connect to a provider)
+    Add {
+        #[arg(long)]
+        id: String,
+        #[arg(long, value_parser = clap::builder::PossibleValuesParser::new(everett::adapters::external::HARNESSES.to_vec()))]
+        harness: String,
+        #[arg(long, default_value = "")]
+        title: String,
+        #[arg(long, default_value = "")]
+        cwd: String,
+        /// update an existing registration of the same harness
+        #[arg(long)]
+        replace: bool,
+    },
+    /// list registrations as JSON
+    List,
+    /// remove a registration without deleting its inbox
+    Remove {
+        #[arg(long)]
+        id: String,
+    },
+}
+
 fn main() {
     let cli = Cli::parse();
     let mut a = Args {
@@ -251,6 +290,13 @@ fn main() {
         ..Default::default()
     };
     let code = match cli.cmd {
+        Cmd::External { action } => match action {
+            ExternalCmd::Add { id, harness, title, cwd, replace } => {
+                cli::cmd_external_add(&id, &harness, &title, &cwd, replace)
+            }
+            ExternalCmd::List => cli::cmd_external_list(),
+            ExternalCmd::Remove { id } => cli::cmd_external_remove(&id),
+        },
         Cmd::Ls { json, all, harness } => {
             a.json = json;
             a.all = all;
@@ -344,6 +390,7 @@ fn main() {
             cli::cmd_install_hooks(&a)
         }
         Cmd::Mcp => cli::cmd_mcp(&a),
+        Cmd::Gateway { config, transport, port } => everett::gateway::run(&config, &transport, port),
         Cmd::InstallMcp { claude, codex, omp, grok, devin, apply, repair } => {
             a.claude = claude;
             a.codex = codex;

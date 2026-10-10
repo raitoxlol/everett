@@ -165,6 +165,18 @@ pub fn find(message_id: &str) -> Option<Map<String, Value>> {
     None
 }
 
+/// Look a message up by id in one session's inbox only; the message must be
+/// addressed to that session. Used for replies bound to a specific inbox.
+pub fn find_in(session_id: &str, message_id: &str) -> Option<Map<String, Value>> {
+    if message_id.is_empty() {
+        return None;
+    }
+    read(session_id).into_iter().find(|item| {
+        item.get("id").and_then(|v| v.as_str()) == Some(message_id)
+            && item.get("to").and_then(|v| v.as_str()) == Some(session_id)
+    })
+}
+
 pub fn reply_hops(original: &Map<String, Value>, env_hops: i64) -> Result<i64> {
     let hops = original
         .get("hops")

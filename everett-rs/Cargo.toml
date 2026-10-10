@@ -25,6 +25,15 @@ wait-timeout = "0.2"
 libc = "0.2"
 rpassword = "7"
 terminal_size = "0.4"
+rmcp = { version = "=3.4.0", default-features = false, features = ["server", "client", "transport-io", "transport-streamable-http-server"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "process", "net", "time", "sync", "io-util", "io-std"] }
+axum = { version = "0.8", default-features = false, features = ["http1", "tokio"] }
+sha2 = "0.10"
+subtle = "2"
+url = "2"
+hyper = { version = "1", features = ["server", "http1"] }
+hyper-util = { version = "0.1", features = ["tokio", "service"] }
+httparse = "1"
 
 ratatui = "0.29"
 crossterm = "0.28"
