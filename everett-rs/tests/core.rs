@@ -150,6 +150,7 @@ fn word_cap_drops_oldest() {
 
 type Calls = RefCell<Vec<(Vec<String>, HashMap<String, String>)>>;
 
+#[allow(clippy::type_complexity)]
 fn reply_runner<'a>(stdout: &'a str, calls: &'a Calls)
     -> impl Fn(&[String], Option<&str>, &HashMap<String, String>, f64) -> Result<RunOutput, String> + 'a {
     move |cmd, _cwd, env, _t| {

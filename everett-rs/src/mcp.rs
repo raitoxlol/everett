@@ -289,7 +289,7 @@ fn tool_route(args: &Map<String, Value>) -> std::result::Result<Map<String, Valu
         if router.is_empty() { None } else { Some(&router) },
         if caller.is_empty() { None } else { Some(&caller) },
     )
-    .map_err(|e| ToolFailure::Tool(e))?;
+    .map_err(ToolFailure::Tool)?;
     let mut out = Map::new();
     for k in ["decision", "confidence", "router", "suggested", "candidates", "command"] {
         if let Some(v) = r.get(k) {
@@ -432,7 +432,10 @@ fn tool_send(args: &Map<String, Value>) -> std::result::Result<Map<String, Value
             );
             return Ok(out);
         }
-        session = Session::from_dict(r.get("session").and_then(|v| v.as_object()).unwrap());
+        let Some(session_obj) = r.get("session").and_then(|v| v.as_object()) else {
+            return Err(err2(6, "router returned SESSION without a session object"));
+        };
+        session = Session::from_dict(session_obj);
     }
     refuse_self(&session, if caller.is_empty() { None } else { Some(&caller) }).map_err(ToolFailure::Tool)?;
     if delivery_mode(&session, &mode, None)? == "inbox" {
@@ -542,7 +545,9 @@ fn tool_card(args: &Map<String, Value>) -> std::result::Result<Map<String, Value
         crate::hooks_common::word_limit(parts["state"].as_str().unwrap_or(""), 14),
         crate::hooks_common::word_limit(parts["next"].as_str().unwrap_or(""), 14)
     );
-    let path = crate::cards::card_path(&sid);
+    let Some(path) = crate::cards::card_path(&sid) else {
+        return Err(err2(2, format!("not a valid session id for a card: {sid:?}")));
+    };
     if let Some(parent) = path.parent() {
         let _ = std::fs::create_dir_all(parent);
     }
@@ -581,6 +586,7 @@ fn tool_inbox(args: &Map<String, Value>) -> std::result::Result<Map<String, Valu
     let mut out = Map::new();
     out.insert("session".into(), json!(sid));
     out.insert("messages".into(), json!(messages));
+    let size_of = |out: &Map<String, Value>| serde_json::to_vec(&out).map(|v| v.len()).unwrap_or(usize::MAX);
     for m in &items {
         let mut msg = Map::new();
         for k in ["id", "kind", "from", "from_harness", "from_card", "text", "reply_to", "hops", "ts"] {
@@ -588,9 +594,28 @@ fn tool_inbox(args: &Map<String, Value>) -> std::result::Result<Map<String, Valu
         }
         messages.push(Value::Object(msg));
         out.insert("messages".into(), json!(messages));
-        if serde_json::to_vec(&out).map(|v| v.len()).unwrap_or(usize::MAX) > MAX_TOOL_RESULT {
-            messages.pop();
+        if size_of(&out) > MAX_TOOL_RESULT {
+            let last = messages.pop().unwrap();
             out.insert("messages".into(), json!(messages));
+            if messages.is_empty() {
+                // The first pending message alone exceeds the limit: deliver it
+                // truncated rather than leaving this inbox stuck forever.
+                let mut msg = last.as_object().cloned().unwrap_or_default();
+                let text = msg.get("text").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                let mut keep = text.chars().count();
+                loop {
+                    msg.insert("text".into(), json!(text.chars().take(keep).collect::<String>()));
+                    msg.insert("truncated".into(), json!(true));
+                    messages.push(Value::Object(msg.clone()));
+                    out.insert("messages".into(), json!(messages));
+                    if size_of(&out) <= MAX_TOOL_RESULT || keep == 0 {
+                        break;
+                    }
+                    messages.pop();
+                    keep = keep * 9 / 10;
+                }
+                out.insert("messages".into(), json!(messages));
+            }
             break;
         }
     }
@@ -707,6 +732,9 @@ fn call_handler(name: &str, args: &Map<String, Value>) -> std::result::Result<Ma
 
 fn call_tool(params: &Map<String, Value>) -> std::result::Result<Map<String, Value>, Value> {
     let name = params.get("name").and_then(|v| v.as_str()).unwrap_or("");
+    if std::env::var("EVERETT_MCP_PANIC_TEST").as_deref() == Ok("1") && name == "everett_ls" {
+        panic!("injected test panic"); // tests: a panicking tool must not kill the server
+    }
     if name.is_empty() || !tool_names().contains(&name) {
         return Err(json!({"code": INVALID_PARAMS, "message": format!("unknown tool: {}", if name.is_empty() { Value::Null.to_string() } else { name.to_string() })}));
     }
@@ -744,11 +772,10 @@ fn call_tool(params: &Map<String, Value>) -> std::result::Result<Map<String, Val
                     return Err(json!({"code": INVALID_PARAMS, "message": format!("\"{}\" must be a boolean", key)}));
                 }
             }
-            Some("number") => {
-                if value.as_f64().map(|n| !n.is_finite()).unwrap_or(true) || value.is_boolean() {
+            Some("number")
+                if (value.as_f64().map(|n| !n.is_finite()).unwrap_or(true) || value.is_boolean()) => {
                     return Err(json!({"code": INVALID_PARAMS, "message": format!("\"{}\" must be a finite number", key)}));
                 }
-            }
             _ => {}
         }
         if let Some(values) = spec.get("enum").and_then(|e| e.as_array()) {
@@ -858,10 +885,21 @@ pub fn handle(message: &Value) -> Option<Value> {
         }
         "ping" => Some(result(&msg_id, json!({}))),
         "tools/list" => Some(result(&msg_id, json!({"tools": tools()}))),
-        "tools/call" => match call_tool(params) {
-            Ok(out) => Some(result(&msg_id, Value::Object(out))),
-            Err(e) => Some(error(&msg_id, e["code"].as_i64().unwrap_or(INTERNAL_ERROR), e["message"].as_str().unwrap_or("error"))),
-        },
+        "tools/call" => {
+            // A panic in one tool must not kill the stdio server.
+            let tool = params.get("name").and_then(|v| v.as_str()).unwrap_or("").to_string();
+            let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| call_tool(params)));
+            match outcome {
+                Ok(Ok(out)) => Some(result(&msg_id, Value::Object(out))),
+                Ok(Err(e)) => Some(error(&msg_id, e["code"].as_i64().unwrap_or(INTERNAL_ERROR), e["message"].as_str().unwrap_or("error"))),
+                Err(_) => {
+                    let mut f = Map::new();
+                    f.insert("tool".into(), json!(tool));
+                    log("panic", f);
+                    Some(error(&msg_id, INTERNAL_ERROR, "internal error"))
+                }
+            }
+        }
         _ => Some(error(&msg_id, METHOD_NOT_FOUND, &format!("Method not found: {}", method))),
     }
 }

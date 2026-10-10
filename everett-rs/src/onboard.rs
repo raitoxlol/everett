@@ -221,8 +221,7 @@ pub fn generate_backfill_cards(sessions: &[crate::session::Session], progress: O
         let content = crate::hooks_common::auto_card(Path::new(&s.path), &s.harness, &s.cwd, &s.id);
         if content.is_empty() {
             skipped += 1;
-        } else {
-            let target = crate::cards::card_path(&s.id);
+        } else if let Some(target) = crate::cards::card_path(&s.id) {
             if let Some(parent) = target.parent() {
                 let _ = std::fs::create_dir_all(parent);
             }
@@ -235,6 +234,8 @@ pub fn generate_backfill_cards(sessions: &[crate::session::Session], progress: O
                 Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => skipped += 1,
                 Err(_) => skipped += 1,
             }
+        } else {
+            skipped += 1; // invalid session id: nothing safe to write
         }
         if let Some(p) = progress {
             p(i + 1, total);
@@ -506,9 +507,9 @@ fn run_plain(args: &crate::cli::Args) -> Result<i32, QuitOnboarding> {
         }
         let preview = missing_card_sessions(cfg.span_days);
         println!("  {} session(s) without a card in the last {} day(s).", preview.len(), cfg.span_days);
-        if preview.is_empty() {
-            cfg.backfill_enabled = false;
-        } else if !ask_yes(&format!("  generate {} automatic card(s) now?", preview.len()), true)? {
+        if preview.is_empty()
+            || !ask_yes(&format!("  generate {} automatic card(s) now?", preview.len()), true)?
+        {
             cfg.backfill_enabled = false;
         }
     }

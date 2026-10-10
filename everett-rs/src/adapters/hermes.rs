@@ -116,28 +116,41 @@ pub fn read_db(profile: &str, path: &PathBuf, since_hours: f64) -> Result<Vec<Se
             Ok(map)
         })
         .map_err(|e| e.to_string())?;
+    // Some DBs have sessions but no messages table; list them without user text.
+    let have_messages = {
+        let mut st = con
+            .prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='messages'")
+            .map_err(|e| e.to_string())?;
+        st.exists([]).unwrap_or(false)
+    };
     let mut out = Vec::new();
     for row in rows.flatten() {
         let id = row.get("id").map(sql_text).unwrap_or_default();
         let get_text = |k: &str| -> String { row.get(k).map(sql_text).unwrap_or_default() };
-        let mut users: Vec<String> = con
-            .prepare("SELECT content FROM messages WHERE session_id = ?1 AND role = 'user' ORDER BY id LIMIT 5")
-            .and_then(|mut st| {
-                st.query_map([&id], |r| r.get::<_, SqlValue>(0))
-                    .map(|rows| {
-                        rows.filter_map(|r| r.ok())
-                            .map(|v| text(&v))
-                            .filter(|t| !t.is_empty())
-                            .collect::<Vec<String>>()
-                    })
-            })
-            .unwrap_or_default();
+        let mut users: Vec<String> = if have_messages {
+            con.prepare("SELECT content FROM messages WHERE session_id = ?1 AND role = 'user' ORDER BY id LIMIT 5")
+                .and_then(|mut st| {
+                    st.query_map([&id], |r| r.get::<_, SqlValue>(0))
+                        .map(|rows| {
+                            rows.filter_map(|r| r.ok())
+                                .map(|v| text(&v))
+                                .filter(|t| !t.is_empty())
+                                .collect::<Vec<String>>()
+                        })
+                })
+                .unwrap_or_default()
+        } else {
+            Vec::new()
+        };
         users.retain(|u| !u.is_empty());
-        let last: String = con
-            .prepare("SELECT content FROM messages WHERE session_id = ?1 AND role = 'user' ORDER BY id DESC LIMIT 1")
-            .and_then(|mut st| st.query_row([&id], |r| r.get::<_, SqlValue>(0)))
-            .map(|v| text(&v))
-            .unwrap_or_default();
+        let last: String = if have_messages {
+            con.prepare("SELECT content FROM messages WHERE session_id = ?1 AND role = 'user' ORDER BY id DESC LIMIT 1")
+                .and_then(|mut st| st.query_row([&id], |r| r.get::<_, SqlValue>(0)))
+                .map(|v| text(&v))
+                .unwrap_or_default()
+        } else {
+            String::new()
+        };
         let source = get_text("source");
         let started_at = row.get("started_at").map(sql_f64).unwrap_or(0.0);
         let last_active = row.get("last_active").map(sql_f64).unwrap_or(0.0);
