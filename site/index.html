@@ -1,0 +1,251 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Everett — route requests, messages, and memory across your coding agents</title>
+<meta name="description" content="Everett is the layer above your coding-agent sessions: one CLI and MCP server that routes requests, delivers messages between live sessions, and keeps one shared core of memory. Local-first, read-only session stores.">
+<link rel="canonical" href="https://everett.raitox.tech/">
+<meta property="og:type" content="website">
+<meta property="og:url" content="https://everett.raitox.tech/">
+<meta property="og:title" content="Everett — one layer above all your coding agents">
+<meta property="og:description" content="Route requests, messages, and shared memory across Claude Code, Codex, OMP, Pi, Hermes, Grok, Devin, and T3 Code sessions.">
+<meta property="og:image" content="https://everett.raitox.tech/og.png">
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:title" content="Everett — one layer above all your coding agents">
+<meta name="twitter:description" content="Route requests, messages, and shared memory across your coding-agent sessions.">
+<meta name="twitter:image" content="https://everett.raitox.tech/og.png">
+<meta name="theme-color" content="#faf9f7" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#171412" media="(prefers-color-scheme: dark)">
+<link rel="icon" href="/favicon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+<a class="skip" href="#main">Skip to content</a>
+
+<header class="nav">
+  <div class="wrap nav-row">
+    <a class="brand" href="/" aria-label="Everett home">
+      <svg class="mark" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 20V4h9v3H7v3.5h5V13H7v4h6v3H4z"/></svg>
+      <span>everett</span>
+    </a>
+    <nav class="links" aria-label="Site">
+      <a href="#how">How it works</a>
+      <a href="#mcp">MCP tools</a>
+      <a href="#install">Install</a>
+      <a href="https://github.com/raitoxlol/everett" rel="noopener">GitHub</a>
+    </nav>
+  </div>
+</header>
+
+<main id="main">
+
+<!-- ============ hero ============ -->
+<section class="hero wrap">
+  <div class="hero-copy">
+    <p class="eyebrow">v1.4.0 · Rust + Python · MIT</p>
+    <h1>One layer above all<br>your coding agents.</h1>
+    <p class="lede">Everett routes requests, messages, and shared memory across
+      your coding-agent sessions — from a CLI or MCP client.</p>
+    <div class="install-cmd">
+      <code id="install-line">curl -fsSL https://raw.githubusercontent.com/raitoxlol/everett/main/install.sh | sh</code>
+      <button class="copy" data-copy="install-line" aria-label="Copy install command">copy</button>
+    </div>
+    <p class="hero-actions">
+      <a class="btn" href="#install">Get started</a>
+      <a class="btn ghost" href="https://github.com/raitoxlol/everett" rel="noopener">GitHub</a>
+    </p>
+  </div>
+  <figure class="term" aria-label="Example output of everett ls and everett send">
+    <figcaption><span class="dot"></span><span class="dot"></span><span class="dot"></span> session window</figcaption>
+<pre>$ everett ls
+<span class="run">●</span> claude  2m  ~/src/api     API: adding retry/backoff to upload client
+<span class="idle">○</span> codex   40m ~/src/web     Web: dark-mode toggle; state: styles done
+<span class="idle">○</span> omp     3h  ~/src/infra   Infra: Terraform module, staging bucket
+
+$ everett send "the upload retries should cap at 5"
+<span class="ok">SENT</span>  [claude] ~/src/api — API: adding retry/backoff to upload client
+Done. MAX_RETRIES is now 5 and the backoff test covers the cap.</pre>
+  </figure>
+</section>
+
+<!-- ============ harnesses ============ -->
+<section class="harnesses">
+  <div class="wrap">
+    <p class="harness-line" aria-label="Supported harnesses">
+      <span>claude&nbsp;code</span><span>codex</span><span>omp</span><span>pi</span><span>hermes</span><span>grok&nbsp;cli</span><span>devin&nbsp;cli</span><span>t3&nbsp;code</span>
+    </p>
+  </div>
+</section>
+
+<!-- ============ launch clip ============ -->
+<section class="media wrap">
+  <video controls muted preload="none" playsinline
+         poster="https://raitox.tech/media/everett-launch-poster.jpg"
+         src="https://raitox.tech/media/everett-launch.mp4"></video>
+  <p class="cap">The launch clip: routing a request into a live session.</p>
+</section>
+
+<!-- ============ how a request moves ============ -->
+<section id="how" class="how wrap">
+  <h2>How a request moves</h2>
+  <ol class="flow">
+    <li><span class="n">1</span><h3>request</h3>
+      <p>You send text, or one agent sends another session a task.</p></li>
+    <li><span class="n">2</span><h3>route</h3>
+      <p>Jev when a key is configured, else a local BM25 matcher — no network call needed to pick the session.</p></li>
+    <li><span class="n">3</span><h3>deliver</h3>
+      <p>A running session gets it in its inbox, injected at its next turn or tool call. An idle one is resumed headless.</p></li>
+    <li><span class="n">4</span><h3>reply</h3>
+      <p>The answer lands back in the sender's inbox — or prints, when the send waited for it.</p></li>
+  </ol>
+</section>
+
+<!-- ============ cards + messaging ============ -->
+<section class="two-col wrap">
+  <div class="col">
+    <h2>Session cards</h2>
+    <p>Every session keeps a card — fifty words at most — saying what it is about,
+      its state, and the next step. Routing and <code>ls</code> prefer the card
+      over raw transcript text.</p>
+    <p>Agents write their own card; when they don't, a deterministic auto-card
+      fills the gap — no LLM, no network.</p>
+    <figure class="card-example">
+      <pre>Atlas: adding retry/backoff to the upload client
+state: tests passing
+next: cap retries at 5, then integration test</pre>
+      <figcaption>~/.everett/cards/&lt;session-id&gt;.md</figcaption>
+    </figure>
+  </div>
+  <div class="col push">
+    <h2>Agents message agents</h2>
+    <p>Sessions have inboxes. A message queued for a live session is injected at
+      its next turn or right after its next tool call — the receiver answers with
+      a reply to the same thread.</p>
+    <ul class="ticks">
+      <li>At most 3 hops back and forth, so two agents can't ping-pong forever.</li>
+      <li><code>everett event</code> records what a session is doing: done, blocked, needs-input, info.</li>
+      <li><code>everett subscribe</code> puts another session's events into your inbox.</li>
+    </ul>
+  </div>
+</section>
+
+<!-- ============ shared core ============ -->
+<section class="core">
+  <div class="wrap">
+    <h2>Teach one, they all know</h2>
+    <p class="core-lede">Parallel sessions drift apart. The shared core is the part they keep
+      in common: <code>everett learn</code> pushes a fact, a nightly merge distills it,
+      and every new session starts with the result.</p>
+    <div class="core-grid">
+      <div><h3>push</h3><p><code>everett learn "Atlas deploys from main"</code> — capped, and secrets are rejected by a filter before anything is stored.</p></div>
+      <div><h3>merge</h3><p><code>everett trunk merge</code> distills the inbox into a global core and a per-project core. A LaunchAgent can run it nightly.</p></div>
+      <div><h3>pull</h3><p>The SessionStart hook adds the global plus project core to each new session — local files only, silent on any error.</p></div>
+    </div>
+  </div>
+</section>
+
+<!-- ============ mcp tools ============ -->
+<section id="mcp" class="mcp wrap">
+  <h2>Ten MCP tools, one server</h2>
+  <p class="mcp-lede"><code>everett mcp</code> is a stdio MCP server written with the standard
+    library only — every MCP-capable harness gets Everett as native tools.</p>
+  <dl class="tools">
+    <div><dt><code>everett_ls</code></dt><dd>recent sessions with their cards</dd></div>
+    <div><dt><code>everett_route</code></dt><dd>pick the session a request continues</dd></div>
+    <div><dt><code>everett_send</code></dt><dd>route, then deliver a request or a reply</dd></div>
+    <div><dt><code>everett_inbox</code></dt><dd>messages waiting for your session</dd></div>
+    <div><dt><code>everett_card</code></dt><dd>write the calling session's card</dd></div>
+    <div><dt><code>everett_event</code></dt><dd>record done / blocked / needs-input / info</dd></div>
+    <div><dt><code>everett_subscribe</code></dt><dd>follow a session's or project's events</dd></div>
+    <div><dt><code>everett_learn</code></dt><dd>queue a fact for the shared core</dd></div>
+    <div><dt><code>everett_core</code></dt><dd>the shared core this project sees</dd></div>
+    <div><dt><code>everett_whoami</code></dt><dd>caller id, harness, and hop count</dd></div>
+  </dl>
+  <p class="commands">And the same verbs on the CLI:
+    <code>ls</code> <code>route</code> <code>send</code> <code>reply</code> <code>inbox</code>
+    <code>event</code> <code>events</code> <code>subscribe</code> <code>cards</code>
+    <code>learn</code> <code>core</code> <code>trunk</code> <code>dashboard</code>
+    <code>gateway</code> <code>external</code> <code>doctor</code> <code>onboard</code></p>
+</section>
+
+<!-- ============ dashboard + external ============ -->
+<section class="two-col wrap alt">
+  <div class="col">
+    <h2>A dashboard that never leaves your machine</h2>
+    <p><code>everett dashboard</code> opens a read-only view of the same stores and
+      cards: session filters, activity state, expandable cards, and copyable CLI
+      actions.</p>
+    <p>It binds to <code>127.0.0.1</code> only, rejects foreign Host headers and
+      write methods, and sends nothing anywhere.</p>
+  </div>
+  <div class="col push">
+    <h2>Cloud agents, owner-bound</h2>
+    <p>External agents — OpenAI dots, Grok Bot — register locally and reach Everett
+      through a restricted MCP gateway with fixed identity, explicit destination
+      lists, and authenticated loopback transport.</p>
+    <p><a href="https://github.com/raitoxlol/everett/blob/main/docs/gateway.md" rel="noopener">Gateway permissions →</a></p>
+  </div>
+</section>
+
+<!-- ============ privacy + accounts ============ -->
+<section class="privacy wrap">
+  <h2>Local-first</h2>
+  <p>Everett reads the stores your harnesses already write — every SQLite database
+    is opened read-only — and keeps its own state under <code>~/.everett/</code>.
+    No harness session data is copied to a cloud service for
+    <code>ls</code>, local routing, or inbox delivery. Optional Jev routing sends
+    context to its API; the local matcher needs no network at all.</p>
+  <aside class="accounts">
+    <h3>Accounts: coming</h3>
+    <p>An Everett account would connect CLI installs across devices. The design is
+      in progress — <a href="https://github.com/raitoxlol/everett/blob/main/docs/auth.md" rel="noopener">docs/auth.md</a>.</p>
+  </aside>
+</section>
+
+<!-- ============ install ============ -->
+<section id="install" class="install">
+  <div class="wrap">
+    <h2>Install</h2>
+    <div class="install-grid">
+      <div class="install-opt">
+        <h3>installer</h3>
+        <div class="install-cmd"><code id="i1">curl -fsSL https://raw.githubusercontent.com/raitoxlol/everett/main/install.sh | sh</code><button class="copy" data-copy="i1" aria-label="Copy">copy</button></div>
+      </div>
+      <div class="install-opt">
+        <h3>homebrew</h3>
+        <div class="install-cmd"><code id="i2">brew tap raitoxlol/tap && brew install everett</code><button class="copy" data-copy="i2" aria-label="Copy">copy</button></div>
+      </div>
+      <div class="install-opt">
+        <h3>cargo</h3>
+        <div class="install-cmd"><code id="i3">cargo install --git https://github.com/raitoxlol/everett everett</code><button class="copy" data-copy="i3" aria-label="Copy">copy</button></div>
+      </div>
+    </div>
+    <div class="install-then">
+      <p>then:</p>
+      <div class="install-cmd"><code id="i4">everett onboard && everett doctor</code><button class="copy" data-copy="i4" aria-label="Copy">copy</button></div>
+      <p class="install-note">The Rust binary is the primary build — macOS arm64 and x86_64, Linux musl
+        x86_64 and aarch64. The Python reference ships alongside it.</p>
+    </div>
+  </div>
+</section>
+
+</main>
+
+<footer class="foot">
+  <div class="wrap foot-grid">
+    <p class="etym">Named after Hugh Everett — every session branches from one
+      origin but keeps its own history.</p>
+    <nav class="foot-links" aria-label="Footer">
+      <a href="https://github.com/raitoxlol/everett" rel="noopener">GitHub</a>
+      <a href="https://github.com/raitoxlol/everett/blob/main/CHANGELOG.md" rel="noopener">Changelog</a>
+      <a href="https://github.com/raitoxlol/everett/blob/main/LICENSE" rel="noopener">MIT</a>
+      <a href="https://raitox.tech" rel="noopener">Raitox</a>
+      <a href="https://x.com/raitox_tech" rel="noopener">X</a>
+    </nav>
+  </div>
+</footer>
+
+<script src="/site.js" defer></script>
+</body>
+</html>

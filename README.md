@@ -2,6 +2,8 @@
 
 Route requests, messages, and shared memory across your coding-agent sessions—from a CLI or MCP client.
 
+Website: https://everett.raitox.tech
+
 > **Demo GIF/video placeholder:** the launch clip is being planned.
 
 **Works with:** Claude Code · Codex · OMP · Pi · Hermes Agent · Grok CLI · Devin CLI.
