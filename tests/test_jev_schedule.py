@@ -276,16 +276,27 @@ class TrunkScheduleInstallRemove(IsolatedHome):
         self.assertTrue(Path(result['path']).exists())
         self.assertTrue(result['path'].startswith(str(home())))
         self.assertTrue(result['launchctl_ok'])
-        self.assertEqual(len(calls), 1)
-        self.assertEqual(calls[0][:2], ['launchctl', 'bootstrap'])
+        self.assertEqual([c[:2] for c in calls], [['launchctl', 'bootout'], ['launchctl', 'bootstrap']])
         mode = stat.S_IMODE(Path(result['path']).stat().st_mode)
         self.assertEqual(mode, 0o644)
+
+    def test_install_bootouts_before_bootstrap(self):
+        calls = []
+
+        def fake_runner(cmd, **kwargs):
+            calls.append(cmd)
+            return mock.Mock(returncode=0, stderr='')
+
+        trunk_schedule.install(at='05:30', llm='codex', runner=fake_runner)
+        self.assertEqual([c[1] for c in calls], ['bootout', 'bootstrap'])
+        self.assertEqual(calls[0][2], calls[1][2])  # same domain
+        self.assertEqual(calls[0][3], calls[1][3])  # same plist path
 
     def test_install_is_idempotent(self):
         fake_runner = mock.Mock(return_value=mock.Mock(returncode=0, stderr=''))
         trunk_schedule.install(runner=fake_runner)
         trunk_schedule.install(runner=fake_runner)
-        self.assertEqual(fake_runner.call_count, 2)  # safe to call again; plist content is the same
+        self.assertEqual(fake_runner.call_count, 4)  # bootout + bootstrap per install, safe to repeat
         self.assertTrue(trunk_schedule.is_scheduled())
 
     def test_remove_uninstalls_and_calls_bootout(self):
@@ -325,8 +336,8 @@ class TrunkScheduleCLI(IsolatedHome):
                 rc = main(['trunk', 'schedule', '--apply', '--llm', 'codex', '--at', '05:30'])
         self.assertEqual(rc, 0)
         self.assertTrue(trunk_schedule.plist_path().exists())
-        run.assert_called_once()
-        self.assertIn('launchctl', run.call_args[0][0][0])
+        cmds = [c[0][0][1] for c in run.call_args_list]
+        self.assertEqual(cmds, ['bootout', 'bootstrap'])
         self.assertIn('wrote', out.getvalue())
 
     def test_remove_apply_uninstalls(self):

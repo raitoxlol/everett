@@ -542,7 +542,9 @@ fn tool_card(args: &Map<String, Value>) -> std::result::Result<Map<String, Value
         crate::hooks_common::word_limit(parts["state"].as_str().unwrap_or(""), 14),
         crate::hooks_common::word_limit(parts["next"].as_str().unwrap_or(""), 14)
     );
-    let path = crate::cards::card_path(&sid);
+    let Some(path) = crate::cards::card_path(&sid) else {
+        return Err(err2(2, format!("not a valid session id for a card: {sid:?}")));
+    };
     if let Some(parent) = path.parent() {
         let _ = std::fs::create_dir_all(parent);
     }
@@ -581,6 +583,7 @@ fn tool_inbox(args: &Map<String, Value>) -> std::result::Result<Map<String, Valu
     let mut out = Map::new();
     out.insert("session".into(), json!(sid));
     out.insert("messages".into(), json!(messages));
+    let size_of = |out: &Map<String, Value>| serde_json::to_vec(&out).map(|v| v.len()).unwrap_or(usize::MAX);
     for m in &items {
         let mut msg = Map::new();
         for k in ["id", "kind", "from", "from_harness", "from_card", "text", "reply_to", "hops", "ts"] {
@@ -588,9 +591,28 @@ fn tool_inbox(args: &Map<String, Value>) -> std::result::Result<Map<String, Valu
         }
         messages.push(Value::Object(msg));
         out.insert("messages".into(), json!(messages));
-        if serde_json::to_vec(&out).map(|v| v.len()).unwrap_or(usize::MAX) > MAX_TOOL_RESULT {
-            messages.pop();
+        if size_of(&out) > MAX_TOOL_RESULT {
+            let last = messages.pop().unwrap();
             out.insert("messages".into(), json!(messages));
+            if messages.is_empty() {
+                // The first pending message alone exceeds the limit: deliver it
+                // truncated rather than leaving this inbox stuck forever.
+                let mut msg = last.as_object().cloned().unwrap_or_default();
+                let text = msg.get("text").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                let mut keep = text.chars().count();
+                loop {
+                    msg.insert("text".into(), json!(text.chars().take(keep).collect::<String>()));
+                    msg.insert("truncated".into(), json!(true));
+                    messages.push(Value::Object(msg.clone()));
+                    out.insert("messages".into(), json!(messages));
+                    if size_of(&out) <= MAX_TOOL_RESULT || keep == 0 {
+                        break;
+                    }
+                    messages.pop();
+                    keep = keep * 9 / 10;
+                }
+                out.insert("messages".into(), json!(messages));
+            }
             break;
         }
     }

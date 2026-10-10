@@ -88,6 +88,19 @@ class Inbox(Base):
         clock = iter([0, 0, 1, 2, 3, 4, 5, 6]).__next__
         self.assertIsNone(inbox.wait_reply('me', 'mnope', wait=3, poll=1, clock=clock, sleep=lambda s: None))
 
+    def test_take_records_max_hops_for_the_session(self):
+        inbox.post('s-live', 'low', sender='a', hops=1)
+        inbox.take('s-live')
+        self.assertEqual(inbox.session_hops('s-live'), 1)
+        inbox.post('s-live', 'high', sender='a', hops=3)
+        inbox.take('s-live')
+        self.assertEqual(inbox.session_hops('s-live'), 3)
+        # The memory expires: a long-lived session can send again later.
+        data = json.loads(inbox.live_path('s-live').read_text())
+        data['hops_ts'] = time.time() - inbox.HOP_MEMORY_SECONDS - 1
+        inbox.live_path('s-live').write_text(json.dumps(data))
+        self.assertEqual(inbox.session_hops('s-live'), 0)
+
     def test_live_record(self):
         self.assertIsNone(inbox.live('s1'))
         with mock.patch('everett.inbox.harness_pid', return_value=os.getpid()):
@@ -207,6 +220,27 @@ class SendModes(Base):
         with self.assertRaises(SendError):
             reply('mmissing', 'x')
 
+    def test_live_session_hop_guard_holds_without_env(self):
+        # A sent to B at hop 3 and take() delivered it; B's next fresh send must be
+        # refused even though its EVERETT_HOPS is 0 (interactive sessions always start at 0).
+        inbox.post('b-live', 'please forward', sender='a-live', hops=3)
+        inbox.take('b-live')
+        with mock.patch.dict(os.environ, {'EVERETT_SESSION_ID': 'b-live'}):
+            with self.assertRaises(SendError) as cm:
+                send_inbox(self.session('c-live'), 'onward')
+        self.assertEqual(cm.exception.code, 7)
+        # A different session with no recorded hops can still send.
+        with mock.patch.dict(os.environ, {'EVERETT_SESSION_ID': 'fresh-1'}):
+            out = send_inbox(self.session('c-live'), 'onward')
+        self.assertEqual(out['mode'], 'inbox')
+        # And once the recorded hops age past HOP_MEMORY_SECONDS, B sends again.
+        data = json.loads(inbox.live_path('b-live').read_text())
+        data['hops_ts'] = time.time() - inbox.HOP_MEMORY_SECONDS - 1
+        inbox.live_path('b-live').write_text(json.dumps(data))
+        with mock.patch.dict(os.environ, {'EVERETT_SESSION_ID': 'b-live'}):
+            out = send_inbox(self.session('c-live'), 'onward')
+        self.assertEqual(out['mode'], 'inbox')
+
     def test_cli_send_inbox_reply_and_inbox(self):
         s = self.session()
         routed = {'decision': 'SESSION', 'choice': 'to', 'confidence': 1.0, 'session': asdict(s)}
@@ -261,6 +295,40 @@ class Install(Base):
         self.assertEqual(len(json.loads(settings.read_text())['hooks']['PostToolUse']), 2)
         self.assertIn('codex_inbox.py', install.snippet('codex'))
         self.assertIn('grok_inbox.py', install.snippet('grok'))
+
+    def test_stale_hooks_detected_and_repaired(self):
+        settings = self.home / '.claude' / 'settings.json'
+        settings.parent.mkdir(parents=True)
+        settings.write_text(json.dumps({'hooks': {
+            'UserPromptSubmit': [
+                {'hooks': [{'type': 'command', 'command': 'other-tool --keep'}]},
+                {'hooks': [{'type': 'command',
+                            'command': '/gone/python3 /gone/everett/hooks/claude_inbox.py'}]},
+            ]}}))
+        self.assertEqual(install.installed_state('claude')['UserPromptSubmit'], 'stale')
+        report = install.apply('claude')
+        self.assertIn('backup', report)
+        data = json.loads(settings.read_text())
+        entries = data['hooks']['UserPromptSubmit']
+        commands = [h['command'] for e in entries for h in e['hooks']]
+        self.assertIn('other-tool --keep', commands)             # foreign hook preserved
+        self.assertNotIn('/gone/python3', commands)              # stale Everett hook replaced
+        self.assertTrue(any('claude_inbox.py' in c for c in commands))
+        self.assertEqual(install.installed_state('claude')['UserPromptSubmit'], 'ok')
+        backups = [p for p in settings.parent.iterdir() if '.everett-bak-' in p.name]
+        self.assertEqual(len(backups), 1)
+        self.assertIn('/gone/python3', backups[0].read_text())
+
+    def test_mcp_non_executable_command_and_bad_args_are_not_ready(self):
+        cfg = self.home / '.claude.json'
+        fake = self.home / 'fake-everett'
+        fake.write_text('#!/bin/sh\n')  # exists but not executable
+        cfg.write_text(json.dumps({'mcpServers': {'everett': {
+            'type': 'stdio', 'command': str(fake), 'args': ['-m', 'everett', 'mcp']}}}))
+        self.assertEqual(install.mcp_status('claude').state, 'stale')
+        cfg.write_text(json.dumps({'mcpServers': {'everett': {
+            'type': 'stdio', 'command': '/no/such/python', 'args': ['-m', 'everett', 'mcp']}}}))
+        self.assertEqual(install.mcp_status('claude').state, 'stale')
 
 
 class GrokMCP(Base):

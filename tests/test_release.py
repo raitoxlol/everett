@@ -161,10 +161,13 @@ class InstallHooks(TempHome):
         self.assertEqual(len(list(settings.parent.glob('settings.json.everett-bak-*'))), 1)
 
     def test_existing_entry_at_another_path_counts(self):
+        # The registration mentions Everett's script but its script path is gone:
+        # stale, so apply replaces it with the current command.
         cmd = 'python3 /somewhere/everett/everett/hooks/codex_session_start.py'
         self.write('.codex/hooks.json', json.dumps({'hooks': {'SessionStart': [{'hooks': [{'command': cmd}]}]}}))
-        self.assertEqual(install.installed('codex'), {'SessionStart': True, 'Stop': False, 'UserPromptSubmit': False,
+        self.assertEqual(install.installed('codex'), {'SessionStart': False, 'Stop': False, 'UserPromptSubmit': False,
                                                       'PostToolUse': False})
+        self.assertEqual(install.installed_state('codex')['SessionStart'], 'stale')
         with contextlib.redirect_stdout(io.StringIO()):
             main(['install-hooks', '--codex', '--apply'])
         data = json.loads((self.home / '.codex/hooks.json').read_text())
