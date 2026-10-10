@@ -50,12 +50,16 @@ class Adapters(unittest.TestCase):
             cards.card_path('p-1').write_text('Orchestrating work')
             self.assertEqual(claude.parse(p).id, 'p-1')
 
-    def test_injected_allowlist_keeps_pasted_markup(self):
+    def test_injected_rule_keeps_pasted_markup(self):
         from everett.session import is_injected
         self.assertFalse(is_injected('<div>broken layout'))
-        self.assertFalse(is_injected('  <Value> 1'))
+        self.assertFalse(is_injected('  <DIV CLASS="x"> 1'))
+        self.assertFalse(is_injected('<?xml version="1.0"?><root/>'))
+        self.assertFalse(is_injected('</table>'))
         self.assertFalse(is_injected('<pasted_content id="a">\nreal paste'))
         for t in ('<system-reminder>x</system-reminder>', '  <user_info>u</user_info>',
+                  '<permissions instructions>i</permissions instructions>',
+                  '<turn_aborted>x</turn_aborted>', '<Value> 1',
                   '<environment_context/>', '<command-name>/clear</command-name>',
                   '<local-command-stdout>out</local-command-stdout>', '<ide_opened_file>x</ide_opened_file>'):
             self.assertTrue(is_injected(t), t)

@@ -95,6 +95,11 @@ class Inbox(Base):
         inbox.post('s-live', 'high', sender='a', hops=3)
         inbox.take('s-live')
         self.assertEqual(inbox.session_hops('s-live'), 3)
+        # The memory expires: a long-lived session can send again later.
+        data = json.loads(inbox.live_path('s-live').read_text())
+        data['hops_ts'] = time.time() - inbox.HOP_MEMORY_SECONDS - 1
+        inbox.live_path('s-live').write_text(json.dumps(data))
+        self.assertEqual(inbox.session_hops('s-live'), 0)
 
     def test_live_record(self):
         self.assertIsNone(inbox.live('s1'))
@@ -226,6 +231,13 @@ class SendModes(Base):
         self.assertEqual(cm.exception.code, 7)
         # A different session with no recorded hops can still send.
         with mock.patch.dict(os.environ, {'EVERETT_SESSION_ID': 'fresh-1'}):
+            out = send_inbox(self.session('c-live'), 'onward')
+        self.assertEqual(out['mode'], 'inbox')
+        # And once the recorded hops age past HOP_MEMORY_SECONDS, B sends again.
+        data = json.loads(inbox.live_path('b-live').read_text())
+        data['hops_ts'] = time.time() - inbox.HOP_MEMORY_SECONDS - 1
+        inbox.live_path('b-live').write_text(json.dumps(data))
+        with mock.patch.dict(os.environ, {'EVERETT_SESSION_ID': 'b-live'}):
             out = send_inbox(self.session('c-live'), 'onward')
         self.assertEqual(out['mode'], 'inbox')
 
