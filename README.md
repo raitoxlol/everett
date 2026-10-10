@@ -109,7 +109,7 @@ Done. MAX_RETRIES is now 5 and the backoff test covers the cap.
 | `everett onboard [--yes] [--span-days N] [--no-backfill] [--no-mcp]` | Friendly first-time setup TUI (welcome, detect, hooks, MCP, optional Jev key + nightly merge, optional card backfill, summary); `--yes` runs it non-interactively for scripts. |
 | `everett install-hooks [--claude] [--codex] [--omp] [--grok] [--apply]` | Prints the hook registrations. `--apply` backs up the file, then merges idempotently. |
 | `everett mcp` | Runs the stdio MCP server (harnesses start it; see below). |
-| `everett install-mcp [--claude] [--codex] [--omp] [--grok] [--apply]` | Prints or registers the MCP server for each harness. |
+| `everett install-mcp [--claude] [--codex] [--omp] [--grok] [--devin] [--apply]` | Prints or registers the MCP server for each harness. |
 | `everett doctor` | Installed CLIs, stores, hooks, live stdio/MCP registration checks, cards, router, and exact next commands. |
 | `everett learn "<fact>" [--project P] [--scope global\|project]` | Pushes a fact to the shared core inbox. Secrets are rejected. |
 | `everett trunk merge [--llm claude\|codex\|none] [--dry-run]` | Distills the inbox into the shared core. |
@@ -281,10 +281,11 @@ everett install-mcp --apply    # back up, then register (idempotent)
 - **Codex**: an `[mcp_servers.everett]` block in `~/.codex/config.toml`.
 - **OMP**: `mcpServers.everett` in `~/.omp/agent/mcp.json`. OMP also imports Claude Code's servers.
 - **Grok CLI**: `grok mcp add everett <python> -- -m everett mcp`, or `--apply` appends an `[mcp_servers.everett]` block to `~/.grok/config.toml`. Grok also imports Claude Code's servers by default. Included by default when `~/.grok` exists.
+- **Devin CLI (v3000.3+)**: `everett install-mcp --devin --apply` merges `mcpServers.everett` into `~/.config/devin/mcp_config.json` (Windows: `%APPDATA%/devin/mcp_config.json`). This is separate from the session store configured by `DEVIN_HOME`. Existing servers and unrelated environment values are preserved; use `--repair --apply` to back up and refresh a stale registration. Doctor and onboarding recognize Devin MCP, but no native hook or automatic caller-id environment variable is assumed.
 
-The registration uses the Python interpreter and package path of the install you ran it from.
-For another MCP client, configure a stdio server with that interpreter as `command` and
-`["-m", "everett", "mcp"]` as `args`. `python -m everett mcp` is also a valid launcher when
+The registration uses the install you ran it from: the Rust executable with `["mcp"]`, or
+the Python interpreter and package path with `["-m", "everett", "mcp"]`. For another MCP
+client, copy the launcher printed by a dry run. `python -m everett mcp` is also valid when
 that Python has Everett installed. Restart clients after changing their registration.
 
 **Caller identity.** Everett reads the calling session from the environment the harness gives the server: `CLAUDE_CODE_SESSION_ID` (Claude Code), `CODEX_THREAD_ID` (Codex), `HERMES_SESSION_ID` (Hermes), `PI_SESSION_FILE` (Pi), or `GROK_SESSION_ID` (Grok documents it for hooks; for MCP servers it is unverified). `EVERETT_SESSION_ID` overrides all of them. OMP and the Devin CLI expose none. When nothing is detected, agents pass `session_id` to `everett_send` and `everett_card`. An MCP server starts once per session, so after a harness switches sessions in place (for example `/clear`), pass `session_id` explicitly.
@@ -335,7 +336,7 @@ to a cloud service for plain `ls`, local routing, or inbox delivery.
 | --- | --- |
 | `everett: command not found` | Run `pipx ensurepath`, open a new terminal, then `everett --version`. If needed, reinstall from the GitHub URL above. |
 | `No module named everett` | Use the Python from Everett's venv; a pipx install is isolated from your system Python. `everett install-mcp --apply` records the correct interpreter. |
-| MCP client shows zero tools | Run `everett doctor`. It must list **10 tools over stdio**. For a stale/disabled launcher, run `everett install-mcp --claude --repair --apply` (replace `--claude` with `--codex`, `--omp` or `--grok`), then restart/enable the server in the client. Fix malformed config before repair. |
+| MCP client shows zero tools | Run `everett doctor`. It must list **10 tools over stdio**. For a stale/disabled launcher, run `everett install-mcp --claude --repair --apply` (replace `--claude` with `--codex`, `--omp`, `--grok` or `--devin`), then restart/enable the server in the client. Fix malformed config before repair. |
 | Session not found / no live reply | Start a harness session or run `everett --hours 168 ls` for older ones; send to its exact id or title. In MCP, pass `hours: 168` to listing and sending. Hook injection needs enabled/trusted hooks; Pi/Hermes poll `everett_inbox`. A queued message is not a read receipt. |
 | Codex reports `Interrupted system call (os error 4)` | Delivery is unconfirmed. Check the target session before retrying; for an open session with Everett hooks, use `--mode inbox` (MCP: `mode: "inbox"`). Failed resumes are not retried automatically. |
 | Shared fact missing / scheduling unavailable | Run `everett trunk merge --llm none`, then `everett core`. Automatic launchd scheduling and default desktop notifications require macOS; manual merging works on Linux. |

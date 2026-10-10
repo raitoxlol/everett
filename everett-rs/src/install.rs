@@ -286,6 +286,17 @@ pub fn mcp_path(harness: &str) -> PathBuf {
         "claude" => home().join(".claude.json"),
         "codex" => home().join(".codex").join("config.toml"),
         "grok" => home().join(".grok").join("config.toml"),
+        "devin" => {
+            let root = if cfg!(windows) {
+                std::env::var_os("APPDATA")
+                    .filter(|v| !v.is_empty())
+                    .map(PathBuf::from)
+                    .unwrap_or_else(|| home().join("AppData").join("Roaming"))
+            } else {
+                home().join(".config")
+            };
+            root.join("devin").join("mcp_config.json")
+        }
         _ => home().join(".omp").join("agent").join("mcp.json"),
     }
 }
@@ -363,6 +374,11 @@ pub fn mcp_status(harness: &str) -> (String, String) {
         return ("stale".into(), "registration is disabled".to_string());
     }
     let command = entry.get("command").and_then(|v| v.as_str()).unwrap_or("");
+    if harness == "devin" && (entry.get("url").and_then(Value::as_str).map(|s| !s.is_empty()).unwrap_or(false)
+        || entry.get("transport").map(|v| v.as_str() != Some("stdio")).unwrap_or(false))
+    {
+        return ("stale".into(), "registration is not Everett stdio".to_string());
+    }
     let args: Vec<String> = entry
         .get("args")
         .and_then(|v| v.as_array())
@@ -490,6 +506,15 @@ fn replace_toml_entry(text: &str, entry: &Map<String, Value>) -> std::result::Re
 pub fn mcp_snippet(harness: &str) -> String {
     let (command, args, env) = mcp_launch();
     match harness {
+        "devin" => {
+            let mut entry = mcp_json_entry();
+            entry.remove("type");
+            format!(
+                "# user scope, Devin CLI v3000.3+: merge into {}\n{}\n",
+                mcp_path(harness).display(),
+                serde_json::to_string_pretty(&json!({"mcpServers": {"everett": entry}})).unwrap()
+            )
+        }
         "claude" => {
             let env_flags = env
                 .iter()
@@ -551,8 +576,12 @@ pub fn apply_mcp(harness: &str, repair: bool) -> std::result::Result<String, Str
             return Err("Everett MCP entry must be an object; correct it before retrying".to_string());
         }
     }
-    let entry = repaired_entry(&old.as_ref().and_then(|o| o.as_object()).cloned().unwrap_or_default())
+    let mut entry = repaired_entry(&old.as_ref().and_then(|o| o.as_object()).cloned().unwrap_or_default())
         .map_err(|e| e.message)?;
+    if harness == "devin" {
+        entry.remove("type");
+        entry.remove("transport");
+    }
     let saved;
     if TOML_MCP.contains(&harness) {
         let text = fs::read_to_string(&path).unwrap_or_default();
