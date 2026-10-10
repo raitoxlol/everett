@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 1.5.0 — 2026-10-10
 
 - **Breaking:** remove the Python package (`everett/`, `pyproject.toml`, `bin/everett`); `pipx install`
   no longer works. Install with `install.sh`, Homebrew, or `cargo install`. `install-hooks --apply` and
