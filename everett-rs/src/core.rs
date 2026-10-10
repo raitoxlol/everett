@@ -92,10 +92,8 @@ pub fn project_for(cwd: &str) -> String {
         return String::new();
     }
     let path = realpath(&expanduser(cwd));
-    let home_dir = home();
-    let is_stop = |p: &Path| -> bool {
-        p == Path::new("/") || p == home_dir.as_path() || p == dirs_home()
-    };
+    let (home_dir, env_home) = (realpath(&home()), realpath(&dirs_home()));
+    let is_stop = |p: &Path| -> bool { p == Path::new("/") || p == home_dir || p == env_home };
     if is_stop(&path) {
         return String::new();
     }
