@@ -84,7 +84,13 @@ def active_sessions() -> set[str]:
         if not isinstance(row, dict) or not row.get('session_id'):
             continue
         try:
-            os.kill(int(row.get('pid')), 0)
+            pid = int(row.get('pid'))
+        except (TypeError, ValueError):
+            continue
+        if pid <= 1:  # 0/negative is not a process; kill(0,0) would match our own group
+            continue
+        try:
+            os.kill(pid, 0)
         except PermissionError:
             pass  # exists, owned by someone else
         except (OSError, TypeError, ValueError):

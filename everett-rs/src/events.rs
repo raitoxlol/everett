@@ -17,6 +17,10 @@ use crate::paths;
 use crate::send::caller_identity;
 use crate::session::{file_mtime, home, now};
 
+/// Injectable runner for notification commands (tests substitute a fake).
+type NotifyRunner = dyn Fn(&[String], Option<&HashMap<String, String>>);
+type NotifyRun = (Vec<String>, Option<HashMap<String, String>>);
+
 pub const KINDS: &[&str] = &["done", "blocked", "needs-input", "info"];
 pub const HUMAN_KINDS: &[&str] = &["blocked", "needs-input"];
 pub const DEBOUNCE: f64 = 600.0;
@@ -213,6 +217,21 @@ pub fn subscribe(subscriber: &str, target: &str, remove: bool) -> Result<Vec<Str
     if target.is_empty() {
         return Err(EverettError::new(2, "Name a session id, \"project:<name>\", or \"*\"."));
     }
+    // Exclusive lock around the read-modify-write so concurrent subscribers
+    // can't lose each other's changes.
+    let lock_target = subs_path().with_extension("json.lock");
+    if let Some(parent) = lock_target.parent() {
+        let _ = fs::create_dir_all(parent);
+    }
+    let lock = OpenOptions::new()
+        .create(true)
+        .write(true)
+        .truncate(true)
+        .open(&lock_target)
+        .map_err(|e| EverettError::new(2, format!("cannot lock subscriptions: {e}")))?;
+    use fs2::FileExt;
+    lock.lock_exclusive()
+        .map_err(|e| EverettError::new(2, format!("cannot lock subscriptions: {e}")))?;
     let mut subs = subscriptions();
     let mut current = subs.get(subscriber).cloned().unwrap_or_default();
     if remove {
@@ -341,13 +360,13 @@ pub fn notify_line(event: &Map<String, Value>, reason: &str) -> String {
 pub fn notify(
     event: &Map<String, Value>,
     reason: &str,
-    runner: Option<&dyn Fn(&[String], Option<&HashMap<String, String>>)>,
+    runner: Option<&NotifyRunner>,
 ) -> Vec<Vec<String>> {
     let command = config::get("notify_command", Some("EVERETT_NOTIFY_COMMAND"), "");
     let default_mode = if !command.is_empty() { "both" } else { "osascript" };
     let mode = config::get("notify", Some("EVERETT_NOTIFY"), default_mode);
     let line = notify_line(event, reason);
-    let mut runs: Vec<(Vec<String>, Option<HashMap<String, String>>)> = Vec::new();
+    let mut runs: Vec<NotifyRun> = Vec::new();
     if (mode == "command" || mode == "both") && !command.is_empty() {
         let mut env: HashMap<String, String> = std::env::vars().collect();
         env.insert("EVERETT_EVENT_KIND".into(), event.get("kind").and_then(|v| v.as_str()).unwrap_or("").to_string());
@@ -417,7 +436,7 @@ fn escalate_minutes() -> f64 {
 }
 
 /// Notify once for every session blocked / waiting on input longer than escalate_minutes.
-pub fn check_escalations(at: Option<f64>, runner: Option<&dyn Fn(&[String], Option<&HashMap<String, String>>)>) -> Vec<Map<String, Value>> {
+pub fn check_escalations(at: Option<f64>, runner: Option<&NotifyRunner>) -> Vec<Map<String, Value>> {
     let now = at.unwrap_or_else(now);
     let limit = escalate_minutes() * 60.0;
     let mut out = Vec::new();

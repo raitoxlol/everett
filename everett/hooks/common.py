@@ -7,7 +7,6 @@ import re
 import tempfile
 from pathlib import Path
 
-from ..adapters import claude, codex, grok
 from ..cards import AUTO_MARKER, INSTRUCTION, card_path
 from ..session import clean, read_edges, scan_full
 
@@ -183,6 +182,7 @@ def _thread_headline(harness: str, session_id: str) -> str:
         pass
     if harness == 'codex':
         try:
+            from ..adapters import codex
             name = codex.thread_names().get(session_id, '')
             if name:
                 return clean(name, 120)
@@ -192,6 +192,7 @@ def _thread_headline(harness: str, session_id: str) -> str:
 
 
 def _auto_card(transcript: Path, harness: str, cwd: str = '', session_id: str = '') -> str:
+    from ..adapters import claude, codex, grok  # lazy: keep stop-hook startup fast
     adapter = {'claude': claude, 'codex': codex, 'grok': grok}.get(harness)
     if adapter is None:
         return ''
@@ -326,6 +327,7 @@ def _last_assistant(data: dict, harness: str) -> str:
         value = data.get(key)
         if isinstance(value, str) and value.strip():
             return value
+    from ..adapters import claude, codex, grok  # lazy: keep stop-hook startup fast
     adapter = {'claude': claude, 'codex': codex, 'grok': grok}.get(harness)
     transcript = data.get('transcript_path')
     if adapter is None or not isinstance(transcript, str) or not transcript:
@@ -379,6 +381,7 @@ def grok_stop_hook(raw: str) -> None:
         cwd = data.get('cwd') if isinstance(data.get('cwd'), str) else ''
         if not isinstance(session_id, str) or not re.fullmatch(r'[A-Za-z0-9._-]+', session_id):
             return
+        from ..adapters import grok
         path = grok.transcript(session_id, cwd)
         if path is not None:
             stop_hook(json.dumps({'session_id': session_id, 'transcript_path': str(path), 'cwd': cwd}), 'grok')

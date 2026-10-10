@@ -16,7 +16,7 @@ const SKIP_ENV: &str = "EVERETT_SEND";
 
 /// Card instruction plus the shared core for a new session ('' to stay silent).
 pub fn session_start_context(session_id: &str, cwd: &str) -> String {
-    if std::env::var(SKIP_ENV).is_ok() || session_id.is_empty() {
+    if std::env::var(SKIP_ENV).map(|v| !v.is_empty()).unwrap_or(false) || session_id.is_empty() {
         return String::new();
     }
     let Some(path) = crate::cards::card_path(session_id) else {
@@ -185,7 +185,7 @@ fn markdown_lines(text: &str) -> Vec<(String, bool, bool)> {
         if let Some(f) = fence {
             if let Some(m) = &fence_match {
                 let run = m.get(1).unwrap().as_str();
-                if run.chars().next() == Some(f.0) && run.len() >= f.1 {
+                if run.starts_with(f.0) && run.len() >= f.1 {
                     fence = None;
                 }
             }
@@ -539,7 +539,7 @@ pub fn stop_hook(raw: &str, harness: &str) {
 }
 
 fn stop_hook_inner(raw: &str, harness: &str) -> Option<()> {
-    if std::env::var(SKIP_ENV).is_ok()
+    if std::env::var(SKIP_ENV).map(|v| !v.is_empty()).unwrap_or(false)
         || (harness == "claude" && std::env::var("CLAUDE_CODE_ENTRYPOINT").as_deref() == Ok("sdk-cli"))
     {
         return None;
@@ -653,7 +653,7 @@ pub fn stop_event(raw: &str, harness: &str) {
 }
 
 fn stop_event_inner(raw: &str, harness: &str) {
-    if std::env::var(SKIP_ENV).is_ok()
+    if std::env::var(SKIP_ENV).map(|v| !v.is_empty()).unwrap_or(false)
         || (harness == "claude" && std::env::var("CLAUDE_CODE_ENTRYPOINT").as_deref() == Ok("sdk-cli"))
     {
         return;
@@ -740,7 +740,7 @@ const EVENTS: &[&str] = &["UserPromptSubmit", "PostToolUse"];
 
 /// Hook stdin JSON -> hook stdout JSON ("" to stay silent).
 pub fn deliver_output(raw: &str, harness: &str) -> String {
-    if std::env::var("EVERETT_SEND").is_ok() {
+    if std::env::var("EVERETT_SEND").map(|v| !v.is_empty()).unwrap_or(false) {
         return String::new();
     }
     if harness == "claude" && std::env::var("CLAUDE_CODE_ENTRYPOINT").as_deref() == Ok("sdk-cli") {
@@ -754,8 +754,18 @@ pub fn deliver_output(raw: &str, harness: &str) -> String {
         .and_then(|v| v.as_str())
         .or_else(|| map.get("sessionId").and_then(|v| v.as_str()))
         .unwrap_or("");
-    let event = map.get("hook_event_name").and_then(|v| v.as_str()).unwrap_or("");
-    if !EVENTS.contains(&event) {
+    // Harnesses send hook_event_name (Claude), hookEventName (Grok), or snake_case values.
+    let raw_event = map
+        .get("hook_event_name")
+        .and_then(|v| v.as_str())
+        .or_else(|| map.get("hookEventName").and_then(|v| v.as_str()))
+        .unwrap_or("");
+    let event = EVENTS
+        .iter()
+        .find(|e| e.eq_ignore_ascii_case(raw_event))
+        .copied()
+        .unwrap_or("");
+    if event.is_empty() {
         return String::new();
     }
     if !crate::inbox::valid_id(session_id) {
@@ -779,8 +789,22 @@ pub fn deliver_output(raw: &str, harness: &str) -> String {
     .unwrap_or_default()
 }
 
+/// Write hook output without panicking on a closed stdout (a harness that
+/// pipes us and exits early would otherwise kill the hook with SIGPIPE/EPIPE).
+fn emit(text: &str) {
+    use std::io::Write;
+    let mut out = std::io::stdout().lock();
+    let _ = out.write_all(text.as_bytes());
+    let _ = out.flush();
+}
+
 /// One `everett hook <stem>` invocation: stdin JSON -> stdout. Always exit 0.
 pub fn hook_main(stem: &str, args: &[String]) -> i32 {
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| hook_main_inner(stem, args)));
+    0
+}
+
+fn hook_main_inner(stem: &str, args: &[String]) -> i32 {
     let stdin_raw = || {
         use std::io::Read;
         let mut buf = String::new();
@@ -794,13 +818,13 @@ pub fn hook_main(stem: &str, args: &[String]) -> i32 {
             }
             let out = session_start_output(&stdin_raw());
             if !out.is_empty() {
-                println!("{}", out);
+                emit(&format!("{out}\n"));
             }
         }
         "codex_session_start" => {
             let out = session_start_output(&stdin_raw());
             if !out.is_empty() {
-                println!("{}", out);
+                emit(&format!("{out}\n"));
             }
         }
         "claude_stop" => {
@@ -816,20 +840,20 @@ pub fn hook_main(stem: &str, args: &[String]) -> i32 {
         "claude_inbox" => {
             let out = deliver_output(&stdin_raw(), "claude");
             if !out.is_empty() {
-                print!("{}\n", out);
+                emit(&format!("{out}\n"));
             }
         }
         "codex_inbox" => {
             let out = deliver_output(&stdin_raw(), "codex");
             if !out.is_empty() {
-                print!("{}\n", out);
+                emit(&format!("{out}\n"));
             }
         }
         "grok_stop" => grok_stop_hook(&stdin_raw()),
         "grok_inbox" => {
             let out = deliver_output(&stdin_raw(), "grok");
             if !out.is_empty() {
-                print!("{}\n", out);
+                emit(&format!("{out}\n"));
             }
         }
         "omp_inbox" => {
@@ -838,7 +862,7 @@ pub fn hook_main(stem: &str, args: &[String]) -> i32 {
                     crate::inbox::touch_live(sid, "omp", "turn");
                     let text = crate::inbox::take(sid);
                     if !text.is_empty() {
-                        print!("{}", text);
+                        emit(&text);
                     }
                 }
             }
@@ -848,7 +872,7 @@ pub fn hook_main(stem: &str, args: &[String]) -> i32 {
                 let cwd = std::env::current_dir().map(|p| p.to_string_lossy().to_string()).unwrap_or_default();
                 let context = session_start_context(sid, &cwd);
                 if !context.is_empty() {
-                    print!("{}", context);
+                    emit(&context);
                 }
             }
         }

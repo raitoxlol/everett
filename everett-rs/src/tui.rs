@@ -292,11 +292,13 @@ fn screen_detect(
     pause(t, p, 2, "What Everett found", &lines, true, None)
 }
 
+type BoolSetter = Box<dyn Fn(&mut OnboardConfig, bool)>;
+
 struct CheckItem {
     label: String,
     path: String,
     get: Box<dyn Fn(&OnboardConfig) -> bool>,
-    set: Box<dyn Fn(&mut OnboardConfig, bool)>,
+    set: BoolSetter,
 }
 
 fn checklist(
@@ -841,7 +843,7 @@ fn screen_apply(
         let done_ref = &done;
         let progress = |i: usize, total: usize| {
             let bar_w = 30usize;
-            let filled = if total > 0 { bar_w * i / total } else { bar_w };
+            let filled = bar_w * i.checked_div(total).unwrap_or(1);
             let bar = "#".repeat(filled) + &"-".repeat(bar_w - filled);
             let extra = format!("[{}] {}/{}", bar, i, total);
             let _ = term_cell
@@ -962,23 +964,23 @@ impl Drop for TermGuard {
     }
 }
 
-/// The wizard. `Err(())` means the terminal could not be initialized — caller falls back to
+/// The wizard. `Err(_)` means the terminal could not be initialized — caller falls back to
 /// plain prompts. `Err(Quit)` semantics travel via `Ok(None)`.
-pub fn run(args: &crate::cli::Args, mut cfg: OnboardConfig) -> Result<Option<()>, ()> {
+pub fn run(args: &crate::cli::Args, mut cfg: OnboardConfig) -> Result<Option<()>, std::io::Error> {
     use std::io::IsTerminal;
     if !io::stdin().is_terminal() || !io::stdout().is_terminal() {
-        return Err(());
+        return Err(std::io::Error::new(std::io::ErrorKind::Unsupported, "terminal unavailable"));
     }
     match std::env::var("TERM") {
         Ok(t) if t != "dumb" => {}
-        _ => return Err(()),
+        _ => return Err(std::io::Error::new(std::io::ErrorKind::Unsupported, "terminal unavailable")),
     }
-    enable_raw_mode().map_err(|_| ())?;
+    enable_raw_mode()?;
     let mut stdout = io::stdout();
-    execute!(stdout, EnterAlternateScreen, cursor::Hide).map_err(|_| ())?;
+    execute!(stdout, EnterAlternateScreen, cursor::Hide)?;
     let backend = CrosstermBackend::new(stdout);
-    let mut term = Terminal::new(backend).map_err(|_| ())?;
-    term.clear().map_err(|_| ())?;
+    let mut term = Terminal::new(backend)?;
+    term.clear()?;
     let _guard = TermGuard;
     let p = Palette::new();
 

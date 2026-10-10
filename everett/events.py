@@ -12,6 +12,8 @@ one-time escalation when a session stays blocked longer than `escalate_minutes`.
 """
 from __future__ import annotations
 
+import contextlib
+import fcntl
 import json
 import os
 import re
@@ -53,6 +55,18 @@ def subs_path() -> Path:
 
 def _valid_sid(sid: str) -> bool:
     return bool(sid) and bool(re.fullmatch(r'[A-Za-z0-9._-]{1,128}', sid)) and sid not in ('.', '..')
+
+
+@contextlib.contextmanager
+def _locked(target: Path):
+    """Exclusive lock serializing read-modify-write of a shared JSON file."""
+    target.parent.mkdir(parents=True, exist_ok=True)
+    fd = os.open(target.with_suffix(target.suffix + '.lock'), os.O_WRONLY | os.O_CREAT, 0o600)
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX)
+        yield
+    finally:
+        os.close(fd)
 
 
 def _write_json(target: Path, data) -> None:
@@ -136,18 +150,19 @@ def subscribe(subscriber: str, target: str, remove: bool = False) -> list[str]:
     target = target.strip()
     if not target:
         raise EventError('Name a session id, "project:<name>", or "*".')
-    subs = subscriptions()
-    current = subs.get(subscriber, [])
-    if remove:
-        current = [t for t in current if t != target]
-    elif target not in current:
-        current.append(target)
-    if current:
-        subs[subscriber] = current
-    else:
-        subs.pop(subscriber, None)
-    _write_json(subs_path(), subs)
-    return current
+    with _locked(subs_path()):
+        subs = subscriptions()
+        current = subs.get(subscriber, [])
+        if remove:
+            current = [t for t in current if t != target]
+        elif target not in current:
+            current.append(target)
+        if current:
+            subs[subscriber] = current
+        else:
+            subs.pop(subscriber, None)
+        _write_json(subs_path(), subs)
+        return current
 
 
 def resolve_target(target: str) -> str:

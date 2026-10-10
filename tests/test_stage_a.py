@@ -103,6 +103,21 @@ class HermesAdapter(TempHome):
         with self.assertRaises(SendError):
             command_for(found['h-tg'], 'go')
 
+    def test_db_without_messages_table_still_lists_sessions(self):
+        bare = self.home / '.hermes/profiles/bare/state.db'
+        bare.parent.mkdir(parents=True)
+        con = sqlite3.connect(bare)
+        con.execute("CREATE TABLE sessions (id TEXT PRIMARY KEY, source TEXT, started_at REAL, cwd TEXT,"
+                    " title TEXT, profile_name TEXT, parent_session_id TEXT, hidden INTEGER, last_activity_at REAL)")
+        con.execute("INSERT INTO sessions VALUES ('h-9','cli',?,'/work/nomsg','No messages',NULL,NULL,0,?)",
+                    (time.time() - 60, time.time() - 60))
+        con.commit()
+        con.close()
+        found = {s.id: s for s in hermes.scan(72)}
+        self.assertIn('h-9', found)
+        self.assertEqual(found['h-9'].title, 'No messages')
+        self.assertEqual(found['h-9'].first_user, '')  # user text unavailable, session still listed
+
     def test_busy_uses_session_activity_not_db_mtime(self):
         s = Session('hermes', 'h', '', str(self.db), '', time.time() - 3600, source='cli')
         os.utime(self.db)  # other sessions keep writing the shared db
@@ -203,31 +218,30 @@ class Spawn(TempHome):
             spawn_command('vim', 'hi')
 
     def test_claude_spawn_preassigns_id_and_records_it(self):
-        run = mock.Mock(return_value=SimpleNamespace(returncode=0, stdout='OK\n', stderr=''))
-        with mock.patch('everett.send.subprocess.run', run):
+        run = mock.Mock(return_value=(0, 'OK\n', ''))
+        with mock.patch('everett.send._run_capture', run):
             result = spawn('claude', 'reply OK', str(self.home))
         self.assertEqual(result.reply, 'OK')
         self.assertEqual(run.call_args.args[0][:2], ['claude', '--session-id'])
         self.assertEqual(run.call_args.args[0][2], result.session_id)
-        self.assertEqual(run.call_args.kwargs['cwd'], str(self.home))
+        self.assertEqual(run.call_args.args[2], str(self.home))
         self.assertIn(result.session_id, registry.spawned_ids())
         hidden = Session('claude', result.session_id, '', '', '', 0, auto=True)
         self.assertFalse(registry.is_auto(hidden, registry.spawned_ids()))
 
     def test_codex_spawn_reads_last_message_and_session_id(self):
-        def fake_run(cmd, **kw):
+        def fake_run(cmd, *args):
             Path(cmd[cmd.index('-o') + 1]).write_text('the answer')
-            return SimpleNamespace(returncode=0, stdout='noise',
-                                   stderr='session id: 01a0d358-0f69-77f3-950a-8bfbe2f5a13a\n')
-        with mock.patch('everett.send.subprocess.run', side_effect=fake_run):
+            return 0, 'noise', 'session id: 01a0d358-0f69-77f3-950a-8bfbe2f5a13a\n'
+        with mock.patch('everett.send._run_capture', side_effect=fake_run):
             result = spawn('codex', 'q', str(self.home))
         self.assertEqual((result.reply, result.session_id), ('the answer', '01a0d358-0f69-77f3-950a-8bfbe2f5a13a'))
 
     def test_spawn_errors(self):
         with self.assertRaises(SendError):
             spawn('claude', 'x', str(self.home / 'missing'))
-        failed = SimpleNamespace(returncode=3, stdout='', stderr='boom')
-        with mock.patch('everett.send.subprocess.run', return_value=failed), self.assertRaises(SendError) as cm:
+        failed = (3, '', 'boom')
+        with mock.patch('everett.send._run_capture', return_value=failed), self.assertRaises(SendError) as cm:
             spawn('claude', 'x', str(self.home))
         self.assertEqual(cm.exception.code, 6)
 
