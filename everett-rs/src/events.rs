@@ -17,6 +17,10 @@ use crate::paths;
 use crate::send::caller_identity;
 use crate::session::{file_mtime, home, now};
 
+/// Injectable runner for notification commands (tests substitute a fake).
+type NotifyRunner<'a> = dyn Fn(&[String], Option<&HashMap<String, String>>) + 'a;
+type NotifyRun = (Vec<String>, Option<HashMap<String, String>>);
+
 pub const KINDS: &[&str] = &["done", "blocked", "needs-input", "info"];
 pub const HUMAN_KINDS: &[&str] = &["blocked", "needs-input"];
 pub const DEBOUNCE: f64 = 600.0;
@@ -40,18 +44,22 @@ fn valid_sid(sid: &str) -> bool {
     inbox::valid_id(sid)
 }
 
-fn write_json(target: &PathBuf, data: &Value) {
+fn write_json(target: &PathBuf, data: &Value) -> Result<()> {
     if let Some(parent) = target.parent() {
-        let _ = fs::create_dir_all(parent);
+        fs::create_dir_all(parent).map_err(|e| {
+            EverettError::new(2, format!("cannot create {}: {}", parent.display(), e))
+        })?;
     }
     let tmp = target.with_file_name(format!(
         ".{}.{}.tmp",
         target.file_name().unwrap_or_default().to_string_lossy(),
         std::process::id()
     ));
-    if fs::write(&tmp, serde_json::to_string(data).unwrap_or_default()).is_ok() {
-        let _ = fs::rename(&tmp, target);
-    }
+    let w = || {
+        fs::write(&tmp, serde_json::to_string(data).unwrap_or_default())
+            .and_then(|_| fs::rename(&tmp, target))
+    };
+    w().map_err(|e| EverettError::new(2, format!("cannot write {}: {}", target.display(), e)))
 }
 
 pub fn state(session_id: &str) -> Option<Map<String, Value>> {
@@ -127,11 +135,20 @@ pub fn record(
     event.insert("harness".into(), json!(harness));
     event.insert("cwd".into(), json!(cwd));
     event.insert("source".into(), json!(source));
-    let _ = fs::create_dir_all(events_path().parent().unwrap());
-    if let Ok(mut f) = OpenOptions::new().create(true).append(true).open(events_path()) {
-        let _ = f.set_permissions(PermissionsExt::from_mode(0o600));
-        let _ = f.write_all((serde_json::to_string(&event).unwrap() + "\n").as_bytes());
+    let events_file = events_path();
+    if let Some(parent) = events_file.parent() {
+        fs::create_dir_all(parent).map_err(|e| {
+            EverettError::new(2, format!("cannot create {}: {}", parent.display(), e))
+        })?;
     }
+    let mut f = OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&events_file)
+        .map_err(|e| EverettError::new(2, format!("cannot write {}: {}", events_file.display(), e)))?;
+    let _ = f.set_permissions(PermissionsExt::from_mode(0o600));
+    f.write_all((serde_json::to_string(&event).unwrap() + "\n").as_bytes())
+        .map_err(|e| EverettError::new(2, format!("cannot write {}: {}", events_file.display(), e)))?;
     if !session.is_empty() && valid_sid(&session) {
         let same = prev
             .as_ref()
@@ -156,7 +173,7 @@ pub fn record(
                 json!(false)
             },
         );
-        write_json(&state_dir().join(format!("{}.json", session)), &Value::Object(state_doc));
+        write_json(&state_dir().join(format!("{}.json", session)), &Value::Object(state_doc))?;
     }
     route(&event);
     if HUMAN_KINDS.contains(&kind) {
@@ -200,6 +217,21 @@ pub fn subscribe(subscriber: &str, target: &str, remove: bool) -> Result<Vec<Str
     if target.is_empty() {
         return Err(EverettError::new(2, "Name a session id, \"project:<name>\", or \"*\"."));
     }
+    // Exclusive lock around the read-modify-write so concurrent subscribers
+    // can't lose each other's changes.
+    let lock_target = subs_path().with_extension("json.lock");
+    if let Some(parent) = lock_target.parent() {
+        let _ = fs::create_dir_all(parent);
+    }
+    let lock = OpenOptions::new()
+        .create(true)
+        .write(true)
+        .truncate(true)
+        .open(&lock_target)
+        .map_err(|e| EverettError::new(2, format!("cannot lock subscriptions: {e}")))?;
+    use fs2::FileExt;
+    lock.lock_exclusive()
+        .map_err(|e| EverettError::new(2, format!("cannot lock subscriptions: {e}")))?;
     let mut subs = subscriptions();
     let mut current = subs.get(subscriber).cloned().unwrap_or_default();
     if remove {
@@ -212,7 +244,7 @@ pub fn subscribe(subscriber: &str, target: &str, remove: bool) -> Result<Vec<Str
     } else {
         subs.insert(subscriber.to_string(), current.clone());
     }
-    write_json(&subs_path(), &serde_json::to_value(&subs).unwrap_or(Value::Null));
+    write_json(&subs_path(), &serde_json::to_value(&subs).unwrap_or(Value::Null))?;
     Ok(current)
 }
 
@@ -328,13 +360,13 @@ pub fn notify_line(event: &Map<String, Value>, reason: &str) -> String {
 pub fn notify(
     event: &Map<String, Value>,
     reason: &str,
-    runner: Option<&dyn Fn(&[String], Option<&HashMap<String, String>>)>,
+    runner: Option<&NotifyRunner<'_>>,
 ) -> Vec<Vec<String>> {
     let command = config::get("notify_command", Some("EVERETT_NOTIFY_COMMAND"), "");
     let default_mode = if !command.is_empty() { "both" } else { "osascript" };
     let mode = config::get("notify", Some("EVERETT_NOTIFY"), default_mode);
     let line = notify_line(event, reason);
-    let mut runs: Vec<(Vec<String>, Option<HashMap<String, String>>)> = Vec::new();
+    let mut runs: Vec<NotifyRun> = Vec::new();
     if (mode == "command" || mode == "both") && !command.is_empty() {
         let mut env: HashMap<String, String> = std::env::vars().collect();
         env.insert("EVERETT_EVENT_KIND".into(), event.get("kind").and_then(|v| v.as_str()).unwrap_or("").to_string());
@@ -404,7 +436,7 @@ fn escalate_minutes() -> f64 {
 }
 
 /// Notify once for every session blocked / waiting on input longer than escalate_minutes.
-pub fn check_escalations(at: Option<f64>, runner: Option<&dyn Fn(&[String], Option<&HashMap<String, String>>)>) -> Vec<Map<String, Value>> {
+pub fn check_escalations(at: Option<f64>, runner: Option<&NotifyRunner<'_>>) -> Vec<Map<String, Value>> {
     let now = at.unwrap_or_else(now);
     let limit = escalate_minutes() * 60.0;
     let mut out = Vec::new();
@@ -431,7 +463,7 @@ pub fn check_escalations(at: Option<f64>, runner: Option<&dyn Fn(&[String], Opti
             runner,
         );
         data.insert("escalated".into(), json!(true));
-        write_json(&file, &Value::Object(data.clone()));
+        let _ = write_json(&file, &Value::Object(data.clone()));
         out.push(data);
     }
     out
@@ -448,8 +480,10 @@ pub fn maybe_escalate(at: Option<f64>) {
     if mtime == 0.0 && !state_dir().is_dir() {
         return;
     }
-    if let Ok(f) = OpenOptions::new().create(true).write(true).open(&stamp) {
-        drop(f);
+    // Actually advance the stamp's mtime: open+drop alone does not, and an
+    // unchanged mtime makes the scan run on every hook invocation.
+    if let Ok(mut f) = OpenOptions::new().create(true).write(true).truncate(true).open(&stamp) {
+        let _ = f.write_all(now.to_string().as_bytes());
     }
     let _ = check_escalations(Some(now), None);
 }

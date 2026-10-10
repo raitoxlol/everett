@@ -1,4 +1,5 @@
 pub mod adapters;
+pub mod auth;
 pub mod cards;
 pub mod cli;
 pub mod config;

@@ -13,6 +13,9 @@ use crate::config;
 use crate::error::{EverettError, Result};
 use crate::paths::{expanduser, realpath};
 use crate::proc::{run_capture, RunOutput};
+
+/// Injectable runner for the merge LLM subprocess (tests substitute a fake).
+type LlmRunner<'a> = dyn Fn(&[String], Option<&str>, &HashMap<String, String>, f64) -> std::result::Result<RunOutput, String> + 'a;
 use crate::send::{caller_session_id, child_env, spawn_command};
 use crate::session::{home, now};
 use crate::timefmt::strftime_local;
@@ -32,6 +35,7 @@ fn locked(name: &str, blocking: bool) -> Result<FileLock> {
         .create(true)
         .read(true)
         .write(true)
+        .truncate(true)
         .open(core_dir().join(name))
         .map_err(|e| EverettError::new(2, e.to_string()))?;
     let _ = f.set_permissions(PermissionsExt::from_mode(0o600));
@@ -420,7 +424,7 @@ pub fn merge_llm(
     items: &[Map<String, Value>],
     llm: &str,
     timeout: f64,
-    runner: &dyn Fn(&[String], Option<&str>, &HashMap<String, String>, f64) -> std::result::Result<RunOutput, String>,
+    runner: &LlmRunner<'_>,
 ) -> Result<HashMap<String, String>> {
     let mut ordered: Vec<(&String, &String)> = current.iter().collect();
     ordered.sort_by_key(|(k, _)| if k.is_empty() { (0, String::new()) } else { (1, (*k).clone()) });
@@ -587,7 +591,7 @@ pub fn merge(llm: &str, dry_run: bool) -> Result<Map<String, Value>> {
 pub fn merge_with(
     llm: &str,
     dry_run: bool,
-    runner: &dyn Fn(&[String], Option<&str>, &HashMap<String, String>, f64) -> std::result::Result<RunOutput, String>,
+    runner: &LlmRunner<'_>,
 ) -> Result<Map<String, Value>> {
     let _merge_guard = if dry_run { None } else { Some(locked(".merge.lock", false)?) };
     let snapshot = if dry_run {
@@ -641,7 +645,7 @@ pub fn merge_with(
     }
     fs::create_dir_all(&snap).map_err(|e| EverettError::new(2, e.to_string()))?;
     if global_path().exists() {
-        let _ = fs::copy(&global_path(), snap.join("core.md"));
+        let _ = fs::copy(global_path(), snap.join("core.md"));
     }
     if core_dir().join("projects").is_dir() {
         let _ = copy_dir(&core_dir().join("projects"), &snap.join("projects"));

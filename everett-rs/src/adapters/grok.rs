@@ -246,7 +246,7 @@ pub fn parse(
         .filter(|t| !t.is_empty())
         .or_else(|| summary.get("generated_title").and_then(|v| v.as_str()))
         .unwrap_or("");
-    if users.is_empty() && title.is_empty() && !card_path(&sid).exists() {
+    if users.is_empty() && title.is_empty() && card_path(&sid).is_none_or(|p| !p.exists()) {
         return None;
     }
     let mut s = Session::new(
