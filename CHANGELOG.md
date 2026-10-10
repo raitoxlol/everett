@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- Docs: `docs/cross-device.md` — design for peer discovery and remote `ls`/`send` (issue #4, second half).
+
 ## 1.5.0 — 2026-10-10
 
 - **Breaking:** remove the Python package (`everett/`, `pyproject.toml`, `bin/everett`); `pipx install`
