@@ -67,6 +67,19 @@ def is_scheduled(path: Path | None = None) -> bool:
     return (path or plist_path()).exists()
 
 
+def is_stale(path: Path | None = None) -> bool:
+    """The plist exists but its baked ProgramArguments executable is gone
+    (e.g. a pipx/venv upgrade moved the interpreter): launchd fails silently."""
+    target = path or plist_path()
+    try:
+        data = plistlib.loads(target.read_bytes())
+    except (OSError, ValueError):
+        return True if target.exists() else False
+    args = data.get('ProgramArguments') if isinstance(data, dict) else None
+    exe = args[0] if isinstance(args, list) and args else ''
+    return not (isinstance(exe, str) and exe and os.path.isfile(exe) and os.access(exe, os.X_OK))
+
+
 def _domain() -> str:
     uid = os.getuid() if hasattr(os, 'getuid') else 501
     return f'gui/{uid}'
@@ -85,6 +98,10 @@ def install(at: str = '04:00', llm: str = 'claude', path: Path | None = None, lo
     (log or log_path()).parent.mkdir(parents=True, exist_ok=True)
     target.write_bytes(render_plist(at, llm))
     target.chmod(0o644)
+    # Bootout first so re-applying with a changed --at/--llm replaces the loaded job;
+    # bootout fails harmlessly when nothing is loaded yet.
+    runner(['launchctl', 'bootout', _domain(), str(target)],
+           capture_output=True, text=True, check=False)
     result = runner(['launchctl', 'bootstrap', _domain(), str(target)],
                      capture_output=True, text=True, check=False)
     ok = getattr(result, 'returncode', 1) == 0

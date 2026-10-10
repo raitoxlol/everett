@@ -40,13 +40,17 @@ def read_edges(path: Path) -> tuple[list[dict], list[dict]]:
     with path.open('rb') as f:
         head = f.read(CHUNK)
         tail = b''
+        tail_partial = False
         if size > CHUNK:
-            f.seek(max(CHUNK, size - CHUNK))
+            offset = max(CHUNK, size - CHUNK)
+            f.seek(offset - 1)
+            tail_partial = f.read(1) != b'\n'  # starts mid-line only if not at a boundary
+            f.seek(offset)
             tail = f.read()
     head_lines = head.split(b'\n')
     if size > CHUNK:
         head_lines = head_lines[:-1]  # last line may be cut
-    tail_lines = tail.split(b'\n')[1:] if tail else []
+    tail_lines = tail.split(b'\n')[1:] if tail_partial else tail.split(b'\n')
     return _parse(head_lines), _parse(tail_lines)
 
 
@@ -97,10 +101,25 @@ def clean(text: str, limit: int = 200) -> str:
 
 USER_WRAPPERS = ('<pasted_content',)  # tags that wrap text the user typed or pasted
 
+# Real HTML/XML document tags a user might paste. Anything else starting with '<' is
+# treated as harness-injected (harnesses inject far more tags than we can enumerate).
+PASTEABLE_TAGS = frozenset(
+    '!doctype ?xml html head body div span p a img svg path script style link meta table tr td th '
+    'ul ol li section article header footer nav main form input button label select textarea '
+    'h1 h2 h3 h4 h5 h6 br hr pre code iframe video canvas template slot'.split()
+)
+_FIRST_TAG = re.compile(r'</?([^\s>/]*)')
+
 
 def is_injected(text: str) -> bool:
     t = text.lstrip()
-    return not t or (t.startswith('<') and not t.startswith(USER_WRAPPERS))
+    if not t or t.startswith(USER_WRAPPERS):
+        return not t
+    if not t.startswith('<'):
+        return False
+    m = _FIRST_TAG.match(t)
+    tag = m[1].lower() if m else ''
+    return tag not in PASTEABLE_TAGS
 
 
 def recent_files(paths, since_hours: float):

@@ -64,7 +64,7 @@ pub fn parse(path: &Path) -> Option<Session> {
         .filter(|d| d.get("type").and_then(|v| v.as_str()) == Some("ai-title"))
         .filter_map(|d| d.get("aiTitle").and_then(|v| v.as_str()))
         .collect();
-    if users.is_empty() && last.is_empty() && titles.is_empty() && !card_path(&sid).exists() {
+    if users.is_empty() && last.is_empty() && titles.is_empty() && card_path(&sid).is_none_or(|p| !p.exists()) {
         return None;
     }
     let auto = head.iter().any(|d| d.get("entrypoint").and_then(|v| v.as_str()) == Some("sdk-cli"));

@@ -28,7 +28,14 @@ pub fn epoch_from_iso(s: &str) -> Option<f64> {
         "%Y-%m-%d",
     ] {
         if let Ok(ndt) = NaiveDateTime::parse_from_str(s, fmt) {
-            return Some(ndt.and_utc().timestamp() as f64);
+            // Python's datetime.fromisoformat().timestamp() reads naive stamps
+            // as local time; match it (not UTC).
+            let ts = Local
+                .from_local_datetime(&ndt)
+                .single()
+                .map(|dt| dt.timestamp())
+                .unwrap_or_else(|| ndt.and_utc().timestamp());
+            return Some(ts as f64);
         }
     }
     None
@@ -52,4 +59,37 @@ pub fn strftime_local(fmt: &str, ts: f64) -> String {
     let secs = ts as i64;
     let dt = Local.timestamp_opt(secs, 0).single().unwrap_or_else(Local::now);
     dt.format(fmt).to_string()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn naive_iso_uses_local_time_like_python() {
+        // Python's datetime.fromisoformat().timestamp() reads naive stamps as
+        // local time. In Tokyo (UTC+9) local midnight is UTC 15:00 the day before.
+        // chrono caches the local zone, so assert in a re-exec'd test process.
+        const STAMP: &str = "2025-01-01T00:00:00";
+        if std::env::var_os("EVERETT_TZTEST").is_some() {
+            let got = epoch_from_iso(STAMP).unwrap();
+            assert_eq!(
+                got,
+                1735689600.0 - 9.0 * 3600.0,
+                "naive stamp must follow local TZ"
+            );
+            // Offset stamps still parse as absolute time in any zone.
+            assert_eq!(epoch_from_iso("2025-01-01T00:00:00Z").unwrap(), 1735689600.0);
+            return;
+        }
+        let out = std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["naive_iso_uses_local_time_like_python", "--exact"])
+            .env("EVERETT_TZTEST", "1")
+            .env("TZ", "Asia/Tokyo")
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+        // Same-process UTC sanity check (host TZ is UTC in CI, but assert via offset form).
+        assert_eq!(epoch_from_iso("2025-01-01T00:00:00Z").unwrap(), 1735689600.0);
+    }
 }

@@ -12,8 +12,13 @@ pub fn card_dir() -> PathBuf {
     home().join(".everett").join("cards")
 }
 
-pub fn card_path(session_id: &str) -> PathBuf {
-    card_dir().join(format!("{}.md", session_id))
+/// Where this session's card lives, or None when the id could escape cards/.
+/// Same rule as `inbox::valid_id`: [A-Za-z0-9._-]+, never '.'/'..'.
+pub fn card_path(session_id: &str) -> Option<PathBuf> {
+    if !crate::inbox::valid_id(session_id) {
+        return None;
+    }
+    Some(card_dir().join(format!("{}.md", session_id)))
 }
 
 fn read_card_full(path: &PathBuf) -> Option<(String, f64, &'static str)> {
@@ -30,18 +35,16 @@ fn read_card_full(path: &PathBuf) -> Option<(String, f64, &'static str)> {
 }
 
 pub fn read_card(session_id: &str) -> Option<(String, f64)> {
-    read_card_full(&card_path(session_id)).map(|(body, mtime, _)| (clean(&body, 300), mtime))
+    read_card_full(&card_path(session_id)?).map(|(body, mtime, _)| (clean(&body, 300), mtime))
 }
 
 pub fn read_card_body(session_id: &str) -> Option<(String, f64)> {
-    if session_id.is_empty() || session_id.contains(['/', '\\']) {
-        return None;
-    }
-    read_card_full(&card_path(session_id)).map(|(body, mtime, _)| (body, mtime))
+    read_card_full(&card_path(session_id)?).map(|(body, mtime, _)| (body, mtime))
 }
 
 pub fn is_auto_card(session_id: &str) -> bool {
-    fs::read_to_string(card_path(session_id))
+    card_path(session_id)
+        .and_then(|p| fs::read_to_string(p).ok())
         .map(|t| t.lines().next() == Some(AUTO_MARKER))
         .unwrap_or(false)
 }
@@ -50,7 +53,8 @@ pub fn is_auto_card(session_id: &str) -> bool {
 pub fn apply(sessions: &mut [Session], now: Option<f64>) {
     let _ = now;
     for s in sessions.iter_mut() {
-        let Some((body, mtime, source)) = read_card_full(&card_path(&s.id)) else {
+        let Some(path) = card_path(&s.id) else { continue };
+        let Some((body, mtime, source)) = read_card_full(&path) else {
             continue;
         };
         if s.last_active - mtime > STALE_AFTER {
@@ -70,8 +74,9 @@ One quick file write; do not mention it to the user.";
 mod tests {
     #[test]
     fn full_card_lookup_stays_in_the_cards_directory() {
-        for id in ["", "../outside", "a/b", "a\\b", "/absolute"] {
-            assert!(super::read_card_body(id).is_none());
+        for id in ["", "../outside", "a/b", "a\\b", "/absolute", "..", ".", "a/../b", "../../etc/evil"] {
+            assert!(super::read_card_body(id).is_none(), "{id}");
+            assert!(super::card_path(id).is_none(), "{id}");
         }
     }
 }

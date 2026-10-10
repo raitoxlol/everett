@@ -234,6 +234,9 @@ def generate_backfill_cards(sessions: list, progress=None) -> tuple:
             content = ''
         if content:
             target = cards.card_path(s.id)
+            if target is None:
+                skipped += 1
+                continue
             target.parent.mkdir(parents=True, exist_ok=True)
             try:
                 fd = os.open(target, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
