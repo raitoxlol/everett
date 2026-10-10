@@ -9,12 +9,19 @@ T3 Code threads are recognized through their underlying harness sessions.
 
 ## Quickstart
 
-Have Python 3.10+, pipx, Git, and at least one harness CLI on your PATH. Everett supports macOS and Linux.
+The Rust binary is the primary install. Have at least one harness CLI on your PATH. Everett supports macOS and Linux.
 
 ```bash
-pipx install git+https://github.com/raitoxlol/everett
+curl -fsSL https://raw.githubusercontent.com/raitoxlol/everett/main/install.sh | sh   # ~/.local/bin
 everett onboard --yes --no-backfill
 everett doctor
+```
+
+Or via Homebrew or Cargo:
+
+```bash
+brew tap raitoxlol/tap && brew install everett
+cargo install --git https://github.com/raitoxlol/everett everett   # from source
 ```
 
 Onboarding detects installed CLIs even before their first session. It backs up and registers
@@ -23,15 +30,16 @@ then run `everett ls`. Doctor checks the registered launchers and lists your exa
 Pi, Hermes, and Devin sessions can be listed/routed; they need manual MCP configuration and inbox polling.
 No router key or model call is needed for this setup. Codex may ask you to enable/trust its hooks.
 
-Python 3.11+ uses the standard library at runtime. Python 3.10 also installs the small `tomli`
-parser. The package name is `everett-sessions`; install from GitHub, not an unpublished PyPI name.
+### Python reference install
 
-### Other install options
+The Python package is the reference implementation. Have Python 3.10+, pipx, and Git:
 
 ```bash
-brew tap raitoxlol/tap
-brew install everett
+pipx install git+https://github.com/raitoxlol/everett
 ```
+
+Python 3.11+ uses the standard library at runtime. Python 3.10 also installs the small `tomli`
+parser. The package name is `everett-sessions`; install from GitHub, not an unpublished PyPI name.
 
 The tap can lag GitHub: check `everett --version`, or use pipx for the latest source.
 You can also use `uv tool install git+https://github.com/raitoxlol/everett`,
