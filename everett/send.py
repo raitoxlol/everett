@@ -36,7 +36,8 @@ def command_for(session: Session, text: str) -> list[str]:
         raise SendError(2, 'The request must not be empty.')
     if session.source == 't3code':
         raise SendError(2, 'T3 Code owns this thread\'s resume point, so a CLI resume would fork it. '
-                           'Continue it in T3 Code, or use inbox delivery if that session has Everett hooks.')
+                           'Continue it in T3 Code, or queue inbox delivery and explicitly poll everett_inbox '
+                           'with the provider session_id.')
     if session.harness == 'claude':
         return ['claude', '--resume', session.id, '--print', text]
     if session.harness == 'codex':
@@ -335,7 +336,7 @@ def delivery_mode(session: Session, mode: str = 'auto', ps_out: str | None = Non
     if mode != 'auto':
         return mode
     if session.source == 't3code':
-        return 'inbox'  # a CLI resume would fork the T3 thread; its hooks can still deliver
+        return 'inbox'  # T3 owns the resume point; pickup may require explicit polling
     return 'inbox' if attached(session, ps_out) else 'resume'
 
 
@@ -376,6 +377,10 @@ def send_inbox(session: Session, text: str, wait: float = 0, caller: str | None 
         raise SendError(e.code, str(e)) from e
     result = {'mode': 'inbox', 'message_id': message['id'], 'reply_inbox': who['sender'], 'reply': None,
               'hooked': session.harness in INBOX_HARNESSES}
+    if session.source == 't3code':
+        result.update(hooked=False, pickup='poll', poll_session_id=session.id,
+                      pickup_note='Queued only. In T3 Code, call everett_inbox with this provider session_id; '
+                                  'reply with everett_send(reply_to=<message id>, text=..., session_id=...).')
     if wait > 0:
         reply = inbox.wait_reply(who['sender'], message['id'], wait, poll=poll)
         if reply:

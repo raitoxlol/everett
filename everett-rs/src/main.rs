@@ -203,6 +203,8 @@ enum Cmd {
         omp: bool,
         #[arg(long)]
         grok: bool,
+        #[arg(long)]
+        devin: bool,
         /// back up, then register
         #[arg(long)]
         apply: bool,
@@ -342,11 +344,12 @@ fn main() {
             cli::cmd_install_hooks(&a)
         }
         Cmd::Mcp => cli::cmd_mcp(&a),
-        Cmd::InstallMcp { claude, codex, omp, grok, apply, repair } => {
+        Cmd::InstallMcp { claude, codex, omp, grok, devin, apply, repair } => {
             a.claude = claude;
             a.codex = codex;
             a.omp = omp;
             a.grok = grok;
+            a.devin = devin;
             a.apply = apply;
             a.repair = repair;
             cli::cmd_install_mcp(&a)

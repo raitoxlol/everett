@@ -182,6 +182,10 @@ def mcp_json_entry() -> dict:
 
 
 def mcp_path(harness: str) -> Path:
+    if harness == 'devin':
+        root = (Path(os.environ.get('APPDATA') or home() / 'AppData' / 'Roaming')
+                if sys.platform == 'win32' else home() / '.config')
+        return root / 'devin' / 'mcp_config.json'
     return {'claude': home() / '.claude.json', 'codex': home() / '.codex' / 'config.toml',
             'grok': home() / '.grok' / 'config.toml', 'omp': home() / '.omp' / 'agent' / 'mcp.json'}[harness]
 
@@ -252,6 +256,8 @@ def mcp_status(harness: str) -> MCPStatus:
         return MCPStatus('invalid', 'Everett MCP entry must be an object')
     if entry.get('disabled') or entry.get('enabled') is False:
         return MCPStatus('stale', 'registration is disabled')
+    if harness == 'devin' and (entry.get('url') or entry.get('transport', 'stdio') != 'stdio'):
+        return MCPStatus('stale', 'registration is not Everett stdio')
     command, args = entry.get('command'), entry.get('args', [])
     if not isinstance(command, str) or not command:
         return MCPStatus('stale', 'registration has no executable')
@@ -320,6 +326,11 @@ def _replace_toml_entry(text: str, entry: dict) -> str:
 
 def mcp_snippet(harness: str) -> str:
     command, args, env = mcp_launch()
+    if harness == 'devin':
+        entry = mcp_json_entry()
+        entry.pop('type', None)
+        return (f'# user scope, Devin CLI v3000.3+: merge into {mcp_path(harness)}\n'
+                f'{json.dumps({"mcpServers": {"everett": entry}}, indent=2)}\n')
     if harness == 'claude':
         env_flags = ''.join(f' -e {k}={shlex.quote(v)}' for k, v in env.items())
         return (f'# user scope, all projects:\nclaude mcp add --scope user{env_flags} everett -- '
@@ -349,6 +360,9 @@ def apply_mcp(harness: str, repair: bool = False) -> str:
     if old is not None and not isinstance(old, dict):
         raise ValueError('Everett MCP entry must be an object; correct it before retrying')
     entry = _repaired_entry(old or {})
+    if harness == 'devin':
+        entry.pop('type', None)
+        entry.pop('transport', None)
     if harness in TOML_MCP:
         try:
             text = path.read_text(encoding='utf-8')
