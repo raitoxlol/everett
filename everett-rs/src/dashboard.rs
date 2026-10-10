@@ -1,12 +1,15 @@
 use std::collections::BTreeMap;
-use std::net::Ipv4Addr;
+use std::io::{Read, Write};
+use std::net::{Ipv4Addr, TcpListener, TcpStream};
 #[cfg(target_os = "macos")]
 use std::process::Command;
-
-use tiny_http::{Header, Method, Response, Server};
+use std::time::Duration;
 
 use crate::registry;
 use crate::session::{now, Session};
+
+const MAX_HEADER_BYTES: usize = 16 * 1024;
+const READ_TIMEOUT: Duration = Duration::from_secs(5);
 
 const HARNESSES: &[(&str, &str)] = &[
     ("claude", "Claude Code"),
@@ -24,8 +27,7 @@ pub fn serve(hours: f64, port: u16, no_open: bool) -> i32 {
         eprintln!("dashboard needs a positive --hours value and a port from 1 to 65535.");
         return 2;
     }
-    let address = (Ipv4Addr::LOCALHOST, port);
-    let server = match Server::http(address) {
+    let listener = match TcpListener::bind((Ipv4Addr::LOCALHOST, port)) {
         Ok(listener) => listener,
         Err(err) => {
             eprintln!("could not start the dashboard on http://127.0.0.1:{port}: {err}");
@@ -38,61 +40,171 @@ pub fn serve(hours: f64, port: u16, no_open: bool) -> i32 {
     if !no_open {
         open_browser(&url);
     }
-    for request in server.incoming_requests() {
-        let host = request
-            .headers()
-            .iter()
-            .find(|header| header.field.equiv("Host"));
-        let (status, content_type, body) =
-            if !allowed_host(host.map(|header| header.value.as_str()), port) {
-                (
-                    403,
-                    "text/plain; charset=utf-8",
-                    "Use the dashboard's loopback URL.\n".to_string(),
-                )
-            } else if request.method() != &Method::Get {
-                (
-                    405,
-                    "text/plain; charset=utf-8",
-                    "This dashboard is read-only.\n".to_string(),
-                )
-            } else {
-                match request.url().split('?').next().unwrap_or("/") {
-                    "/" => {
-                        let mut sessions = registry::scan(hours, false, Some(80), "");
-                        for session in &mut sessions {
-                            if let Some((body, mtime)) = crate::cards::read_card_body(&session.id) {
-                                if session.last_active - mtime <= crate::cards::STALE_AFTER {
-                                    session.card = body;
-                                }
-                            }
-                        }
-                        (
-                            200,
-                            "text/html; charset=utf-8",
-                            render(&sessions, hours, now()),
-                        )
-                    }
-                    "/healthz" => (200, "text/plain; charset=utf-8", "ok\n".to_string()),
-                    "/favicon.ico" => (204, "image/x-icon", String::new()),
-                    _ => (404, "text/plain; charset=utf-8", "Not found\n".to_string()),
-                }
-            };
-        let mut response = Response::from_string(body).with_status_code(status);
-        for (name, value) in [
-            ("Content-Type", content_type),
-            ("Cache-Control", "no-store"),
-            ("X-Content-Type-Options", "nosniff"),
-            ("Referrer-Policy", "no-referrer"),
-            ("Content-Security-Policy", "default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; connect-src 'self'; base-uri 'none'; frame-ancestors 'none'"),
-        ] {
-            response.add_header(Header::from_bytes(name, value).unwrap());
-        }
-        if let Err(err) = request.respond(response) {
-            eprintln!("dashboard response failed: {err}");
+    for stream in listener.incoming() {
+        match stream {
+            Ok(stream) => handle(stream, hours, port),
+            Err(err) => eprintln!("dashboard accept failed: {err}"),
         }
     }
     0
+}
+
+struct Request {
+    method: String,
+    target: String,
+    hosts: Vec<String>,
+    content_length: u64,
+    transfer_encoding: bool,
+}
+
+/// Reads only the request's header block; bodies are never consumed.
+fn read_request(stream: &mut TcpStream) -> Result<Request, (u16, &'static str)> {
+    let mut buf = Vec::with_capacity(4096);
+    let mut chunk = [0u8; 4096];
+    let head_end = loop {
+        if let Some(end) = find_head_end(&buf) {
+            break end;
+        }
+        if buf.len() >= MAX_HEADER_BYTES {
+            return Err((431, "Request headers too large\n"));
+        }
+        let n = stream
+            .read(&mut chunk)
+            .map_err(|_| (408, "Request timed out\n"))?;
+        if n == 0 {
+            return Err((400, "Bad request\n"));
+        }
+        buf.extend_from_slice(&chunk[..n]);
+    };
+    let head = std::str::from_utf8(&buf[..head_end]).map_err(|_| (400, "Bad request\n"))?;
+    let mut lines = head.split("\r\n");
+    let mut parts = lines.next().unwrap_or("").split_whitespace();
+    let (Some(method), Some(target), Some(_)) = (parts.next(), parts.next(), parts.next()) else {
+        return Err((400, "Bad request\n"));
+    };
+    if parts.next().is_some() {
+        return Err((400, "Bad request\n"));
+    }
+    let mut request = Request {
+        method: method.to_string(),
+        target: target.to_string(),
+        hosts: Vec::new(),
+        content_length: 0,
+        transfer_encoding: false,
+    };
+    for line in lines {
+        let Some((name, value)) = line.split_once(':') else {
+            return Err((400, "Bad request\n"));
+        };
+        let value = value.trim();
+        if name.eq_ignore_ascii_case("host") {
+            request.hosts.push(value.to_string());
+        } else if name.eq_ignore_ascii_case("content-length") {
+            request.content_length = value.parse::<u64>().unwrap_or(u64::MAX);
+        } else if name.eq_ignore_ascii_case("transfer-encoding") {
+            request.transfer_encoding = true;
+        }
+    }
+    Ok(request)
+}
+
+fn find_head_end(buf: &[u8]) -> Option<usize> {
+    buf.windows(4).position(|w| w == b"\r\n\r\n")
+}
+
+fn handle(mut stream: TcpStream, hours: f64, port: u16) {
+    let _ = stream.set_read_timeout(Some(READ_TIMEOUT));
+    let (status, content_type, body) = match read_request(&mut stream) {
+        Ok(request) => dispatch(&request, hours, port),
+        Err((status, message)) => (
+            status,
+            "text/plain; charset=utf-8",
+            message.to_string(),
+        ),
+    };
+    let head = format!(
+        "HTTP/1.1 {status} {}\r\nContent-Type: {content_type}\r\n\
+         Cache-Control: no-store\r\nX-Content-Type-Options: nosniff\r\n\
+         Referrer-Policy: no-referrer\r\n\
+         Content-Security-Policy: default-src 'none'; style-src 'unsafe-inline'; \
+         script-src 'unsafe-inline'; connect-src 'self'; base-uri 'none'; \
+         frame-ancestors 'none'\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+        status_text(status),
+        body.len()
+    );
+    if stream.write_all(head.as_bytes()).is_err() || stream.write_all(body.as_bytes()).is_err() {
+        eprintln!("dashboard response failed");
+    }
+}
+
+fn status_text(status: u16) -> &'static str {
+    match status {
+        200 => "OK",
+        204 => "No Content",
+        400 => "Bad Request",
+        403 => "Forbidden",
+        404 => "Not Found",
+        405 => "Method Not Allowed",
+        408 => "Request Timeout",
+        411 => "Length Required",
+        413 => "Content Too Large",
+        431 => "Request Header Fields Too Large",
+        _ => "Internal Server Error",
+    }
+}
+
+fn dispatch(request: &Request, hours: f64, port: u16) -> (u16, &'static str, String) {
+    if request.hosts.len() > 1 {
+        return (
+            400,
+            "text/plain; charset=utf-8",
+            "Duplicate Host header\n".to_string(),
+        );
+    }
+    if !allowed_host(request.hosts.first().map(String::as_str), port) {
+        return (
+            403,
+            "text/plain; charset=utf-8",
+            "Use the dashboard's loopback URL.\n".to_string(),
+        );
+    }
+    if request.transfer_encoding {
+        return (
+            411,
+            "text/plain; charset=utf-8",
+            "Request bodies are not accepted\n".to_string(),
+        );
+    }
+    if request.content_length > 0 {
+        return (
+            413,
+            "text/plain; charset=utf-8",
+            "Request bodies are not accepted\n".to_string(),
+        );
+    }
+    if request.method != "GET" {
+        return (
+            405,
+            "text/plain; charset=utf-8",
+            "This dashboard is read-only.\n".to_string(),
+        );
+    }
+    match request.target.split('?').next().unwrap_or("/") {
+        "/" => {
+            let mut sessions = registry::scan(hours, false, Some(80), "");
+            for session in &mut sessions {
+                if let Some((body, mtime)) = crate::cards::read_card_body(&session.id) {
+                    if session.last_active - mtime <= crate::cards::STALE_AFTER {
+                        session.card = body;
+                    }
+                }
+            }
+            (200, "text/html; charset=utf-8", render(&sessions, hours, now()))
+        }
+        "/healthz" => (200, "text/plain; charset=utf-8", "ok\n".to_string()),
+        "/favicon.ico" => (204, "image/x-icon", String::new()),
+        _ => (404, "text/plain; charset=utf-8", "Not found\n".to_string()),
+    }
 }
 
 #[cfg(target_os = "macos")]
@@ -435,6 +547,68 @@ mod tests {
         let page = render(&[], 72.0, 0.0);
         assert!(page.contains("No recent sessions yet"));
         assert!(page.contains("everett doctor"));
+    }
+
+    fn roundtrip(port: u16, request: &str) -> String {
+        let mut stream = TcpStream::connect((Ipv4Addr::LOCALHOST, port)).unwrap();
+        stream
+            .set_read_timeout(Some(Duration::from_secs(5)))
+            .unwrap();
+        stream.write_all(request.as_bytes()).unwrap();
+        let mut response = String::new();
+        stream.read_to_string(&mut response).unwrap();
+        response
+    }
+
+    fn test_server(connections: usize) -> (u16, std::thread::JoinHandle<()>) {
+        let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let join = std::thread::spawn(move || {
+            for _ in 0..connections {
+                let (stream, _) = listener.accept().unwrap();
+                handle(stream, 24.0, port);
+            }
+        });
+        (port, join)
+    }
+
+    #[test]
+    fn huge_content_length_is_rejected_without_reading_the_body() {
+        let (port, join) = test_server(2);
+        let response = roundtrip(
+            port,
+            &format!(
+                "GET / HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nContent-Length: 99999999999\r\n\r\n"
+            ),
+        );
+        assert!(response.starts_with("HTTP/1.1 413"), "{response}");
+        let response = roundtrip(
+            port,
+            &format!("GET /healthz HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\n\r\n"),
+        );
+        assert!(response.starts_with("HTTP/1.1 200"), "{response}");
+        assert!(response.ends_with("ok\n"));
+        join.join().unwrap();
+    }
+
+    #[test]
+    fn transfer_encoding_and_duplicate_host_are_rejected() {
+        let (port, join) = test_server(2);
+        let response = roundtrip(
+            port,
+            &format!(
+                "GET / HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nTransfer-Encoding: chunked\r\n\r\n"
+            ),
+        );
+        assert!(response.starts_with("HTTP/1.1 411"), "{response}");
+        let response = roundtrip(
+            port,
+            &format!(
+                "GET /healthz HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nHost: localhost:{port}\r\n\r\n"
+            ),
+        );
+        assert!(response.starts_with("HTTP/1.1 400"), "{response}");
+        join.join().unwrap();
     }
 
     #[test]
