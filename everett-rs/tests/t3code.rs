@@ -220,6 +220,47 @@ fn legacy_t3_missing_transcript_uses_only_real_cursor() {
 }
 
 #[test]
+fn null_message_payload_drops_only_that_threads_prompts_not_the_map() {
+    let fx = fixture();
+    let con = v2(&fx);
+    add(&con, "null-text", Some("native-null"), "codex");
+    add(&con, "fine", Some("native-fine"), "codex");
+    con.execute_batch(
+        "CREATE TABLE m2 (message_id TEXT PRIMARY KEY, thread_id TEXT NOT NULL, run_id TEXT, \
+         node_id TEXT, role TEXT NOT NULL, streaming INTEGER NOT NULL, created_at TEXT NOT NULL, \
+         updated_at TEXT NOT NULL, payload_json TEXT);
+         INSERT INTO m2 SELECT * FROM orchestration_v2_projection_messages;
+         DROP TABLE orchestration_v2_projection_messages;
+         ALTER TABLE m2 RENAME TO orchestration_v2_projection_messages;",
+    )
+    .unwrap();
+    let now = Utc::now().to_rfc3339();
+    con.execute(
+        "UPDATE orchestration_v2_projection_messages SET payload_json=NULL \
+         WHERE thread_id='null-text' AND message_id='null-text-1'",
+        [],
+    )
+    .unwrap();
+    con.execute(
+        "INSERT INTO orchestration_v2_projection_messages \
+         (message_id,thread_id,role,streaming,created_at,updated_at,payload_json) \
+         VALUES ('null-text-bad','null-text','user',0,?1,?1,'{unclosed')",
+        [&now],
+    )
+    .unwrap();
+    let sessions = list(&fx, "codex");
+    assert_eq!(sessions.len(), 2);
+    let fine = sessions.iter().find(|s| s["id"] == "native-fine").unwrap();
+    assert_eq!(fine["last_user"], "latest real request");
+    let null = sessions
+        .iter()
+        .find(|s| s["id"] == "native-null")
+        .unwrap();
+    assert_eq!(null["first_user"], "first real request");
+    assert_eq!(null["last_user"], "");
+}
+
+#[test]
 fn synthetic_t3_mcp_routes_polls_replies_and_learns_without_provider_resume() {
     let fx = fixture();
     let con = v2(&fx);
