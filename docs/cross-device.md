@@ -23,7 +23,7 @@ other machine, and the reply comes back to the sender's inbox.
 | Layer | Holds | Where |
 |---|---|---|
 | Identity | who you are (`sub`, email) | OIDC issuer (`docs/auth.md`) |
-| Device registry | per account: device id, name, public key, tailnet/SSH address, created/revoked | small hosted table (Supabase or Convex), self-hostable |
+| Device registry | per account: device id, name, public key, tailnet/SSH address, created/revoked | Convex (one `devices` table, two functions), self-hostable |
 | Transport | authenticated byte stream between two of your devices | OpenSSH over Tailscale (phase 1), optional direct HTTPS later |
 | Everett RPC | `ls`, `card`, `send`, `reply` across the link | `everett peer serve` on the remote, `everett peer …` on the caller |
 
@@ -98,8 +98,9 @@ of your devices serves it.
 
 1. **Issuer**: Auth0, Zitadel or Supabase Auth for the hosted tenant (any RFC 8628 issuer works;
    `docs/auth.md`). This also decides where "revoke a lost device" lives.
-2. **Registry backend**: Supabase (Postgres + row-level security, simple REST) or Convex (functions,
-   TypeScript). Everett only needs one table and two calls (`upsert device`, `list devices`).
+2. **Registry backend**: Convex (decided 2026-10-10). Everett needs one `devices` table and two
+   functions, `upsertDevice` and `listDevices`, both gated on the caller's OIDC identity; the Rust
+   side calls them over Convex's HTTP API with the access token from `auth.json`.
 3. **Network**: Tailscale assumed for phase 1. Plain SSH over LAN/VPN works identically with a
    manual address.
 4. **Device naming**: `--device` from `everett login` doubles as the peer prefix; confirm names are
