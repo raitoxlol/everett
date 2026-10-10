@@ -15,7 +15,7 @@ use crate::paths::{expanduser, realpath};
 use crate::proc::{run_capture, RunOutput};
 
 /// Injectable runner for the merge LLM subprocess (tests substitute a fake).
-type LlmRunner = dyn Fn(&[String], Option<&str>, &HashMap<String, String>, f64) -> std::result::Result<RunOutput, String>;
+type LlmRunner<'a> = dyn Fn(&[String], Option<&str>, &HashMap<String, String>, f64) -> std::result::Result<RunOutput, String> + 'a;
 use crate::send::{caller_session_id, child_env, spawn_command};
 use crate::session::{home, now};
 use crate::timefmt::strftime_local;
@@ -96,10 +96,8 @@ pub fn project_for(cwd: &str) -> String {
         return String::new();
     }
     let path = realpath(&expanduser(cwd));
-    let home_dir = home();
-    let is_stop = |p: &Path| -> bool {
-        p == Path::new("/") || p == home_dir.as_path() || p == dirs_home()
-    };
+    let (home_dir, env_home) = (realpath(&home()), realpath(&dirs_home()));
+    let is_stop = |p: &Path| -> bool { p == Path::new("/") || p == home_dir || p == env_home };
     if is_stop(&path) {
         return String::new();
     }
@@ -426,7 +424,7 @@ pub fn merge_llm(
     items: &[Map<String, Value>],
     llm: &str,
     timeout: f64,
-    runner: &LlmRunner,
+    runner: &LlmRunner<'_>,
 ) -> Result<HashMap<String, String>> {
     let mut ordered: Vec<(&String, &String)> = current.iter().collect();
     ordered.sort_by_key(|(k, _)| if k.is_empty() { (0, String::new()) } else { (1, (*k).clone()) });
@@ -593,7 +591,7 @@ pub fn merge(llm: &str, dry_run: bool) -> Result<Map<String, Value>> {
 pub fn merge_with(
     llm: &str,
     dry_run: bool,
-    runner: &LlmRunner,
+    runner: &LlmRunner<'_>,
 ) -> Result<Map<String, Value>> {
     let _merge_guard = if dry_run { None } else { Some(locked(".merge.lock", false)?) };
     let snapshot = if dry_run {

@@ -18,7 +18,7 @@ use crate::send::caller_identity;
 use crate::session::{file_mtime, home, now};
 
 /// Injectable runner for notification commands (tests substitute a fake).
-type NotifyRunner = dyn Fn(&[String], Option<&HashMap<String, String>>);
+type NotifyRunner<'a> = dyn Fn(&[String], Option<&HashMap<String, String>>) + 'a;
 type NotifyRun = (Vec<String>, Option<HashMap<String, String>>);
 
 pub const KINDS: &[&str] = &["done", "blocked", "needs-input", "info"];
@@ -360,7 +360,7 @@ pub fn notify_line(event: &Map<String, Value>, reason: &str) -> String {
 pub fn notify(
     event: &Map<String, Value>,
     reason: &str,
-    runner: Option<&NotifyRunner>,
+    runner: Option<&NotifyRunner<'_>>,
 ) -> Vec<Vec<String>> {
     let command = config::get("notify_command", Some("EVERETT_NOTIFY_COMMAND"), "");
     let default_mode = if !command.is_empty() { "both" } else { "osascript" };
@@ -436,7 +436,7 @@ fn escalate_minutes() -> f64 {
 }
 
 /// Notify once for every session blocked / waiting on input longer than escalate_minutes.
-pub fn check_escalations(at: Option<f64>, runner: Option<&NotifyRunner>) -> Vec<Map<String, Value>> {
+pub fn check_escalations(at: Option<f64>, runner: Option<&NotifyRunner<'_>>) -> Vec<Map<String, Value>> {
     let now = at.unwrap_or_else(now);
     let limit = escalate_minutes() * 60.0;
     let mut out = Vec::new();

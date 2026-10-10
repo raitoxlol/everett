@@ -46,6 +46,10 @@ tempfile = "3"
 expectrl = "0.7"
 vt100 = "0.15"
 
+[[test]]
+name = "gateway_native"
+harness = false
+
 [profile.release]
 lto = true
 strip = true
