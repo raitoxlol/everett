@@ -353,10 +353,9 @@ pub fn render(messages: &[Map<String, Value>], at: Option<f64>) -> (String, Vec<
     (format!("{}\n{}{}", header, parts.join("\n"), tail), ids)
 }
 
-/// Render pending messages for injection, mark exactly those delivered, and
-/// record the highest hop count seen so the session can't forward forever.
-/// Shrink this session's files under its lock: drop delivered+expired records
-/// from the inbox, prune .done to ids still on disk, reap stale live/state.
+/// Shrink this session's files under its lock: drop expired records only —
+/// delivered records stay so reply_to lookups still resolve — prune .done to
+/// ids still on disk, and reap stale live records.
 fn compact(session_id: &str) {
     let now = now();
     let kept: Vec<Map<String, Value>> = read(session_id)
@@ -374,9 +373,6 @@ fn compact(session_id: &str) {
     if let Ok(target) = path(session_id) {
         let body: String = kept
             .iter()
-            .filter(|m| {
-                !m.get("id").and_then(|v| v.as_str()).map(|id| done.contains(id)).unwrap_or(false)
-            })
             .filter_map(|m| serde_json::to_string(&Value::Object(m.clone())).ok())
             .map(|s| s + "\n")
             .collect();
@@ -396,7 +392,9 @@ fn compact(session_id: &str) {
 }
 
 fn reap_stale(now: f64) {
-    for folder in [inbox_dir().join("live"), crate::events::state_dir()] {
+    // inbox/live only: ~/.everett/state is event/escalation state, and a session
+    // can legitimately stay blocked longer than LIVE_TTL.
+    for folder in [inbox_dir().join("live")] {
         if !folder.is_dir() {
             continue;
         }

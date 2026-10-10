@@ -124,7 +124,6 @@ class Inbox(Base):
         self.assertIsNone(inbox.live('s1'))  # a recycled pid can't keep it attached forever
 
     def test_take_compacts_inbox_done_and_stale_live_state(self):
-        from everett.session import home
         m = inbox.post('s1', 'fresh', sender='s0')
         old = inbox.post('s1', 'old', sender='s0')
         rows = [json.loads(l) for l in inbox.path('s1').read_text().splitlines()]
@@ -135,21 +134,24 @@ class Inbox(Base):
         self.assertIn('fresh', inbox.take('s1'))
         on_disk = [json.loads(l)['id'] for l in
                    inbox.path('s1').read_text().splitlines()] if inbox.path('s1').exists() else []
-        self.assertEqual(on_disk, [])  # delivered and expired records are dropped
+        # Delivered records stay (reply_to resolution needs them); only the expired one is dropped.
+        self.assertEqual(on_disk, [m['id']])
         inbox._append(inbox._done_path('s1'), 'ghost-id\n')
         live = inbox.live_path('stale')
         live.parent.mkdir(parents=True, exist_ok=True)
         live.write_text('{"pid": 1, "ts": 0}')
-        stale_state = home() / '.everett' / 'state' / 'old.json'
-        stale_state.parent.mkdir(parents=True, exist_ok=True)
-        stale_state.write_text('{}')
         old_t = time.time() - inbox.LIVE_TTL - 10
         os.utime(live, (old_t, old_t))
-        os.utime(stale_state, (old_t, old_t))
         inbox.take('s1')
         self.assertNotIn('ghost-id', inbox.done_ids('s1'))  # .done pruned to ids still present
         self.assertFalse(live.exists())
-        self.assertFalse(stale_state.exists())
+
+    def test_reply_still_resolves_after_take_compacts(self):
+        m = inbox.post('s1', 'question?', sender='s0')
+        inbox.take('s1')  # delivers + compacts
+        result = reply(m['id'], 'the answer')
+        self.assertEqual(result['reply_to'], m['id'])
+        self.assertEqual([r['reply_to'] for r in inbox.pending('s0')], [m['id']])
 
     def test_concurrent_take_delivers_once(self):
         import threading

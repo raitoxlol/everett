@@ -340,13 +340,18 @@ fn inbox_take_is_atomic_and_compacts() {
     let out = fx.run_stdin(&["hook", "claude_inbox"], &prompt, &[]);
     assert_eq!(fx.stdout(&out), "", "message delivered twice");
 
-    // Compaction: delivered and expired records are dropped; .done is pruned to
-    // ids still on disk; the stale live record is reaped.
+    // Compaction: expired records are dropped; delivered records stay so
+    // reply_to lookups still resolve; .done is pruned to ids still on disk;
+    // the stale live record is reaped.
     let inbox = std::fs::read_to_string(fx.home().join(".everett/inbox/x-1.jsonl")).unwrap();
-    assert!(inbox.trim().is_empty(), "{inbox}");
+    assert!(inbox.contains("m-live") && !inbox.contains("m-old"), "{inbox}");
     let done = std::fs::read_to_string(fx.home().join(".everett/inbox/x-1.done")).unwrap();
     assert!(!done.contains("m-gone"), "{done}");
     assert!(!stale.exists(), "stale live record survived");
+
+    // A delivered message is still replyable after compaction.
+    let out = fx.run(&["reply", "m-live", "still here"]);
+    assert_eq!(out.status.code(), Some(0), "{}", String::from_utf8_lossy(&out.stderr));
 }
 
 #[test]
