@@ -34,6 +34,10 @@ def _columns(con: sqlite3.Connection, table: str) -> set[str]:
     return {row[1] for row in con.execute(f'PRAGMA table_info({table})')}
 
 
+def _tables(con: sqlite3.Connection) -> set[str]:
+    return {row[0] for row in con.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+
+
 def _text(content) -> str:
     return '' if not isinstance(content, str) or is_injected(content) else clean(content)
 
@@ -57,14 +61,19 @@ def read_db(profile: str, path: Path, since_hours: float) -> list[Session]:
                            f'WHERE {where} ORDER BY last_active DESC LIMIT 200',
                            (time.time() - since_hours * 3600,)).fetchall()
         out = []
+        # Some DBs have sessions but no messages table; list them without user text.
+        have_messages = 'messages' in _tables(con)
         for row in rows:
-            users = [_text(r[0]) for r in con.execute(
-                "SELECT content FROM messages WHERE session_id = ? AND role = 'user' ORDER BY id LIMIT 5",
-                (row['id'],))]
-            users = [u for u in users if u]
-            last = con.execute(
-                "SELECT content FROM messages WHERE session_id = ? AND role = 'user' ORDER BY id DESC LIMIT 1",
-                (row['id'],)).fetchone()
+            if have_messages:
+                users = [_text(r[0]) for r in con.execute(
+                    "SELECT content FROM messages WHERE session_id = ? AND role = 'user' ORDER BY id LIMIT 5",
+                    (row['id'],))]
+                users = [u for u in users if u]
+                last = con.execute(
+                    "SELECT content FROM messages WHERE session_id = ? AND role = 'user' ORDER BY id DESC LIMIT 1",
+                    (row['id'],)).fetchone()
+            else:
+                users, last = [], None
             source = row['source'] or ''
             started = datetime.fromtimestamp(row['started_at'], timezone.utc).isoformat() if row['started_at'] else ''
             out.append(Session(

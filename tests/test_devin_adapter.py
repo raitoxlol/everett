@@ -132,6 +132,16 @@ class DevinDb(TempHome):
         self.assertAlmostEqual(devin._epoch(now * 1000), now, places=3)
         self.assertEqual(devin._epoch('not a time'), 0.0)
 
+    def test_large_db_keeps_recent_sessions(self):
+        now = time.time()
+        rows = [(f'bulk-{i}', '/w', 'bulk', 'm', now - 200 * i - 10000, now - 200 * i - 10000, 0)
+                for i in range(500)]
+        rows.append(('d-newest', '/work/fresh', 'newest', 'm', now - 10000, now - 10, 0))
+        make_db(self.data / 'big' / 'sessions.db', rows, [])
+        sessions, _ = devin.read_db(self.data / 'big' / 'sessions.db', 72)
+        self.assertEqual(len(sessions), 400)
+        self.assertIn('d-newest', {s.id for s in sessions})  # LIMIT must not drop the recent rows
+
     def test_broken_db_warns_and_transcripts_still_scan(self):
         self.db.write_text('not sqlite')
         transcript(self.data / 'transcripts/t-9.json', 't-9', [

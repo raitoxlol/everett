@@ -159,7 +159,9 @@ pub fn cmd_ls(args: &Args) -> i32 {
 }
 
 /// Per-harness and total counts of agent/auto/missing cards.
-pub fn card_coverage(sessions: &[Session]) -> (Vec<(String, HashMap<String, i64>)>, [i64; 5]) {
+pub type Coverage = (Vec<(String, HashMap<String, i64>)>, [i64; 5]);
+
+pub fn card_coverage(sessions: &[Session]) -> Coverage {
     let mut order: Vec<String> = Vec::new();
     let mut counts: HashMap<String, HashMap<String, i64>> = HashMap::new();
     for harness in crate::registry::ADAPTERS {
@@ -201,7 +203,7 @@ const REGENERATE_HARNESSES: &[&str] = &["claude", "codex", "grok"];
 
 /// Rewrite every AUTO-marked card among `sessions` with the current builder. Never touches a
 /// missing card or an agent-written one. Returns (rewritten, skipped).
-pub fn regenerate_auto_cards(sessions: &[Session], dry_run: bool) -> (usize, usize) {
+pub fn regenerate_auto_cards(sessions: &[Session], dry_run: bool) -> std::result::Result<(usize, usize), String> {
     let mut rewritten = 0usize;
     let mut skipped = 0usize;
     for s in sessions {
@@ -218,32 +220,43 @@ pub fn regenerate_auto_cards(sessions: &[Session], dry_run: bool) -> (usize, usi
             skipped += 1;
             continue;
         }
-        let target = crate::cards::card_path(&s.id);
+        let Some(target) = crate::cards::card_path(&s.id) else {
+            skipped += 1; // invalid session id: nothing safe to write
+            continue;
+        };
         let current = std::fs::read_to_string(&target).ok();
         if current.as_deref() == Some(content.as_str()) {
             skipped += 1;
             continue;
         }
         if !dry_run {
-            let _ = std::fs::write(&target, &content);
+            std::fs::write(&target, &content)
+                .map_err(|e| format!("cannot write {}: {}", target.display(), e))?;
         }
         rewritten += 1;
     }
-    (rewritten, skipped)
+    Ok((rewritten, skipped))
 }
 
 pub fn cmd_cards(args: &Args) -> i32 {
     if args.regenerate_auto {
         let hours = args.regen_hours.unwrap_or(args.hours);
         let sessions = crate::registry::scan(hours, true, None, "");
-        let (rewritten, skipped) = regenerate_auto_cards(&sessions, args.dry_run);
+        let (rewritten, skipped) = match regenerate_auto_cards(&sessions, args.dry_run) {
+            Ok(pair) => pair,
+            Err(e) => {
+                eprintln!("everett: {e}");
+                return 2;
+            }
+        };
         let label = if args.dry_run { "Would rewrite" } else { "Rewrote" };
         println!("{} {} auto card(s), skipped {} (last {} hours).", label, rewritten, skipped, crate::fmt::g(hours));
         return 0;
     }
-    let sessions = crate::registry::scan(args.hours, true, None, "");
+    let hours = args.regen_hours.unwrap_or(args.hours);
+    let sessions = crate::registry::scan(hours, true, None, "");
     let (counts, totals) = card_coverage(&sessions);
-    println!("Sessions (last {} hours): {}", crate::fmt::g(args.hours), totals[0]);
+    println!("Sessions (last {} hours): {}", crate::fmt::g(hours), totals[0]);
     println!("Agent cards: {}", totals[1]);
     println!("Auto cards: {}", totals[2]);
     println!("Missing: {}", totals[3]);
@@ -350,7 +363,7 @@ fn spawn_cmd(args: &Args, r: &Map<String, Value>, sessions: &[Session]) -> i32 {
         let command = crate::send::spawn_command(
             &harness,
             args.text.as_deref().unwrap_or(""),
-            if harness == "claude" { "<new-session-id>" } else { "" },
+            if harness == "claude" || harness == "grok" { "<new-session-id>" } else { "" },
             "",
         )
         .unwrap_or_default();

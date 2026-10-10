@@ -51,23 +51,81 @@ def omp_extension_source() -> str:
     return f'// Everett session cards + shared core (installed by `everett install-hooks --omp`).\nexport {{ default }} from {json.dumps(target)};\n'
 
 
-def _has_script(entries: list, script: str) -> bool:
+def _executable_ok(name: str) -> bool:
+    """True when `name` runs: an executable file, or a bare name on PATH."""
+    if not name:
+        return False
+    if os.path.sep in name or (os.path.altsep and os.path.altsep in name):
+        return os.path.isfile(name) and os.access(name, os.X_OK)
+    return shutil.which(name) is not None
+
+
+def _hook_state(command: str, script: str) -> str | None:
+    """'ok'/'stale' for an Everett hook command registered for `script`, else None.
+
+    A registration that still mentions Everett + the script but whose interpreter
+    (first token) or script path no longer exists is stale: it fails silently."""
+    if not isinstance(command, str) or script not in command or 'everett' not in command:
+        return None
+    try:
+        tokens = shlex.split(command)
+    except ValueError:
+        return 'stale'
+    if not tokens or not _executable_ok(tokens[0]):
+        return 'stale'
+    script_arg = next((t for t in tokens[1:] if script in t), '')
+    if not script_arg or not os.path.exists(script_arg):
+        return 'stale'
+    return 'ok'
+
+
+def _script_state(entries: list, script: str) -> str:
+    """'ok' | 'stale' | 'missing' for Everett's registration of `script` in one event's entries."""
+    stale = False
     for entry in entries if isinstance(entries, list) else []:
         for hook in (entry or {}).get('hooks', []) if isinstance(entry, dict) else []:
-            command = hook.get('command', '') if isinstance(hook, dict) else ''
-            if script in command and 'everett' in command:
-                return True
-    return False
+            state = _hook_state(hook.get('command', '') if isinstance(hook, dict) else '', script)
+            if state == 'ok':
+                return 'ok'
+            stale |= state == 'stale'
+    return 'stale' if stale else 'missing'
+
+
+def _has_script(entries: list, script: str) -> bool:
+    return _script_state(entries, script) == 'ok'
+
+
+def _omp_extension_state() -> str:
+    """'ok' | 'stale' | 'missing': the extension file must exist and its baked
+    file:// target must still be there (a moved checkout leaves a dead re-export)."""
+    path = omp_extension_path()
+    if not path.is_file():
+        return 'missing'
+    try:
+        text = path.read_text(encoding='utf-8')
+    except OSError:
+        return 'stale'
+    match = re.search(r'from\s+["\'](file://[^"\']+)["\']', text)
+    if match:
+        from urllib.parse import unquote, urlparse
+        target = Path(unquote(urlparse(match[1]).path))
+        return 'ok' if target.exists() else 'stale'
+    return 'ok'
 
 
 def installed(harness: str, data: dict | None = None) -> dict[str, bool]:
     """Which of Everett's hook events are registered for a harness."""
+    return {event: state == 'ok' for event, state in installed_state(harness, data).items()}
+
+
+def installed_state(harness: str, data: dict | None = None) -> dict[str, str]:
+    """Per-event 'ok' | 'stale' | 'missing' so doctor/apply can repair dead registrations."""
     if harness == 'omp':
-        return {'extension': omp_extension_path().exists()}
+        return {'extension': _omp_extension_state()}
     if data is None:
         data = _load(settings_path(harness))
     hooks = data.get('hooks') if isinstance(data.get('hooks'), dict) else {}
-    return {event: _has_script(hooks.get(event, []), script) for event, script, _ in HOOKS[harness]}
+    return {event: _script_state(hooks.get(event, []), script) for event, script, _ in HOOKS[harness]}
 
 
 def merge(data: dict, harness: str, events: list[str] | None = None) -> tuple[dict, list[str]]:
@@ -87,8 +145,19 @@ def merge(data: dict, harness: str, events: list[str] | None = None) -> tuple[di
         entries = hooks.setdefault(event, [])
         if not isinstance(entries, list):
             raise ValueError(f'"hooks.{event}" is not a list')
-        if _has_script(entries, script):
+        state = _script_state(entries, script)
+        if state == 'ok':
             continue
+        if state == 'stale':
+            # Replace only Everett's own dead hooks; other hooks in this event stay.
+            for entry in entries:
+                if isinstance(entry, dict):
+                    entry['hooks'] = [
+                        h for h in entry.get('hooks', [])
+                        if _hook_state(h.get('command', '') if isinstance(h, dict) else '', script) != 'stale'
+                    ]
+            entries[:] = [e for e in entries
+                          if not (isinstance(e, dict) and e.get('hooks') == [])]
         entries.append({'hooks': [{'type': 'command', 'command': hook_command(script), 'timeout': timeout}]})
         added.append(event)
     return data, added
@@ -142,6 +211,8 @@ def snippet(harness: str) -> str:
 def apply(harness: str, events: list[str] | None = None) -> str:
     """Install for one harness; returns a one-line report. `events` restricts which hook events
     are merged (see `merge`); omitted or None installs every event Everett knows for the harness."""
+    if events is not None and not events:
+        return f'{harness}: skipped (no hooks selected)'
     if harness == 'omp':
         path = omp_extension_path()
         source = omp_extension_source()
@@ -151,8 +222,6 @@ def apply(harness: str, events: list[str] | None = None) -> str:
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(source, encoding='utf-8')
         return f'omp: wrote {path}' + (f' (backup {saved})' if saved else '')
-    if events is not None and not events:
-        return f'{harness}: skipped (no hooks selected)'
     path = settings_path(harness)
     data = _load(path)
     merged, added = merge(data, harness, events=events)

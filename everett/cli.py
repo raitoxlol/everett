@@ -95,6 +95,9 @@ def regenerate_auto_cards(sessions, dry_run: bool = False) -> tuple[int, int]:
             skipped += 1  # nothing usable to rebuild from; leave the existing card as-is
             continue
         target = cards_mod.card_path(s.id)
+        if target is None:
+            skipped += 1  # invalid session id: nothing safe to write
+            continue
         try:
             current = target.read_text(encoding='utf-8')
         except OSError:
@@ -116,9 +119,10 @@ def cmd_cards(args) -> int:
         label = 'Would rewrite' if args.dry_run else 'Rewrote'
         print(f'{label} {rewritten} auto card(s), skipped {skipped} (last {hours:g} hours).')
         return 0
-    sessions = registry.scan(args.hours, include_auto=True, limit=None)
+    hours = args.regen_hours if args.regen_hours is not None else args.hours
+    sessions = registry.scan(hours, include_auto=True, limit=None)
     counts, totals = card_coverage(sessions)
-    print(f'Sessions (last {args.hours:g} hours): {totals["total"]}')
+    print(f'Sessions (last {hours:g} hours): {totals["total"]}')
     print(f'Agent cards: {totals["agent"]}')
     print(f'Auto cards: {totals["auto"]}')
     print(f'Missing: {totals["missing"]}')
@@ -164,7 +168,7 @@ def _spawn(args, r: dict, sessions) -> int:
     harness = args.harness or default_harness()
     cwd = os.path.abspath(os.path.expanduser(args.dir)) if args.dir else (best_dir(args.text, sessions) or os.getcwd())
     if args.dry_run:
-        command = spawn_command(harness, args.text, '<new-session-id>' if harness == 'claude' else '')
+        command = spawn_command(harness, args.text, '<new-session-id>' if harness in ('claude', 'grok') else '')
         _emit(args, {**r, 'delivered': False, 'dry_run': True, 'spawn': True, 'harness': harness,
                      'cwd': cwd, 'command': command},
               [f'DRY RUN  spawn NEW [{harness}] {cwd}', f'  {format_command(command)}'])

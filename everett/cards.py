@@ -14,11 +14,16 @@ def card_dir() -> Path:
     return home() / '.everett' / 'cards'
 
 
-def card_path(session_id: str) -> Path:
-    return card_dir() / f'{session_id}.md'
+def card_path(session_id: str) -> Path | None:
+    """Where this session's card lives, or None when the id could escape cards/.
+    Same rule as inbox.valid_id: [A-Za-z0-9._-]+, never '.'/'..'."""
+    from .inbox import valid_id
+    return card_dir() / f'{session_id}.md' if valid_id(session_id) else None
 
 
-def _read_card(p: Path) -> tuple[str, float, str] | None:
+def _read_card(p: Path | None) -> tuple[str, float, str] | None:
+    if p is None:
+        return None
     try:
         text, mtime = p.read_text(), p.stat().st_mtime
     except OSError:
@@ -38,8 +43,11 @@ def read_card(session_id: str) -> tuple[str, float] | None:
 
 
 def is_auto_card(session_id: str) -> bool:
+    target = card_path(session_id)
+    if target is None:
+        return False
     try:
-        with card_path(session_id).open(encoding='utf-8') as f:
+        with target.open(encoding='utf-8') as f:
             return f.readline().rstrip('\r\n') == AUTO_MARKER
     except OSError:
         return False

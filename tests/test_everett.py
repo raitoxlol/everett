@@ -4,6 +4,7 @@ import os
 import shutil
 import subprocess
 import tempfile
+import time
 import unittest
 from dataclasses import asdict
 from pathlib import Path
@@ -50,12 +51,80 @@ class Adapters(unittest.TestCase):
             cards.card_path('p-1').write_text('Orchestrating work')
             self.assertEqual(claude.parse(p).id, 'p-1')
 
+    def test_injected_rule_keeps_pasted_markup(self):
+        from everett.session import is_injected
+        self.assertFalse(is_injected('<div>broken layout'))
+        self.assertFalse(is_injected('  <DIV CLASS="x"> 1'))
+        self.assertFalse(is_injected('<?xml version="1.0"?><root/>'))
+        self.assertFalse(is_injected('</table>'))
+        self.assertFalse(is_injected('<pasted_content id="a">\nreal paste'))
+        for t in ('<system-reminder>x</system-reminder>', '  <user_info>u</user_info>',
+                  '<permissions instructions>i</permissions instructions>',
+                  '<turn_aborted>x</turn_aborted>', '<Value> 1',
+                  '<environment_context/>', '<command-name>/clear</command-name>',
+                  '<local-command-stdout>out</local-command-stdout>', '<ide_opened_file>x</ide_opened_file>'):
+            self.assertTrue(is_injected(t), t)
+        self.assertTrue(is_injected('   '))
+        # End-to-end: a session whose first user text is pasted markup is still listed.
+        rows = [{'type': 'user', 'sessionId': 'h-1', 'cwd': '/w', 'timestamp': 't',
+                 'message': {'content': '<div>broken layout</div>'}}]
+        with tempfile.TemporaryDirectory() as d, mock.patch.dict('os.environ', {'EVERETT_HOME': d}):
+            p = Path(d) / 'h-1.jsonl'
+            p.write_text('\n'.join(map(json.dumps, rows)) + '\n')
+            s = claude.parse(p)
+            self.assertEqual(s.first_user, 'broken layout')
+
+    def test_card_path_traversal_reads_nothing_outside_cards_dir(self):
+        from everett import cards
+        with tempfile.TemporaryDirectory() as d, mock.patch.dict('os.environ', {'EVERETT_HOME': d}):
+            outside = Path(d) / '.everett' / 'evil.md'   # what '../evil' would resolve to
+            outside.parent.mkdir(parents=True)
+            outside.write_text('STOLEN CARD BODY')
+            rows = [{'type': 'user', 'sessionId': '../evil', 'cwd': '/w', 'timestamp': 't',
+                     'message': {'content': 'hello'}}]
+            transcript = Path(d) / 'evil.jsonl'
+            transcript.write_text('\n'.join(map(json.dumps, rows)) + '\n')
+            s = claude.parse(transcript)
+            self.assertEqual(s.id, '../evil')  # session still lists
+            cards.apply([s])
+            self.assertEqual(s.card, '')       # but no card is read through the traversal
+            self.assertIsNone(cards.card_path('../evil'))
+            self.assertIsNone(cards.read_card('../evil'))
+            self.assertFalse(cards.is_auto_card('../evil'))
+            self.assertEqual(outside.read_text(), 'STOLEN CARD BODY')
+
     def test_read_edges_large_file(self):
         with tempfile.NamedTemporaryFile('w', suffix='.jsonl', delete=False) as f:
             f.write('{"n": 0}\n' + ('{"pad": "' + 'x' * 100 + '"}\n') * (3 * CHUNK // 100) + '{"n": 1}\n')
         head, tail = read_edges(Path(f.name))
         self.assertEqual(head[0], {'n': 0})
         self.assertEqual(tail[-1], {'n': 1})
+
+    def test_read_edges_keeps_record_at_tail_boundary(self):
+        # Tail window starts exactly on a record boundary: the first tail line
+        # must not be dropped.
+        tagged = json.dumps({'type': 'user', 'i': 99})
+        start = CHUNK + len(tagged) + 1  # read_edges uses max(CHUNK, size-CHUNK)
+        body = ' ' * (start - 1) + '\n' + tagged + '\n'
+        body += ' ' * (CHUNK - len(tagged) - 2) + '\n'
+        with tempfile.NamedTemporaryFile('w', suffix='.jsonl', delete=False) as f:
+            f.write(body)
+        self.assertEqual(Path(f.name).stat().st_size, start + CHUNK)
+        _, tail = read_edges(Path(f.name))
+        self.assertEqual(tail[0].get('i'), 99)
+
+    def test_codex_uuid_extracted_from_rollout_stem(self):
+        import uuid
+        sid = str(uuid.uuid4())
+        meta = json.dumps({'type': 'session_meta',
+                           'payload': {'cwd': '/work/x', 'timestamp': '2026-01-01T00:00:00Z'}})
+        good = Path(tempfile.mkdtemp()) / f'rollout-2026-01-01T00-00-00-{sid}.jsonl'
+        good.write_text(meta + '\n')
+        s = codex.parse(good)
+        self.assertEqual(s.id, sid)  # `codex exec resume` needs the uuid, not the filename
+        bad = good.with_name('rollout-no-uuid-here.jsonl')
+        bad.write_text(meta + '\n')
+        self.assertIsNone(codex.parse(bad))
 
 
 class Routing(unittest.TestCase):
@@ -131,18 +200,16 @@ class Sending(unittest.TestCase):
         self.assertEqual(command_for(omp_session, 'a request'), ['omp', '-r', 'o-1', '-p', 'a request'])
 
     def test_send_captures_reply_without_shell(self):
-        runner = mock.Mock(return_value=SimpleNamespace(returncode=0, stdout='answer\n', stderr=''))
+        runner = mock.Mock(return_value=(0, 'answer\n', ''))
         with mock.patch('everett.send.wait_idle', return_value=True), mock.patch(
-            'everett.send.subprocess.run', runner
+            'everett.send._run_capture', runner
         ):
             result = send(self.session, 'review; rm -rf /')
         self.assertEqual(result.reply, 'answer')
         self.assertEqual(result.command[-1], 'review; rm -rf /')
-        runner.assert_called_once_with(
-            result.command, cwd='/work/app', stdin=subprocess.DEVNULL, capture_output=True,
-            text=True, timeout=120, check=False, env=mock.ANY
-        )
-        self.assertEqual(runner.call_args.kwargs['env']['EVERETT_SEND'], '1')  # card hooks skip headless resumes
+        runner.assert_called_once_with(result.command, 120, '/work/app', None)
+        from everett.send import child_env
+        self.assertEqual(child_env()['EVERETT_SEND'], '1')  # card hooks skip headless resumes
 
     def test_wait_idle(self):
         from everett.send import wait_idle
@@ -157,7 +224,7 @@ class Sending(unittest.TestCase):
                                    clock=clock, sleep=sleep))
 
     def test_running_session_is_refused(self):
-        with mock.patch('everett.send.wait_idle', return_value=False), mock.patch('everett.send.subprocess.run') as runner:
+        with mock.patch('everett.send.wait_idle', return_value=False), mock.patch('everett.send._run_capture') as runner:
             with self.assertRaises(SendError) as cm:
                 send(self.session, 'a request')
         self.assertEqual(cm.exception.code, 4)
@@ -166,16 +233,16 @@ class Sending(unittest.TestCase):
     def test_timeout_is_reported(self):
         expired = __import__('subprocess').TimeoutExpired('claude', 1)
         with mock.patch('everett.send.wait_idle', return_value=True), mock.patch(
-            'everett.send.subprocess.run', side_effect=expired
+            'everett.send._run_capture', side_effect=expired
         ):
             with self.assertRaises(SendError) as cm:
                 send(self.session, 'a request', timeout=1)
         self.assertEqual(cm.exception.code, 5)
 
     def test_harness_failure_is_reported(self):
-        failed = SimpleNamespace(returncode=7, stdout='', stderr='model unavailable')
+        failed = (7, '', 'model unavailable')
         with mock.patch('everett.send.wait_idle', return_value=True), mock.patch(
-            'everett.send.subprocess.run', return_value=failed
+            'everett.send._run_capture', return_value=failed
         ):
             with self.assertRaises(SendError) as cm:
                 send(self.session, 'a request')
@@ -237,6 +304,19 @@ class SendCLI(unittest.TestCase):
         self.assertEqual(code, 4)
         self.assertIn('running', errors.getvalue())
         sender.assert_called_once()
+
+    def test_spawn_dry_run_shows_grok_session_id(self):
+        import contextlib
+        import io
+        import json
+        output = io.StringIO()
+        with mock.patch('everett.cli.registry.scan', return_value=[]), mock.patch(
+            'everett.cli.route', return_value={'decision': 'NEW', 'choice': 'new', 'confidence': 0.9}
+        ), contextlib.redirect_stdout(output):
+            code = main(['send', 'a request', '--spawn', '--dry-run', '--harness', 'grok', '--json'])
+        self.assertEqual(code, 0)
+        command = json.loads(output.getvalue())['command']
+        self.assertEqual(command, ['grok', '--session-id', '<new-session-id>', '-p', 'a request'])
 
 
 class Cards(unittest.TestCase):
@@ -345,6 +425,28 @@ class Cards(unittest.TestCase):
             listing = json.loads(output.getvalue())
             self.assertEqual(listing[0]['card_source'], 'auto')
             self.assertIn('Authentication tests', listing[0]['card'])
+
+
+class CardsCLI(unittest.TestCase):
+    def test_cards_hours_without_regenerate_is_honored(self):
+        import contextlib
+        import io
+        session = Session('claude', 'c-1', '/work/app', '', '', 0)
+        seen = {}
+        def fake_scan(hours, **kw):
+            seen['hours'] = hours
+            return [session]
+        output = io.StringIO()
+        with mock.patch('everett.cli.registry.scan', side_effect=fake_scan), \
+                contextlib.redirect_stdout(output):
+            self.assertEqual(main(['cards', '--hours', '5']), 0)
+        self.assertEqual(seen['hours'], 5)
+        self.assertIn('last 5 hours', output.getvalue())
+        seen.clear()
+        with mock.patch('everett.cli.registry.scan', side_effect=fake_scan), \
+                contextlib.redirect_stdout(io.StringIO()):
+            self.assertEqual(main(['--hours', '2', 'cards']), 0)
+        self.assertEqual(seen['hours'], 2)
 
 
 class AutoCardQuality(unittest.TestCase):
@@ -708,6 +810,65 @@ class Misc(unittest.TestCase):
         out = trunk.render([omp.parse(FX / 'omp.jsonl')])
         self.assertIn('| omp | `/tmp` | Repo health checks', out)
 
+    def test_trunk_render_escapes_pipes_in_cwd(self):
+        s = omp.parse(FX / 'omp.jsonl')
+        s.cwd = '/work/a|b'
+        out = trunk.render([s])
+        self.assertIn('`/work/a/b`', out)
+
+    def test_session_running_requires_harness_binary(self):
+        from everett.registry import session_running
+        s = Session('claude', 'c-1', '/w', '/tmp/c-1.jsonl', '', time.time() - 86400)
+        ps = 'other-tool --flag c-1\nvim notes.txt\n'
+        self.assertFalse(session_running(s, ps_out=ps))  # id alone isn't enough
+        self.assertTrue(session_running(s, ps_out='claude --resume c-1\n'))
+
+    def test_timeout_kills_process_group(self):
+        import signal
+        from everett.send import _run_capture
+        marker = Path(tempfile.mkdtemp()) / 'pid'
+        with self.assertRaises(subprocess.TimeoutExpired):
+            _run_capture(['sh', '-c', f'sleep 60 & echo $! > {marker}; wait'],
+                         timeout=0.5, cwd=None, env=None)
+        for _ in range(50):
+            if marker.exists():
+                break
+            time.sleep(0.05)
+        grandchild = int(marker.read_text())
+        # The whole group went down, not just the shell. The orphan may linger as
+        # a zombie until init reaps it, so accept "gone" or "zombie".
+        for _ in range(100):
+            try:
+                os.kill(grandchild, 0)
+            except OSError:
+                break
+            stat = subprocess.run(['ps', '-o', 'stat=', '-p', str(grandchild)],
+                                  capture_output=True, text=True).stdout.strip()
+            if not stat or stat.startswith('Z'):
+                break
+            time.sleep(0.05)
+        else:
+            self.fail(f'grandchild {grandchild} still running after the timeout')
+
+    def test_spawn_mkstemp_error_is_senderror(self):
+        import tempfile as tf
+        from everett.send import spawn
+        with tempfile.TemporaryDirectory() as d, mock.patch('tempfile.mkstemp', side_effect=OSError('denied')):
+            with self.assertRaises(SendError) as cm:
+                spawn('codex', 'x', d)
+        self.assertEqual(cm.exception.code, 5)
+
+    def test_pi_resume_requires_session_file(self):
+        with self.assertRaises(SendError) as cm:
+            command_for(Session('pi', 'p-1', '/w', '', '', 0), 'go')
+        self.assertIn('no session file', str(cm.exception))
+
+    def test_omp_empty_events_selection_is_skipped(self):
+        from everett import install
+        with tempfile.TemporaryDirectory() as d, mock.patch.dict(os.environ, {'EVERETT_HOME': d}):
+            self.assertIn('skipped', install.apply('omp', events=[]))
+            self.assertFalse(install.omp_extension_path().exists())
+
 
 class OMPHook(unittest.TestCase):
     SCRIPT = r'''
@@ -724,6 +885,11 @@ if (handlers.session_start) {
 }
 process.stdout.write(JSON.stringify({ events: Object.keys(handlers), first, second }));
 '''
+
+    def test_omp_extension_has_card_timeout_and_safe_mark_session(self):
+        src = (Path(__file__).parents[1] / 'everett' / 'hooks' / 'omp_session_start.mjs').read_text()
+        self.assertGreaterEqual(src.count('timeout: 3000'), 2)  # inboxText and cardContext both bounded
+        self.assertRegex(src, r'markSession[^{]*\{[^}]*try')  # markSession body is wrapped in try/catch
 
     def test_omp_hook_adds_shared_context_once_with_session_id(self):
         node = shutil.which('node')
