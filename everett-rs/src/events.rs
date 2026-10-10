@@ -40,18 +40,22 @@ fn valid_sid(sid: &str) -> bool {
     inbox::valid_id(sid)
 }
 
-fn write_json(target: &PathBuf, data: &Value) {
+fn write_json(target: &PathBuf, data: &Value) -> Result<()> {
     if let Some(parent) = target.parent() {
-        let _ = fs::create_dir_all(parent);
+        fs::create_dir_all(parent).map_err(|e| {
+            EverettError::new(2, format!("cannot create {}: {}", parent.display(), e))
+        })?;
     }
     let tmp = target.with_file_name(format!(
         ".{}.{}.tmp",
         target.file_name().unwrap_or_default().to_string_lossy(),
         std::process::id()
     ));
-    if fs::write(&tmp, serde_json::to_string(data).unwrap_or_default()).is_ok() {
-        let _ = fs::rename(&tmp, target);
-    }
+    let w = || {
+        fs::write(&tmp, serde_json::to_string(data).unwrap_or_default())
+            .and_then(|_| fs::rename(&tmp, target))
+    };
+    w().map_err(|e| EverettError::new(2, format!("cannot write {}: {}", target.display(), e)))
 }
 
 pub fn state(session_id: &str) -> Option<Map<String, Value>> {
@@ -127,11 +131,20 @@ pub fn record(
     event.insert("harness".into(), json!(harness));
     event.insert("cwd".into(), json!(cwd));
     event.insert("source".into(), json!(source));
-    let _ = fs::create_dir_all(events_path().parent().unwrap());
-    if let Ok(mut f) = OpenOptions::new().create(true).append(true).open(events_path()) {
-        let _ = f.set_permissions(PermissionsExt::from_mode(0o600));
-        let _ = f.write_all((serde_json::to_string(&event).unwrap() + "\n").as_bytes());
+    let events_file = events_path();
+    if let Some(parent) = events_file.parent() {
+        fs::create_dir_all(parent).map_err(|e| {
+            EverettError::new(2, format!("cannot create {}: {}", parent.display(), e))
+        })?;
     }
+    let mut f = OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&events_file)
+        .map_err(|e| EverettError::new(2, format!("cannot write {}: {}", events_file.display(), e)))?;
+    let _ = f.set_permissions(PermissionsExt::from_mode(0o600));
+    f.write_all((serde_json::to_string(&event).unwrap() + "\n").as_bytes())
+        .map_err(|e| EverettError::new(2, format!("cannot write {}: {}", events_file.display(), e)))?;
     if !session.is_empty() && valid_sid(&session) {
         let same = prev
             .as_ref()
@@ -156,7 +169,7 @@ pub fn record(
                 json!(false)
             },
         );
-        write_json(&state_dir().join(format!("{}.json", session)), &Value::Object(state_doc));
+        write_json(&state_dir().join(format!("{}.json", session)), &Value::Object(state_doc))?;
     }
     route(&event);
     if HUMAN_KINDS.contains(&kind) {
@@ -212,7 +225,7 @@ pub fn subscribe(subscriber: &str, target: &str, remove: bool) -> Result<Vec<Str
     } else {
         subs.insert(subscriber.to_string(), current.clone());
     }
-    write_json(&subs_path(), &serde_json::to_value(&subs).unwrap_or(Value::Null));
+    write_json(&subs_path(), &serde_json::to_value(&subs).unwrap_or(Value::Null))?;
     Ok(current)
 }
 
@@ -431,7 +444,7 @@ pub fn check_escalations(at: Option<f64>, runner: Option<&dyn Fn(&[String], Opti
             runner,
         );
         data.insert("escalated".into(), json!(true));
-        write_json(&file, &Value::Object(data.clone()));
+        let _ = write_json(&file, &Value::Object(data.clone()));
         out.push(data);
     }
     out
@@ -448,8 +461,10 @@ pub fn maybe_escalate(at: Option<f64>) {
     if mtime == 0.0 && !state_dir().is_dir() {
         return;
     }
-    if let Ok(f) = OpenOptions::new().create(true).write(true).open(&stamp) {
-        drop(f);
+    // Actually advance the stamp's mtime: open+drop alone does not, and an
+    // unchanged mtime makes the scan run on every hook invocation.
+    if let Ok(mut f) = OpenOptions::new().create(true).write(true).truncate(true).open(&stamp) {
+        let _ = f.write_all(now.to_string().as_bytes());
     }
     let _ = check_escalations(Some(now), None);
 }

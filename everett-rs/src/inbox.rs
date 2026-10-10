@@ -43,14 +43,20 @@ fn done_path(session_id: &str) -> PathBuf {
     inbox_dir().join(format!("{}.done", session_id))
 }
 
-fn append(target: &PathBuf, line: &str) {
+fn append(target: &PathBuf, line: &str) -> Result<()> {
     if let Some(parent) = target.parent() {
-        let _ = fs::create_dir_all(parent);
+        fs::create_dir_all(parent).map_err(|e| {
+            EverettError::new(2, format!("cannot create {}: {}", parent.display(), e))
+        })?;
     }
-    if let Ok(mut f) = OpenOptions::new().create(true).append(true).open(target) {
-        let _ = f.set_permissions(std::os::unix::fs::PermissionsExt::from_mode(0o600));
-        let _ = f.write_all(line.as_bytes());
-    }
+    let mut f = OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(target)
+        .map_err(|e| EverettError::new(2, format!("cannot write {}: {}", target.display(), e)))?;
+    let _ = f.set_permissions(std::os::unix::fs::PermissionsExt::from_mode(0o600));
+    f.write_all(line.as_bytes())
+        .map_err(|e| EverettError::new(2, format!("cannot write {}: {}", target.display(), e)))
 }
 
 pub fn new_id() -> String {
@@ -94,7 +100,7 @@ pub fn post(
         }
     }
     let target = path(to)?;
-    append(&target, &(serde_json::to_string(&message).unwrap() + "\n"));
+    append(&target, &(serde_json::to_string(&message).unwrap() + "\n"))?;
     Ok(message)
 }
 
@@ -140,7 +146,7 @@ pub fn mark_done(session_id: &str, ids: &[&str]) {
         return;
     }
     let body: String = ids.iter().map(|i| format!("{}\n", i)).collect();
-    append(&done_path(session_id), &body);
+    let _ = append(&done_path(session_id), &body);
 }
 
 /// Look a message up by id across every inbox (for replies).
@@ -320,17 +326,69 @@ pub fn render(messages: &[Map<String, Value>], at: Option<f64>) -> (String, Vec<
     (format!("{}\n{}{}", header, parts.join("\n"), tail), ids)
 }
 
-/// Render pending messages for injection and mark exactly those delivered.
+/// Render pending messages for injection, mark exactly those delivered, and
+/// record the highest hop count seen so the session can't forward forever.
 pub fn take(session_id: &str) -> String {
-    let (text, ids) = render(&pending(session_id, None), None);
+    let pending_msgs = pending(session_id, None);
+    let (text, ids) = render(&pending_msgs, None);
     if !ids.is_empty() {
         mark_done(session_id, &ids.iter().map(|s| s.as_str()).collect::<Vec<_>>());
+        let max_hops = ids
+            .iter()
+            .filter_map(|id| {
+                pending_msgs
+                    .iter()
+                    .find(|m| m.get("id").and_then(|v| v.as_str()) == Some(id.as_str()))
+            })
+            .filter_map(|m| m.get("hops").and_then(|v| v.as_i64()))
+            .max()
+            .unwrap_or(0);
+        record_hops(session_id, max_hops);
     }
     text
 }
 
 pub fn live_path(session_id: &str) -> PathBuf {
     inbox_dir().join("live").join(format!("{}.json", session_id))
+}
+
+/// The highest message hop count take() has delivered to this session (0 if none).
+pub fn session_hops(session_id: &str) -> i64 {
+    if !valid_id(session_id) {
+        return 0;
+    }
+    fs::read_to_string(live_path(session_id))
+        .ok()
+        .and_then(|t| serde_json::from_str::<Value>(&t).ok())
+        .and_then(|v| v.get("hops").and_then(|h| h.as_i64()))
+        .unwrap_or(0)
+        .max(0)
+}
+
+/// Remember the highest hops delivered to this session in its live record (best effort).
+pub fn record_hops(session_id: &str, hops: i64) {
+    if !valid_id(session_id) {
+        return;
+    }
+    let target = live_path(session_id);
+    let mut current: Map<String, Value> = fs::read_to_string(&target)
+        .ok()
+        .and_then(|t| serde_json::from_str::<Value>(&t).ok())
+        .and_then(|v| v.as_object().cloned())
+        .unwrap_or_default();
+    let prev = current.get("hops").and_then(|v| v.as_i64()).unwrap_or(0);
+    current.insert("hops".into(), json!(prev.max(hops)));
+    if let Some(parent) = target.parent() {
+        let _ = fs::create_dir_all(parent);
+    }
+    let tmp = target.with_file_name(format!(
+        ".{}.{}.tmp",
+        target.file_name().unwrap_or_default().to_string_lossy(),
+        std::process::id()
+    ));
+    if fs::write(&tmp, serde_json::to_string(&Value::Object(current)).unwrap()).is_ok() {
+        let _ = fs::rename(&tmp, &target);
+    }
 }
 
 const SHELLS: &[&str] = &["sh", "bash", "zsh", "dash", "fish", "-sh", "-bash", "-zsh"];
@@ -374,8 +432,12 @@ pub fn touch_live(session_id: &str, harness: &str, state: &str) {
         target.file_name().unwrap_or_default().to_string_lossy(),
         std::process::id()
     ));
-    let body = json!({"pid": pid, "harness": harness, "state": state, "ts": now});
-    if fs::write(&tmp, serde_json::to_string(&body).unwrap()).is_ok() {
+    let mut body = current;
+    body.insert("pid".into(), json!(pid));
+    body.insert("harness".into(), json!(harness));
+    body.insert("state".into(), json!(state));
+    body.insert("ts".into(), json!(now));
+    if fs::write(&tmp, serde_json::to_string(&Value::Object(body)).unwrap()).is_ok() {
         let _ = fs::rename(&tmp, &target);
     }
 }

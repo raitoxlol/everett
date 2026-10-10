@@ -222,7 +222,22 @@ pub fn read_db(path: &Path, since_hours: f64) -> Result<(Vec<Session>, bool), St
         .map(|f| format!("COALESCE({}, 0) = 0", f))
         .collect();
     let where_clause = if clauses.is_empty() { "1=1".to_string() } else { clauses.join(" AND ") };
-    let sql = format!("SELECT {} FROM sessions WHERE {} LIMIT 400", wanted.join(", "), where_clause);
+    let activity: Vec<&str> = ["last_activity_at", "updated_at", "created_at"]
+        .iter()
+        .copied()
+        .filter(|c| cols.contains(*c))
+        .collect();
+    let order = if activity.is_empty() {
+        String::new()
+    } else {
+        format!(" ORDER BY COALESCE({}) DESC", activity.join(", "))
+    };
+    let sql = format!(
+        "SELECT {} FROM sessions WHERE {}{} LIMIT 400",
+        wanted.join(", "),
+        where_clause,
+        order
+    );
     let mut stmt = con.prepare(&sql).map_err(|e| e.to_string())?;
     let rows = stmt
         .query_map([], |row| {

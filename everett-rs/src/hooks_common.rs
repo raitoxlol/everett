@@ -2,7 +2,6 @@
 //! Every public entry swallows all errors — a hook must never break a harness session.
 
 use std::fs::{self, OpenOptions};
-use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 
@@ -20,7 +19,9 @@ pub fn session_start_context(session_id: &str, cwd: &str) -> String {
     if std::env::var(SKIP_ENV).is_ok() || session_id.is_empty() {
         return String::new();
     }
-    let path = crate::cards::card_path(session_id);
+    let Some(path) = crate::cards::card_path(session_id) else {
+        return String::new();
+    };
     if let Some(parent) = path.parent() {
         let _ = fs::create_dir_all(parent);
     }
@@ -556,8 +557,8 @@ fn stop_hook_inner(raw: &str, harness: &str) -> Option<()> {
         return None;
     }
     let transcript = PathBuf::from(transcript_value);
-    let transcript_mtime = transcript.metadata().ok()?.mtime_nsec();
-    let target = crate::cards::card_path(session_id);
+    let transcript_mtime = transcript.metadata().and_then(|m| m.modified()).ok()?;
+    let target = crate::cards::card_path(session_id)?;
     if target.is_symlink() {
         return None;
     }
@@ -571,7 +572,11 @@ fn stop_hook_inner(raw: &str, harness: &str) -> Option<()> {
     };
     if existed
         && (current.lines().next() != Some(AUTO_MARKER)
-            || current_stat.as_ref().map(|m| m.mtime_nsec()).unwrap_or(0) >= transcript_mtime)
+            || current_stat
+                .as_ref()
+                .map(|m| m.modified().unwrap_or(std::time::UNIX_EPOCH))
+                .unwrap_or(std::time::UNIX_EPOCH)
+                >= transcript_mtime)
     {
         return None;
     }
@@ -593,7 +598,8 @@ fn stop_hook_inner(raw: &str, harness: &str) -> Option<()> {
     let latest = fs::read_to_string(&target).ok()?;
     let latest_stat = target.metadata().ok()?;
     if latest.lines().next() != Some(AUTO_MARKER)
-        || latest_stat.mtime_nsec() != current_stat.as_ref().map(|m| m.mtime_nsec()).unwrap_or(0)
+        || latest_stat.modified().ok()
+            != current_stat.as_ref().and_then(|m| m.modified().ok())
         || latest != current
     {
         return None;
@@ -602,7 +608,8 @@ fn stop_hook_inner(raw: &str, harness: &str) -> Option<()> {
     fs::write(&tmp, &content).ok()?;
     let still_ok = !target.is_symlink()
         && fs::read_to_string(&target).ok().as_deref() == Some(current.as_str())
-        && target.metadata().ok().map(|m| m.mtime_nsec()) == current_stat.as_ref().map(|m| m.mtime_nsec());
+        && target.metadata().ok().and_then(|m| m.modified().ok())
+            == current_stat.as_ref().and_then(|m| m.modified().ok());
     if !still_ok {
         let _ = fs::remove_file(&tmp);
         return None;
@@ -848,4 +855,46 @@ pub fn hook_main(stem: &str, args: &[String]) -> i32 {
         _ => {}
     }
     0
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn set_mtime(path: &Path, sec: i64, nsec: i64) {
+        let c = std::ffi::CString::new(path.to_string_lossy().as_bytes()).unwrap();
+        let times = [
+            libc::timespec { tv_sec: sec, tv_nsec: nsec },
+            libc::timespec { tv_sec: sec, tv_nsec: nsec },
+        ];
+        let rc = unsafe { libc::utimensat(libc::AT_FDCWD, c.as_ptr(), times.as_ptr(), 0) };
+        assert_eq!(rc, 0);
+    }
+
+    #[test]
+    fn auto_card_freshness_uses_full_mtime_not_just_nanos() {
+        let home = tempfile::tempdir().unwrap();
+        std::env::set_var("EVERETT_HOME", home.path());
+        let sid = "mtime-sid";
+        let transcript = home.path().join("t.jsonl");
+        fs::write(
+            &transcript,
+            "{\"type\":\"user\",\"message\":{\"content\":\"fix the login bug\"},\"cwd\":\"/w\"}\n",
+        )
+        .unwrap();
+        let card = home.path().join(".everett/cards").join(format!("{sid}.md"));
+        fs::create_dir_all(card.parent().unwrap()).unwrap();
+        let body = format!("{}\nold auto body\n", AUTO_MARKER);
+        fs::write(&card, &body).unwrap();
+        // Transcript at T=*.9s, auto card 2s later but with a LOWER nanosecond
+        // component: an mtime_nsec-only compare would treat the card as stale
+        // and regenerate it.
+        set_mtime(&transcript, 1_700_000_000, 900_000_000);
+        set_mtime(&card, 1_700_000_002, 100_000_000);
+        stop_hook_inner(
+            &json!({"session_id": sid, "transcript_path": transcript}).to_string(),
+            "claude",
+        );
+        assert_eq!(fs::read_to_string(&card).unwrap(), body);
+    }
 }

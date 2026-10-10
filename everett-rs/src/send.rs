@@ -296,7 +296,7 @@ pub const MAX_HOPS: i64 = 3;
 
 /// Env for a delivery: EVERETT_HOPS counts agent-to-agent forwards; refuse past MAX_HOPS.
 pub fn hop_env() -> Result<HashMap<String, String>> {
-    let hops = current_hops();
+    let hops = caller_hops();
     if hops >= MAX_HOPS {
         return Err(EverettError::new(
             7,
@@ -317,6 +317,21 @@ pub fn current_hops() -> i64 {
         .ok()
         .and_then(|v| v.parse::<i64>().ok())
         .unwrap_or(0)
+}
+
+/// EVERETT_HOPS plus the highest hop take() delivered to the calling live session,
+/// so a live session can't forward forever just because its env hop count is 0.
+pub fn caller_hops() -> i64 {
+    let mut hops = current_hops();
+    let sid = caller_identity()
+        .get("session_id")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
+    if !sid.is_empty() {
+        hops = hops.max(inbox::session_hops(&sid));
+    }
+    hops
 }
 
 const IDENTITY_ENV: &[(&str, &str)] = &[
@@ -603,15 +618,18 @@ pub fn send_inbox(session: &Session, text: &str, wait: f64, caller: Option<&str>
     if !wait.is_finite() || wait < 0.0 {
         return Err(EverettError::new(2, "--wait must be a finite number of seconds, 0 or more."));
     }
-    let hops = current_hops();
+    let who = sender_info(caller);
+    let sender = who.get("sender").and_then(|v| v.as_str()).unwrap_or(inbox::HUMAN);
+    let mut hops = current_hops();
+    if sender != inbox::HUMAN {
+        hops = hops.max(inbox::session_hops(sender));
+    }
     if hops >= MAX_HOPS {
         return Err(EverettError::new(
             7,
             format!("Hop limit reached ({}/{}): answer here instead of forwarding again.", hops, MAX_HOPS),
         ));
     }
-    let who = sender_info(caller);
-    let sender = who.get("sender").and_then(|v| v.as_str()).unwrap_or(inbox::HUMAN);
     let message = inbox::post(
         &session.id,
         text,
