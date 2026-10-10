@@ -44,7 +44,8 @@ def parse(path: Path) -> Session | None:
     users = [t for t in map(user_text, head) if t]
     last = [t for t in map(user_text, tail) if t] or users
     titles = [d['aiTitle'] for d in rows if d.get('type') == 'ai-title' and d.get('aiTitle')]
-    if not users and not last and not titles and not card_path(sid).exists():
+    card = card_path(sid)
+    if not users and not last and not titles and not (card is not None and card.exists()):
         return None  # nothing to show; a session that wrote a card is always kept
     auto = any(d.get('entrypoint') == 'sdk-cli' for d in head)
     return Session('claude', sid, cwd, str(path), started, path.stat().st_mtime,

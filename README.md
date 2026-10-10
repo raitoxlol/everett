@@ -329,7 +329,7 @@ that Python has Everett installed. Restart clients after changing their registra
 
 **Safety.**
 - The server refuses self-send when the caller's identity is known. If `everett_whoami` cannot identify you, pass your own `session_id`; do not guess another session's identity from its folder or recency.
-- `EVERETT_HOPS` travels through every delivery, and a request that has already been forwarded 3 times is refused, so two agents cannot ping-pong.
+- `EVERETT_HOPS` travels through every delivery, and a request that has already been forwarded 3 times is refused, so two agents cannot ping-pong. A live session also inherits the hop count of messages delivered to it within the last 15 minutes (older deliveries no longer count against it).
 - A new session starts only with `spawn: true`.
 - `everett_learn` runs the secret filter.
 - Calls are logged to `~/.everett/mcp.log` with tool name, argument names, caller id, result status and duration. Argument values and replies are not logged. Existing log entries from older versions are preserved.

@@ -10,6 +10,17 @@ use serde_json::{Map, Value};
 pub const CHUNK: usize = 64 * 1024;
 pub const USER_WRAPPERS: &[&str] = &["<pasted_content"];
 
+/// Real HTML/XML document tags a user might paste. Anything else starting with
+/// '<' is treated as harness-injected (harnesses inject far more tags than we
+/// can enumerate).
+pub const PASTEABLE_TAGS: &[&str] = &[
+    "!doctype", "?xml", "html", "head", "body", "div", "span", "p", "a", "img", "svg", "path",
+    "script", "style", "link", "meta", "table", "tr", "td", "th", "ul", "ol", "li", "section",
+    "article", "header", "footer", "nav", "main", "form", "input", "button", "label", "select",
+    "textarea", "h1", "h2", "h3", "h4", "h5", "h6", "br", "hr", "pre", "code", "iframe", "video",
+    "canvas", "template", "slot",
+];
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Session {
     pub harness: String,
@@ -178,10 +189,18 @@ pub fn is_injected(text: &str) -> bool {
     if stripped.is_empty() {
         return true;
     }
-    if !stripped.starts_with('<') {
+    if USER_WRAPPERS.iter().any(|w| stripped.starts_with(w)) {
         return false;
     }
-    !USER_WRAPPERS.iter().any(|w| stripped.starts_with(w))
+    let Some(rest) = stripped.strip_prefix('<') else { return false };
+    let rest = rest.strip_prefix('/').unwrap_or(rest);
+    let end = rest
+        .find(|c: char| c.is_whitespace() || c == '>' || c == '/')
+        .unwrap_or(rest.len());
+    if end == 0 {
+        return true;
+    }
+    !PASTEABLE_TAGS.contains(&rest[..end].to_lowercase().as_str())
 }
 
 pub fn recent_files(paths: Vec<PathBuf>, since_hours: f64) -> Vec<PathBuf> {

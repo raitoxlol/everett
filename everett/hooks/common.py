@@ -19,6 +19,8 @@ def session_start_context(session_id: str, cwd: str = '') -> str:
     if os.environ.get(SKIP_ENV) or not session_id:
         return ''
     path = card_path(session_id)
+    if path is None:
+        return ''
     path.parent.mkdir(parents=True, exist_ok=True)
     text = INSTRUCTION.format(path=path)
     try:  # the core is best effort: a broken core must never cost the card instruction
@@ -262,7 +264,7 @@ def stop_hook(raw: str, harness: str) -> None:
         transcript = Path(transcript_value)
         transcript_mtime = transcript.stat().st_mtime_ns
         target = card_path(session_id)
-        if target.is_symlink():
+        if target is None or target.is_symlink():
             return
         try:
             current = target.read_text(encoding='utf-8')

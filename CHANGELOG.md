@@ -27,6 +27,29 @@
 - **Devin MCP registration** — `install-mcp --devin` supports the dedicated CLI MCP config on Linux/macOS and Windows, with existing dry-run, backup, repair, and idempotency behavior. Doctor and onboarding recognize the registration without adding native hooks or assuming a caller-id variable.
 - **Stable Devin timestamp regression** — freeze the synthetic ISO timestamp fixture's clock so the default 72-hour look-back does not expire it.
 
+### Audit hardening
+
+- Detect stale hook and MCP registrations (moved interpreters, binaries, and
+  script paths): `doctor` reports them with repair commands and
+  `install-hooks --apply` replaces Everett's dead entries while preserving
+  foreign hooks.
+- Record the highest hop count delivered to a live session so fresh sends are
+  still refused at the hop limit.
+- Validate session ids inside `card_path` so transcript ids cannot escape the
+  cards directory.
+- Compare full modification times for auto-card freshness instead of the
+  nanosecond field alone.
+- Propagate inbox, event-log, and card-write failures to the CLI and MCP
+  instead of reporting success.
+- Advance the escalation-throttle stamp each scan so hooks check at most once
+  per minute.
+- Order the Devin sessions query by newest activity before the row limit.
+- Deliver a single oversized inbox message truncated instead of dropping it.
+- Keep user text that merely starts with `<` visible by allowlisting the known
+  injected tag names.
+- `launchctl bootout` before `bootstrap` when re-applying the merge schedule.
+- Honor `everett cards --hours` without `--regenerate-auto`.
+
 ## 1.4.0 — 2026-10-05
 
 ### Rust binary releases

@@ -221,8 +221,7 @@ pub fn generate_backfill_cards(sessions: &[crate::session::Session], progress: O
         let content = crate::hooks_common::auto_card(Path::new(&s.path), &s.harness, &s.cwd, &s.id);
         if content.is_empty() {
             skipped += 1;
-        } else {
-            let target = crate::cards::card_path(&s.id);
+        } else if let Some(target) = crate::cards::card_path(&s.id) {
             if let Some(parent) = target.parent() {
                 let _ = std::fs::create_dir_all(parent);
             }
@@ -235,6 +234,8 @@ pub fn generate_backfill_cards(sessions: &[crate::session::Session], progress: O
                 Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => skipped += 1,
                 Err(_) => skipped += 1,
             }
+        } else {
+            skipped += 1; // invalid session id: nothing safe to write
         }
         if let Some(p) = progress {
             p(i + 1, total);

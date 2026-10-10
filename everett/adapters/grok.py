@@ -140,7 +140,8 @@ def parse(session_dir: Path, live: set[str] = frozenset(),
     users = typed or [t for t in map(user_text, head) if t]
     last = typed or [t for t in map(user_text, tail) if t] or users
     title = summary.get('title') or summary.get('generated_title') or ''
-    if not users and not title and not card_path(sid).exists():
+    card = card_path(sid)
+    if not users and not title and not (card is not None and card.exists()):
         return None  # nothing typed yet
     return Session('grok', sid, cwd, str(session_dir), summary.get('created_at', ''), activity(session_dir),
                    title=clean(title, 120), first_user=users[0] if users else '',

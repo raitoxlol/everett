@@ -97,10 +97,25 @@ def clean(text: str, limit: int = 200) -> str:
 
 USER_WRAPPERS = ('<pasted_content',)  # tags that wrap text the user typed or pasted
 
+# Real HTML/XML document tags a user might paste. Anything else starting with '<' is
+# treated as harness-injected (harnesses inject far more tags than we can enumerate).
+PASTEABLE_TAGS = frozenset(
+    '!doctype ?xml html head body div span p a img svg path script style link meta table tr td th '
+    'ul ol li section article header footer nav main form input button label select textarea '
+    'h1 h2 h3 h4 h5 h6 br hr pre code iframe video canvas template slot'.split()
+)
+_FIRST_TAG = re.compile(r'</?([^\s>/]*)')
+
 
 def is_injected(text: str) -> bool:
     t = text.lstrip()
-    return not t or (t.startswith('<') and not t.startswith(USER_WRAPPERS))
+    if not t or t.startswith(USER_WRAPPERS):
+        return not t
+    if not t.startswith('<'):
+        return False
+    m = _FIRST_TAG.match(t)
+    tag = m[1].lower() if m else ''
+    return tag not in PASTEABLE_TAGS
 
 
 def recent_files(paths, since_hours: float):

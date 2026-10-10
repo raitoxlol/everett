@@ -165,7 +165,10 @@ def read_db(path: Path, since_hours: float) -> tuple[list[Session], bool]:
                               'created_at', 'last_activity_at', 'updated_at') if c in cols]
         where = ' AND '.join(f'COALESCE({flag}, 0) = 0'
                              for flag in ('hidden', 'archived') if flag in cols) or '1=1'
-        rows = con.execute(f'SELECT {", ".join(wanted)} FROM sessions WHERE {where} LIMIT 400').fetchall()
+        activity = [c for c in ('last_activity_at', 'updated_at', 'created_at') if c in cols]
+        order = f' ORDER BY COALESCE({", ".join(activity)}) DESC' if activity else ''
+        rows = con.execute(
+            f'SELECT {", ".join(wanted)} FROM sessions WHERE {where}{order} LIMIT 400').fetchall()
         keys = rows[0].keys() if rows else []
         cutoff = time.time() - since_hours * 3600
         out: list[Session] = []
