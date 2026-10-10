@@ -2,8 +2,16 @@
 
 ## Unreleased
 
+- **Breaking:** remove the Python package (`everett/`, `pyproject.toml`, `bin/everett`); `pipx install`
+  no longer works. Install with `install.sh`, Homebrew, or `cargo install`. `install-hooks --apply` and
+  `install-mcp --apply` back up and replace Python hook commands, `-m everett mcp` launchers (dropping
+  their `PYTHONPATH`) and the Python OMP extension with the native binary.
+- Port the Python test suite's behavior to `everett-rs/tests/`; `tests/release_journey.rs` replaces
+  `scripts/verify_release.py`, and CI runs it against a release build.
+- Fix the native stop hook comparing only the sub-second part of file mtimes, which made stale
+  auto-card refresh effectively random. `trunk schedule` now runs `launchctl` with `PATH`/`HOME`.
 - Add native `everett external add`, `list`, and `remove` for durable cloud-agent registrations,
-  with shared Python/Rust records and cloud harness filters in `everett ls`.
+  with cloud harness filters in `everett ls`.
 - Register OpenAI dots and Grok Bot as durable external sessions, with inbox-only delivery,
   explicit polling, correlated replies, and no local provider resume or spawn.
 - Add native `everett gateway` using the official Rust MCP SDK, replacing the Python gateway

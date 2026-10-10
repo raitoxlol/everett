@@ -13,7 +13,7 @@ dot wake-ups**.
    destination IDs. Decide whether to grant global plus project shared core.
 2. Run `everett external add --id <agent_id> --harness openai-dot` on the host
    if local agents must list or route handoffs to it. The gateway alone does not
-   register it. The Python package also provides `python -m everett.external`.
+   register it.
 3. Verify the gateway command works locally using an MCP client with synthetic
    data after the integration PR is created. Do not point the tunnel at bare
    `everett mcp`: that bypasses the gateway's restrictions.

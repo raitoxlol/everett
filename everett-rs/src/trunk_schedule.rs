@@ -127,6 +127,15 @@ fn domain() -> String {
     format!("gui/{}", unsafe { libc::getuid() })
 }
 
+fn launchctl(action: &str, plist: &std::path::Path) -> std::result::Result<crate::proc::RunOutput, String> {
+    let env: HashMap<String, String> = ["PATH", "HOME"]
+        .iter()
+        .filter_map(|k| std::env::var(k).ok().map(|v| (k.to_string(), v)))
+        .collect();
+    let command = ["launchctl", action, &domain(), &plist.to_string_lossy()].map(String::from);
+    run_capture(&command, None, &env, 15.0)
+}
+
 /// Write the plist (idempotent) and `launchctl bootstrap` it.
 pub fn install(at: &str, llm: &str, path: Option<&PathBuf>, log: Option<&PathBuf>) -> Result<Map<String, Value>> {
     let target = path.cloned().unwrap_or_else(plist_path);
@@ -138,17 +147,7 @@ pub fn install(at: &str, llm: &str, path: Option<&PathBuf>, log: Option<&PathBuf
     }
     fs::write(&target, render_plist(at, llm)?).map_err(|e| EverettError::new(2, e.to_string()))?;
     let _ = fs::set_permissions(&target, PermissionsExt::from_mode(0o644));
-    let result = run_capture(
-        &[
-            "launchctl".to_string(),
-            "bootstrap".to_string(),
-            domain(),
-            target.to_string_lossy().to_string(),
-        ],
-        None,
-        &HashMap::new(),
-        15.0,
-    );
+    let result = launchctl("bootstrap", &target);
     let (ok, stderr) = match result {
         Ok(r) => (r.code == 0, r.stderr.trim().to_string()),
         Err(e) => (false, e),
@@ -165,17 +164,7 @@ pub fn remove(path: Option<&PathBuf>) -> Map<String, Value> {
     let target = path.cloned().unwrap_or_else(plist_path);
     let existed = target.exists();
     if existed {
-        let _ = run_capture(
-            &[
-                "launchctl".to_string(),
-                "bootout".to_string(),
-                domain(),
-                target.to_string_lossy().to_string(),
-            ],
-            None,
-            &HashMap::new(),
-            15.0,
-        );
+        let _ = launchctl("bootout", &target);
         let _ = fs::remove_file(&target);
     }
     let mut r = Map::new();
