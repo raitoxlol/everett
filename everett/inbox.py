@@ -238,8 +238,8 @@ def _compact(session_id: str, now: float) -> None:
         done = done_ids(session_id)
         target = path(session_id)
         live_done = {i for i in done if i in keep_ids}
-        # Rewriting the inbox drops delivered (already-done) records entirely.
-        body = ''.join(json.dumps(m, ensure_ascii=False) + '\n' for m in kept if m['id'] not in done)
+        # Delivered records stay so reply_to lookups still resolve; only expiry shrinks the file.
+        body = ''.join(json.dumps(m, ensure_ascii=False) + '\n' for m in kept)
         tmp = target.with_name(f'.{target.name}.{os.getpid()}.tmp')
         tmp.write_text(body, encoding='utf-8')
         tmp.replace(target)
@@ -254,9 +254,9 @@ def _compact(session_id: str, now: float) -> None:
 
 
 def _reap_stale(now: float) -> None:
-    """Remove live/ and state/ records older than LIVE_TTL."""
-    state = home() / '.everett' / 'state'
-    for folder in (inbox_dir() / 'live', state):
+    """Remove live/ records older than LIVE_TTL. ~/.everett/state is event/escalation
+    state — a session can legitimately stay blocked longer than a day."""
+    for folder in (inbox_dir() / 'live',):
         if not folder.is_dir():
             continue
         for file in folder.glob('*.json'):
