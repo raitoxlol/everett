@@ -105,7 +105,7 @@ Stop it with Ctrl-C.
 **Future direction:** an Everett account could connect CLI installations across
 devices and expose their local activity through either a self-hosted or hosted
 dashboard. Account auth, peer transport, and hosting (including a custom-domain
-frontend on Vercel) are not implemented here. A Rust local-data service would
+frontend on Vercel) are not implemented here. The planned shape is in `docs/cross-device.md`. A Rust local-data service would
 still be required; a static website cannot read another device's session stores.
 
 This is example output (paths and ids are shortened):
