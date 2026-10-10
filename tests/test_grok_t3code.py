@@ -104,6 +104,15 @@ class GrokAdapter(TempHome):
         self.assertTrue(found['live'].running)
         self.assertFalse(found['dead'].running)
 
+    def test_pid_zero_and_negative_are_not_alive(self):
+        (self.home / '.grok').mkdir(parents=True, exist_ok=True)
+        (self.home / '.grok/active_sessions.json').write_text(json.dumps([
+            {'session_id': 'g-zero', 'pid': 0, 'cwd': '/w'},
+            {'session_id': 'g-neg', 'pid': -3, 'cwd': '/w'},
+            {'session_id': 'g-us', 'pid': os.getpid(), 'cwd': '/w'}]))
+        # kill(0, 0) would match our own process group; only a real pid counts
+        self.assertEqual(grok.active_sessions(), {'g-us'})
+
     def test_send_and_spawn_commands(self):
         s = Session('grok', '01a0-x', '/w', '/tmp/x', '', time.time())
         self.assertEqual(command_for(s, 'go'), ['grok', '--resume', '01a0-x', '-p', 'go'])
@@ -111,8 +120,8 @@ class GrokAdapter(TempHome):
         self.assertIn('grok --resume 01a0-x', resume_command(s, 'go'))
 
     def test_spawn_preassigns_session_id(self):
-        run = mock.Mock(return_value=SimpleNamespace(returncode=0, stdout='OK', stderr=''))
-        with mock.patch('everett.send.subprocess.run', run), mock.patch('everett.send.require_harness'):
+        run = mock.Mock(return_value=(0, 'OK', ''))
+        with mock.patch('everett.send._run_capture', run), mock.patch('everett.send.require_harness'):
             result = spawn('grok', 'reply OK', str(self.home))
         command = run.call_args.args[0]
         self.assertEqual(command[:2], ['grok', '--session-id'])
