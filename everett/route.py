@@ -9,7 +9,7 @@ import ssl
 import time
 import urllib.request
 
-from . import config
+from . import config, external
 from .session import Session, home
 
 JEV_URL = 'https://api.typesafe.ai/v1/systemone'
@@ -127,6 +127,9 @@ def criteria(sessions: list[Session]) -> tuple[dict[str, str], dict[str, Session
 
 
 def resume_command(session: Session, text: str) -> str:
+    if external.is_external(session.harness):
+        return (f'everett send {shlex.quote(text)} --to {shlex.quote(session.id)} --mode inbox'
+                '   # queues only; the external agent must poll Everett through MCP')
     if session.source == 't3code':
         return (f'# Continue in T3 Code; poll everett_inbox(session_id={json.dumps(session.id)}). '
                 'Do not resume this thread with the provider CLI.')

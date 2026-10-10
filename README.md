@@ -68,6 +68,13 @@ Everett reads the session stores the harnesses already write: `~/.claude/project
 Hermes' `state.db` files, the Devin CLI's `sessions.db` (plus `transcripts/*.json`),
 and T3 Code's `~/.t3/userdata/statev2.sqlite` (legacy `state.sqlite` fallback). Every database is opened read-only.
 
+Cloud agents use explicit local registrations and the native restricted MCP gateway, not fabricated
+provider transcripts or API-model substitutes. See [OpenAI dots setup](docs/openai-dots.md),
+[Grok Bot registration and polling](docs/grok-bot.md), and [gateway permissions](docs/gateway.md).
+Owner-side connector setup is required; queued messages do not prove pickup or wake-up.
+The native binary manages local bindings with `everett external add`, `list`, and `remove`;
+the Python package uses `python -m everett.external`. Both write the same records.
+
 ## Demo
 
 ### Local dashboard (Rust binary)
@@ -160,6 +167,7 @@ Global option: `--hours N` sets the look-back window (default 72).
 | Grok CLI | `grok --resume <id> -p <text>` | `grok --session-id <new uuid> -p <text>` |
 | Devin CLI | `devin --resume <id> --print <text>` | `devin -p <text>` |
 | T3 Code | Inbox; hooks where supported, otherwise explicit MCP polling; no CLI resume | not supported |
+| OpenAI dots / Grok Bot | Registered external inbox via owner-authorized MCP; no provider resume | not supported |
 
 The harness appends the request and the reply to that session's history. Hermes sessions that belong to a chat platform (Telegram, Discord, and so on) are listed and routable, but `send` refuses them, because a CLI resume would not reach that chat. Scripted Hermes runs (cron, oneshot, webhook) are hidden like other automated runs. Grok sessions are read from `~/.grok/sessions/<url-encoded cwd>/<id>/` (`summary.json` for id, folder, and title; `prompt_history.jsonl` for the typed requests). A Grok session counts as running while `~/.grok/active_sessions.json` names it with a live process id. Headless `grok -p` runs are hidden like other scripted runs. Devin CLI sessions are read from `sessions.db` under `$DEVIN_HOME`, else the platform data dir (`~/Library/Application Support/devin/cli` on macOS, `~/.local/share/devin/cli` on Linux): the `sessions` table gives id, folder, title, and activity; `message_nodes` gives the user asks when the CLI build has it, otherwise `transcripts/<id>.json` carries the listing. Hidden sessions are skipped. Devin has no Everett hooks, so delivery is a headless `devin --resume <id>` run.
 
@@ -398,6 +406,11 @@ and `cargo test` for the Rust binary on macOS/Linux.
 A single-binary Rust rewrite lives alongside the Python tree: one `everett` binary, no
 Python interpreter needed, fast startup. The Python package remains the reference.
 
+The Rust binary also provides `everett external add/list/remove` and `everett gateway`.
+The gateway uses the official Rust MCP SDK for private stdio and authenticated loopback HTTP.
+See the [owner-bound gateway setup](docs/gateway.md). The Python gateway and its optional SDK
+dependency have been removed; the remaining Python CLI is retained as a reference.
+
 Release tags publish prebuilt binaries for macOS (arm64, x86_64) and Linux (static musl,
 x86_64, aarch64), each with a `.sha256`, plus a rendered Homebrew formula (`everett.rb`).
 Rerun either command to update:
@@ -426,6 +439,8 @@ Parity status (Rust vs Python):
 | `install-hooks`, `install-mcp`, `doctor`, `onboard --yes` | Same; hooks read `EVERETT_HOME` |
 | `onboard` interactive | Same seven-step wizard as the Python curses TUI (ratatui); falls back to plain prompts off a TTY |
 | `mcp` | Same 10 tools, same schemas, newline-delimited JSON-RPC 2.0 |
+| `external add`, `list`, `remove` | Native registration commands with shared Python/Rust storage |
+| `gateway` | Rust-only owner-bound MCP server; Python gateway removed |
 | Session stores | Read-only for all harnesses (claude/codex/omp/pi/hermes/grok/devin + t3code overlay); sqlite opened `mode=ro` |
 | Send/resume argv | `claude --resume`, `codex exec resume`, `omp -r`, `pi --session`, `hermes chat --resume`, `grok --resume`, `devin --resume --print` |
 | Python-only surface | `everett` console_script entry points and `python -m everett` |

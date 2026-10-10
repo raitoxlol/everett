@@ -142,6 +142,13 @@ pub fn criteria(sessions: &[Session]) -> (Map<String, Value>, HashMap<String, Se
 }
 
 pub fn resume_command(session: &Session, text: &str) -> String {
+    if crate::adapters::external::is_external(&session.harness) {
+        return format!(
+            "everett send {} --to {} --mode inbox   # queues only; the external agent must poll Everett through MCP",
+            shlex_quote(text),
+            shlex_quote(&session.id)
+        );
+    }
     if session.source == "t3code" {
         return format!(
             "# Continue in T3 Code; poll everett_inbox(session_id={}). Do not resume this thread with the provider CLI.",

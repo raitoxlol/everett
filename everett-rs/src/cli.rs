@@ -8,6 +8,37 @@ use serde_json::{json, Map, Value};
 
 use crate::session::{home, now, Session};
 
+pub fn cmd_external_add(id: &str, harness: &str, title: &str, cwd: &str, replace: bool) -> i32 {
+    match crate::adapters::external::register(id, harness, title, cwd, replace) {
+        Ok(record) => {
+            println!("{}", serde_json::to_string(&record).unwrap());
+            0
+        }
+        Err(error) => {
+            eprintln!("everett.external: {error}");
+            2
+        }
+    }
+}
+
+pub fn cmd_external_list() -> i32 {
+    println!("{}", serde_json::to_string(&crate::adapters::external::records()).unwrap());
+    0
+}
+
+pub fn cmd_external_remove(id: &str) -> i32 {
+    match crate::adapters::external::remove(id) {
+        Ok(()) => {
+            println!("Removed registration {id}. Its inbox is retained.");
+            0
+        }
+        Err(error) => {
+            eprintln!("everett.external: {error}");
+            2
+        }
+    }
+}
+
 #[derive(Debug, Default)]
 pub struct Args {
     pub hours: f64,

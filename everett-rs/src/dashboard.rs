@@ -20,6 +20,8 @@ const HARNESSES: &[(&str, &str)] = &[
     ("grok", "Grok CLI"),
     ("devin", "Devin CLI"),
     ("t3code", "T3 Code"),
+    ("openai-dot", "OpenAI dot"),
+    ("grok-bot", "Grok Bot"),
 ];
 
 pub fn serve(hours: f64, port: u16, no_open: bool) -> i32 {

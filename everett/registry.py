@@ -4,8 +4,8 @@ import json
 import subprocess
 import time
 
-from . import cards
-from .adapters import claude, codex, devin, grok, hermes, omp, pi, t3code
+from . import cards, external
+from .adapters import claude, codex, devin, external as external_adapter, grok, hermes, omp, pi, t3code
 from .session import Session, home
 
 ADAPTERS = {'claude': claude, 'codex': codex, 'omp': omp, 'pi': pi, 'hermes': hermes, 'grok': grok,
@@ -51,6 +51,8 @@ def mark_running(sessions: list[Session], ps_out: str, now: float) -> None:
 
 def session_running(s: Session, ps_out: str | None = None, now: float | None = None) -> bool:
     """Recheck one session's running state immediately before a send."""
+    if external.is_external(s.harness):
+        return False
     if ps_out is None:
         ps_out = _ps()
     if now is None:
@@ -60,11 +62,12 @@ def session_running(s: Session, ps_out: str | None = None, now: float | None = N
 
 def scan(since_hours: float = 72, include_auto: bool = False,
          limit: int | None = CAP, harness: str = '') -> list[Session]:
-    """Recent sessions, newest first; `harness` filters before the cap, not after."""
+    """Recent local and durable external sessions; `harness` filters before the local cap."""
     sessions: list[Session] = []
     for name, mod in ADAPTERS.items():
         if not harness or name == harness:
             sessions.extend(mod.scan(since_hours))
+    sessions.extend(external_adapter.scan(harness))
     t3code.overlay(sessions, since_hours, harness)
     for s in sessions:
         if not s.first_user:  # first real ask can sit past the head chunk in huge files
@@ -74,7 +77,9 @@ def scan(since_hours: float = 72, include_auto: bool = False,
         sessions = [s for s in sessions if not is_auto(s, spawned)]
     sessions.sort(key=lambda s: s.last_active, reverse=True)
     if limit is not None:
-        sessions = sessions[:limit]
+        registered = [s for s in sessions if external.is_external(s.harness)]
+        local = [s for s in sessions if not external.is_external(s.harness)]
+        sessions = sorted(local[:limit] + registered, key=lambda s: s.last_active, reverse=True)
     mark_running(sessions, _ps(), time.time())
     cards.apply(sessions)
     try:
