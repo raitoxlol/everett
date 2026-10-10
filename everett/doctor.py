@@ -114,13 +114,17 @@ def run(hours: float = 72) -> int:
         if harness not in seen:
             continue
         try:
-            events = install.installed(harness)
+            events = install.installed_state(harness)
         except (OSError, ValueError) as e:
             problems += 1
             _line(False, f'  {harness:<7} cannot read config: {e}')
             continue
-        missing = [event for event, ok in events.items() if not ok]
-        if missing:
+        stale = [event for event, state in events.items() if state == 'stale']
+        missing = [event for event, state in events.items() if state == 'missing']
+        if stale:
+            problems += 1
+            _line(False, f'  {harness:<7} stale {", ".join(stale)}; run `everett install-hooks --{harness} --apply`')
+        elif missing:
             _line(False, f'  {harness:<7} missing {", ".join(missing)}; run `everett install-hooks --{harness} --apply`')
         else:
             _line(True, f'  {harness:<7} installed')
@@ -166,8 +170,12 @@ def run(hours: float = 72) -> int:
 
     if sys.platform == 'darwin':
         scheduled = trunk_schedule.is_scheduled()
-        _line(True if scheduled else None,
-              f'trunk schedule: scheduled ({trunk_schedule.plist_path()})' if scheduled
+        stale = scheduled and trunk_schedule.is_stale()
+        if stale:
+            problems += 1
+        _line(False if stale else (True if scheduled else None),
+              f'trunk schedule: stale ({trunk_schedule.plist_path()}); run `everett trunk schedule --apply`' if stale
+              else f'trunk schedule: scheduled ({trunk_schedule.plist_path()})' if scheduled
               else 'trunk schedule: not scheduled (optional, macOS; `everett trunk schedule --apply`)')
     else:
         _line(None, 'trunk schedule: automatic scheduling requires macOS; run `everett trunk merge --llm none` manually')
