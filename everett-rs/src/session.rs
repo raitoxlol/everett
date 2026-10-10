@@ -121,7 +121,10 @@ pub fn file_mtime(path: &Path) -> f64 {
         .unwrap_or(0.0)
 }
 
-pub fn read_edges(path: &Path) -> (Vec<Map<String, Value>>, Vec<Map<String, Value>>) {
+/// First-window rows, last-window rows.
+pub type EdgeRows = (Vec<Map<String, Value>>, Vec<Map<String, Value>>);
+
+pub fn read_edges(path: &Path) -> EdgeRows {
     let mut head = Vec::new();
     let mut tail = Vec::new();
     let Ok(mut f) = fs::File::open(path) else {
@@ -145,7 +148,15 @@ pub fn read_edges(path: &Path) -> (Vec<Map<String, Value>>, Vec<Map<String, Valu
     if size <= CHUNK {
         return (head, tail);
     }
-    if f.seek(SeekFrom::Start(CHUNK.max(size - CHUNK) as u64)).is_err() {
+    let offset = CHUNK.max(size - CHUNK) as u64;
+    // Drop the tail's first line only when the window starts mid-record.
+    let mut prev = [0u8; 1];
+    let tail_partial = f
+        .seek(SeekFrom::Start(offset - 1))
+        .and_then(|_| f.read(&mut prev))
+        .map(|n| n == 1 && prev[0] != b'\n')
+        .unwrap_or(true);
+    if f.seek(SeekFrom::Start(offset)).is_err() {
         return (head, tail);
     }
     let mut tbuf = Vec::new();
@@ -153,7 +164,10 @@ pub fn read_edges(path: &Path) -> (Vec<Map<String, Value>>, Vec<Map<String, Valu
         return (head, tail);
     }
     let tail_text = String::from_utf8_lossy(&tbuf);
-    let tail_lines: Vec<&str> = tail_text.split('\n').skip(1).collect();
+    let tail_lines: Vec<&str> = tail_text
+        .split('\n')
+        .skip(if tail_partial { 1 } else { 0 })
+        .collect();
     for line in tail_lines {
         if let Ok(Value::Object(obj)) = serde_json::from_str::<Value>(line) {
             tail.push(obj);
@@ -209,4 +223,42 @@ pub fn recent_files(paths: Vec<PathBuf>, since_hours: f64) -> Vec<PathBuf> {
         .into_iter()
         .filter(|p| file_mtime(p) >= cutoff)
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn read_edges_keeps_tail_line_at_record_boundary() {
+        // Build a file whose tail window starts exactly on a record boundary:
+        // the byte at offset-1 is '\n' and the tagged record begins there.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("s.jsonl");
+        let tagged = serde_json::to_string(&serde_json::json!({"type": "user", "i": 999999})).unwrap();
+        // offset = CHUNK.max(size - CHUNK), so the boundary must be past CHUNK.
+        let start = CHUNK + tagged.len() + 1; // tail starts at `start` → size = start + CHUNK
+        // First line pads to `start`; tagged record second; filler to start+CHUNK.
+        let first = {
+            let base = serde_json::to_string(&serde_json::json!({"type": "user", "i": 0})).unwrap();
+            format!("{}{}\n", " ".repeat(start - base.len() - 1), base)
+        };
+        let mut body = first + &tagged + "\n";
+        // One filler line sized so total length is exactly start + CHUNK.
+        let short = serde_json::to_string(&serde_json::json!({"type": "user", "i": 1})).unwrap();
+        let need = start + CHUNK - body.len();
+        assert!(need > short.len() + 1, "test setup: cannot pad to boundary");
+        body.push_str(&" ".repeat(need - short.len() - 1));
+        body.push_str(&short);
+        body.push('\n');
+        let bytes = body.into_bytes();
+        assert_eq!(bytes.len(), start + CHUNK, "test setup: wrong size");
+        std::fs::write(&path, &bytes).unwrap();
+        assert_eq!(bytes[start - 1], b'\n', "test setup: boundary not aligned");
+        let (_, tail) = read_edges(&path);
+        assert!(
+            tail.first().and_then(|m| m.get("i")).and_then(|v| v.as_i64()) == Some(999999),
+            "boundary record was dropped"
+        );
+    }
 }

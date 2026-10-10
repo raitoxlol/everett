@@ -54,7 +54,7 @@ pub fn render(sessions: &[Session], at: Option<f64>) -> String {
         let work = work.replace('|', "/");
         let last: String = session.last_user.chars().take(90).collect::<String>().replace('|', "/");
         let when = strftime_local("%m-%d %H:%M", session.last_active);
-        lines.push(format!("| {} | {} | `{}` | {} | {} | {} |", dot, session.harness, session.cwd, work, last, when));
+        lines.push(format!("| {} | {} | `{}` | {} | {} | {} |", dot, session.harness, session.cwd.replace('|', "/"), work, last, when));
     }
     lines.push(String::new());
     lines.push(String::new());

@@ -40,13 +40,17 @@ def read_edges(path: Path) -> tuple[list[dict], list[dict]]:
     with path.open('rb') as f:
         head = f.read(CHUNK)
         tail = b''
+        tail_partial = False
         if size > CHUNK:
-            f.seek(max(CHUNK, size - CHUNK))
+            offset = max(CHUNK, size - CHUNK)
+            f.seek(offset - 1)
+            tail_partial = f.read(1) != b'\n'  # starts mid-line only if not at a boundary
+            f.seek(offset)
             tail = f.read()
     head_lines = head.split(b'\n')
     if size > CHUNK:
         head_lines = head_lines[:-1]  # last line may be cut
-    tail_lines = tail.split(b'\n')[1:] if tail else []
+    tail_lines = tail.split(b'\n')[1:] if tail_partial else tail.split(b'\n')
     return _parse(head_lines), _parse(tail_lines)
 
 
