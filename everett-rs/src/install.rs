@@ -176,11 +176,11 @@ fn script_state(entries: &Value, script: &str) -> &'static str {
 /// 'ok' | 'stale' | 'missing' for the OMP extension file (the bundled extension
 /// shells out to `everett` on PATH, so a moved binary leaves it dead).
 fn omp_extension_state() -> &'static str {
-    if !omp_extension_path().is_file() {
+    let Ok(text) = fs::read_to_string(omp_extension_path()) else {
         return "missing";
-    }
+    };
     // A Python-era extension shells out to python3, not the binary.
-    if fs::read_to_string(omp_extension_path()).map(|t| t.contains("python3")).unwrap_or(false) {
+    if text.contains("python3") {
         return "stale";
     }
     if crate::proc::executable_ok("everett") {
