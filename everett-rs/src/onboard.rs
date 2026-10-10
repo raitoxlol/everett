@@ -507,9 +507,9 @@ fn run_plain(args: &crate::cli::Args) -> Result<i32, QuitOnboarding> {
         }
         let preview = missing_card_sessions(cfg.span_days);
         println!("  {} session(s) without a card in the last {} day(s).", preview.len(), cfg.span_days);
-        if preview.is_empty() {
-            cfg.backfill_enabled = false;
-        } else if !ask_yes(&format!("  generate {} automatic card(s) now?", preview.len()), true)? {
+        if preview.is_empty()
+            || !ask_yes(&format!("  generate {} automatic card(s) now?", preview.len()), true)?
+        {
             cfg.backfill_enabled = false;
         }
     }
