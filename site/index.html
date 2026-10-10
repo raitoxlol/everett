@@ -30,8 +30,8 @@
       <span>everett</span>
     </a>
     <nav class="links" aria-label="Site">
-      <a href="#how">How it works</a>
-      <a href="#mcp">MCP tools</a>
+      <a href="#how">How</a>
+      <a href="#mcp">Tools</a>
       <a href="#install">Install</a>
       <a href="https://github.com/raitoxlol/everett" rel="noopener">GitHub</a>
     </nav>
@@ -44,7 +44,7 @@
 <section class="hero wrap">
   <div class="hero-copy">
     <p class="eyebrow">v1.4.0 · Rust + Python · MIT</p>
-    <h1>One layer above all<br>your coding agents.</h1>
+    <h1>One layer above all your coding agents.</h1>
     <p class="lede">Everett routes requests, messages, and shared memory across
       your coding-agent sessions — from a CLI or MCP client.</p>
     <div class="install-cmd">
@@ -59,13 +59,13 @@
   <figure class="term" aria-label="Example output of everett ls and everett send">
     <figcaption><span class="dot"></span><span class="dot"></span><span class="dot"></span> session window</figcaption>
 <pre>$ everett ls
-<span class="run">●</span> claude  2m  ~/src/api     API: adding retry/backoff to upload client
-<span class="idle">○</span> codex   40m ~/src/web     Web: dark-mode toggle; state: styles done
-<span class="idle">○</span> omp     3h  ~/src/infra   Infra: Terraform module, staging bucket
+<span class="run">●</span> claude  2m  ~/src/api    API: retry/backoff in upload client
+<span class="idle">○</span> codex   40m ~/src/web    Web: dark-mode toggle; styles done
+<span class="idle">○</span> omp     3h  ~/src/infra  Infra: Terraform staging bucket
 
-$ everett send "the upload retries should cap at 5"
-<span class="ok">SENT</span>  [claude] ~/src/api — API: adding retry/backoff to upload client
-Done. MAX_RETRIES is now 5 and the backoff test covers the cap.</pre>
+$ everett send "retry cap: 5"
+<span class="ok">SENT</span>  [claude] ~/src/api — API: retry/backoff in upload client
+Done. MAX_RETRIES is now 5, backoff test covers the cap.</pre>
   </figure>
 </section>
 

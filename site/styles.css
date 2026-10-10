@@ -38,7 +38,6 @@
 html { scroll-behavior: smooth; }
 @media (prefers-reduced-motion: reduce) {
   html { scroll-behavior: auto; }
-  .reveal { opacity: 1 !important; transform: none !important; transition: none !important; }
 }
 
 body {
@@ -65,7 +64,7 @@ a:focus-visible, button:focus-visible {
   outline: 2px solid var(--focus); outline-offset: 2px; border-radius: var(--r);
 }
 
-h1 { font-size: clamp(2.4rem, 5.4vw, 3.9rem); line-height: 1.04; letter-spacing: -0.035em; margin: 0 0 18px; }
+h1 { font-size: clamp(2.4rem, 5.4vw, 3.9rem); line-height: 1.04; letter-spacing: -0.035em; margin: 0 0 18px; text-wrap: balance; max-width: 14ch; }
 h2 { font-size: clamp(1.5rem, 2.6vw, 2rem); letter-spacing: -0.02em; margin: 0 0 14px; }
 h3 { font-size: 1rem; margin: 0 0 6px; }
 p { margin: 0 0 14px; }
@@ -84,7 +83,7 @@ section { margin: 96px 0; }
 .brand { display: flex; align-items: center; gap: 9px; font-family: var(--mono); font-size: 0.95rem; color: var(--ink); text-decoration: none; }
 .brand .mark { width: 20px; height: 20px; fill: var(--accent); }
 .links { display: flex; gap: 26px; }
-.links a { color: var(--ink-2); text-decoration: none; font-size: 0.92rem; }
+.links a { color: var(--ink-2); text-decoration: none; font-size: 0.92rem; white-space: nowrap; }
 .links a:hover { color: var(--ink); }
 
 /* ---------- hero ---------- */
@@ -235,10 +234,6 @@ section { margin: 96px 0; }
 .foot-links a { color: var(--ink-2); text-decoration: none; }
 .foot-links a:hover { color: var(--ink); }
 
-/* ---------- reveal ---------- */
-.reveal { opacity: 0; transform: translateY(10px); transition: opacity 0.5s ease, transform 0.5s ease; }
-.reveal.in { opacity: 1; transform: none; }
-
 /* ---------- responsive ---------- */
 @media (max-width: 900px) {
   .hero { grid-template-columns: 1fr; gap: 36px; padding-top: 48px; }
@@ -251,8 +246,8 @@ section { margin: 96px 0; }
 }
 @media (max-width: 620px) {
   section { margin: 64px 0; }
-  .links { gap: 16px; }
-  .links a { font-size: 0.85rem; }
+  .links { gap: 12px; }
+  .links a { font-size: 0.78rem; }
   .flow { grid-template-columns: 1fr; }
   .core-grid { grid-template-columns: 1fr; gap: 24px; }
   .tools { grid-template-columns: 1fr; }
