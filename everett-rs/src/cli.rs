@@ -86,6 +86,9 @@ pub struct Args {
     pub no_mcp: bool,
     pub jev_key_env: Option<String>,
     pub schedule_merge: bool,
+    pub device: Option<String>,
+    pub open: bool,
+    pub force: bool,
 }
 
 fn ago(ts: f64) -> String {
@@ -1118,6 +1121,153 @@ pub fn cmd_install_mcp(args: &Args) -> i32 {
 
 pub fn cmd_doctor(args: &Args) -> i32 {
     crate::doctor::run(args.hours)
+}
+
+pub fn cmd_login(args: &Args) -> i32 {
+    use crate::auth;
+    if !auth::configured() {
+        eprintln!(
+            "everett login: no issuer configured.\nset `auth.issuer` and `auth.client_id` in {} (or EVERETT_AUTH_ISSUER / EVERETT_AUTH_CLIENT_ID); see docs/auth.md",
+            crate::config::config_path().display()
+        );
+        return 2;
+    }
+    if !args.force {
+        if let Some(stored) = auth::load() {
+            if args.json {
+                println!("{}", serde_json::to_string_pretty(&Value::Object(auth::public_json(&stored))).unwrap());
+            } else {
+                println!("Already signed in as {} on this device ({}).", stored.email, stored.device_name);
+            }
+            return 0;
+        }
+    }
+    let issuer = auth::issuer();
+    let client_id = auth::client_id();
+    let disc = match auth::discover(&issuer) {
+        Ok(d) => d,
+        Err(e) => {
+            eprintln!("everett login: {e}");
+            return e.code;
+        }
+    };
+    let grant = match auth::start_device_flow(&disc, &client_id) {
+        Ok(g) => g,
+        Err(e) => {
+            eprintln!("everett login: {e}");
+            return e.code;
+        }
+    };
+    macro_rules! flow_note {
+        ($($arg:tt)*) => {
+            if args.json { eprintln!($($arg)*); } else { println!($($arg)*); }
+        };
+    }
+    flow_note!("Open {} on any device and enter code  {}", grant.verification_uri, grant.user_code);
+    if let Some(uri) = &grant.verification_uri_complete {
+        flow_note!("  (or open {uri})");
+    }
+    if args.open {
+        let url = grant.verification_uri_complete.clone().unwrap_or_else(|| grant.verification_uri.clone());
+        let opener = if cfg!(target_os = "macos") { "open" } else { "xdg-open" };
+        match std::process::Command::new(opener).arg(&url).status() {
+            Ok(s) if s.success() => {}
+            _ => eprintln!("everett login: could not launch {opener}; open the URL above yourself"),
+        }
+    }
+    flow_note!("Waiting…");
+    let token = match auth::poll_token(&disc, &client_id, &grant) {
+        Ok(t) => t,
+        Err(e) => {
+            eprintln!("everett login: {e}");
+            return e.code;
+        }
+    };
+    let access = token.get("access_token").and_then(|v| v.as_str()).unwrap_or("").to_string();
+    if access.is_empty() {
+        eprintln!("everett login: provider response missing `access_token`");
+        return 6;
+    }
+    let (sub, email, name) = match auth::userinfo(&disc, &access) {
+        Ok(u) => u,
+        Err(e) => {
+            eprintln!("everett login: {e}");
+            return e.code;
+        }
+    };
+    let device_name = args.device.clone().unwrap_or_else(auth::hostname);
+    let stored = auth::Stored {
+        issuer: issuer.clone(),
+        client_id,
+        sub,
+        email: email.clone(),
+        name,
+        device_name: device_name.clone(),
+        access_token: access,
+        refresh_token: token.get("refresh_token").and_then(|v| v.as_str()).unwrap_or("").to_string(),
+        expires_at: crate::session::now()
+            + token.get("expires_in").and_then(|v| v.as_f64()).unwrap_or(3600.0),
+        scope: token.get("scope").and_then(|v| v.as_str()).unwrap_or("").to_string(),
+    };
+    if let Err(e) = auth::save(&stored) {
+        eprintln!("everett login: could not write {}: {e}", auth::auth_path().display());
+        return 6;
+    }
+    if args.json {
+        println!("{}", serde_json::to_string_pretty(&Value::Object(auth::public_json(&stored))).unwrap());
+    } else {
+        println!("Signed in as {email} on this device ({device_name}).");
+    }
+    0
+}
+
+pub fn cmd_whoami(args: &Args) -> i32 {
+    use crate::auth;
+    let Some(stored) = auth::load() else {
+        if args.json {
+            println!("{}", serde_json::to_string(&json!({"signed_in": false})).unwrap());
+        } else {
+            println!("not signed in");
+        }
+        return 1;
+    };
+    let stored = match auth::ensure_fresh(&stored) {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("everett whoami: {e}");
+            return e.code;
+        }
+    };
+    if args.json {
+        println!("{}", serde_json::to_string_pretty(&Value::Object(auth::public_json(&stored))).unwrap());
+    } else {
+        let expiry = crate::timefmt::iso_from_epoch(stored.expires_at);
+        println!("{} via {} ({})", stored.email, stored.issuer, stored.device_name);
+        println!("token expires {expiry}");
+    }
+    0
+}
+
+pub fn cmd_logout(args: &Args) -> i32 {
+    use crate::auth;
+    let Some(stored) = auth::load() else {
+        if args.json {
+            println!("{}", serde_json::to_string(&json!({"signed_out": true, "revoked": false})).unwrap());
+        } else {
+            println!("not signed in");
+        }
+        return 0;
+    };
+    let revoked = auth::revoke(&stored);
+    auth::clear();
+    if args.json {
+        println!("{}", serde_json::to_string(&json!({"signed_out": true, "revoked": revoked})).unwrap());
+    } else if revoked {
+        println!("Signed out on this device; the provider revoked the refresh token.");
+    } else {
+        println!("Signed out on this device; the remote revoke did not happen (provider unreachable or endpoint missing).");
+    }
+    0
 }
 
 pub fn cmd_onboard(args: &Args) -> i32 {

@@ -357,6 +357,14 @@ pub fn run(hours: f64) -> i32 {
             "trunk schedule: automatic scheduling requires macOS; run `everett trunk merge --llm none` manually",
         );
     }
+    let account = crate::auth::load();
+    line(
+        &mut warnings,
+        None,
+        &account
+            .map(|s| format!("account: {} via {} ({})", s.email, s.issuer, s.device_name))
+            .unwrap_or_else(|| "account: not signed in (optional)".to_string()),
+    );
     let warning_count = warnings.len() - problems;
     if warnings.is_empty() {
         println!("ready");
