@@ -533,6 +533,10 @@ pub fn auto_card(transcript: &Path, harness: &str, cwd: &str, session_id: &str) 
 }
 
 /// Write a deterministic fallback card, silently ignoring every hook error.
+fn mtime_ns(meta: &fs::Metadata) -> i128 {
+    meta.mtime() as i128 * 1_000_000_000 + meta.mtime_nsec() as i128
+}
+
 pub fn stop_hook(raw: &str, harness: &str) {
     let _ = stop_hook_inner(raw, harness);
 }
@@ -556,7 +560,7 @@ fn stop_hook_inner(raw: &str, harness: &str) -> Option<()> {
         return None;
     }
     let transcript = PathBuf::from(transcript_value);
-    let transcript_mtime = transcript.metadata().ok()?.mtime_nsec();
+    let transcript_mtime = mtime_ns(&transcript.metadata().ok()?);
     let target = crate::cards::card_path(session_id);
     if target.is_symlink() {
         return None;
@@ -571,7 +575,7 @@ fn stop_hook_inner(raw: &str, harness: &str) -> Option<()> {
     };
     if existed
         && (current.lines().next() != Some(AUTO_MARKER)
-            || current_stat.as_ref().map(|m| m.mtime_nsec()).unwrap_or(0) >= transcript_mtime)
+            || current_stat.as_ref().map(mtime_ns).unwrap_or(0) >= transcript_mtime)
     {
         return None;
     }
@@ -593,7 +597,7 @@ fn stop_hook_inner(raw: &str, harness: &str) -> Option<()> {
     let latest = fs::read_to_string(&target).ok()?;
     let latest_stat = target.metadata().ok()?;
     if latest.lines().next() != Some(AUTO_MARKER)
-        || latest_stat.mtime_nsec() != current_stat.as_ref().map(|m| m.mtime_nsec()).unwrap_or(0)
+        || mtime_ns(&latest_stat) != current_stat.as_ref().map(mtime_ns).unwrap_or(0)
         || latest != current
     {
         return None;
@@ -602,7 +606,7 @@ fn stop_hook_inner(raw: &str, harness: &str) -> Option<()> {
     fs::write(&tmp, &content).ok()?;
     let still_ok = !target.is_symlink()
         && fs::read_to_string(&target).ok().as_deref() == Some(current.as_str())
-        && target.metadata().ok().map(|m| m.mtime_nsec()) == current_stat.as_ref().map(|m| m.mtime_nsec());
+        && target.metadata().ok().as_ref().map(mtime_ns) == current_stat.as_ref().map(mtime_ns);
     if !still_ok {
         let _ = fs::remove_file(&tmp);
         return None;

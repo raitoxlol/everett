@@ -76,25 +76,48 @@ pub fn omp_extension_source() -> String {
     include_str!("omp_session_start.mjs").to_string()
 }
 
+fn is_native_hook(command: &str, script: &str) -> bool {
+    command.contains("everett") && command.trim_end().ends_with(&format!(" hook {}", script))
+}
+
+/// A hook registered by the retired Python package: `<python> <...>/everett/hooks/<script>.py`.
+fn is_legacy_hook(command: &str) -> bool {
+    let command = command.trim_end().trim_end_matches(['\'', '"']);
+    command.ends_with(".py")
+        && HOOKS
+            .iter()
+            .flat_map(|(_, hooks)| hooks.iter())
+            .any(|(_, script, _)| command.ends_with(&format!("everett/hooks/{}.py", script)))
+}
+
 fn has_script(entries: &Value, script: &str) -> bool {
     let Some(entries) = entries.as_array() else { return false };
-    for entry in entries {
-        let Some(hooks) = entry.get("hooks").and_then(|h| h.as_array()) else { continue };
-        for hook in hooks {
-            let command = hook.get("command").and_then(|c| c.as_str()).unwrap_or("");
-            if command.contains(script) && command.contains("everett") {
-                return true;
-            }
+    entries
+        .iter()
+        .filter_map(|entry| entry.get("hooks").and_then(|h| h.as_array()))
+        .flatten()
+        .filter_map(|hook| hook.get("command").and_then(|c| c.as_str()))
+        .any(|command| is_native_hook(command, script))
+}
+
+/// Drop legacy Python hooks (and entries left empty); returns whether anything changed.
+fn remove_legacy_hooks(entries: &mut Vec<Value>) -> bool {
+    let before = entries.clone();
+    for entry in entries.iter_mut() {
+        if let Some(hooks) = entry.get_mut("hooks").and_then(|h| h.as_array_mut()) {
+            hooks.retain(|hook| !hook.get("command").and_then(|c| c.as_str()).map(is_legacy_hook).unwrap_or(false));
         }
     }
-    false
+    entries.retain(|entry| entry.get("hooks").and_then(|h| h.as_array()).map(|h| !h.is_empty()).unwrap_or(true));
+    *entries != before
 }
 
 /// Which of Everett's hook events are registered for a harness.
 pub fn installed(harness: &str, data: Option<&Map<String, Value>>) -> std::result::Result<HashMap<String, bool>, String> {
     use std::collections::HashMap;
     if harness == "omp" {
-        return Ok(HashMap::from([("extension".to_string(), omp_extension_path().exists())]));
+        let current = fs::read_to_string(omp_extension_path()).map(|text| !text.contains("python3")).unwrap_or(false);
+        return Ok(HashMap::from([("extension".to_string(), current)]));
     }
     let owned;
     let data = match data {
@@ -118,12 +141,13 @@ pub fn installed(harness: &str, data: Option<&Map<String, Value>>) -> std::resul
     Ok(out)
 }
 
-/// Return (merged settings, events added). Pure: does not touch the input.
+/// Return (merged settings, events added, events whose legacy Python hooks were replaced).
+/// Pure: does not touch the input.
 pub fn merge(
     data: &Map<String, Value>,
     harness: &str,
     events: Option<&[String]>,
-) -> std::result::Result<(Map<String, Value>, Vec<String>), String> {
+) -> std::result::Result<(Map<String, Value>, Vec<String>, Vec<String>), String> {
     let mut data = data.clone();
     if !data.get("hooks").map(|h| h.is_object()).unwrap_or(true) {
         return Err("\"hooks\" is not an object".to_string());
@@ -131,6 +155,7 @@ pub fn merge(
     let hooks = data.entry("hooks").or_insert(Value::Object(Map::new()));
     let hooks = hooks.as_object_mut().unwrap();
     let mut added = Vec::new();
+    let mut migrated = Vec::new();
     for (event, script, timeout) in hooks_for(harness) {
         if let Some(events) = events {
             if !events.iter().any(|e| e.as_str() == *event) {
@@ -142,15 +167,20 @@ pub fn merge(
         }
         let entries = hooks.entry(event.to_string()).or_insert(Value::Array(Vec::new()));
         let entries = entries.as_array_mut().unwrap();
+        if remove_legacy_hooks(entries) && !migrated.iter().any(|e| e == event) {
+            migrated.push(event.to_string());
+        }
         if has_script(&Value::Array(entries.clone()), script) {
             continue;
         }
         entries.push(json!({
             "hooks": [{"type": "command", "command": hook_command(script), "timeout": timeout}]
         }));
-        added.push(event.to_string());
+        if !migrated.iter().any(|e| e == event) {
+            added.push(event.to_string());
+        }
     }
-    Ok((data, added))
+    Ok((data, added, migrated))
 }
 
 fn load(path: &PathBuf) -> std::result::Result<Map<String, Value>, String> {
@@ -244,16 +274,23 @@ pub fn apply(harness: &str, events: Option<&[String]>) -> std::result::Result<St
     }
     let path = settings_path(harness);
     let data = load(&path)?;
-    let (merged, added) = merge(&data, harness, events)?;
-    if added.is_empty() {
+    let (merged, added, migrated) = merge(&data, harness, events)?;
+    if added.is_empty() && migrated.is_empty() {
         return Ok(format!("{}: already installed ({})", harness, path.display()));
     }
     let saved = backup(&path);
     write_json(&path, &merged).map_err(|e| e.to_string())?;
+    let mut changes = Vec::new();
+    if !added.is_empty() {
+        changes.push(format!("added {}", added.join(", ")));
+    }
+    if !migrated.is_empty() {
+        changes.push(format!("replaced legacy Python hooks for {}", migrated.join(", ")));
+    }
     Ok(format!(
-        "{}: added {} to {}{}",
+        "{}: {} in {}{}",
         harness,
-        added.join(", "),
+        changes.join("; "),
         path.display(),
         saved.map(|s| format!(" (backup {})", s.display())).unwrap_or_default()
     ))
@@ -392,12 +429,14 @@ pub fn mcp_status(harness: &str) -> (String, String) {
     if !is_exec && crate::proc::which(command, &path_env).is_none() {
         return ("stale".into(), "registered executable is missing or not on PATH".to_string());
     }
-    let is_python_form = args == ["-m", "everett", "mcp"].map(String::from);
+    if is_legacy_mcp(entry) {
+        return ("stale".into(), "registration launches the retired Python package".to_string());
+    }
     let name = PathBuf::from(command)
         .file_name()
         .map(|n| n.to_string_lossy().to_string())
         .unwrap_or_default();
-    if !is_python_form && !(name == "everett" && args == ["mcp"].map(String::from)) {
+    if !(name == "everett" && args == ["mcp"].map(String::from)) {
         return ("stale".into(), "registration does not launch Everett stdio MCP".to_string());
     }
     if let Some(env) = entry.get("env") {
@@ -409,17 +448,13 @@ pub fn mcp_status(harness: &str) -> (String, String) {
                 return ("invalid".into(), "registration env values must be strings".to_string());
             }
         }
-        if let Some(source) = env.get("PYTHONPATH").and_then(|v| v.as_str()) {
-            if !source.is_empty()
-                && !source
-                    .split(if cfg!(windows) { ';' } else { ':' })
-                    .any(|p| PathBuf::from(p).join("everett/__init__.py").is_file())
-            {
-                return ("stale".into(), "registered source checkout is missing".to_string());
-            }
-        }
     }
     ("ready".into(), "Everett stdio MCP registered".to_string())
+}
+
+/// `<python> -m everett mcp`, as written by the retired Python package.
+fn is_legacy_mcp(entry: &Map<String, Value>) -> bool {
+    entry.get("args") == Some(&json!(["-m", "everett", "mcp"]))
 }
 
 fn repaired_entry(old: &Map<String, Value>) -> Result<Map<String, Value>> {
@@ -564,7 +599,8 @@ pub fn apply_mcp(harness: &str, repair: bool) -> std::result::Result<String, Str
     let path = mcp_path(harness);
     let data = mcp_config(harness)?;
     let old = mcp_entry(harness, &data)?;
-    if old.is_some() && !repair {
+    let legacy = old.as_ref().and_then(|o| o.as_object()).map(is_legacy_mcp).unwrap_or(false);
+    if old.is_some() && !repair && !legacy {
         let (state, detail) = mcp_status(harness);
         if state != "ready" {
             return Err(format!("{}; run `everett install-mcp --{} --repair --apply`", detail, harness));

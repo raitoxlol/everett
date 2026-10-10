@@ -19,14 +19,13 @@ Read this before working in Everett so another agent can pick up the same state.
 ## Useful entry points
 
 - `README.md` — user-facing commands and data sources.
-- `everett/cli.py` — command dispatch.
-- `everett/cards.py` — per-session summaries shown by the router and listing.
-- `everett/route.py` — local BM25 and Jev routing, resume commands.
-- `everett/config.py` — `~/.everett/config.toml` and env overrides.
-- `everett/install.py`, `everett/doctor.py` — hook install and health check.
-- `everett/trunk.py` — generated vault session view.
-- `everett/core.py` — shared core: learn, merge, context injected by SessionStart hooks.
-- `everett/mcp.py` — stdio MCP server (tools for agents).
-- `everett/adapters/` — one module per harness: claude, codex, omp, pi, hermes, grok, devin, plus the t3code overlay (all read-only).
-- `tests/` — tests; every module imports `sandbox` first so HOME is a temp dir.
+- `everett-rs/src/main.rs`, `cli.rs` — command dispatch.
+- `everett-rs/src/cards.rs` — per-session summaries shown by the router and listing.
+- `everett-rs/src/route.rs` — local BM25 and Jev routing, resume commands.
+- `everett-rs/src/config.rs` — `~/.everett/config.toml` and env overrides.
+- `everett-rs/src/install.rs`, `doctor.rs` — hook/MCP install (migrates retired Python registrations) and health check.
+- `everett-rs/src/trunk.rs`, `core.rs` — vault session view; shared core learn/merge/context.
+- `everett-rs/src/mcp.rs`, `gateway.rs` — stdio MCP server; owner-bound gateway for dots/Grok Bot.
+- `everett-rs/src/adapters/` — one module per harness (all read-only), plus the t3code overlay.
+- `everett-rs/tests/` — integration tests; `tests/common` gives each test a temp HOME.
 

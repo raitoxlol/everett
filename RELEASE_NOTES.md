@@ -13,7 +13,7 @@ everett doctor
 pin with `EVERETT_VERSION=v1.4.0`) and verifies the archive's SHA-256 before installing.
 To build from source: `cargo install --git https://github.com/raitoxlol/everett everett`.
 
-The Python package stays available during the transition (`pipx upgrade everett-sessions`).
+The Python package has been removed. After installing the binary, run `everett install-hooks --apply` and `everett install-mcp --apply` to replace Python registrations, then `pipx uninstall everett-sessions`.
 
 ## What changed
 

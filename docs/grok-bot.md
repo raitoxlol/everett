@@ -8,8 +8,7 @@ discover cloud conversations, or prove a vendor-issued identity.
 
 ## Register explicitly
 
-Use the native Rust executable to register the inbox. If you installed only the
-Python package, use `python -m everett.external` for the same commands and files.
+Use the native executable to register the inbox.
 
 ```sh
 everett external add \
@@ -36,7 +35,7 @@ not authorization lifetime or whether the Bot is running. A harness filter
 still applies; MCP `everett_ls` accepts `grok-bot` and `openai-dot`. The module's
 `list` operation returns registrations only.
 
-## Shared Python/Rust storage contract
+## Storage contract
 
 Each registration is `~/.everett/external/<id>.json` (or under `EVERETT_HOME`
 when set). Example:
@@ -103,7 +102,7 @@ or cross-device synchronization.
 
 Use the native [`everett gateway`](gateway.md) command for the restricted stdio
 or authenticated loopback HTTP connection. It defaults to the same binary's MCP
-backend and does not need Python. The owner must provide TLS and reachability
+backend. The owner must provide TLS and reachability
 for a Remote HTTPS connector.
 
 ## Poll and reply through MCP

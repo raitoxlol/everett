@@ -79,3 +79,35 @@ pub fn plant(fixture: &Fixture, name: &str, rel: &str) -> PathBuf {
     let src = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures").join(name);
     fixture.write(rel, &std::fs::read_to_string(src).unwrap())
 }
+
+/// Library-level tests share process env: hold this guard while HOME points at a fresh temp dir.
+pub struct LibHome {
+    pub dir: tempfile::TempDir,
+    _guard: std::sync::MutexGuard<'static, ()>,
+}
+
+impl LibHome {
+    pub fn path(&self) -> PathBuf {
+        self.dir.path().to_path_buf()
+    }
+}
+
+const SANDBOX_UNSET: &[&str] = &[
+    "TYPESAFE_API_KEY", "EVERETT_VAULT", "EVERETT_VAULT_DIR", "EVERETT_ROUTER", "EVERETT_HARNESS",
+    "EVERETT_SEND", "EVERETT_HOPS", "EVERETT_SESSION_ID", "EVERETT_MERGE_LLM", "CLAUDE_CODE_ENTRYPOINT",
+    "CLAUDECODE", "CLAUDE_CODE_SESSION_ID", "CLAUDE_SESSION_ID", "CODEX_THREAD_ID", "HERMES_SESSION_ID",
+    "PI_SESSION_FILE", "GROK_SESSION_ID", "EVERETT_NOTIFY_COMMAND", "EVERETT_ESCALATE_MINUTES",
+];
+
+pub fn lib_home() -> LibHome {
+    static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    let guard = LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let dir = tempfile::tempdir().unwrap();
+    std::env::set_var("HOME", dir.path());
+    std::env::set_var("EVERETT_HOME", dir.path());
+    std::env::set_var("EVERETT_NOTIFY", "none");
+    for name in SANDBOX_UNSET {
+        std::env::remove_var(name);
+    }
+    LibHome { dir, _guard: guard }
+}

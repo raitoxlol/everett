@@ -2,7 +2,7 @@
 
 The native `everett gateway` command lets an existing cloud agent call Everett's
 Rust stdio backend. The official Rust MCP SDK is compiled into the binary.
-No Python interpreter or optional Python SDK is needed. The gateway does not
+The gateway does not
 create an OpenAI or xAI model instance.
 
 Build the native binary from this branch:
@@ -14,8 +14,7 @@ everett-rs/target/debug/everett gateway --help
 
 Use an installed Rust Everett binary that supports `gateway`. If `backend_command`
 is omitted, the gateway starts the same binary with `mcp`. An explicit override
-must use an absolute executable path. Do not point it at the Python fallback or
-at the gateway itself. The executable and its arguments are trusted owner
+must use an absolute executable path. Do not point it at the gateway itself. The executable and its arguments are trusted owner
 configuration, never tool-call arguments.
 
 ## One process, one logical identity
@@ -73,7 +72,7 @@ The external-session registration contract is:
 ```
 
 Use the native `everett external add`, `list`, and `remove` commands to manage
-registrations (or `python -m everett.external` with the Python package). The
+registrations. The
 gateway does not write registrations, invent local CLI transcripts, or resume
 either cloud Bot. Register the same ID before end-to-end
 handoffs. External registration is durable, requires no periodic timestamp refresh,
@@ -173,20 +172,16 @@ this binding's inbox, capped at 8 MiB; oversized or malformed inboxes fail close
 Backend frames are bounded before SDK buffering, and tool results are checked
 again after SDK encoding.
 
-The isolated tests drive the native CLI and real loopback HTTP sockets. Both
-external harness journeys run with Python absent from the native process's PATH.
-Adversarial worker tests use a synthetic subprocess backend. No test invokes a
+`everett-rs/tests/gateway_native.rs` drives the native CLI and real loopback HTTP
+sockets with `PATH=/nonexistent` for the gateway process. Adversarial worker tests
+use the test binary itself as a synthetic MCP backend. No test invokes a
 model, live bot, tunnel, or production credentials:
 
 ```sh
-cargo test --locked --manifest-path everett-rs/Cargo.toml
-EVERETT_GATEWAY_TEST_BINARY="$PWD/everett-rs/target/debug/everett" \
-  python3 -m unittest discover -s tests -p test_gateway.py -v
+cargo test --locked --manifest-path everett-rs/Cargo.toml --test gateway_native
 ```
 
-The Python standard library runs the test harness only; it is not part of the
-native gateway runtime. Gateway process tests skip unless the binary environment
-variable is set. Rust policy tests always run with `cargo test`. Tests do not
+Tests do not
 prove actual dot/Grok plan availability, TLS deployment, or runtime approval flow.
 
 **No automatic dot wake-ups, MCP2 Events, webhook engine, Slack bridge, or external
