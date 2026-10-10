@@ -226,6 +226,31 @@ enum Cmd {
         #[arg(long)]
         repair: bool,
     },
+    /// sign in to your Everett account (device-code flow)
+    Login {
+        /// name this device in the account (default: hostname)
+        #[arg(long)]
+        device: Option<String>,
+        /// open the verification URL in a browser (never automatic)
+        #[arg(long)]
+        open: bool,
+        /// start a fresh sign-in even when already signed in
+        #[arg(long)]
+        force: bool,
+        /// machine-readable output
+        #[arg(long)]
+        json: bool,
+    },
+    /// print the signed-in account
+    Whoami {
+        #[arg(long)]
+        json: bool,
+    },
+    /// revoke this device's sign-in and delete the local token
+    Logout {
+        #[arg(long)]
+        json: bool,
+    },
     /// check stores, hooks, cards, and router
     Doctor,
     /// friendly first-time setup (--yes for scripts)
@@ -400,6 +425,21 @@ fn main() {
             a.apply = apply;
             a.repair = repair;
             cli::cmd_install_mcp(&a)
+        }
+        Cmd::Login { device, open, force, json } => {
+            a.device = device;
+            a.open = open;
+            a.force = force;
+            a.json = json;
+            cli::cmd_login(&a)
+        }
+        Cmd::Whoami { json } => {
+            a.json = json;
+            cli::cmd_whoami(&a)
+        }
+        Cmd::Logout { json } => {
+            a.json = json;
+            cli::cmd_logout(&a)
         }
         Cmd::Doctor => cli::cmd_doctor(&a),
         Cmd::Onboard { yes, span_days, no_backfill, no_mcp, jev_key_env, schedule_merge } => {
