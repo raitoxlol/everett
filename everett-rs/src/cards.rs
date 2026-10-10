@@ -25,11 +25,18 @@ fn read_card_full(path: &PathBuf) -> Option<(String, f64, &'static str)> {
     let text = frontmatter.replace(&text, "");
     let headings = Regex::new(r"(?m)^#+\s*").unwrap();
     let text = headings.replace_all(&text, "");
-    let body = clean(&text, 300);
+    let body = text.trim().to_string();
     if body.is_empty() { None } else { Some((body, mtime, source)) }
 }
 
 pub fn read_card(session_id: &str) -> Option<(String, f64)> {
+    read_card_full(&card_path(session_id)).map(|(body, mtime, _)| (clean(&body, 300), mtime))
+}
+
+pub fn read_card_body(session_id: &str) -> Option<(String, f64)> {
+    if session_id.is_empty() || session_id.contains(['/', '\\']) {
+        return None;
+    }
     read_card_full(&card_path(session_id)).map(|(body, mtime, _)| (body, mtime))
 }
 
@@ -49,7 +56,7 @@ pub fn apply(sessions: &mut [Session], now: Option<f64>) {
         if s.last_active - mtime > STALE_AFTER {
             continue;
         }
-        s.card = body;
+        s.card = clean(&body, 300);
         s.card_source = Some(source.to_string());
     }
 }
@@ -58,3 +65,13 @@ pub const INSTRUCTION: &str = "REQUIRED — Everett card. Other agents route wor
 In your FIRST reply that does any work (even a plain answer), write that file: plain markdown, max 50 words — \
 what this session is about, current state, next step. Rewrite it when the topic or state changes. \
 One quick file write; do not mention it to the user.";
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn full_card_lookup_stays_in_the_cards_directory() {
+        for id in ["", "../outside", "a/b", "a\\b", "/absolute"] {
+            assert!(super::read_card_body(id).is_none());
+        }
+    }
+}
