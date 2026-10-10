@@ -86,6 +86,9 @@ pub struct Args {
     pub no_mcp: bool,
     pub jev_key_env: Option<String>,
     pub schedule_merge: bool,
+    pub device: Option<String>,
+    pub open: bool,
+    pub force: bool,
 }
 
 fn ago(ts: f64) -> String {
@@ -156,7 +159,9 @@ pub fn cmd_ls(args: &Args) -> i32 {
 }
 
 /// Per-harness and total counts of agent/auto/missing cards.
-pub fn card_coverage(sessions: &[Session]) -> (Vec<(String, HashMap<String, i64>)>, [i64; 5]) {
+pub type Coverage = (Vec<(String, HashMap<String, i64>)>, [i64; 5]);
+
+pub fn card_coverage(sessions: &[Session]) -> Coverage {
     let mut order: Vec<String> = Vec::new();
     let mut counts: HashMap<String, HashMap<String, i64>> = HashMap::new();
     for harness in crate::registry::ADAPTERS {
@@ -198,7 +203,7 @@ const REGENERATE_HARNESSES: &[&str] = &["claude", "codex", "grok"];
 
 /// Rewrite every AUTO-marked card among `sessions` with the current builder. Never touches a
 /// missing card or an agent-written one. Returns (rewritten, skipped).
-pub fn regenerate_auto_cards(sessions: &[Session], dry_run: bool) -> (usize, usize) {
+pub fn regenerate_auto_cards(sessions: &[Session], dry_run: bool) -> std::result::Result<(usize, usize), String> {
     let mut rewritten = 0usize;
     let mut skipped = 0usize;
     for s in sessions {
@@ -215,32 +220,43 @@ pub fn regenerate_auto_cards(sessions: &[Session], dry_run: bool) -> (usize, usi
             skipped += 1;
             continue;
         }
-        let target = crate::cards::card_path(&s.id);
+        let Some(target) = crate::cards::card_path(&s.id) else {
+            skipped += 1; // invalid session id: nothing safe to write
+            continue;
+        };
         let current = std::fs::read_to_string(&target).ok();
         if current.as_deref() == Some(content.as_str()) {
             skipped += 1;
             continue;
         }
         if !dry_run {
-            let _ = std::fs::write(&target, &content);
+            std::fs::write(&target, &content)
+                .map_err(|e| format!("cannot write {}: {}", target.display(), e))?;
         }
         rewritten += 1;
     }
-    (rewritten, skipped)
+    Ok((rewritten, skipped))
 }
 
 pub fn cmd_cards(args: &Args) -> i32 {
     if args.regenerate_auto {
         let hours = args.regen_hours.unwrap_or(args.hours);
         let sessions = crate::registry::scan(hours, true, None, "");
-        let (rewritten, skipped) = regenerate_auto_cards(&sessions, args.dry_run);
+        let (rewritten, skipped) = match regenerate_auto_cards(&sessions, args.dry_run) {
+            Ok(pair) => pair,
+            Err(e) => {
+                eprintln!("everett: {e}");
+                return 2;
+            }
+        };
         let label = if args.dry_run { "Would rewrite" } else { "Rewrote" };
         println!("{} {} auto card(s), skipped {} (last {} hours).", label, rewritten, skipped, crate::fmt::g(hours));
         return 0;
     }
-    let sessions = crate::registry::scan(args.hours, true, None, "");
+    let hours = args.regen_hours.unwrap_or(args.hours);
+    let sessions = crate::registry::scan(hours, true, None, "");
     let (counts, totals) = card_coverage(&sessions);
-    println!("Sessions (last {} hours): {}", crate::fmt::g(args.hours), totals[0]);
+    println!("Sessions (last {} hours): {}", crate::fmt::g(hours), totals[0]);
     println!("Agent cards: {}", totals[1]);
     println!("Auto cards: {}", totals[2]);
     println!("Missing: {}", totals[3]);
@@ -347,7 +363,7 @@ fn spawn_cmd(args: &Args, r: &Map<String, Value>, sessions: &[Session]) -> i32 {
         let command = crate::send::spawn_command(
             &harness,
             args.text.as_deref().unwrap_or(""),
-            if harness == "claude" { "<new-session-id>" } else { "" },
+            if harness == "claude" || harness == "grok" { "<new-session-id>" } else { "" },
             "",
         )
         .unwrap_or_default();
@@ -1105,6 +1121,153 @@ pub fn cmd_install_mcp(args: &Args) -> i32 {
 
 pub fn cmd_doctor(args: &Args) -> i32 {
     crate::doctor::run(args.hours)
+}
+
+pub fn cmd_login(args: &Args) -> i32 {
+    use crate::auth;
+    if !auth::configured() {
+        eprintln!(
+            "everett login: no issuer configured.\nset `auth.issuer` and `auth.client_id` in {} (or EVERETT_AUTH_ISSUER / EVERETT_AUTH_CLIENT_ID); see docs/auth.md",
+            crate::config::config_path().display()
+        );
+        return 2;
+    }
+    if !args.force {
+        if let Some(stored) = auth::load() {
+            if args.json {
+                println!("{}", serde_json::to_string_pretty(&Value::Object(auth::public_json(&stored))).unwrap());
+            } else {
+                println!("Already signed in as {} on this device ({}).", stored.email, stored.device_name);
+            }
+            return 0;
+        }
+    }
+    let issuer = auth::issuer();
+    let client_id = auth::client_id();
+    let disc = match auth::discover(&issuer) {
+        Ok(d) => d,
+        Err(e) => {
+            eprintln!("everett login: {e}");
+            return e.code;
+        }
+    };
+    let grant = match auth::start_device_flow(&disc, &client_id) {
+        Ok(g) => g,
+        Err(e) => {
+            eprintln!("everett login: {e}");
+            return e.code;
+        }
+    };
+    macro_rules! flow_note {
+        ($($arg:tt)*) => {
+            if args.json { eprintln!($($arg)*); } else { println!($($arg)*); }
+        };
+    }
+    flow_note!("Open {} on any device and enter code  {}", grant.verification_uri, grant.user_code);
+    if let Some(uri) = &grant.verification_uri_complete {
+        flow_note!("  (or open {uri})");
+    }
+    if args.open {
+        let url = grant.verification_uri_complete.clone().unwrap_or_else(|| grant.verification_uri.clone());
+        let opener = if cfg!(target_os = "macos") { "open" } else { "xdg-open" };
+        match std::process::Command::new(opener).arg(&url).status() {
+            Ok(s) if s.success() => {}
+            _ => eprintln!("everett login: could not launch {opener}; open the URL above yourself"),
+        }
+    }
+    flow_note!("Waiting…");
+    let token = match auth::poll_token(&disc, &client_id, &grant) {
+        Ok(t) => t,
+        Err(e) => {
+            eprintln!("everett login: {e}");
+            return e.code;
+        }
+    };
+    let access = token.get("access_token").and_then(|v| v.as_str()).unwrap_or("").to_string();
+    if access.is_empty() {
+        eprintln!("everett login: provider response missing `access_token`");
+        return 6;
+    }
+    let (sub, email, name) = match auth::userinfo(&disc, &access) {
+        Ok(u) => u,
+        Err(e) => {
+            eprintln!("everett login: {e}");
+            return e.code;
+        }
+    };
+    let device_name = args.device.clone().unwrap_or_else(auth::hostname);
+    let stored = auth::Stored {
+        issuer: issuer.clone(),
+        client_id,
+        sub,
+        email: email.clone(),
+        name,
+        device_name: device_name.clone(),
+        access_token: access,
+        refresh_token: token.get("refresh_token").and_then(|v| v.as_str()).unwrap_or("").to_string(),
+        expires_at: crate::session::now()
+            + token.get("expires_in").and_then(|v| v.as_f64()).unwrap_or(3600.0),
+        scope: token.get("scope").and_then(|v| v.as_str()).unwrap_or("").to_string(),
+    };
+    if let Err(e) = auth::save(&stored) {
+        eprintln!("everett login: could not write {}: {e}", auth::auth_path().display());
+        return 6;
+    }
+    if args.json {
+        println!("{}", serde_json::to_string_pretty(&Value::Object(auth::public_json(&stored))).unwrap());
+    } else {
+        println!("Signed in as {email} on this device ({device_name}).");
+    }
+    0
+}
+
+pub fn cmd_whoami(args: &Args) -> i32 {
+    use crate::auth;
+    let Some(stored) = auth::load() else {
+        if args.json {
+            println!("{}", serde_json::to_string(&json!({"signed_in": false})).unwrap());
+        } else {
+            println!("not signed in");
+        }
+        return 1;
+    };
+    let stored = match auth::ensure_fresh(&stored) {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("everett whoami: {e}");
+            return e.code;
+        }
+    };
+    if args.json {
+        println!("{}", serde_json::to_string_pretty(&Value::Object(auth::public_json(&stored))).unwrap());
+    } else {
+        let expiry = crate::timefmt::iso_from_epoch(stored.expires_at);
+        println!("{} via {} ({})", stored.email, stored.issuer, stored.device_name);
+        println!("token expires {expiry}");
+    }
+    0
+}
+
+pub fn cmd_logout(args: &Args) -> i32 {
+    use crate::auth;
+    let Some(stored) = auth::load() else {
+        if args.json {
+            println!("{}", serde_json::to_string(&json!({"signed_out": true, "revoked": false})).unwrap());
+        } else {
+            println!("not signed in");
+        }
+        return 0;
+    };
+    let revoked = auth::revoke(&stored);
+    auth::clear();
+    if args.json {
+        println!("{}", serde_json::to_string(&json!({"signed_out": true, "revoked": revoked})).unwrap());
+    } else if revoked {
+        println!("Signed out on this device; the provider revoked the refresh token.");
+    } else {
+        println!("Signed out on this device; the remote revoke did not happen (provider unreachable or endpoint missing).");
+    }
+    0
 }
 
 pub fn cmd_onboard(args: &Args) -> i32 {

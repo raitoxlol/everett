@@ -1,7 +1,5 @@
 //! `everett doctor`: one screen of what Everett can see and what is missing.
 
-use std::path::PathBuf;
-
 use serde_json::{json, Value};
 
 use crate::adapters::devin as devin_adapter;
@@ -22,17 +20,8 @@ pub fn stores() -> &'static [(&'static str, &'static str)] {
 }
 
 fn which(name: &str) -> Option<String> {
-    let path = std::env::var("PATH").ok()?;
-    for dir in path.split(':') {
-        if dir.is_empty() {
-            continue;
-        }
-        let candidate = PathBuf::from(dir).join(name);
-        if candidate.is_file() {
-            return Some(candidate.to_string_lossy().to_string());
-        }
-    }
-    None
+    // proc::which requires an executable file, not just a name that exists.
+    crate::proc::which(name, &std::env::var("PATH").unwrap_or_default())
 }
 
 pub fn detected_harnesses() -> Vec<String> {
@@ -219,8 +208,18 @@ pub fn run(hours: f64) -> i32 {
                 continue;
             }
         };
-        let missing: Vec<&String> = events.iter().filter(|(_, ok)| !*ok).map(|(k, _)| k).collect();
-        if !missing.is_empty() {
+        let stale: Vec<&String> = events.iter().filter(|(_, s)| s.as_str() == "stale").map(|(k, _)| k).collect();
+        let missing: Vec<&String> = events.iter().filter(|(_, s)| s.as_str() == "missing").map(|(k, _)| k).collect();
+        if !stale.is_empty() {
+            problems += 1;
+            let names: Vec<String> = stale.iter().map(|m| m.to_string()).collect();
+            line(&mut warnings, Some(false), &format!(
+                "  {:<7} stale {}; run `everett install-hooks --{} --apply`",
+                harness,
+                names.join(", "),
+                harness
+            ));
+        } else if !missing.is_empty() {
             let names: Vec<String> = missing.iter().map(|m| m.to_string()).collect();
             line(&mut warnings, Some(false), &format!(
                 "  {:<7} missing {}; run `everett install-hooks --{} --apply`",
@@ -241,7 +240,7 @@ pub fn run(hours: f64) -> i32 {
     line(&mut warnings, Some(ok), &format!("  server: {}", detail));
     let mcp_harnesses: Vec<&str> = ["claude", "codex", "omp", "grok", "devin"]
         .iter()
-        .filter(|h| seen.iter().any(|s| s == *h) || crate::install::mcp_path(*h).exists())
+        .filter(|h| seen.iter().any(|s| s == *h) || crate::install::mcp_path(h).exists())
         .cloned()
         .collect();
     let mut missing_mcp: Vec<&str> = Vec::new();
@@ -333,12 +332,18 @@ pub fn run(hours: f64) -> i32 {
 
     if cfg!(target_os = "macos") {
         let scheduled = crate::trunk_schedule::is_scheduled(None);
+        let stale = scheduled && crate::trunk_schedule::is_stale(None);
+        if stale {
+            problems += 1;
+        }
         line(
             &mut warnings,
-            if scheduled { Some(true) } else { None },
+            if stale { Some(false) } else if scheduled { Some(true) } else { None },
             &format!(
                 "trunk schedule: {}",
-                if scheduled {
+                if stale {
+                    format!("stale ({}); run `everett trunk schedule --apply`", crate::trunk_schedule::plist_path().display())
+                } else if scheduled {
                     format!("scheduled ({})", crate::trunk_schedule::plist_path().display())
                 } else {
                     "not scheduled (optional, macOS; `everett trunk schedule --apply`)".to_string()
@@ -352,6 +357,14 @@ pub fn run(hours: f64) -> i32 {
             "trunk schedule: automatic scheduling requires macOS; run `everett trunk merge --llm none` manually",
         );
     }
+    let account = crate::auth::load();
+    line(
+        &mut warnings,
+        None,
+        &account
+            .map(|s| format!("account: {} via {} ({})", s.email, s.issuer, s.device_name))
+            .unwrap_or_else(|| "account: not signed in (optional)".to_string()),
+    );
     let warning_count = warnings.len() - problems;
     if warnings.is_empty() {
         println!("ready");

@@ -46,8 +46,8 @@ fn second_merge_refuses_promptly_while_learning_remains_available() {
     core::learn("Initial convention", None, None, None).unwrap();
     let (started_tx, started_rx) = std::sync::mpsc::channel::<()>();
     let (release_tx, release_rx) = std::sync::mpsc::channel::<()>();
-    let release_rx = std::sync::Mutex::new(release_rx);
-    let started_tx = std::sync::Mutex::new(started_tx);
+    let release_rx: &'static std::sync::Mutex<_> = Box::leak(Box::new(std::sync::Mutex::new(release_rx)));
+    let started_tx: &'static std::sync::Mutex<_> = Box::leak(Box::new(std::sync::Mutex::new(started_tx)));
     std::thread::scope(|scope| {
         let first = scope.spawn(|| {
             let runner: &Runner = &|_, _, _, _| {

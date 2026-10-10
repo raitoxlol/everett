@@ -120,25 +120,25 @@ fn stop_hook_writes_auto_card_and_ignores_bad_input() {
     let h = lib_home();
     grok_session(&home(&h), "card-1", "/work/api", &["add retries to the upload client"], json!({}));
     grok_stop_hook(&json!({"hookEventName": "stop", "hook_event_name": "Stop", "sessionId": "card-1", "cwd": "/work/api"}).to_string());
-    let text = std::fs::read_to_string(card_path("card-1")).unwrap();
+    let text = std::fs::read_to_string(card_path("card-1").unwrap()).unwrap();
     assert!(text.starts_with(AUTO_MARKER));
     assert!(text.contains("Api: add retries to the upload client") && text.contains("Next: run the integration test."), "{text}");
     for raw in ["not json", "[]", &json!({"sessionId": "../x"}).to_string(), &json!({"sessionId": "missing"}).to_string()] {
         grok_stop_hook(raw);
     }
-    assert!(!card_path("missing").exists());
+    assert!(!card_path("missing").unwrap().exists());
 }
 
 #[test]
 fn install_hooks_writes_grok_hook_file() {
     let h = lib_home();
     let state = install::installed("grok", None).unwrap();
-    assert!(state.values().all(|v| !v) && state.contains_key("Stop") && state.contains_key("PostToolUse"));
+    assert!(state.values().all(|v| v == "missing") && state.contains_key("Stop") && state.contains_key("PostToolUse"));
     let report = install::apply("grok", None).unwrap();
     let path = home(&h).join(".grok/hooks/everett.json");
     assert!(report.contains(&path.to_string_lossy().to_string()));
     let data: Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
     assert!(data["hooks"]["Stop"][0]["hooks"][0]["command"].as_str().unwrap().ends_with(" hook grok_stop"));
-    assert!(install::installed("grok", None).unwrap().values().all(|v| *v));
+    assert!(install::installed("grok", None).unwrap().values().all(|v| v == "ok"));
     assert!(install::apply("grok", None).unwrap().contains("already installed"));
 }

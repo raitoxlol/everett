@@ -2,7 +2,6 @@
 //! Every public entry swallows all errors — a hook must never break a harness session.
 
 use std::fs::{self, OpenOptions};
-use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 
@@ -17,10 +16,12 @@ const SKIP_ENV: &str = "EVERETT_SEND";
 
 /// Card instruction plus the shared core for a new session ('' to stay silent).
 pub fn session_start_context(session_id: &str, cwd: &str) -> String {
-    if std::env::var(SKIP_ENV).is_ok() || session_id.is_empty() {
+    if std::env::var(SKIP_ENV).map(|v| !v.is_empty()).unwrap_or(false) || session_id.is_empty() {
         return String::new();
     }
-    let path = crate::cards::card_path(session_id);
+    let Some(path) = crate::cards::card_path(session_id) else {
+        return String::new();
+    };
     if let Some(parent) = path.parent() {
         let _ = fs::create_dir_all(parent);
     }
@@ -184,7 +185,7 @@ fn markdown_lines(text: &str) -> Vec<(String, bool, bool)> {
         if let Some(f) = fence {
             if let Some(m) = &fence_match {
                 let run = m.get(1).unwrap().as_str();
-                if run.chars().next() == Some(f.0) && run.len() >= f.1 {
+                if run.starts_with(f.0) && run.len() >= f.1 {
                     fence = None;
                 }
             }
@@ -533,16 +534,12 @@ pub fn auto_card(transcript: &Path, harness: &str, cwd: &str, session_id: &str) 
 }
 
 /// Write a deterministic fallback card, silently ignoring every hook error.
-fn mtime_ns(meta: &fs::Metadata) -> i128 {
-    meta.mtime() as i128 * 1_000_000_000 + meta.mtime_nsec() as i128
-}
-
 pub fn stop_hook(raw: &str, harness: &str) {
     let _ = stop_hook_inner(raw, harness);
 }
 
 fn stop_hook_inner(raw: &str, harness: &str) -> Option<()> {
-    if std::env::var(SKIP_ENV).is_ok()
+    if std::env::var(SKIP_ENV).map(|v| !v.is_empty()).unwrap_or(false)
         || (harness == "claude" && std::env::var("CLAUDE_CODE_ENTRYPOINT").as_deref() == Ok("sdk-cli"))
     {
         return None;
@@ -560,8 +557,8 @@ fn stop_hook_inner(raw: &str, harness: &str) -> Option<()> {
         return None;
     }
     let transcript = PathBuf::from(transcript_value);
-    let transcript_mtime = mtime_ns(&transcript.metadata().ok()?);
-    let target = crate::cards::card_path(session_id);
+    let transcript_mtime = transcript.metadata().and_then(|m| m.modified()).ok()?;
+    let target = crate::cards::card_path(session_id)?;
     if target.is_symlink() {
         return None;
     }
@@ -575,7 +572,11 @@ fn stop_hook_inner(raw: &str, harness: &str) -> Option<()> {
     };
     if existed
         && (current.lines().next() != Some(AUTO_MARKER)
-            || current_stat.as_ref().map(mtime_ns).unwrap_or(0) >= transcript_mtime)
+            || current_stat
+                .as_ref()
+                .map(|m| m.modified().unwrap_or(std::time::UNIX_EPOCH))
+                .unwrap_or(std::time::UNIX_EPOCH)
+                >= transcript_mtime)
     {
         return None;
     }
@@ -597,7 +598,8 @@ fn stop_hook_inner(raw: &str, harness: &str) -> Option<()> {
     let latest = fs::read_to_string(&target).ok()?;
     let latest_stat = target.metadata().ok()?;
     if latest.lines().next() != Some(AUTO_MARKER)
-        || mtime_ns(&latest_stat) != current_stat.as_ref().map(mtime_ns).unwrap_or(0)
+        || latest_stat.modified().ok()
+            != current_stat.as_ref().and_then(|m| m.modified().ok())
         || latest != current
     {
         return None;
@@ -606,7 +608,8 @@ fn stop_hook_inner(raw: &str, harness: &str) -> Option<()> {
     fs::write(&tmp, &content).ok()?;
     let still_ok = !target.is_symlink()
         && fs::read_to_string(&target).ok().as_deref() == Some(current.as_str())
-        && target.metadata().ok().as_ref().map(mtime_ns) == current_stat.as_ref().map(mtime_ns);
+        && target.metadata().ok().and_then(|m| m.modified().ok())
+            == current_stat.as_ref().and_then(|m| m.modified().ok());
     if !still_ok {
         let _ = fs::remove_file(&tmp);
         return None;
@@ -650,7 +653,7 @@ pub fn stop_event(raw: &str, harness: &str) {
 }
 
 fn stop_event_inner(raw: &str, harness: &str) {
-    if std::env::var(SKIP_ENV).is_ok()
+    if std::env::var(SKIP_ENV).map(|v| !v.is_empty()).unwrap_or(false)
         || (harness == "claude" && std::env::var("CLAUDE_CODE_ENTRYPOINT").as_deref() == Ok("sdk-cli"))
     {
         return;
@@ -737,7 +740,7 @@ const EVENTS: &[&str] = &["UserPromptSubmit", "PostToolUse"];
 
 /// Hook stdin JSON -> hook stdout JSON ("" to stay silent).
 pub fn deliver_output(raw: &str, harness: &str) -> String {
-    if std::env::var("EVERETT_SEND").is_ok() {
+    if std::env::var("EVERETT_SEND").map(|v| !v.is_empty()).unwrap_or(false) {
         return String::new();
     }
     if harness == "claude" && std::env::var("CLAUDE_CODE_ENTRYPOINT").as_deref() == Ok("sdk-cli") {
@@ -751,8 +754,18 @@ pub fn deliver_output(raw: &str, harness: &str) -> String {
         .and_then(|v| v.as_str())
         .or_else(|| map.get("sessionId").and_then(|v| v.as_str()))
         .unwrap_or("");
-    let event = map.get("hook_event_name").and_then(|v| v.as_str()).unwrap_or("");
-    if !EVENTS.contains(&event) {
+    // Harnesses send hook_event_name (Claude), hookEventName (Grok), or snake_case values.
+    let raw_event = map
+        .get("hook_event_name")
+        .and_then(|v| v.as_str())
+        .or_else(|| map.get("hookEventName").and_then(|v| v.as_str()))
+        .unwrap_or("");
+    let event = EVENTS
+        .iter()
+        .find(|e| e.eq_ignore_ascii_case(raw_event))
+        .copied()
+        .unwrap_or("");
+    if event.is_empty() {
         return String::new();
     }
     if !crate::inbox::valid_id(session_id) {
@@ -776,8 +789,22 @@ pub fn deliver_output(raw: &str, harness: &str) -> String {
     .unwrap_or_default()
 }
 
+/// Write hook output without panicking on a closed stdout (a harness that
+/// pipes us and exits early would otherwise kill the hook with SIGPIPE/EPIPE).
+fn emit(text: &str) {
+    use std::io::Write;
+    let mut out = std::io::stdout().lock();
+    let _ = out.write_all(text.as_bytes());
+    let _ = out.flush();
+}
+
 /// One `everett hook <stem>` invocation: stdin JSON -> stdout. Always exit 0.
 pub fn hook_main(stem: &str, args: &[String]) -> i32 {
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| hook_main_inner(stem, args)));
+    0
+}
+
+fn hook_main_inner(stem: &str, args: &[String]) -> i32 {
     let stdin_raw = || {
         use std::io::Read;
         let mut buf = String::new();
@@ -791,13 +818,13 @@ pub fn hook_main(stem: &str, args: &[String]) -> i32 {
             }
             let out = session_start_output(&stdin_raw());
             if !out.is_empty() {
-                println!("{}", out);
+                emit(&format!("{out}\n"));
             }
         }
         "codex_session_start" => {
             let out = session_start_output(&stdin_raw());
             if !out.is_empty() {
-                println!("{}", out);
+                emit(&format!("{out}\n"));
             }
         }
         "claude_stop" => {
@@ -813,20 +840,20 @@ pub fn hook_main(stem: &str, args: &[String]) -> i32 {
         "claude_inbox" => {
             let out = deliver_output(&stdin_raw(), "claude");
             if !out.is_empty() {
-                print!("{}\n", out);
+                emit(&format!("{out}\n"));
             }
         }
         "codex_inbox" => {
             let out = deliver_output(&stdin_raw(), "codex");
             if !out.is_empty() {
-                print!("{}\n", out);
+                emit(&format!("{out}\n"));
             }
         }
         "grok_stop" => grok_stop_hook(&stdin_raw()),
         "grok_inbox" => {
             let out = deliver_output(&stdin_raw(), "grok");
             if !out.is_empty() {
-                print!("{}\n", out);
+                emit(&format!("{out}\n"));
             }
         }
         "omp_inbox" => {
@@ -835,7 +862,7 @@ pub fn hook_main(stem: &str, args: &[String]) -> i32 {
                     crate::inbox::touch_live(sid, "omp", "turn");
                     let text = crate::inbox::take(sid);
                     if !text.is_empty() {
-                        print!("{}", text);
+                        emit(&text);
                     }
                 }
             }
@@ -845,11 +872,53 @@ pub fn hook_main(stem: &str, args: &[String]) -> i32 {
                 let cwd = std::env::current_dir().map(|p| p.to_string_lossy().to_string()).unwrap_or_default();
                 let context = session_start_context(sid, &cwd);
                 if !context.is_empty() {
-                    print!("{}", context);
+                    emit(&context);
                 }
             }
         }
         _ => {}
     }
     0
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn set_mtime(path: &Path, sec: i64, nsec: i64) {
+        let c = std::ffi::CString::new(path.to_string_lossy().as_bytes()).unwrap();
+        let times = [
+            libc::timespec { tv_sec: sec, tv_nsec: nsec },
+            libc::timespec { tv_sec: sec, tv_nsec: nsec },
+        ];
+        let rc = unsafe { libc::utimensat(libc::AT_FDCWD, c.as_ptr(), times.as_ptr(), 0) };
+        assert_eq!(rc, 0);
+    }
+
+    #[test]
+    fn auto_card_freshness_uses_full_mtime_not_just_nanos() {
+        let home = tempfile::tempdir().unwrap();
+        std::env::set_var("EVERETT_HOME", home.path());
+        let sid = "mtime-sid";
+        let transcript = home.path().join("t.jsonl");
+        fs::write(
+            &transcript,
+            "{\"type\":\"user\",\"message\":{\"content\":\"fix the login bug\"},\"cwd\":\"/w\"}\n",
+        )
+        .unwrap();
+        let card = home.path().join(".everett/cards").join(format!("{sid}.md"));
+        fs::create_dir_all(card.parent().unwrap()).unwrap();
+        let body = format!("{}\nold auto body\n", AUTO_MARKER);
+        fs::write(&card, &body).unwrap();
+        // Transcript at T=*.9s, auto card 2s later but with a LOWER nanosecond
+        // component: an mtime_nsec-only compare would treat the card as stale
+        // and regenerate it.
+        set_mtime(&transcript, 1_700_000_000, 900_000_000);
+        set_mtime(&card, 1_700_000_002, 100_000_000);
+        stop_hook_inner(
+            &json!({"session_id": sid, "transcript_path": transcript}).to_string(),
+            "claude",
+        );
+        assert_eq!(fs::read_to_string(&card).unwrap(), body);
+    }
 }

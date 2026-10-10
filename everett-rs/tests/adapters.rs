@@ -121,6 +121,42 @@ fn devin_db_and_transcript_listed() {
 }
 
 #[test]
+fn devin_db_limit_keeps_recent_sessions() {
+    let fx = fixture();
+    let base = fx.home().join(".local/share/devin/cli");
+    std::fs::create_dir_all(base.join("transcripts")).unwrap();
+    let con = rusqlite::Connection::open(base.join("sessions.db")).unwrap();
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs_f64();
+    con.execute_batch(
+        "CREATE TABLE sessions (id TEXT, working_directory TEXT, title TEXT,
+            created_at REAL, last_activity_at REAL);",
+    )
+    .unwrap();
+    // 45 old rows inserted before the recent one: an unordered LIMIT/first-N
+    // would drop the newest session before sorting.
+    let mut st = con
+        .prepare("INSERT INTO sessions VALUES (?1,'/work','bulk',?2,?2)")
+        .unwrap();
+    for i in 0..45 {
+        st.execute(rusqlite::params![format!("bulk-{i}"), now - 10000.0 - i as f64])
+            .unwrap();
+    }
+    drop(st);
+    con.execute(
+        "INSERT INTO sessions VALUES ('d-newest','/work/fresh','newest',?1,?1)",
+        [now - 10.0],
+    )
+    .unwrap();
+    drop(con);
+    let list = fx.ls_json();
+    let ids: Vec<&str> = list.iter().filter_map(|s| s["id"].as_str()).collect();
+    assert!(ids.contains(&"d-newest"), "the row cap must not drop recent sessions: {ids:?}");
+}
+
+#[test]
 fn devin_message_nodes_supply_user_text() {
     let fx = fixture();
     let base = fx.home().join(".local/share/devin/cli");

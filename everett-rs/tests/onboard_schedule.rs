@@ -52,15 +52,15 @@ fn onboard_yes_end_to_end_flags_and_idempotence() {
     let h = lib_home();
     claude_session(&h.path(), "c-fresh", "/work/app", "fix the login bug", 0.0);
     assert_eq!(cli(&h, &["onboard", "--yes", "--no-backfill", "--no-mcp"]).status.code(), Some(0));
-    assert!(!cards::card_path("c-fresh").exists());
+    assert!(!cards::card_path("c-fresh").unwrap().exists());
     assert_eq!(install::mcp_status("claude").0, "missing");
-    assert!(install::installed("claude", None).unwrap()["SessionStart"]);
+    assert_eq!(install::installed("claude", None).unwrap()["SessionStart"], "ok");
 
     let out = cli(&h, &["onboard", "--yes"]);
     assert_eq!(out.status.code(), Some(0));
     let text = stdout(&out);
     assert!(text.contains("Everett onboarding complete.") && text.contains("1 card(s) written"), "{text}");
-    assert!(std::fs::read_to_string(cards::card_path("c-fresh")).unwrap().starts_with(cards::AUTO_MARKER));
+    assert!(std::fs::read_to_string(cards::card_path("c-fresh").unwrap()).unwrap().starts_with(cards::AUTO_MARKER));
     assert_eq!(install::mcp_status("claude").0, "ready");
     assert!(!config::config_path().exists() && !trunk_schedule::plist_path().exists());
 
@@ -78,7 +78,7 @@ fn backfill_respects_span_agent_cards_and_progress() {
     claude_session(&h.path(), "c-outside", "/work/b", "outside span", 10.0);
     claude_session(&h.path(), "c-agent", "/work/agent", "has a real card", 0.0);
     std::fs::create_dir_all(cards::card_dir()).unwrap();
-    std::fs::write(cards::card_path("c-agent"), "Atlas: agent-written, do not touch.").unwrap();
+    std::fs::write(cards::card_path("c-agent").unwrap(), "Atlas: agent-written, do not touch.").unwrap();
     let mut ids: Vec<String> = missing_card_sessions(3).into_iter().map(|s| s.id).collect();
     ids.sort();
     assert_eq!(ids, ["c-inside"]);
@@ -86,14 +86,14 @@ fn backfill_respects_span_agent_cards_and_progress() {
     let progress = |i: usize, t: usize| seen.borrow_mut().push((i, t));
     assert_eq!(generate_backfill_cards(&missing_card_sessions(3), Some(&progress)), (1, 0));
     assert_eq!(*seen.borrow(), [(1, 1)]);
-    assert!(missing_card_sessions(3).is_empty() && !cards::card_path("c-outside").exists());
-    assert_eq!(std::fs::read_to_string(cards::card_path("c-agent")).unwrap(), "Atlas: agent-written, do not touch.");
+    assert!(missing_card_sessions(3).is_empty() && !cards::card_path("c-outside").unwrap().exists());
+    assert_eq!(std::fs::read_to_string(cards::card_path("c-agent").unwrap()).unwrap(), "Atlas: agent-written, do not touch.");
     let mut cfg = default_config();
     cfg.hooks.clear();
     cfg.mcp.clear();
     cfg.span_days = 30;
     assert_eq!(run_apply(&cfg, None).backfill_written, 1);
-    assert!(cards::card_path("c-outside").exists());
+    assert!(cards::card_path("c-outside").unwrap().exists());
 }
 
 #[test]
@@ -173,7 +173,7 @@ fn trunk_schedule_install_remove_use_sandboxed_paths_and_launchctl() {
     assert!(trunk_schedule::remove(None)["removed"].as_bool().unwrap());
     assert!(!trunk_schedule::is_scheduled(None));
     let calls: Vec<String> = std::fs::read_to_string(&log).unwrap().lines().map(|l| l.split(' ').next().unwrap().to_string()).collect();
-    assert_eq!(calls, ["bootstrap", "bootstrap", "bootout"]);
+    assert_eq!(calls, ["bootout", "bootstrap", "bootout", "bootstrap", "bootout"]);
 }
 
 #[test]

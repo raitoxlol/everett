@@ -1,67 +1,57 @@
-# Publish Everett 1.3.0
+# Releasing Everett
 
-These are maintainer commands to run after reviewing the prepared release. Preparation does
-not push, tag or publish. Run from the release checkout with a clean working tree and authenticated
-GitHub CLI. The public repository is `raitoxlol/everett`.
+Everett is one Rust binary (`everett-rs/`). Release = a `vX.Y.Z` git tag; CI
+builds everything else. Run these steps from `main` with a clean tree and an
+authenticated GitHub CLI. The public repository is `raitoxlol/everett`; nothing
+is published to PyPI.
 
-## 1. Verify and build
+## 1. Pick the version
+
+The tag **must** match `everett-rs/Cargo.toml` (`version = "X.Y.Z"`); the release
+job fails on a mismatch. Bump the version in `everett-rs/Cargo.toml`, refresh
+`Cargo.lock` (`cargo check` does it), and update `CHANGELOG.md` (move the release
+notes out of Unreleased). Commit as the version bump.
+
+## 2. Verify before tagging
 
 ```bash
-everett_repo="$(git rev-parse --show-toplevel)"
-(
-set -e
-test "$(git -C "$everett_repo" branch --show-current)" = "everett/relaunch-1.3.0"
-test -z "$(git -C "$everett_repo" status --porcelain)"
-cd "$everett_repo/everett-rs"
-cargo fmt --check
-cargo clippy --all-targets --all-features -- -D warnings
+cd everett-rs
+cargo clippy --all-targets -- -D warnings
 cargo test --locked
 cargo build --release --locked
 EVERETT_VERIFY_BINARY="$PWD/target/release/everett" cargo test --locked --test release_journey
-)
 ```
 
-## 2. Push the prepared branch and wait for CI
+Sanity-check the binary: `./target/release/everett --version`, `./target/release/everett doctor`.
+
+## 3. Write RELEASE_NOTES.md
+
+`RELEASE_NOTES.md` at the repo root becomes the GitHub release body
+(`gh release create --notes-file`). Summarize user-facing changes; point at the
+CHANGELOG for the full list.
+
+## 4. Tag and push
 
 ```bash
-(
-set -e
-git -C "$everett_repo" push https://github.com/raitoxlol/everett.git HEAD:refs/heads/everett/relaunch-1.3.0
-everett_run="$(gh run list --repo raitoxlol/everett --branch everett/relaunch-1.3.0 \
-  --commit "$(git -C "$everett_repo" rev-parse HEAD)" --workflow ci.yml --limit 1 \
-  --json databaseId --jq '.[0].databaseId')"
-test -n "$everett_run" && test "$everett_run" != null
-gh run watch "$everett_run" --repo raitoxlol/everett --exit-status
-)
+git tag -a "v$(sed -n 's/^version = \"\(.*\)\"/\1/p' everett-rs/Cargo.toml | head -1)" -m "Everett vX.Y.Z"
+git push origin main --follow-tags
 ```
 
-If GitHub has not created the run yet, repeat the run lookup when it appears. Proceed only
-after all matrix jobs pass. If the main push below is rejected, inspect the new remote commits
-before proceeding; use a normal fast-forward push.
+## 5. What CI then does (`.github/workflows/rust.yml`)
 
-## 3. Tag and publish
+- `cargo clippy --all-targets -- -D warnings` and `cargo test` on Linux + macOS.
+- Builds release binaries for `x86_64-apple-darwin`, `aarch64-apple-darwin`,
+  `x86_64-unknown-linux-musl`, `aarch64-unknown-linux-musl`, packages each as
+  `everett-<target>.tar.gz` + `.sha256`.
+- Renders `dist/everett.rb` (Homebrew formula) via `scripts/render_formula.sh`
+  and uploads everything to the `vX.Y.Z` GitHub release (creating the release
+  from `RELEASE_NOTES.md` if step 3 has not already).
 
-```bash
-(
-set -e
-git -C "$everett_repo" push https://github.com/raitoxlol/everett.git HEAD:refs/heads/main
-git -C "$everett_repo" tag -a v1.3.0 -m "Everett 1.3.0"
-git -C "$everett_repo" push https://github.com/raitoxlol/everett.git refs/tags/v1.3.0
-gh release create v1.3.0 --repo raitoxlol/everett --verify-tag --latest \
-  --title "Everett 1.3.0" --notes-file "$everett_repo/RELEASE_NOTES.md"
-)
-```
+Watch it: `gh run watch --repo raitoxlol/everett`.
 
-## 4. Rust binaries and the binary Homebrew formula
+## 6. Homebrew tap
 
-Pushing the tag runs the `Rust binary` workflow (`.github/workflows/rust.yml`). It fails unless the
-tag equals `v` + `everett-rs/Cargo.toml`'s version, so bump it first. After
-`cargo test` passes on macOS and Linux, it builds the four targets and uploads
-`everett-<target>.tar.gz`, `.sha256` and a rendered `everett.rb` to the release; it creates the
-release from `RELEASE_NOTES.md` only if step 3 has not already. `install.sh` users get the new
-binary on their next run.
-
-Update the Homebrew tap with the rendered formula:
+Update the tap with the rendered formula:
 
 ```bash
 (
@@ -72,3 +62,16 @@ brew install raitoxlol/tap/everett && brew test raitoxlol/tap/everett
 git -C "$everett_tap" commit -am "everett X.Y.Z (prebuilt binary)" && git -C "$everett_tap" push
 )
 ```
+
+The tap lags the tag by however long that step takes — `install.sh` does not.
+
+## 7. Verify the install path
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/raitoxlol/everett/main/install.sh | sh
+everett --version   # should print X.Y.Z
+brew tap raitoxlol/tap && brew install everett   # once the tap is updated
+```
+
+`install.sh` verifies the `.sha256` checksum; `EVERETT_VERSION=vX.Y.Z` pins a
+release, `EVERETT_INSTALL_DIR` overrides `~/.local/bin`.

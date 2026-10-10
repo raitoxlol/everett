@@ -10,6 +10,12 @@
   `scripts/verify_release.py`, and CI runs it against a release build.
 - Fix the native stop hook comparing only the sub-second part of file mtimes, which made stale
   auto-card refresh effectively random. `trunk schedule` now runs `launchctl` with `PATH`/`HOME`.
+- Add optional account sign-in to the Rust binary: `everett login` (OIDC
+  device-code flow, RFC 8628), `everett whoami` with transparent token
+  refresh, and `everett logout` with RFC 7009 revocation. Tokens live in
+  `~/.everett/auth.json` (mode 0600); the issuer and client id come from
+  `[auth]` config or `EVERETT_AUTH_ISSUER`/`EVERETT_AUTH_CLIENT_ID`. See
+  `docs/auth.md`.
 - Add native `everett external add`, `list`, and `remove` for durable cloud-agent registrations,
   with cloud harness filters in `everett ls`.
 - Register OpenAI dots and Grok Bot as durable external sessions, with inbox-only delivery,
@@ -34,6 +40,51 @@
 - **Verification accuracy** — exercise the selected CLI's MCP launcher in the release journey; freeze the synthetic Devin ISO fixture's clock so its 72-hour window cannot expire.
 - **Devin MCP registration** — `install-mcp --devin` supports the dedicated CLI MCP config on Linux/macOS and Windows, with existing dry-run, backup, repair, and idempotency behavior. Doctor and onboarding recognize the registration without adding native hooks or assuming a caller-id variable.
 - **Stable Devin timestamp regression** — freeze the synthetic ISO timestamp fixture's clock so the default 72-hour look-back does not expire it.
+
+### Audit hardening
+
+- Detect stale hook and MCP registrations (moved interpreters, binaries, and
+  script paths): `doctor` reports them with repair commands and
+  `install-hooks --apply` replaces Everett's dead entries while preserving
+  foreign hooks.
+- Record the highest hop count delivered to a live session so fresh sends are
+  still refused at the hop limit.
+- Validate session ids inside `card_path` so transcript ids cannot escape the
+  cards directory.
+- Compare full modification times for auto-card freshness instead of the
+  nanosecond field alone.
+- Propagate inbox, event-log, and card-write failures to the CLI and MCP
+  instead of reporting success.
+- Advance the escalation-throttle stamp each scan so hooks check at most once
+  per minute.
+- Order the Devin sessions query by newest activity before the row limit.
+- Deliver a single oversized inbox message truncated instead of dropping it.
+- Keep user text that merely starts with `<` visible by allowlisting the known
+  injected tag names.
+- `launchctl bootout` before `bootstrap` when re-applying the merge schedule.
+
+### Audit hardening (2)
+
+- Lock inbox reads and writes per session and compact the inbox, `.done`, and
+  stale live/state records on take; live records now expire after 24 h so a
+  recycled PID cannot keep a dead session attached.
+- Lock and atomically replace `subscriptions.json`; lock and atomically write
+  `config.toml` with proper TOML escaping and non-NotFound read errors surfaced.
+- Embed the absolute binary path in the generated OMP extension (basename
+  fallback), bound its card-context spawn with the same 3 s timeout, and guard
+  `markSession` so malformed hook context cannot break OMP.
+- Contain MCP tool panics behind a JSON-RPC internal error; hooks write through
+  a fallible writer, run under `catch_unwind`, and treat only a non-empty
+  `EVERETT_SEND` as set.
+- Parse naive ISO timestamps as local time like Python, escape `|` in the trunk
+  cwd column, share the harness-binary check between `ls` and `send`, reject
+  Grok pids ≤ 1, keep tail-window records that start on a line boundary, list
+  Hermes databases that lack a `messages` table, kill the process group on send
+  timeout, wrap spawn `mkstemp` failures, refuse a Pi resume without a session
+  file, extract the resumable UUID from Codex rollout filenames, show the real
+  `--session-id` shape in Grok dry-run output, and honor an empty OMP hook-event
+  selection before the OMP early return.
+- Honor `everett cards --hours` without `--regenerate-auto`.
 
 ## 1.4.0 — 2026-10-05
 
