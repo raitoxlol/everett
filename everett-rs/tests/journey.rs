@@ -1,5 +1,5 @@
-//! End-to-end journey over a temp HOME: mirrors scripts/verify_release.py and the
-//! send/route/inbox/core tests in the Python suite.
+//! End-to-end journey over a temp HOME: send/route/inbox/core coverage ported
+//! from the retired Python suite (release_journey.rs is the packaged-binary twin).
 
 mod common;
 

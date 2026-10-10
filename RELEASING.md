@@ -1,8 +1,7 @@
 # Releasing Everett
 
-The Rust binary (`everett-rs/`) is the primary install; the Python package is the
-reference implementation and ships in the same tag. Release = a `vX.Y.Z` git tag;
-CI builds everything else. Run these steps from `main` with a clean tree and an
+Everett is one Rust binary (`everett-rs/`). Release = a `vX.Y.Z` git tag; CI
+builds everything else. Run these steps from `main` with a clean tree and an
 authenticated GitHub CLI. The public repository is `raitoxlol/everett`; nothing
 is published to PyPI.
 
@@ -16,12 +15,14 @@ notes out of Unreleased). Commit as the version bump.
 ## 2. Verify before tagging
 
 ```bash
-python3 -m unittest discover -s tests
-cargo test --manifest-path everett-rs/Cargo.toml
-cargo clippy --manifest-path everett-rs/Cargo.toml --all-targets -- -D warnings
+cd everett-rs
+cargo clippy --all-targets -- -D warnings
+cargo test --locked
+cargo build --release --locked
+EVERETT_VERIFY_BINARY="$PWD/target/release/everett" cargo test --locked --test release_journey
 ```
 
-Sanity-check the binary: `cargo run -p everett -- --version`, `everett doctor`.
+Sanity-check the binary: `./target/release/everett --version`, `./target/release/everett doctor`.
 
 ## 3. Write RELEASE_NOTES.md
 
@@ -43,15 +44,26 @@ git push origin main --follow-tags
   `x86_64-unknown-linux-musl`, `aarch64-unknown-linux-musl`, packages each as
   `everett-<target>.tar.gz` + `.sha256`.
 - Renders `dist/everett.rb` (Homebrew formula) via `scripts/render_formula.sh`
-  and uploads everything to the `vX.Y.Z` GitHub release.
+  and uploads everything to the `vX.Y.Z` GitHub release (creating the release
+  from `RELEASE_NOTES.md` if step 3 has not already).
 
 Watch it: `gh run watch --repo raitoxlol/everett`.
 
 ## 6. Homebrew tap
 
-Copy the generated `everett.rb` from the release assets into the
-`raitoxlol/homebrew-tap` repository (`Formula/everett.rb`) and commit. The tap
-lags the tag by however long that step takes — `install.sh` does not.
+Update the tap with the rendered formula:
+
+```bash
+(
+set -e
+everett_tap="$(brew --repository raitoxlol/tap)"
+gh release download vX.Y.Z --repo raitoxlol/everett --pattern everett.rb --dir "$everett_tap/Formula" --clobber
+brew install raitoxlol/tap/everett && brew test raitoxlol/tap/everett
+git -C "$everett_tap" commit -am "everett X.Y.Z (prebuilt binary)" && git -C "$everett_tap" push
+)
+```
+
+The tap lags the tag by however long that step takes — `install.sh` does not.
 
 ## 7. Verify the install path
 
@@ -63,10 +75,3 @@ brew tap raitoxlol/tap && brew install everett   # once the tap is updated
 
 `install.sh` verifies the `.sha256` checksum; `EVERETT_VERSION=vX.Y.Z` pins a
 release, `EVERETT_INSTALL_DIR` overrides `~/.local/bin`.
-
-## 8. Python reference package
-
-The Python package builds as part of `ci.yml` on every push (wheel + sdist
-artifacts, installed-journey proof via `scripts/verify_release.py`). It is the
-reference implementation — it is not published to PyPI and needs no release
-step of its own; it rides the same tag.

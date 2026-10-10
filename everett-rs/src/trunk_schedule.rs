@@ -154,11 +154,22 @@ fn domain() -> String {
     format!("gui/{}", unsafe { libc::getuid() })
 }
 
+/// `launchctl` is found through PATH, so it runs with the caller's PATH and HOME only.
+fn launchctl_env() -> HashMap<String, String> {
+    ["PATH", "HOME"]
+        .iter()
+        .filter_map(|k| std::env::var(k).ok().map(|v| (k.to_string(), v)))
+        .collect()
+}
+
+fn launchctl(action: &str, plist: &std::path::Path) -> std::result::Result<crate::proc::RunOutput, String> {
+    let command = ["launchctl", action, &domain(), &plist.to_string_lossy()].map(String::from);
+    run_capture(&command, None, &launchctl_env(), 15.0)
+}
+
 /// Write the plist (idempotent) and `launchctl bootstrap` it.
 pub fn install(at: &str, llm: &str, path: Option<&PathBuf>, log: Option<&PathBuf>) -> Result<Map<String, Value>> {
-    install_inner(at, llm, path, log, &mut |cmd| {
-        run_capture(cmd, None, &HashMap::new(), 15.0)
-    })
+    install_inner(at, llm, path, log, &mut |cmd| run_capture(cmd, None, &launchctl_env(), 15.0))
 }
 
 fn install_inner(
@@ -207,17 +218,7 @@ pub fn remove(path: Option<&PathBuf>) -> Map<String, Value> {
     let target = path.cloned().unwrap_or_else(plist_path);
     let existed = target.exists();
     if existed {
-        let _ = run_capture(
-            &[
-                "launchctl".to_string(),
-                "bootout".to_string(),
-                domain(),
-                target.to_string_lossy().to_string(),
-            ],
-            None,
-            &HashMap::new(),
-            15.0,
-        );
+        let _ = launchctl("bootout", &target);
         let _ = fs::remove_file(&target);
     }
     let mut r = Map::new();

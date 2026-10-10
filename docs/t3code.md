@@ -61,7 +61,7 @@ shared core and `everett_learn(fact=..., project=<workspace>)` queues a learning
 Queued learnings enter the shared core after the normal Everett merge workflow;
 enqueue alone does not immediately update every agent's injected context.
 
-Synthetic Python and Rust tests cover provider-ID discovery, read-only access,
+Synthetic Rust tests cover provider-ID discovery, read-only access,
 deduplication, route guidance, explicit inbox pickup, replies, self-send rejection
 with known identity, and learning/merge/peer shared-core reads. They do not establish
 real T3 SDK MCP registration, hook execution, automatic wakeup, or cross-device delivery.

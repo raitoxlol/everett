@@ -9,7 +9,7 @@ T3 Code threads are recognized through their underlying harness sessions.
 
 ## Quickstart
 
-The Rust binary is the primary install. Have at least one harness CLI on your PATH. Everett supports macOS and Linux.
+Everett is one native binary for macOS and Linux. Have at least one harness CLI on your PATH.
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/raitoxlol/everett/main/install.sh | sh   # ~/.local/bin
@@ -30,20 +30,16 @@ then run `everett ls`. Doctor checks the registered launchers and lists your exa
 Pi, Hermes, and Devin sessions can be listed/routed; they need manual MCP configuration and inbox polling.
 No router key or model call is needed for this setup. Codex may ask you to enable/trust its hooks.
 
-### Python reference install
+`install.sh` verifies the release checksum; `EVERETT_VERSION=vX.Y.Z` pins a release and
+`EVERETT_INSTALL_DIR` changes the target directory. Rerun it to update.
 
-The Python package is the reference implementation. Have Python 3.10+, pipx, and Git:
+From source (needs a Rust toolchain): `cargo install --git https://github.com/raitoxlol/everett everett`,
+or `cargo install --path everett-rs` from a checkout.
 
-```bash
-pipx install git+https://github.com/raitoxlol/everett
-```
-
-Python 3.11+ uses the standard library at runtime. Python 3.10 also installs the small `tomli`
-parser. The package name is `everett-sessions`; install from GitHub, not an unpublished PyPI name.
-
-The tap can lag GitHub: check `everett --version`, or use pipx for the latest source.
-You can also use `uv tool install git+https://github.com/raitoxlol/everett`,
-`pip install git+https://github.com/raitoxlol/everett` inside a venv, or `pipx install .` from a checkout.
+**Upgrading from the retired Python package (pipx).** Install the binary, then run
+`everett install-hooks --apply` and `everett install-mcp --apply`. They back up each file and replace
+the Python hook commands, `-m everett mcp` launchers (and their `PYTHONPATH`), and the OMP extension with
+the native binary. Then `pipx uninstall everett-sessions`.
 
 ### Setup options
 
@@ -80,8 +76,7 @@ Cloud agents use explicit local registrations and the native restricted MCP gate
 provider transcripts or API-model substitutes. See [OpenAI dots setup](docs/openai-dots.md),
 [Grok Bot registration and polling](docs/grok-bot.md), and [gateway permissions](docs/gateway.md).
 Owner-side connector setup is required; queued messages do not prove pickup or wake-up.
-The native binary manages local bindings with `everett external add`, `list`, and `remove`;
-the Python package uses `python -m everett.external`. Both write the same records.
+Manage local bindings with `everett external add`, `list`, and `remove`.
 
 ## Demo
 
@@ -105,7 +100,7 @@ It is read-only: copying a command does not execute it, deliver a message, or
 wake an agent. “Active” is Everett's existing process/recency heuristic, not a
 verified agent heartbeat. The server binds only to `127.0.0.1`, rejects foreign
 Host headers and write methods, and sends no session data to a hosted service.
-Stop it with Ctrl-C. This command is not in the Python CLI.
+Stop it with Ctrl-C.
 
 **Future direction:** an Everett account could connect CLI installations across
 devices and expose their local activity through either a self-hosted or hosted
@@ -270,7 +265,7 @@ everett install-hooks --apply    # back up, then merge into the real config file
 - **Grok CLI**: writes `~/.grok/hooks/everett.json` with a `Stop` hook for automatic cards and events, and a `PostToolUse` hook for live delivery. Grok ignores `SessionStart` output, so Grok sessions get no card instruction or shared core at start. Grok also runs the hooks in `~/.claude/settings.json`; Everett's Claude hooks do nothing there: they need `session_id` and `transcript_path`, and Grok's documented hook input uses camelCase `sessionId` with no transcript path. `--grok` is included by default when `~/.grok` exists.
 - **OMP**: writes `~/.omp/agent/extensions/everett.ts`, which re-exports Everett's extension. OMP loads that folder at startup. You can also pass it per launch: `omp --hook=<path printed by install-hooks>`.
 
-`--apply` writes a backup (`<file>.everett-bak-<timestamp>`) before any change. It never removes other hooks and never adds a second Everett entry. The printed commands use the Python interpreter and the hook paths of the install you ran them from.
+`--apply` writes a backup (`<file>.everett-bak-<timestamp>`) before any change. It never removes other hooks and never adds a second Everett entry. The hooks run `everett hook <name>` through the binary you ran it from. Hooks registered by the retired Python package are replaced in place.
 
 ## Shared core: one mind, many sessions
 
@@ -325,16 +320,15 @@ everett install-mcp            # print the registration for Claude Code, Codex, 
 everett install-mcp --apply    # back up, then register (idempotent)
 ```
 
-- **Claude Code**: `claude mcp add --scope user everett -- <python> -m everett mcp`, or `--apply` adds `mcpServers.everett` to `~/.claude.json`.
+- **Claude Code**: `claude mcp add --scope user everett -- <everett> mcp`, or `--apply` adds `mcpServers.everett` to `~/.claude.json`.
 - **Codex**: an `[mcp_servers.everett]` block in `~/.codex/config.toml`.
 - **OMP**: `mcpServers.everett` in `~/.omp/agent/mcp.json`. OMP also imports Claude Code's servers.
-- **Grok CLI**: `grok mcp add everett <python> -- -m everett mcp`, or `--apply` appends an `[mcp_servers.everett]` block to `~/.grok/config.toml`. Grok also imports Claude Code's servers by default. Included by default when `~/.grok` exists.
+- **Grok CLI**: `grok mcp add everett <everett> -- mcp`, or `--apply` appends an `[mcp_servers.everett]` block to `~/.grok/config.toml`. Grok also imports Claude Code's servers by default. Included by default when `~/.grok` exists.
 - **Devin CLI (v3000.3+)**: `everett install-mcp --devin --apply` merges `mcpServers.everett` into `~/.config/devin/mcp_config.json` (Windows: `%APPDATA%/devin/mcp_config.json`). This is separate from the session store configured by `DEVIN_HOME`. Existing servers and unrelated environment values are preserved; use `--repair --apply` to back up and refresh a stale registration. Doctor and onboarding recognize Devin MCP, but no native hook or automatic caller-id environment variable is assumed.
 
-The registration uses the install you ran it from: the Rust executable with `["mcp"]`, or
-the Python interpreter and package path with `["-m", "everett", "mcp"]`. For another MCP
-client, copy the launcher printed by a dry run. `python -m everett mcp` is also valid when
-that Python has Everett installed. Restart clients after changing their registration.
+The registration launches the executable you ran it from with `["mcp"]`. A launcher left by the
+retired Python package (`["-m", "everett", "mcp"]`) is reported stale and replaced by `--apply`.
+For another MCP client, copy the launcher printed by a dry run. Restart clients after changing their registration.
 
 **Caller identity.** Everett reads the calling session from the environment the harness gives the server: `CLAUDE_CODE_SESSION_ID` (Claude Code), `CODEX_THREAD_ID` (Codex), `HERMES_SESSION_ID` (Hermes), `PI_SESSION_FILE` (Pi), or `GROK_SESSION_ID` (Grok documents it for hooks; for MCP servers it is unverified). `EVERETT_SESSION_ID` overrides all of them. OMP and the Devin CLI expose none. When nothing is detected, agents pass `session_id` to `everett_send` and `everett_card`. An MCP server starts once per session, so after a harness switches sessions in place (for example `/clear`), pass `session_id` explicitly.
 
@@ -398,8 +392,8 @@ to a cloud service for plain `ls`, local routing, or inbox delivery.
 
 | Symptom | Next step |
 | --- | --- |
-| `everett: command not found` | Run `pipx ensurepath`, open a new terminal, then `everett --version`. If needed, reinstall from the GitHub URL above. |
-| `No module named everett` | Use the Python from Everett's venv; a pipx install is isolated from your system Python. `everett install-mcp --apply` records the correct interpreter. |
+| `everett: command not found` | Add the install directory (default `~/.local/bin`; `~/.cargo/bin` for cargo) to `PATH`, open a new terminal, then `everett --version`. |
+| `No module named everett` / hooks call `python3` | A registration still points at the retired Python package. Run `everett install-hooks --apply` and `everett install-mcp --apply`. |
 | MCP client shows zero tools | Run `everett doctor`. It must list **10 tools over stdio**. For a stale/disabled launcher, run `everett install-mcp --claude --repair --apply` (replace `--claude` with `--codex`, `--omp`, `--grok` or `--devin`), then restart/enable the server in the client. Fix malformed config before repair. |
 | Session not found / no live reply | Start a harness session or run `everett --hours 168 ls` for older ones; send to its exact id or title. In MCP, pass `hours: 168` to listing and sending. Hook injection needs enabled/trusted hooks; Pi/Hermes poll `everett_inbox`. A queued message is not a read receipt. |
 | Codex reports `Interrupted system call (os error 4)` | Delivery is unconfirmed. Check the target session before retrying; for an open session with Everett hooks, use `--mode inbox` (MCP: `mode: "inbox"`). Failed resumes are not retried automatically. |
@@ -407,72 +401,25 @@ to a cloud service for plain `ls`, local routing, or inbox delivery.
 
 ## Development
 
-```bash
-python3 -m unittest discover -s tests -v
-bin/everett ls          # run from a checkout without installing
-```
-
-Tests run against a temporary HOME and never read or write your real session stores.
-
-For a release, build a wheel and drive the installed CLI and every MCP tool:
-
-```bash
-python3 -m pip install . build
-python3 -m build
-python3 scripts/verify_release.py --source . --evidence .audit/source-journey.json
-```
-
-Use `--python /path/to/venv/bin/python --cli /path/to/venv/bin/everett` without `--source`
-for fresh artifact proof. The helper records commands/protocol output and checks routing, messages,
-replies, status subscriptions and global/project memory. See the [verification skill](.agents/skills/verify-everett/SKILL.md).
-GitHub Actions runs the suite and fresh wheel journey on macOS/Linux and Python 3.10/3.14, plus Linux 3.12,
-and `cargo test` for the Rust binary on macOS/Linux.
-
-## Rust port (`everett-rs/`)
-
-A single-binary Rust rewrite lives alongside the Python tree: one `everett` binary, no
-Python interpreter needed, fast startup. The Python package remains the reference.
-
-The Rust binary also provides `everett external add/list/remove` and `everett gateway`.
-The gateway uses the official Rust MCP SDK for private stdio and authenticated loopback HTTP.
-See the [owner-bound gateway setup](docs/gateway.md). The Python gateway and its optional SDK
-dependency have been removed; the remaining Python CLI is retained as a reference.
-
-Release tags publish prebuilt binaries for macOS (arm64, x86_64) and Linux (static musl,
-x86_64, aarch64), each with a `.sha256`, plus a rendered Homebrew formula (`everett.rb`).
-Rerun either command to update:
-
-```bash
-curl -fsSL https://raw.githubusercontent.com/raitoxlol/everett/main/install.sh | sh   # ~/.local/bin
-cargo install --git https://github.com/raitoxlol/everett everett                         # from source
-```
-
-`install.sh` verifies the checksum; `EVERETT_VERSION=vX.Y.Z` pins a release and
-`EVERETT_INSTALL_DIR` changes the target directory. To build and test locally:
+The code lives in `everett-rs/`.
 
 ```bash
 cd everett-rs
 cargo build --release            # binary at target/release/everett
-cargo test                       # fixture-store suite (temp HOME, never touches real stores)
+cargo test                       # isolated suite: temp HOME, never touches real stores
 ```
 
-Parity status (Rust vs Python):
+`tests/release_journey.rs` drives the CLI and every MCP tool through routing, messages, replies,
+status subscriptions and global/project memory. Point it at a packaged binary with
+`EVERETT_VERIFY_BINARY=/path/to/everett cargo test --test release_journey`.
+See the [verification skill](.agents/skills/verify-everett/SKILL.md).
+GitHub Actions runs `cargo test` and the release journey against a release build on macOS and Linux.
 
-| Area | Status |
-|---|---|
-| `ls`, `cards`, `route`, `send`, `event`, `events`, `subscribe`, `reply`, `inbox` | Same output shapes and exit codes |
-| `trunk view` / `merge` / `schedule` (plist + launchctl) | Same; schedule is macOS-only as before |
-| `learn`, `core` | Same; secret filter and file locking identical |
-| `install-hooks`, `install-mcp`, `doctor`, `onboard --yes` | Same; hooks read `EVERETT_HOME` |
-| `onboard` interactive | Same seven-step wizard as the Python curses TUI (ratatui); falls back to plain prompts off a TTY |
-| `mcp` | Same 10 tools, same schemas, newline-delimited JSON-RPC 2.0 |
-| `external add`, `list`, `remove` | Native registration commands with shared Python/Rust storage |
-| `gateway` | Rust-only owner-bound MCP server; Python gateway removed |
-| Session stores | Read-only for all harnesses (claude/codex/omp/pi/hermes/grok/devin + t3code overlay); sqlite opened `mode=ro` |
-| Send/resume argv | `claude --resume`, `codex exec resume`, `omp -r`, `pi --session`, `hermes chat --resume`, `grok --resume`, `devin --resume --print` |
-| Python-only surface | `everett` console_script entry points and `python -m everett` |
+Release tags publish prebuilt binaries for macOS (arm64, x86_64) and Linux (static musl,
+x86_64, aarch64), each with a `.sha256`, plus a rendered Homebrew formula (`everett.rb`).
 
-Tests: `cargo test` runs the fixture suite — `ls`/`route`/`send --dry-run`/`cards`/`trunk`/`learn`/`event`/`inbox` journeys, an MCP `initialize`/`tools/list`/`tools/call` stdio round-trip, and pty-driven onboarding wizard runs (rendered-screen assertions via vt100), all against synthetic stores in a temp HOME.
+The gateway uses the official Rust MCP SDK for private stdio and authenticated loopback HTTP.
+See the [owner-bound gateway setup](docs/gateway.md).
 
 ## License
 
