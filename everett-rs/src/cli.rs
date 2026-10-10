@@ -156,7 +156,9 @@ pub fn cmd_ls(args: &Args) -> i32 {
 }
 
 /// Per-harness and total counts of agent/auto/missing cards.
-pub fn card_coverage(sessions: &[Session]) -> (Vec<(String, HashMap<String, i64>)>, [i64; 5]) {
+pub type Coverage = (Vec<(String, HashMap<String, i64>)>, [i64; 5]);
+
+pub fn card_coverage(sessions: &[Session]) -> Coverage {
     let mut order: Vec<String> = Vec::new();
     let mut counts: HashMap<String, HashMap<String, i64>> = HashMap::new();
     for harness in crate::registry::ADAPTERS {
@@ -358,7 +360,7 @@ fn spawn_cmd(args: &Args, r: &Map<String, Value>, sessions: &[Session]) -> i32 {
         let command = crate::send::spawn_command(
             &harness,
             args.text.as_deref().unwrap_or(""),
-            if harness == "claude" { "<new-session-id>" } else { "" },
+            if harness == "claude" || harness == "grok" { "<new-session-id>" } else { "" },
             "",
         )
         .unwrap_or_default();

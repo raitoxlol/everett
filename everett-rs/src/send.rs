@@ -43,7 +43,12 @@ pub fn command_for(session: &Session, text: &str) -> Result<Vec<String>> {
         "claude" => Ok(vec!["claude".into(), "--resume".into(), session.id.clone(), "--print".into(), text.into()]),
         "codex" => Ok(vec!["codex".into(), "exec".into(), "resume".into(), session.id.clone(), text.into()]),
         "omp" => Ok(vec!["omp".into(), "-r".into(), session.id.clone(), "-p".into(), text.into()]),
-        "pi" => Ok(vec!["pi".into(), "--session".into(), session.path.clone(), "-p".into(), text.into()]),
+        "pi" => {
+            if session.path.is_empty() {
+                return Err(EverettError::new(2, "This Pi session has no session file to resume from."));
+            }
+            Ok(vec!["pi".into(), "--session".into(), session.path.clone(), "-p".into(), text.into()])
+        }
         "hermes" => {
             if !session.source.is_empty() && !hermes::INTERACTIVE.contains(&session.source.as_str()) {
                 return Err(EverettError::new(
@@ -75,8 +80,7 @@ pub fn command_for(session: &Session, text: &str) -> Result<Vec<String>> {
 }
 
 fn harness_bin() -> &'static Regex {
-    static RE: OnceLock<Regex> = OnceLock::new();
-    RE.get_or_init(|| Regex::new(r"(^|/)(claude|codex|omp|pi|hermes|grok|devin)(\s|$)").unwrap())
+    crate::registry::harness_bin()
 }
 
 pub const IDLE_QUIET: f64 = 60.0;
@@ -113,7 +117,7 @@ pub fn is_busy(session: &Session, ps_out: &str, now: f64) -> bool {
 }
 
 pub fn wait_idle(session: &Session, wait: f64, poll: f64) -> bool {
-    wait_idle_with(session, wait, poll, ps_commands, || now(), |d| {
+    wait_idle_with(session, wait, poll, ps_commands, now, |d| {
         std::thread::sleep(std::time::Duration::from_secs_f64(d))
     })
 }

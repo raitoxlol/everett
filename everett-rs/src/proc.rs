@@ -57,6 +57,15 @@ fn run_inner(
             cmd.current_dir(cwd);
         }
     }
+    // Own process group so a timeout kills the whole tree, not just the direct child.
+    #[cfg(unix)]
+    unsafe {
+        use std::os::unix::process::CommandExt;
+        cmd.pre_exec(|| {
+            libc::setsid();
+            Ok(())
+        });
+    }
     let mut child = cmd.spawn().map_err(|e| e.to_string())?;
     if let (Some(mut stdin), Some(text)) = (child.stdin.take(), input) {
         use std::io::Write;
@@ -84,6 +93,11 @@ fn run_inner(
         Ok(None) => {
             timed_out = true;
             code = -1;
+            // Kill the child's process group (it called setsid), not just the child.
+            #[cfg(unix)]
+            unsafe {
+                libc::kill(-(child.id() as i32), libc::SIGKILL);
+            }
             let _ = child.kill();
             let _ = child.wait();
         }

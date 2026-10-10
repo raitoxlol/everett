@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 
 from ..session import Session, clean, home, is_injected, read_edges, recent_files, warn
@@ -53,7 +54,15 @@ def parse(path: Path, names: dict[str, str] | None = None) -> Session | None:
     last = [t for t in map(user_text, tail) if t] or users
     src = meta.get('source')
     auto = src == 'exec' or (isinstance(src, dict) and 'subagent' in src)  # scripted run or spawned child thread
-    sid = meta.get('id') or meta.get('session_id') or path.stem
+    sid = meta.get('id') or meta.get('session_id')
+    if not sid:
+        # `codex exec resume` needs the uuid, not the rollout-<ts>-<uuid> filename.
+        match = re.search(
+            r'([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})$',
+            path.stem)
+        if not match:
+            return None
+        sid = match.group(1)
     return Session('codex', sid,
                    meta.get('cwd', ''), str(path), meta.get('timestamp', ''), path.stat().st_mtime,
                    first_user=users[0] if users else '', last_user=last[-1] if last else '', auto=auto,

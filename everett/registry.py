@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 import subprocess
 import time
 
@@ -49,6 +50,11 @@ def mark_running(sessions: list[Session], ps_out: str, now: float) -> None:
         s.running = s.running or session_running(s, ps_out, now)
 
 
+# Only harness binaries count as "running", not greps/scripts mentioning the id.
+# Shared with send.is_busy so ls and send agree.
+HARNESS_BIN = re.compile(r'(^|/)(claude|codex|omp|pi|hermes|grok|devin)(\s|$)')
+
+
 def session_running(s: Session, ps_out: str | None = None, now: float | None = None) -> bool:
     """Recheck one session's running state immediately before a send."""
     if external.is_external(s.harness):
@@ -57,7 +63,8 @@ def session_running(s: Session, ps_out: str | None = None, now: float | None = N
         ps_out = _ps()
     if now is None:
         now = time.time()
-    return (bool(s.id) and s.id in ps_out) or (now - s.last_active) < LIVE_WINDOW
+    in_ps = bool(s.id) and any(s.id in line and HARNESS_BIN.search(line) for line in ps_out.splitlines())
+    return in_ps or (now - s.last_active) < LIVE_WINDOW
 
 
 def scan(since_hours: float = 72, include_auto: bool = False,
