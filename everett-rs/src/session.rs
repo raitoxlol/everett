@@ -10,6 +10,25 @@ use serde_json::{Map, Value};
 pub const CHUNK: usize = 64 * 1024;
 pub const USER_WRAPPERS: &[&str] = &["<pasted_content"];
 
+/// Tags harnesses inject into user-position transcript rows (never typed by the user).
+/// Anything else starting with '<' — pasted HTML/XML like '<div>…' — is real user text.
+pub const INJECTED_TAGS: &[&str] = &[
+    "system-reminder",
+    "system_reminder",
+    "environment_context",
+    "user_info",
+    "user_query",
+    "command-name",
+    "command-message",
+    "command-args",
+    "local-command-stdout",
+    "local-command-caveat",
+    "local-command-stderr",
+    "recommended_plugins",
+];
+/// IDE-injected wrappers: <ide_opened_file>, <ide_selection>, …
+pub const INJECTED_PREFIXES: &[&str] = &["ide_"];
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Session {
     pub harness: String,
@@ -178,10 +197,21 @@ pub fn is_injected(text: &str) -> bool {
     if stripped.is_empty() {
         return true;
     }
-    if !stripped.starts_with('<') {
+    if USER_WRAPPERS.iter().any(|w| stripped.starts_with(w)) {
         return false;
     }
-    !USER_WRAPPERS.iter().any(|w| stripped.starts_with(w))
+    let Some(rest) = stripped.strip_prefix('<') else { return false };
+    if INJECTED_PREFIXES.iter().any(|p| rest.starts_with(p)) {
+        return true;
+    }
+    INJECTED_TAGS.iter().any(|tag| {
+        rest.starts_with(tag)
+            && rest[tag.len()..]
+                .chars()
+                .next()
+                .map(|c| matches!(c, ' ' | '\t' | '\r' | '\n' | '>' | '/'))
+                .unwrap_or(true)
+    })
 }
 
 pub fn recent_files(paths: Vec<PathBuf>, since_hours: f64) -> Vec<PathBuf> {

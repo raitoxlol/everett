@@ -123,12 +123,51 @@ pub fn is_scheduled(path: Option<&PathBuf>) -> bool {
     path.cloned().unwrap_or_else(plist_path).exists()
 }
 
+/// The plist exists but its baked ProgramArguments executable is gone or
+/// non-executable (e.g. a moved binary): launchd then fails silently.
+pub fn is_stale(path: Option<&PathBuf>) -> bool {
+    let target = path.cloned().unwrap_or_else(plist_path);
+    let Ok(text) = fs::read_to_string(&target) else {
+        return false;
+    };
+    // The plist Everett writes stores ProgramArguments as the first <array>
+    // of <string>s; pull its first element without a full plist parser.
+    let marker = "<key>ProgramArguments</key>";
+    let Some(after) = text.split(marker).nth(1) else {
+        return true;
+    };
+    let Some(start) = after.find("<string>") else {
+        return true;
+    };
+    let rest = &after[start + "<string>".len()..];
+    let Some(end) = rest.find("</string>") else {
+        return true;
+    };
+    let exe = rest[..end]
+        .replace("&amp;", "&")
+        .replace("&lt;", "<")
+        .replace("&gt;", ">");
+    exe.is_empty() || !crate::proc::executable_ok(&exe)
+}
+
 fn domain() -> String {
     format!("gui/{}", unsafe { libc::getuid() })
 }
 
 /// Write the plist (idempotent) and `launchctl bootstrap` it.
 pub fn install(at: &str, llm: &str, path: Option<&PathBuf>, log: Option<&PathBuf>) -> Result<Map<String, Value>> {
+    install_inner(at, llm, path, log, &mut |cmd| {
+        run_capture(cmd, None, &HashMap::new(), 15.0)
+    })
+}
+
+fn install_inner(
+    at: &str,
+    llm: &str,
+    path: Option<&PathBuf>,
+    log: Option<&PathBuf>,
+    run: &mut dyn FnMut(&[String]) -> std::result::Result<crate::proc::RunOutput, String>,
+) -> Result<Map<String, Value>> {
     let target = path.cloned().unwrap_or_else(plist_path);
     if let Some(parent) = target.parent() {
         fs::create_dir_all(parent).map_err(|e| EverettError::new(2, e.to_string()))?;
@@ -138,17 +177,20 @@ pub fn install(at: &str, llm: &str, path: Option<&PathBuf>, log: Option<&PathBuf
     }
     fs::write(&target, render_plist(at, llm)?).map_err(|e| EverettError::new(2, e.to_string()))?;
     let _ = fs::set_permissions(&target, PermissionsExt::from_mode(0o644));
-    let result = run_capture(
-        &[
-            "launchctl".to_string(),
-            "bootstrap".to_string(),
-            domain(),
-            target.to_string_lossy().to_string(),
-        ],
-        None,
-        &HashMap::new(),
-        15.0,
-    );
+    // Bootout first so re-applying with a changed --at/--llm replaces the loaded job;
+    // bootout fails harmlessly when nothing is loaded yet.
+    let _ = run(&[
+        "launchctl".to_string(),
+        "bootout".to_string(),
+        domain(),
+        target.to_string_lossy().to_string(),
+    ]);
+    let result = run(&[
+        "launchctl".to_string(),
+        "bootstrap".to_string(),
+        domain(),
+        target.to_string_lossy().to_string(),
+    ]);
     let (ok, stderr) = match result {
         Ok(r) => (r.code == 0, r.stderr.trim().to_string()),
         Err(e) => (false, e),
@@ -182,4 +224,52 @@ pub fn remove(path: Option<&PathBuf>) -> Map<String, Value> {
     r.insert("path".into(), json!(target.to_string_lossy()));
     r.insert("removed".into(), json!(existed));
     r
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn stale_when_baked_program_is_gone() {
+        let dir = tempfile::tempdir().unwrap();
+        let plist = dir.path().join("dev.everett.core-merge.plist");
+        let xml = concat!(
+            "<?xml version=\"1.0\"?><plist version=\"1.0\"><dict>",
+            "<key>Label</key><string>dev.everett.core-merge</string>",
+            "<key>ProgramArguments</key><array>",
+            "<string>/gone/everett</string><string>trunk</string><string>merge</string>",
+            "</array></dict></plist>"
+        );
+        fs::write(&plist, xml).unwrap();
+        assert!(is_stale(Some(&plist)));
+
+        let ok = render_plist("04:00", "none").unwrap();
+        fs::write(&plist, ok).unwrap();
+        assert!(!is_stale(Some(&plist)));
+    }
+
+    #[test]
+    fn bootout_runs_before_bootstrap() {
+        let dir = tempfile::tempdir().unwrap();
+        let plist = dir.path().join("dev.everett.core-merge.plist");
+        let calls = std::cell::RefCell::new(Vec::new());
+        install_inner(
+            "04:00",
+            "none",
+            Some(&plist),
+            Some(&plist),
+            &mut |cmd| {
+                calls.borrow_mut().push(cmd[1].clone());
+                Ok(crate::proc::RunOutput {
+                    code: 0,
+                    stdout: String::new(),
+                    stderr: String::new(),
+                    timed_out: false,
+                })
+            },
+        )
+        .unwrap();
+        assert_eq!(*calls.borrow(), vec!["bootout", "bootstrap"]);
+    }
 }

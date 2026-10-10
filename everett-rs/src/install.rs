@@ -76,25 +76,105 @@ pub fn omp_extension_source() -> String {
     include_str!("omp_session_start.mjs").to_string()
 }
 
-fn has_script(entries: &Value, script: &str) -> bool {
-    let Some(entries) = entries.as_array() else { return false };
-    for entry in entries {
-        let Some(hooks) = entry.get("hooks").and_then(|h| h.as_array()) else { continue };
-        for hook in hooks {
-            let command = hook.get("command").and_then(|c| c.as_str()).unwrap_or("");
-            if command.contains(script) && command.contains("everett") {
-                return true;
+/// `shlex.split`: whitespace-separated tokens honoring 'single'/"double" quotes
+/// and backslash escapes. None on an unterminated quote.
+fn command_tokens(command: &str) -> Option<Vec<String>> {
+    let mut tokens = Vec::new();
+    let mut cur = String::new();
+    let mut quote: Option<char> = None;
+    let mut started = false;
+    let mut chars = command.chars();
+    while let Some(c) = chars.next() {
+        match quote {
+            Some(q) => {
+                if c == q {
+                    quote = None;
+                } else {
+                    cur.push(c);
+                }
+            }
+            None => match c {
+                '\'' | '"' => {
+                    quote = Some(c);
+                    started = true;
+                }
+                '\\' => {
+                    if let Some(n) = chars.next() {
+                        cur.push(n);
+                    }
+                    started = true;
+                }
+                _ if c.is_whitespace() => {
+                    if started || !cur.is_empty() {
+                        tokens.push(std::mem::take(&mut cur));
+                    }
+                    started = false;
+                }
+                _ => {
+                    cur.push(c);
+                    started = true;
+                }
+            },
+        }
+    }
+    if quote.is_some() {
+        return None;
+    }
+    if started || !cur.is_empty() {
+        tokens.push(cur);
+    }
+    Some(tokens)
+}
+
+/// Some(true)=ok / Some(false)=stale for an Everett hook command registered for
+/// `script`, else None. A registration that still mentions Everett + the script
+/// but whose Everett binary is gone or non-executable is stale: it fails silently.
+fn hook_state(command: &str, script: &str) -> Option<bool> {
+    if !command.contains(script) || !command.contains("everett") {
+        return None;
+    }
+    match command_tokens(command).and_then(|t| t.first().cloned()) {
+        Some(first) => Some(crate::proc::executable_ok(&first)),
+        None => Some(false),
+    }
+}
+
+/// 'ok' | 'stale' | 'missing' for Everett's registration of `script` in one event's entries.
+fn script_state(entries: &Value, script: &str) -> &'static str {
+    let mut stale = false;
+    if let Some(entries) = entries.as_array() {
+        for entry in entries {
+            let Some(hooks) = entry.get("hooks").and_then(|h| h.as_array()) else { continue };
+            for hook in hooks {
+                let command = hook.get("command").and_then(|c| c.as_str()).unwrap_or("");
+                match hook_state(command, script) {
+                    Some(true) => return "ok",
+                    Some(false) => stale = true,
+                    None => {}
+                }
             }
         }
     }
-    false
+    if stale { "stale" } else { "missing" }
 }
 
-/// Which of Everett's hook events are registered for a harness.
-pub fn installed(harness: &str, data: Option<&Map<String, Value>>) -> std::result::Result<HashMap<String, bool>, String> {
-    use std::collections::HashMap;
+/// 'ok' | 'stale' | 'missing' for the OMP extension file (the bundled extension
+/// shells out to `everett` on PATH, so a moved binary leaves it dead).
+fn omp_extension_state() -> &'static str {
+    if !omp_extension_path().is_file() {
+        return "missing";
+    }
+    if crate::proc::executable_ok("everett") {
+        "ok"
+    } else {
+        "stale"
+    }
+}
+
+/// Per-event 'ok' | 'stale' | 'missing' so doctor/apply can repair dead registrations.
+pub fn installed(harness: &str, data: Option<&Map<String, Value>>) -> std::result::Result<HashMap<String, String>, String> {
     if harness == "omp" {
-        return Ok(HashMap::from([("extension".to_string(), omp_extension_path().exists())]));
+        return Ok(HashMap::from([("extension".to_string(), omp_extension_state().to_string())]));
     }
     let owned;
     let data = match data {
@@ -113,7 +193,7 @@ pub fn installed(harness: &str, data: Option<&Map<String, Value>>) -> std::resul
     let mut out = HashMap::new();
     for (event, script, _) in hooks_for(harness) {
         let entries = hooks.get(*event).cloned().unwrap_or(Value::Null);
-        out.insert(event.to_string(), has_script(&entries, script));
+        out.insert(event.to_string(), script_state(&entries, script).to_string());
     }
     Ok(out)
 }
@@ -140,10 +220,23 @@ pub fn merge(
         if hooks.get(*event).map(|e| !e.is_array()).unwrap_or(false) {
             return Err(format!("\"hooks.{}\" is not a list", event));
         }
+        let state = script_state(hooks.get(*event).unwrap_or(&Value::Null), script);
+        if state == "ok" {
+            continue;
+        }
         let entries = hooks.entry(event.to_string()).or_insert(Value::Array(Vec::new()));
         let entries = entries.as_array_mut().unwrap();
-        if has_script(&Value::Array(entries.clone()), script) {
-            continue;
+        if state == "stale" {
+            // Replace only Everett's own dead hooks; other hooks in this event stay.
+            for entry in entries.iter_mut() {
+                if let Some(list) = entry.get_mut("hooks").and_then(|h| h.as_array_mut()) {
+                    list.retain(|h| {
+                        hook_state(h.get("command").and_then(|c| c.as_str()).unwrap_or(""), script)
+                            != Some(false)
+                    });
+                }
+            }
+            entries.retain(|e| e.get("hooks").and_then(|h| h.as_array()).map(|h| !h.is_empty()).unwrap_or(true));
         }
         entries.push(json!({
             "hooks": [{"type": "command", "command": hook_command(script), "timeout": timeout}]
@@ -379,18 +472,21 @@ pub fn mcp_status(harness: &str) -> (String, String) {
     {
         return ("stale".into(), "registration is not Everett stdio".to_string());
     }
-    let args: Vec<String> = entry
-        .get("args")
-        .and_then(|v| v.as_array())
-        .map(|a| a.iter().filter_map(|x| x.as_str().map(|s| s.to_string())).collect())
-        .unwrap_or_default();
+    let args: Vec<String> = match entry.get("args") {
+        None => Vec::new(),
+        Some(Value::Array(items)) => {
+            if items.iter().any(|x| !x.is_string()) {
+                return ("invalid".into(), "registration args must be strings".to_string());
+            }
+            items.iter().map(|x| x.as_str().unwrap_or_default().to_string()).collect()
+        }
+        Some(_) => return ("invalid".into(), "registration args must be a list of strings".to_string()),
+    };
     if command.is_empty() {
         return ("stale".into(), "registration has no executable".to_string());
     }
-    let is_exec = PathBuf::from(command).is_file();
-    let path_env = std::env::var("PATH").unwrap_or_default();
-    if !is_exec && crate::proc::which(command, &path_env).is_none() {
-        return ("stale".into(), "registered executable is missing or not on PATH".to_string());
+    if !crate::proc::executable_ok(command) {
+        return ("stale".into(), "registered executable is missing, not executable, or not on PATH".to_string());
     }
     let is_python_form = args == ["-m", "everett", "mcp"].map(String::from);
     let name = PathBuf::from(command)

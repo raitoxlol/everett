@@ -109,7 +109,7 @@ pub fn which(bin: &str, path_env: &str) -> Option<String> {
 }
 
 #[cfg(unix)]
-fn is_executable(path: &str) -> bool {
+pub fn is_executable(path: &str) -> bool {
     use std::os::unix::fs::PermissionsExt;
     std::fs::metadata(path)
         .map(|m| m.permissions().mode() & 0o111 != 0)
@@ -117,8 +117,20 @@ fn is_executable(path: &str) -> bool {
 }
 
 #[cfg(not(unix))]
-fn is_executable(path: &str) -> bool {
+pub fn is_executable(path: &str) -> bool {
     std::path::Path::new(path).exists()
+}
+
+/// True when `name` runs: an executable file path, or a bare name on PATH.
+pub fn executable_ok(name: &str) -> bool {
+    if name.is_empty() {
+        return false;
+    }
+    if name.contains('/') {
+        return std::path::Path::new(name).is_file() && is_executable(name);
+    }
+    let path_env = std::env::var("PATH").unwrap_or_default();
+    which(name, &path_env).is_some()
 }
 
 const SHLEX_SAFE: &str = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789@%_+=:,./-";
