@@ -65,7 +65,7 @@ def scan(since_hours: float = 72, include_auto: bool = False,
     for name, mod in ADAPTERS.items():
         if not harness or name == harness:
             sessions.extend(mod.scan(since_hours))
-    t3code.annotate(sessions)  # T3 Code threads are Codex/Claude/Grok sessions underneath
+    t3code.overlay(sessions, since_hours, harness)
     for s in sessions:
         if not s.first_user:  # first real ask can sit past the head chunk in huge files
             s.first_user = s.last_user

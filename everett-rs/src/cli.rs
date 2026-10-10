@@ -47,6 +47,7 @@ pub struct Args {
     pub codex: bool,
     pub omp: bool,
     pub grok: bool,
+    pub devin: bool,
     pub repair: bool,
     pub onboard_yes: bool,
     pub span_days: i64,
@@ -990,10 +991,16 @@ pub fn cmd_core(args: &Args) -> i32 {
     }
 }
 
-fn harnesses(args: &Args) -> Vec<String> {
+fn harnesses(args: &Args, mcp: bool) -> Vec<String> {
     let mut choices = vec!["claude", "codex", "omp"];
     if home().join(".grok").is_dir() || args.grok {
         choices.push("grok");
+    }
+    if mcp && (args.devin
+        || crate::install::mcp_path("devin").parent().map(|p| p.is_dir()).unwrap_or(false)
+        || crate::proc::which("devin", &std::env::var("PATH").unwrap_or_default()).is_some())
+    {
+        choices.push("devin");
     }
     let mut picked: Vec<String> = Vec::new();
     for h in &choices {
@@ -1002,6 +1009,7 @@ fn harnesses(args: &Args) -> Vec<String> {
             "codex" => args.codex,
             "omp" => args.omp,
             "grok" => args.grok,
+            "devin" => args.devin,
             _ => false,
         } {
             picked.push(h.to_string());
@@ -1015,7 +1023,7 @@ fn harnesses(args: &Args) -> Vec<String> {
 }
 
 pub fn cmd_install_hooks(args: &Args) -> i32 {
-    for harness in harnesses(args) {
+    for harness in harnesses(args, false) {
         if args.apply {
             match crate::install::apply(&harness, None) {
                 Ok(msg) => println!("{}", msg),
@@ -1044,7 +1052,7 @@ pub fn cmd_install_mcp(args: &Args) -> i32 {
         eprintln!("everett: --repair requires --apply (backs up and refreshes the Everett entry).");
         return 2;
     }
-    for harness in harnesses(args) {
+    for harness in harnesses(args, true) {
         if args.apply {
             match crate::install::apply_mcp(&harness, args.repair) {
                 Ok(msg) => println!("{}", msg),
@@ -1075,4 +1083,3 @@ pub fn cmd_onboard(args: &Args) -> i32 {
 pub fn cmd_hook(stem: &str, rest: &[String]) -> i32 {
     crate::hooks_common::hook_main(stem, rest)
 }
-
