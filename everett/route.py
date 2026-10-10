@@ -127,6 +127,9 @@ def criteria(sessions: list[Session]) -> tuple[dict[str, str], dict[str, Session
 
 
 def resume_command(session: Session, text: str) -> str:
+    if session.source == 't3code':
+        return (f'# Continue in T3 Code; poll everett_inbox(session_id={json.dumps(session.id)}). '
+                'Do not resume this thread with the provider CLI.')
     cd = f'cd {shlex.quote(session.cwd or ".")}'
     if session.harness == 'claude':
         return f'{cd} && claude --resume {shlex.quote(session.id)} {shlex.quote(text)}'

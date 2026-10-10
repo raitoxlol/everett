@@ -66,7 +66,7 @@ preserving every other key). The same step has a "merge shared memory nightly" t
 Everett reads the session stores the harnesses already write: `~/.claude/projects`,
 `~/.codex/sessions`, `~/.omp/agent/sessions`, `~/.pi/agent/sessions`, `~/.grok/sessions`,
 Hermes' `state.db` files, the Devin CLI's `sessions.db` (plus `transcripts/*.json`),
-and T3 Code's `~/.t3/userdata/state.sqlite`. Every database is opened read-only.
+and T3 Code's `~/.t3/userdata/statev2.sqlite` (legacy `state.sqlite` fallback). Every database is opened read-only.
 
 ## Demo
 
@@ -130,14 +130,21 @@ Global option: `--hours N` sets the look-back window (default 72).
 | Hermes Agent | `hermes -p <profile> chat --resume <id> -Q -q <text>` | `hermes chat -Q -q <text>` |
 | Grok CLI | `grok --resume <id> -p <text>` | `grok --session-id <new uuid> -p <text>` |
 | Devin CLI | `devin --resume <id> --print <text>` | `devin -p <text>` |
-| T3 Code | Inbox via underlying harness hooks; no CLI resume | not supported |
+| T3 Code | Inbox; hooks where supported, otherwise explicit MCP polling; no CLI resume | not supported |
 
 The harness appends the request and the reply to that session's history. Hermes sessions that belong to a chat platform (Telegram, Discord, and so on) are listed and routable, but `send` refuses them, because a CLI resume would not reach that chat. Scripted Hermes runs (cron, oneshot, webhook) are hidden like other automated runs. Grok sessions are read from `~/.grok/sessions/<url-encoded cwd>/<id>/` (`summary.json` for id, folder, and title; `prompt_history.jsonl` for the typed requests). A Grok session counts as running while `~/.grok/active_sessions.json` names it with a live process id. Headless `grok -p` runs are hidden like other scripted runs. Devin CLI sessions are read from `sessions.db` under `$DEVIN_HOME`, else the platform data dir (`~/Library/Application Support/devin/cli` on macOS, `~/.local/share/devin/cli` on Linux): the `sessions` table gives id, folder, title, and activity; `message_nodes` gives the user asks when the CLI build has it, otherwise `transcripts/<id>.json` carries the listing. Hidden sessions are skipped. Devin has no Everett hooks, so delivery is a headless `devin --resume <id>` run.
 
 T3 Code is a desktop GUI that runs Codex, Claude Code, and Grok underneath. Everett marks the
 matching session with source `t3code` (`[t3code]` in `ls`) and uses the thread title when needed.
-Automatic sends use the inbox; delivery requires the underlying harness's hooks. CLI resume is
-refused because it would fork T3's own resume point. You can also continue the thread in T3 Code.
+Active projections with a real provider ID also supply sessions when the local provider
+transcript is absent. Current v2 and legacy stores are supported; see the
+[T3 discovery and polling guide](docs/t3code.md).
+Automatic sends queue work in the inbox. Hooks can inject it only if T3's provider runtime
+actually loads and runs them; queuing alone does not prove pickup. Otherwise the receiving
+thread calls `everett_inbox(session_id="<underlying-provider-session-id>")` and answers with
+`everett_send(reply_to="<message-id>", text="…", session_id="<underlying-provider-session-id>")`.
+Verify the Everett tools are available inside that T3 thread, and use `everett_core` for shared
+memory. CLI resume is refused because it would fork T3's own resume point.
 
 Sessions that Everett spawns are recorded in `~/.everett/spawned.jsonl`, so they show in `ls` even though they ran headless.
 
@@ -152,7 +159,7 @@ Exit codes: 2 bad input, 3 no Jev key with `--router jev`, 4 session stayed busy
 
 Headless resume only works on a session nobody has open. When a session is running, Everett delivers into it instead: the request goes to the session's inbox, and the session's own hooks inject it at its next turn or, if it is busy, right after its next tool call.
 
-1. **Which path.** `send --mode auto` (the default) uses the inbox when a harness process is attached to the target: Everett's hooks recorded a live process for it (`~/.everett/inbox/live/<id>.json`), or its id is on a running harness command line. T3 Code sessions always use the inbox, because a CLI resume would fork the thread. Everything else is resumed headless, as before. `--mode resume` and `--mode inbox` force a path.
+1. **Which path.** `send --mode auto` (the default) uses the inbox when a harness process is attached to the target: Everett's hooks recorded a live process for it (`~/.everett/inbox/live/<id>.json`), or its id is on a running harness command line. T3 Code sessions always use the inbox, because a CLI resume would fork the thread. Everything else is resumed headless, as before. `--mode inbox` forces inbox delivery; `--mode resume` forces headless resume except for T3, where it is refused.
 2. **Inbox.** `~/.everett/inbox/<session-id>.jsonl`, one message per line: `id`, `from` (the sender's session id, or `human` from a terminal), `from_harness`, `from_card`, `text`, `ts`, `reply_to`, `hops`, `kind` (`message`, `reply`, or `event`). Delivered ids go to `<session-id>.done`. Undelivered messages expire after 7 days.
 3. **Injection.** The hook adds at most 5 messages (2,000 characters each, 6,000 in total) as context, marked as coming from Everett with the sender's session and card, and marks exactly those delivered. The rest arrive at the next hook. The hook reads local files only, takes about 40 ms, and prints nothing on any error.
 4. **Replies.** The receiving agent answers with `everett_send(reply_to="<id>", text=…)` or `everett reply <id> "<text>"`. The reply lands in the sender's inbox and is injected there the same way. A sender can instead block on it: `everett send --wait 120 …` or `everett_send(wait=120)`. `everett inbox` / `everett_inbox` read an inbox directly.
@@ -284,7 +291,7 @@ that Python has Everett installed. Restart clients after changing their registra
 **Caller identity.** Everett reads the calling session from the environment the harness gives the server: `CLAUDE_CODE_SESSION_ID` (Claude Code), `CODEX_THREAD_ID` (Codex), `HERMES_SESSION_ID` (Hermes), `PI_SESSION_FILE` (Pi), or `GROK_SESSION_ID` (Grok documents it for hooks; for MCP servers it is unverified). `EVERETT_SESSION_ID` overrides all of them. OMP and the Devin CLI expose none. When nothing is detected, agents pass `session_id` to `everett_send` and `everett_card`. An MCP server starts once per session, so after a harness switches sessions in place (for example `/clear`), pass `session_id` explicitly.
 
 **Safety.**
-- The server never sends to the caller's own session.
+- The server refuses self-send when the caller's identity is known. If `everett_whoami` cannot identify you, pass your own `session_id`; do not guess another session's identity from its folder or recency.
 - `EVERETT_HOPS` travels through every delivery, and a request that has already been forwarded 3 times is refused, so two agents cannot ping-pong.
 - A new session starts only with `spawn: true`.
 - `everett_learn` runs the secret filter.
