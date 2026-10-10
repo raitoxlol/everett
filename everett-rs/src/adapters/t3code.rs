@@ -56,26 +56,30 @@ fn prompts(con: &Connection, thread_id: &str, v2: bool) -> rusqlite::Result<(Str
     let field = if v2 { "payload_json" } else { "text" };
     let mut texts = Vec::new();
     for order in ["ASC", "DESC"] {
-        let mut stmt = con.prepare(&format!(
-            "SELECT {} FROM {} WHERE thread_id=?1 AND role='user' \
-             ORDER BY created_at {}, message_id {} LIMIT 1",
-            field, table, order, order
-        ))?;
-        let mut rows = stmt.query([thread_id])?;
-        let text = match rows.next()? {
-            Some(row) => {
-                let raw: String = row.get(0)?;
-                if v2 {
-                    serde_json::from_str::<Value>(&raw)
-                        .ok()
-                        .and_then(|v| v.get("text").and_then(Value::as_str).map(str::to_string))
-                        .unwrap_or_default()
-                } else {
-                    raw
-                }
+        let text = (|| -> rusqlite::Result<String> {
+            let mut stmt = con.prepare(&format!(
+                "SELECT {} FROM {} WHERE thread_id=?1 AND role='user' \
+                 ORDER BY created_at {}, message_id {} LIMIT 1",
+                field, table, order, order
+            ))?;
+            let mut rows = stmt.query([thread_id])?;
+            let raw: Option<String> = match rows.next()? {
+                Some(row) => row.get(0)?,
+                None => None,
+            };
+            let Some(raw) = raw else {
+                return Ok(String::new());
+            };
+            if v2 {
+                Ok(serde_json::from_str::<Value>(&raw)
+                    .ok()
+                    .and_then(|v| v.get("text").and_then(Value::as_str).map(str::to_string))
+                    .unwrap_or_default())
+            } else {
+                Ok(raw)
             }
-            None => String::new(),
-        };
+        })()
+        .unwrap_or_default();
         texts.push(clean(&text, 200));
     }
     Ok((texts.remove(0), texts.remove(0)))
@@ -184,7 +188,7 @@ fn read(con: &Connection, path: &Path) -> rusqlite::Result<HashMap<(String, Stri
         } else {
             worktree
         };
-        let (first, last) = prompts(con, &thread_id, v2)?;
+        let (first, last) = prompts(con, &thread_id, v2).unwrap_or_default();
         let mut session = Session::new(
             harness,
             sid,
