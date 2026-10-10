@@ -59,13 +59,13 @@
   <figure class="term" aria-label="Example output of everett ls and everett send">
     <figcaption><span class="dot"></span><span class="dot"></span><span class="dot"></span> session window</figcaption>
 <pre>$ everett ls
-<span class="run">●</span> claude  2m  ~/src/api    API: retry/backoff in upload client
-<span class="idle">○</span> codex   40m ~/src/web    Web: dark-mode toggle; styles done
-<span class="idle">○</span> omp     3h  ~/src/infra  Infra: Terraform staging bucket
+<span class="run">●</span> claude 2m  api   retry/backoff, upload
+<span class="idle">○</span> codex 40m  web   dark mode, styles done
+<span class="idle">○</span> omp   3h   infra terraform staging
 
 $ everett send "retry cap: 5"
-<span class="ok">SENT</span>  [claude] ~/src/api — API: retry/backoff in upload client
-Done. MAX_RETRIES is now 5, backoff test covers the cap.</pre>
+<span class="ok">SENT</span> [claude] api — retry/backoff fix
+Done. MAX_RETRIES=5, test covers it.</pre>
   </figure>
 </section>
 

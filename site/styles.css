@@ -253,5 +253,6 @@ section { margin: 96px 0; }
   .tools { grid-template-columns: 1fr; }
   .tools > div { grid-template-columns: 140px 1fr; }
   .tools > div:nth-child(odd) { padding-right: 0; }
+  .term pre { font-size: 0.7rem; padding: 12px 14px; }
   .foot-grid { flex-direction: column; }
 }
