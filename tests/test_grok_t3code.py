@@ -210,7 +210,7 @@ class T3Code(TempHome):
 
     def test_sessions_annotated_not_double_listed(self):
         sessions = registry.scan(72)
-        self.assertEqual(sorted(s.id for s in sessions), ['cl-1', 'cx-1', 'gk-1'])
+        self.assertEqual(sorted(s.id for s in sessions), ['cl-1', 'cx-1', 'gk-1', 'no-such-session'])
         self.assertTrue(all(s.source == 't3code' for s in sessions))
         by_id = {s.id: s for s in sessions}
         self.assertEqual(by_id['cl-1'].title, 'API retry thread')  # no title of its own: T3's fills in

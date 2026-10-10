@@ -422,14 +422,14 @@ fn tool_send(args: &Map<String, Value>) -> std::result::Result<Map<String, Value
     refuse_self(&session, if caller.is_empty() { None } else { Some(&caller) }).map_err(ToolFailure::Tool)?;
     if delivery_mode(&session, &mode, None)? == "inbox" {
         let result = send_inbox(&session, &text, wait, if caller.is_empty() { None } else { Some(&caller) }, 1.0).map_err(ToolFailure::Tool)?;
-        let note = format!(
+        let note = result.get("pickup_note").and_then(Value::as_str).map(str::to_string).unwrap_or_else(|| format!(
             "Queued; it is injected into that live session at its next turn or tool call.{}",
             if result.get("reply").map(|r| !r.is_null()).unwrap_or(false) {
                 ""
             } else {
                 " Its reply will arrive in your inbox (injected by your hooks, or read it with everett_inbox)."
             }
-        );
+        ));
         let mut out = decision.clone();
         out.insert("delivered".into(), json!(true));
         out.insert("session".into(), Value::Object(brief(&session)));
