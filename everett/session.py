@@ -97,10 +97,29 @@ def clean(text: str, limit: int = 200) -> str:
 
 USER_WRAPPERS = ('<pasted_content',)  # tags that wrap text the user typed or pasted
 
+# Tags harnesses inject into user-position transcript rows (never typed by the user).
+# Anything else starting with '<' — pasted HTML/XML like '<div>…' — is real user text.
+INJECTED_TAGS = (
+    'system-reminder', 'system_reminder', 'environment_context', 'user_info', 'user_query',
+    'command-name', 'command-message', 'command-args',
+    'local-command-stdout', 'local-command-caveat', 'local-command-stderr',
+    'recommended_plugins',
+)
+INJECTED_PREFIXES = ('ide_',)  # IDE-injected wrappers: <ide_opened_file>, <ide_selection>, …
+
 
 def is_injected(text: str) -> bool:
     t = text.lstrip()
-    return not t or (t.startswith('<') and not t.startswith(USER_WRAPPERS))
+    if not t or t.startswith(USER_WRAPPERS):
+        return not t
+    if not t.startswith('<'):
+        return False
+    if t[1:].startswith(INJECTED_PREFIXES):
+        return True
+    for tag in INJECTED_TAGS:
+        if t.startswith(f'<{tag}') and (len(t) == len(tag) + 1 or t[len(tag) + 1] in ' \t\r\n>/'):
+            return True
+    return False
 
 
 def recent_files(paths, since_hours: float):

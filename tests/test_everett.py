@@ -50,6 +50,44 @@ class Adapters(unittest.TestCase):
             cards.card_path('p-1').write_text('Orchestrating work')
             self.assertEqual(claude.parse(p).id, 'p-1')
 
+    def test_injected_allowlist_keeps_pasted_markup(self):
+        from everett.session import is_injected
+        self.assertFalse(is_injected('<div>broken layout'))
+        self.assertFalse(is_injected('  <Value> 1'))
+        self.assertFalse(is_injected('<pasted_content id="a">\nreal paste'))
+        for t in ('<system-reminder>x</system-reminder>', '  <user_info>u</user_info>',
+                  '<environment_context/>', '<command-name>/clear</command-name>',
+                  '<local-command-stdout>out</local-command-stdout>', '<ide_opened_file>x</ide_opened_file>'):
+            self.assertTrue(is_injected(t), t)
+        self.assertTrue(is_injected('   '))
+        # End-to-end: a session whose first user text is pasted markup is still listed.
+        rows = [{'type': 'user', 'sessionId': 'h-1', 'cwd': '/w', 'timestamp': 't',
+                 'message': {'content': '<div>broken layout</div>'}}]
+        with tempfile.TemporaryDirectory() as d, mock.patch.dict('os.environ', {'EVERETT_HOME': d}):
+            p = Path(d) / 'h-1.jsonl'
+            p.write_text('\n'.join(map(json.dumps, rows)) + '\n')
+            s = claude.parse(p)
+            self.assertEqual(s.first_user, 'broken layout')
+
+    def test_card_path_traversal_reads_nothing_outside_cards_dir(self):
+        from everett import cards
+        with tempfile.TemporaryDirectory() as d, mock.patch.dict('os.environ', {'EVERETT_HOME': d}):
+            outside = Path(d) / '.everett' / 'evil.md'   # what '../evil' would resolve to
+            outside.parent.mkdir(parents=True)
+            outside.write_text('STOLEN CARD BODY')
+            rows = [{'type': 'user', 'sessionId': '../evil', 'cwd': '/w', 'timestamp': 't',
+                     'message': {'content': 'hello'}}]
+            transcript = Path(d) / 'evil.jsonl'
+            transcript.write_text('\n'.join(map(json.dumps, rows)) + '\n')
+            s = claude.parse(transcript)
+            self.assertEqual(s.id, '../evil')  # session still lists
+            cards.apply([s])
+            self.assertEqual(s.card, '')       # but no card is read through the traversal
+            self.assertIsNone(cards.card_path('../evil'))
+            self.assertIsNone(cards.read_card('../evil'))
+            self.assertFalse(cards.is_auto_card('../evil'))
+            self.assertEqual(outside.read_text(), 'STOLEN CARD BODY')
+
     def test_read_edges_large_file(self):
         with tempfile.NamedTemporaryFile('w', suffix='.jsonl', delete=False) as f:
             f.write('{"n": 0}\n' + ('{"pad": "' + 'x' * 100 + '"}\n') * (3 * CHUNK // 100) + '{"n": 1}\n')
@@ -345,6 +383,28 @@ class Cards(unittest.TestCase):
             listing = json.loads(output.getvalue())
             self.assertEqual(listing[0]['card_source'], 'auto')
             self.assertIn('Authentication tests', listing[0]['card'])
+
+
+class CardsCLI(unittest.TestCase):
+    def test_cards_hours_without_regenerate_is_honored(self):
+        import contextlib
+        import io
+        session = Session('claude', 'c-1', '/work/app', '', '', 0)
+        seen = {}
+        def fake_scan(hours, **kw):
+            seen['hours'] = hours
+            return [session]
+        output = io.StringIO()
+        with mock.patch('everett.cli.registry.scan', side_effect=fake_scan), \
+                contextlib.redirect_stdout(output):
+            self.assertEqual(main(['cards', '--hours', '5']), 0)
+        self.assertEqual(seen['hours'], 5)
+        self.assertIn('last 5 hours', output.getvalue())
+        seen.clear()
+        with mock.patch('everett.cli.registry.scan', side_effect=fake_scan), \
+                contextlib.redirect_stdout(io.StringIO()):
+            self.assertEqual(main(['--hours', '2', 'cards']), 0)
+        self.assertEqual(seen['hours'], 2)
 
 
 class AutoCardQuality(unittest.TestCase):

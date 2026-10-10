@@ -193,10 +193,7 @@ MAX_HOPS = 3
 
 def hop_env() -> dict:
     """Env for a delivery: EVERETT_HOPS counts agent-to-agent forwards; refuse past MAX_HOPS."""
-    try:
-        hops = int(os.environ.get('EVERETT_HOPS', '0') or 0)
-    except ValueError:
-        hops = 0
+    hops = caller_hops()
     if hops >= MAX_HOPS:
         raise SendError(7, f'Hop limit reached ({hops}/{MAX_HOPS}): this request was already forwarded '
                            f'{hops} times between sessions. Answer it here instead of forwarding again.')
@@ -358,6 +355,17 @@ def current_hops() -> int:
         return 0
 
 
+def caller_hops() -> int:
+    """EVERETT_HOPS plus the highest hop take() delivered to the calling live session,
+    so a live session can't forward forever just because its env hop count is 0."""
+    from . import inbox
+    hops = current_hops()
+    sid = caller_session_id()
+    if sid:
+        hops = max(hops, inbox.session_hops(sid))
+    return hops
+
+
 def sender_info(caller: str | None = None) -> dict:
     """Who is sending: the calling session (with its card), else the human at a terminal."""
     from . import cards, inbox
@@ -377,10 +385,12 @@ def send_inbox(session: Session, text: str, wait: float = 0, caller: str | None 
     from . import inbox
     if not math.isfinite(wait) or wait < 0:
         raise SendError(2, '--wait must be a finite number of seconds, 0 or more.')
+    who = sender_info(caller)
     hops = current_hops()
+    if who['sender'] != inbox.HUMAN:
+        hops = max(hops, inbox.session_hops(who['sender']))
     if hops >= MAX_HOPS:
         raise SendError(7, f'Hop limit reached ({hops}/{MAX_HOPS}): answer here instead of forwarding again.')
-    who = sender_info(caller)
     try:
         message = inbox.post(session.id, text, sender=who['sender'], hops=hops + 1,
                              from_harness=who['from_harness'], from_card=who['from_card'])

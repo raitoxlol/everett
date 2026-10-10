@@ -199,10 +199,14 @@ def render(messages: list[dict], now: float | None = None) -> tuple[str, list[st
 
 
 def take(session_id: str) -> str:
-    """Render pending messages for injection and mark exactly those delivered."""
-    text, ids = render(pending(session_id))
+    """Render pending messages for injection, mark exactly those delivered, and
+    record the highest hop count seen so the session can't forward forever."""
+    messages = pending(session_id)
+    text, ids = render(messages)
     if ids:
         mark_done(session_id, ids)
+        by_id = {m['id']: m for m in messages}
+        record_hops(session_id, max(int(by_id[i].get('hops') or 0) for i in ids))
     return text
 
 
@@ -210,6 +214,39 @@ def take(session_id: str) -> str:
 
 def live_path(session_id: str) -> Path:
     return inbox_dir() / 'live' / f'{session_id}.json'
+
+
+def session_hops(session_id: str) -> int:
+    """The highest message hop count take() has delivered to this session (0 if none)."""
+    try:
+        data = json.loads(live_path(session_id).read_text(encoding='utf-8'))
+        return max(0, int((data or {}).get('hops') or 0))
+    except (OSError, ValueError, TypeError, AttributeError):
+        return 0
+
+
+def record_hops(session_id: str, hops: int) -> None:
+    """Remember the highest hops delivered to this session in its live record (best effort)."""
+    if not valid_id(session_id):
+        return
+    target = live_path(session_id)
+    try:
+        current = json.loads(target.read_text(encoding='utf-8'))
+    except (OSError, ValueError):
+        current = {}
+    if not isinstance(current, dict):
+        current = {}
+    try:
+        current['hops'] = max(int(current.get('hops') or 0), int(hops))
+    except (TypeError, ValueError):
+        current['hops'] = int(hops)
+    try:
+        target.parent.mkdir(parents=True, exist_ok=True)
+        tmp = target.with_name(f'.{target.name}.{os.getpid()}.tmp')
+        tmp.write_text(json.dumps(current), encoding='utf-8')
+        tmp.replace(target)
+    except OSError:
+        pass
 
 
 def pid_alive(pid: int) -> bool:
@@ -251,7 +288,9 @@ def touch_live(session_id: str, harness: str, state: str = 'turn') -> None:
         current = json.loads(target.read_text(encoding='utf-8'))
     except (OSError, ValueError):
         current = {}
-    pid = int(current.get('pid') or 0) if isinstance(current, dict) else 0
+    if not isinstance(current, dict):
+        current = {}
+    pid = int(current.get('pid') or 0)
     now = time.time()
     if pid and pid_alive(pid) and current.get('state') == state and now - float(current.get('ts') or 0) < 30:
         return
@@ -260,7 +299,8 @@ def touch_live(session_id: str, harness: str, state: str = 'turn') -> None:
         _release_pid(pid, session_id)
     target.parent.mkdir(parents=True, exist_ok=True)
     tmp = target.with_name(f'.{target.name}.{os.getpid()}.tmp')
-    tmp.write_text(json.dumps({'pid': pid, 'harness': harness, 'state': state, 'ts': now}), encoding='utf-8')
+    tmp.write_text(json.dumps({**current, 'pid': pid, 'harness': harness, 'state': state, 'ts': now}),
+                   encoding='utf-8')
     tmp.replace(target)
 
 
