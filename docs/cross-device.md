@@ -36,21 +36,48 @@ Why this first: Tailscale gives both machines stable addresses behind NAT (direc
 relayed and still end-to-end encrypted when it cannot) and OpenSSH is already installed, audited and
 understood. No listener, TLS or certificate code lands in Everett.
 
-Pairing (`everett peer add`):
+Each device needs a Tailscale client authenticated to the same tailnet using a Tailscale account.
+This is separate from `everett login`, so phase 1 does not fulfill issue #4's one-sign-in goal.
+Manual pairing does not require an Everett account. A reachable LAN or other VPN can replace
+Tailscale, but Everett does not establish that network for you.
 
-1. Each device generates an Ed25519 keypair under `~/.everett/peer/` (0600) at first use.
-2. `everett peer add linux-box --ssh wright@linux-box.tailnet.ts.net` records the address, pins the
-   SSH host key on first connect (printed for confirmation, like `ssh`), and installs this device's
-   public key in the remote `~/.everett/peer/authorized_keys` through one interactive SSH session.
-3. The remote key line is restricted: `command="everett peer serve",no-pty,no-port-forwarding,
-   no-agent-forwarding,no-X11-forwarding`. The caller can run nothing except the Everett RPC.
-4. When signed in, both devices also publish `{device_id, name, public_key, address}` to the
-   registry so a third device can list and pair without typing addresses. Without sign-in, pairing
-   is manual and still works.
+Both devices need OpenSSH server access enabled and network rules that allow SSH in both directions.
+This design uses OpenSSH over the Tailscale network, not Tailscale SSH, which has a different
+authorization model. It assumes sshd reads `~/.ssh/authorized_keys`. If the host uses a different
+`AuthorizedKeysFile`, pairing stops with an explanation rather than changing `sshd_config`.
+See the [OpenSSH key-file configuration](https://man.openbsd.org/sshd_config.5#AuthorizedKeysFile)
+and the [Tailscale account setup](https://tailscale.com/kb/1017/install).
 
-Transport: `ssh -i ~/.everett/peer/id_ed25519 <addr> everett peer serve`, one request per
-connection, newline-delimited JSON on stdin/stdout, request bodies capped (64 KiB), 20 s timeout.
-No message text in shell arguments.
+Pairing (`everett peer add`) establishes both directions:
+
+1. Each device generates an Ed25519 keypair under `~/.everett/peer/` at first use. The private key
+   has mode 0600 and the directory has mode 0700. Private keys never leave their device.
+2. `everett peer add linux-box --ssh wright@linux-box.tailnet.ts.net` prompts for the caller's
+   reachable SSH address for the return connection. Before trusting either device, compare its
+   SSH host-key and Everett device-key fingerprints with values shown on that device's local
+   terminal or another trusted out-of-band channel. An SSH prompt or registry row alone is not
+   proof of identity. Pairing pins the confirmed host keys on both devices and rejects mismatches.
+3. Through an interactive SSH setup session, pairing installs the caller's public key in the
+   remote `~/.ssh/authorized_keys` and the remote public key in the caller's
+   `~/.ssh/authorized_keys`. Each entry has a trailing `# everett-peer:<device_id>` marker and a
+   forced command using that host's absolute Everett binary path. For example, on Linux:
+
+   ```text
+   command="/home/wright/.local/bin/everett peer serve",no-pty,no-port-forwarding,no-agent-forwarding,no-X11-forwarding ssh-ed25519 <base64-public-key> # everett-peer:mac-studio
+   ```
+
+   Pairing resolves the installed path separately on each host; it does not rely on a login
+   shell's PATH. It backs up existing files, preserves unrelated key entries, and maintains
+   directory mode 0700 and file mode 0600. Retrying replaces the matching tagged entry rather than
+   adding a duplicate. No key goes into `~/.everett/peer/authorized_keys`; sshd does not read it by
+   default. The peer keys permit only Everett RPC, not an unrestricted shell.
+4. Pairing checks an RPC connection in each direction before marking the pair complete. A failed
+   return connection leaves the pair incomplete, reports the failure, and blocks cross-device
+   messaging until pairing succeeds. Retrying completes the same pair without duplicate entries.
+
+Transport: `ssh -i ~/.everett/peer/id_ed25519 <addr>`, using the pinned host key with strict checking
+and the forced command above. Each connection carries one newline-delimited JSON request on
+stdin/stdout, capped at 64 KiB, with a 20 s timeout. No message text goes in shell arguments.
 
 RPC (served by `everett peer serve`, which refuses anything else):
 
@@ -60,12 +87,19 @@ RPC (served by `everett peer serve`, which refuses anything else):
 | `{"op":"card","session":ID}` | `{card, source, updated}` | read-only |
 | `{"op":"send","session":ID,"text":…,"from":{device,session,harness,card},"idempotency_key":K,"hops":n}` | `{message_id, state:"queued"}` | writes the remote inbox; duplicate `K` returns the existing id |
 | `{"op":"status","message_id":M}` | `{state: queued\|delivered\|replied, reply?}` | `delivered` = present in the remote `done` set |
-| `{"op":"reply","message_id":M,"text":…}` | `{reply_id}` | only for a message addressed to the remote device |
+| `{"op":"reply","message_id":M,"reply_id":R,"text":…}` | `{reply_id}` | callback to the original sender; only accepts the paired device that received `M`; duplicate `R` returns the existing id |
 
 Session IDs gain a device prefix at the boundary only: `linux-box/claude/abc123`. Local code keeps
 plain IDs; `send.rs` splits the prefix, routes to the peer if it is not this device, and
 `inbox.rs` stores the sender as `mac-studio/claude/def456` so `reply` knows which peer to call back.
 `hops` keep counting across devices; the three-hop limit applies end to end.
+
+Each sender keeps an outgoing record mapping the remote message ID to its target device and local
+sender session. The return `reply` RPC checks that record before writing the sender's inbox.
+Replies need the reverse SSH connection established during pairing. If that connection fails,
+the replying device retains the reply for `status` polling and reports the callback failure.
+The original sender can fetch it through `status`; importing the same reply twice must not
+duplicate its inbox entry. A failed callback is not reported as successful inbox delivery.
 
 Offline peer: `send` fails fast with exit 7 (`peer unreachable`) and leaves nothing queued locally.
 A local outbox with retry is scope for later; silently queuing would turn `queued` into a lie.
@@ -74,11 +108,17 @@ A local outbox with retry is scope for later; silently queuing would turn `queue
 
 - `everett devices` lists the account's devices (name, last seen, address, revoked) from the
   registry; `everett peer add <name>` resolves the address from it.
-- Registry rows are signed by the device key, so a compromised registry can hide devices but cannot
-  impersonate one: the caller still verifies the SSH host key it pinned (or the published one).
-- Revoking a device = mark revoked in the registry **and** drop its key from every peer's
-  `authorized_keys` on next `everett doctor` (which pulls the revoked list). `everett logout` on the
-  lost device is best effort, as today.
+- Signed registry rows bind metadata to a device key, but do not prove who owns an unfamiliar key.
+  A compromised registry cannot impersonate an already-pinned device without its private keys.
+  It can publish an attacker's key and address for a new device, or hide devices and revocations.
+  First pairing therefore requires the out-of-band fingerprint checks from phase 1, even when
+  the registry supplies the address. Registry changes never replace a pin automatically.
+- When signed in, devices publish `{device_id, name, public_key, address}` to Convex so a third
+  device can discover addresses. Session content never goes to the registry.
+- Revoking a device marks it revoked in Convex. Each remaining peer's next `everett doctor`
+  removes that device's tagged entry from its own `~/.ssh/authorized_keys`, preserving unrelated
+  entries. Offline peers retain access until they fetch the revocation; registry revocation is not
+  immediate enforcement. `everett logout` on a lost device remains best effort.
 
 ## Phase 3 (optional): direct HTTPS peer endpoint
 
@@ -94,25 +134,42 @@ peer sessions through the same RPC, which is the "use the dashboard across devic
 hosted data service. A website on a custom domain can only ever show what a running Everett on one
 of your devices serves it.
 
+## Decided
+
+The device registry uses Convex. Everett needs one `devices` table and the `upsertDevice` and
+`listDevices` functions, both gated on the caller's OIDC identity. The Rust side calls Convex's
+HTTP API with a token accepted by the configured identity provider. Registry storage contains
+device metadata only.
+
 ## Decisions needed from the owner before building
 
-1. **Issuer**: Auth0, Zitadel or Supabase Auth for the hosted tenant (any RFC 8628 issuer works;
-   `docs/auth.md`). This also decides where "revoke a lost device" lives.
-2. **Registry backend**: Convex (decided 2026-10-10). Everett needs one `devices` table and two
-   functions, `upsertDevice` and `listDevices`, both gated on the caller's OIDC identity; the Rust
-   side calls them over Convex's HTTP API with the access token from `auth.json`.
-3. **Network**: Tailscale assumed for phase 1. Plain SSH over LAN/VPN works identically with a
-   manual address.
-4. **Device naming**: `--device` from `everett login` doubles as the peer prefix; confirm names are
+1. **Issuer**: choose an OIDC provider that supports RFC 8628 device flow and tokens accepted by
+   Convex (`docs/auth.md`). No hosted issuer is selected yet. Device revocation lives in Convex.
+2. **Network**: Tailscale assumed for phase 1, with separate account authentication on each device.
+   Plain SSH over LAN/VPN works identically with a manual address.
+3. **Device naming**: `--device` from `everett login` doubles as the peer prefix; confirm names are
    per account unique (the registry enforces it).
 
 ## Smallest shippable slice
 
-`everett peer add` + `peer serve` + remote `ls`/`send`/`status` over manual SSH addresses, no
-registry, no sign-in dependency. Tests: an in-process fake `ssh` command (like the gateway tests'
-fixture backend) exercising pairing, pinned-key mismatch, oversized body, duplicate idempotency key,
-hop-limit across devices, and `status` reporting `queued` → `delivered` only after the remote
-inbox's `done` set changes.
+`everett peer add` + `peer serve` + remote `ls`/`card`/`send`/`status`/`reply` over manual SSH
+addresses, no registry or Everett sign-in dependency. Tailscale still requires its own account
+authentication if used for transport.
+
+Tests use a fake `ssh` command, like the gateway tests' fixture backend, to exercise:
+
+- Two-way pairing, rejection of unconfirmed fingerprints and pinned-key mismatches, and a failed
+  reverse connection leaving pairing incomplete.
+- Tagged key installation in `~/.ssh/authorized_keys`, absolute forced-command paths, preservation
+  of unrelated entries, retry without duplicates, and revocation removing only the matching entry.
+- Oversized requests, duplicate idempotency keys, and the three-hop limit across devices.
+- `status` reporting `queued` to `delivered` only after the remote inbox's `done` set changes.
+- Reply delivery to the original sender, rejection of a callback from the wrong peer, and status
+  recovery without duplicate inbox entries when the return connection fails.
+
+An isolated OpenSSH integration test must also prove that the tagged entry invokes only the
+absolute forced command, never opens an unrestricted shell, and denies forwarding. A fake SSH test cannot prove
+sshd enforces these restrictions.
 
 ## Not in scope
 

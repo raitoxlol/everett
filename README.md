@@ -104,9 +104,14 @@ Stop it with Ctrl-C.
 
 **Future direction:** an Everett account could connect CLI installations across
 devices and expose their local activity through either a self-hosted or hosted
-dashboard. Account auth, peer transport, and hosting (including a custom-domain
-frontend on Vercel) are not implemented here. The planned shape is in `docs/cross-device.md`. A Rust local-data service would
-still be required; a static website cannot read another device's session stores.
+dashboard. OIDC sign-in exists, but peer transport and hosting (including a
+custom-domain frontend on Vercel) are not implemented here. The design in
+[`docs/cross-device.md`](docs/cross-device.md) uses Convex for device metadata and
+direct connections for session content. Phase 1 needs a separate Tailscale account
+authenticated on each device, plus OpenSSH access in both directions. Everett
+sign-in does not enroll devices in Tailscale, so this phase does not yet meet the
+one-sign-in goal. A Rust local-data service would still be required; a static
+website cannot read another device's session stores.
 
 This is example output (paths and ids are shortened):
 
