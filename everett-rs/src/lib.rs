@@ -16,6 +16,7 @@ pub mod install;
 pub mod mcp;
 pub mod onboard;
 pub mod paths;
+pub mod peer;
 pub mod proc;
 pub mod registry;
 pub mod route;

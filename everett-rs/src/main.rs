@@ -22,6 +22,11 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Cmd {
+    /// pair devices and make restricted SSH inbox requests
+    Peer {
+        #[command(subcommand)]
+        action: PeerCmd,
+    },
     /// serve restricted owner-bound MCP for external agents
     Gateway {
         #[arg(long)]
@@ -38,6 +43,9 @@ enum Cmd {
     },
     /// list recent sessions
     Ls {
+        /// list only this paired device (local listing is unchanged by default)
+        #[arg(long)]
+        peer: Option<String>,
         #[arg(long)]
         json: bool,
         /// include automated runs
@@ -78,6 +86,9 @@ enum Cmd {
     /// deliver a request to the right session (or --to one) and print its reply
     Send {
         text: String,
+        /// retry a remote inbox send without posting it twice
+        #[arg(long)]
+        idempotency_key: Option<String>,
         #[arg(long)]
         json: bool,
         /// route and print the command without resuming a session
@@ -284,6 +295,63 @@ enum Cmd {
 }
 
 #[derive(Subcommand)]
+enum PeerCmd {
+    /// pair one SSH direction; replies return through status polling
+    Add {
+        name: String,
+        #[arg(long)]
+        ssh: String,
+        #[arg(long, default_value_t = 22)]
+        port: u16,
+        /// absolute path to Everett on the remote machine
+        #[arg(long)]
+        binary: String,
+        /// remote Ed25519 host-key SHA256 fingerprint, confirmed out of band
+        #[arg(long)]
+        host_key: String,
+        /// remote Everett device-key fingerprint, confirmed out of band
+        #[arg(long)]
+        device_key: String,
+    },
+    /// show paired devices
+    List,
+    /// print this device's peer id and public key
+    Identity,
+    /// revoke our tagged key remotely, then forget this peer (requires online SSH)
+    Remove { name: String },
+    /// remove a client's tagged key from this machine's authorized_keys
+    Revoke { client: String },
+    /// list sessions on a peer
+    Ls {
+        name: String,
+        #[arg(long)]
+        all: bool,
+        #[arg(long)]
+        harness: Option<String>,
+        #[arg(long)]
+        json: bool,
+    },
+    /// fetch one remote session card
+    Card { target: String },
+    /// poll observed delivery state and import any reply into the original sender's inbox
+    Status { name: String, message_id: String },
+    /// serve one bounded stdin/stdout RPC (invoked by sshd's forced command)
+    Serve {
+        #[arg(long)]
+        client: Option<String>,
+    },
+    #[command(hide = true)]
+    Install,
+}
+
+fn peer_output(result: everett::error::Result<serde_json::Value>) -> i32 {
+    match result {
+        Ok(value) => { println!("{}", serde_json::to_string_pretty(&value).unwrap()); 0 }
+        Err(e) => { eprintln!("everett: {e}"); e.code }
+    }
+}
+
+#[derive(Subcommand)]
 enum ExternalCmd {
     /// add an inbox registration (does not connect to a provider)
     Add {
@@ -315,6 +383,21 @@ fn main() {
         ..Default::default()
     };
     let code = match cli.cmd {
+        Cmd::Peer { action } => match action {
+            PeerCmd::Add { name, ssh, port, binary, host_key, device_key } => peer_output(everett::peer::add(&name, &ssh, port, &binary, &host_key, &device_key)),
+            PeerCmd::List => peer_output(everett::peer::peers().map(|p| serde_json::json!(p))),
+            PeerCmd::Identity => peer_output(everett::peer::identity()),
+            PeerCmd::Remove { name } => peer_output(everett::peer::remove(&name)),
+            PeerCmd::Revoke { client } => peer_output(everett::peer::revoke(&client)),
+            PeerCmd::Card { target } => peer_output(everett::peer::card(&target)),
+            PeerCmd::Status { name, message_id } => peer_output(everett::peer::status(&name, &message_id)),
+            PeerCmd::Serve { client } => everett::peer::serve(client.as_deref(), false),
+            PeerCmd::Install => everett::peer::serve(None, true),
+            PeerCmd::Ls { name, all, harness, json } => {
+                a.peer = Some(name); a.all = all; a.harness = harness; a.json = json;
+                cli::cmd_ls(&a)
+            }
+        },
         Cmd::External { action } => match action {
             ExternalCmd::Add { id, harness, title, cwd, replace } => {
                 cli::cmd_external_add(&id, &harness, &title, &cwd, replace)
@@ -322,7 +405,8 @@ fn main() {
             ExternalCmd::List => cli::cmd_external_list(),
             ExternalCmd::Remove { id } => cli::cmd_external_remove(&id),
         },
-        Cmd::Ls { json, all, harness } => {
+        Cmd::Ls { json, all, harness, peer } => {
+            a.peer = peer;
             a.json = json;
             a.all = all;
             a.harness = harness;
@@ -341,7 +425,8 @@ fn main() {
             a.router = router;
             cli::cmd_route(&a)
         }
-        Cmd::Send { text, json, dry_run, timeout, router, to, spawn, dir, harness, mode, wait } => {
+        Cmd::Send { text, json, dry_run, timeout, router, to, spawn, dir, harness, mode, wait, idempotency_key } => {
+            a.idempotency_key = idempotency_key;
             a.text = Some(text);
             a.json = json;
             a.dry_run = dry_run;

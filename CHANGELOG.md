@@ -1,5 +1,17 @@
 # Changelog
 
+## Unreleased
+
+- Add SSH-only cross-device peers: `peer add`, `serve`, `ls`, `card`, `status`, `identity`,
+  `list`, `remove`, and `revoke`, plus `ls --peer` and explicit remote inbox sends.
+  Pairing verifies host/device fingerprints, pins host keys, and installs a tagged restricted
+  forced command in the receiver's real `~/.ssh/authorized_keys`.
+- Return cross-device replies only through status polling, with idempotent send/reply recovery,
+  observed queued/delivered/replied states, a three-hop end-to-end limit, 64 KiB request frames,
+  and 20-second deadlines. Offline peers fail without a local retry queue.
+- Document manual SSH setup and real-machine sshd checks in `docs/cross-device.md`.
+  No registry, sign-in dependency, Convex relay, or Everett listener is part of this slice.
+
 ## 1.5.0 — 2026-10-10
 
 - **Breaking:** remove the Python package (`everett/`, `pyproject.toml`, `bin/everett`); `pipx install`

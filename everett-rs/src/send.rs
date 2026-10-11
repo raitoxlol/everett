@@ -698,6 +698,9 @@ pub fn reply(message_id: &str, text: &str, caller: Option<&str>) -> Result<Map<S
     };
     let hops = inbox::reply_hops(&original, current_hops())?;
     let who = sender_info(caller);
+    if original.contains_key("peer_client") {
+        return crate::peer::retain_reply(&original, text, &who, hops);
+    }
     let to = original.get("from").and_then(|v| v.as_str()).filter(|s| !s.is_empty()).unwrap_or(inbox::HUMAN);
     let message = inbox::post(
         to,
