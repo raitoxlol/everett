@@ -41,6 +41,8 @@ pub fn cmd_external_remove(id: &str) -> i32 {
 
 #[derive(Debug, Default)]
 pub struct Args {
+    pub peer: Option<String>,
+    pub idempotency_key: Option<String>,
     pub hours: f64,
     pub json: bool,
     pub all: bool,
@@ -119,6 +121,22 @@ fn width() -> usize {
 }
 
 pub fn cmd_ls(args: &Args) -> i32 {
+    if let Some(peer) = &args.peer {
+        return match crate::peer::ls(peer, args.hours, args.all, args.harness.as_deref().unwrap_or("")) {
+            Ok(rows) => {
+                if args.json {
+                    println!("{}", serde_json::to_string_pretty(&rows).unwrap());
+                } else {
+                    for row in rows.as_array().unwrap() {
+                        println!("{}  {}  {}", row["id"].as_str().unwrap_or(""), row["cwd"].as_str().unwrap_or(""), row["card"].as_str().filter(|s| !s.is_empty()).or_else(|| row["title"].as_str()).unwrap_or(""));
+                    }
+                    if rows.as_array().unwrap().is_empty() { println!("no sessions on {peer}"); }
+                }
+                0
+            }
+            Err(e) => { eprintln!("everett: {e}"); e.code }
+        };
+    }
     let sessions = crate::registry::scan(args.hours, args.all, Some(crate::registry::CAP), args.harness.as_deref().unwrap_or(""));
     if args.json {
         println!("{}", serde_json::to_string_pretty(&sessions.iter().map(|s| s.to_dict()).collect::<Vec<_>>()).unwrap_or_default());
@@ -423,7 +441,39 @@ fn spawn_cmd(args: &Args, r: &Map<String, Value>, sessions: &[Session]) -> i32 {
     }
 }
 
+fn cmd_remote_send(args: &Args, to: &str) -> i32 {
+    if args.spawn || args.mode == "resume" || !args.wait.is_finite() || args.wait != 0.0 {
+        eprintln!("everett: remote sends are inbox-only; no --spawn, --mode resume, or --wait. Poll everett peer status.");
+        return 2;
+    }
+    if args.dry_run {
+        return match crate::peer::target(to) {
+            Ok((peer, _, _)) => {
+                println!("{}", json!({"peer":peer,"target":to,"mode":"inbox","dry_run":true,"pickup":"status polling"}));
+                0
+            }
+            Err(e) => { eprintln!("everett: {e}"); e.code }
+        };
+    }
+    match crate::peer::send(to, args.text.as_deref().unwrap_or(""), args.idempotency_key.as_deref(), None) {
+        Ok(value) => {
+            if args.json {
+                println!("{}", serde_json::to_string_pretty(&value).unwrap());
+            } else {
+                println!("{}  remote inbox {} message {}. Poll: everett peer status {} {}", value["state"].as_str().unwrap_or("queued").to_uppercase(), to,
+                    value["message_id"].as_str().unwrap_or(""), value["peer"].as_str().unwrap_or(""), value["message_id"].as_str().unwrap_or(""));
+                println!("idempotency key: {}", value["idempotency_key"].as_str().unwrap_or(""));
+            }
+            0
+        }
+        Err(e) => { eprintln!("everett: {e}"); e.code }
+    }
+}
+
 pub fn cmd_send(args: &Args) -> i32 {
+    if let Some(to) = args.to.as_deref().filter(|to| crate::peer::target(to).is_ok()) {
+        return cmd_remote_send(args, to);
+    }
     if !args.timeout.is_finite() || args.timeout <= 0.0 {
         eprintln!("everett: --timeout must be a finite number greater than zero.");
         return 2;
@@ -659,6 +709,10 @@ pub fn cmd_reply(args: &Args) -> i32 {
         None,
     ) {
         Ok(result) => {
+            if result.get("mode").and_then(Value::as_str) == Some("peer-reply") {
+                println!("RETAINED  reply to {} for status polling by the sender; no callback or remote inbox delivery claimed", result["reply_to"].as_str().unwrap_or(""));
+                return 0;
+            }
             println!(
                 "REPLIED  to {} (inbox {}), message {}",
                 result.get("reply_to").and_then(|v| v.as_str()).unwrap_or(""),
@@ -687,6 +741,10 @@ pub fn cmd_inbox(args: &Args) -> i32 {
             .filter_map(|m| m.get("id").and_then(|v| v.as_str()))
             .collect();
         crate::inbox::mark_done(&sid, &ids);
+        if let Some(hops) = items.iter().filter(|m| m.contains_key("peer_client") || m.contains_key("peer_reply_id"))
+            .filter_map(|m| m.get("hops").and_then(Value::as_i64)).max() {
+            crate::inbox::record_hops(&sid, hops);
+        }
     }
     if args.json {
         println!(

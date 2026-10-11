@@ -133,6 +133,10 @@ Done. MAX_RETRIES is now 5 and the backoff test covers the cap.
 | Command | What it does |
 |---|---|
 | `everett ls [--json] [--all] [--harness H]` | Recent sessions from every harness, one line each. `--all` includes scripted runs. |
+| `everett ls --peer <name> [--json]` | Sessions on one paired SSH device, with `peer/harness/session-id` IDs. |
+| `everett peer add <name> --ssh user@host --binary /absolute/everett --host-key SHA256:... --device-key SHA256:...` | Pair with confirmed fingerprints; install a restricted key in the receiver's `~/.ssh/authorized_keys`. |
+| `everett peer status <name> <message-id>` | Poll remote queued/delivered/replied state; import a retained reply once into the sender's inbox. |
+| `everett peer identity / list / remove <name> / revoke <client-id>` | Inspect device keys/peers; remove a remote authorization or revoke a local tagged client key. |
 | `everett dashboard [--port 7347] [--no-open]` | Native Rust binary only: read-only local browser dashboard with session cards, filters, activity state, and copyable CLI actions. |
 | `everett route "<text>" [--router local\|jev] [--json]` | Picks the session a request continues: `SESSION`, `NEW`, or `ASK`, with a confidence and the resume command. It never sends. |
 | `everett send "<text>" [--dry-run] [--timeout S] [--router …]` | Routes the request (jev when a key is configured, else local) and delivers it, printing `routed by jev → [claude] ~/src/api — … (0.87)` before sending. A session with a live harness process gets it in its inbox, injected at its next turn or tool call (see [Live delivery](#live-delivery)). An idle one is resumed headless after it goes quiet (up to 2 min), and the reply is printed. `NEW` and `ASK` send nothing (`ASK` prints its candidates; resend with `--to`). |
@@ -197,6 +201,28 @@ Safety rails for agents that call `send`:
 - **Spawning is explicit.** `NEW` starts a session only with `--spawn`.
 
 Exit codes: 2 bad input, 3 no Jev key with `--router jev`, 4 session stayed busy, 5 harness did not start or timed out, 6 harness failed, 7 hop limit reached.
+
+## Cross-device peers (manual SSH)
+
+Pair once using the receiving machine's host/device fingerprints and absolute Everett path.
+Existing noninteractive SSH login access is required for setup. The dedicated peer key can
+only run Everett RPC: no shell, PTY, or forwarding. Host-key changes fail closed.
+
+```sh
+everett ls --peer linux-box --json
+everett send --to linux-box/claude/<full-session-id> --idempotency-key task-42 --json 'Check the failing test'
+everett peer status linux-box <returned-message-id>
+```
+
+Remote delivery is inbox-only; it never resumes/spawns a harness or silently queues on your
+device. The receiving agent replies normally, but Everett retains that reply on the receiver
+until the sender polls `peer status`. No reverse SSH pairing is needed for replies.
+`queued` means inbox write, `delivered` means inbox pickup (`.done`), and `replied` means a
+correlated reply exists. A timeout can leave remote delivery uncertain: retry the same explicit
+idempotency key. Requests have a 64 KiB cap, 20-second deadline, and three-hop end-to-end limit.
+
+No registry, account sign-in, Convex relay, or Everett listener is involved. See
+[cross-device setup, protocol, revocation, and real-machine checks](docs/cross-device.md).
 
 ## Live delivery
 

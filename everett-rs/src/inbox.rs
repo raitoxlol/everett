@@ -341,7 +341,7 @@ pub fn render(messages: &[Map<String, Value>], at: Option<f64>) -> (String, Vec<
     }
     let more = messages.len() - ids.len();
     let header = format!(
-        "[Everett] {} message(s) from other sessions on this machine, delivered by Everett \
+        "[Everett] {} message(s) from other sessions, delivered by Everett \
          (not typed by the user). Handle them alongside your current task; the user can see this.",
         ids.len()
     );

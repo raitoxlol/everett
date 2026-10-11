@@ -50,6 +50,10 @@ vt100 = "0.15"
 name = "gateway_native"
 harness = false
 
+[[test]]
+name = "peer_native"
+harness = false
+
 [profile.release]
 lto = true
 strip = true
