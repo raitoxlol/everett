@@ -8,7 +8,7 @@ use std::sync::OnceLock;
 use serde_json::{json, Map, Value};
 
 use crate::error::EverettError;
-use crate::send::{caller_identity, delivery_mode, refuse_self};
+use crate::send::{caller_identity, refuse_self};
 use crate::session::{now, Session};
 
 pub const PROTOCOL_VERSIONS: &[&str] = &["2025-06-18", "2025-03-26", "2024-11-05"];
@@ -68,7 +68,8 @@ pub fn tools() -> &'static Vec<Value> {
                 "description": "Deliver a request to another session. This is the default way to hand off work: pass just `text` describing the task and Everett routes it for you (jev when configured, else the local matcher) -- do not call everett_ls and pick a target by hand. Only pass `to` (session id prefix, exact title, card name, or project folder) when the user named a specific session, or when replying to one; it skips routing entirely. The response always reports the route decision -- which router decided (jev/local), the chosen session, and its confidence -- so you can tell the user e.g. \"jev picked ...\". A SESSION decision is delivered. On ASK (ambiguous) nothing is sent; the candidate sessions come back for you to disambiguate, then call again with `to`. A session with a live harness process (someone has it open) gets the request in its inbox, injected at its next turn or tool call; pass `wait` to wait for the reply, or it arrives in YOUR inbox later. An idle session is resumed headless and its reply returned. To answer an Everett message you received, pass reply_to=<message id> and text. A NEW decision starts a new headless session only when spawn=true. It refuses to send to your own session and refuses requests forwarded more than 3 times.",
                 "inputSchema": {"type": "object", "properties": {
                     "text": s("The request for the other session. Make it self-contained."),
-                    "to": s("Target session: id prefix, exact title, card name, or project folder name."),
+                    "to": s("Local session id prefix/title/card/project, or explicit remote peer/harness/session. Remote delivery is inbox-only and never wakes a session."),
+                    "idempotency_key": s("Stable key for an explicit remote send; reuse it only for the same request when delivery is uncertain."),
                     "hours": hours_prop(),
                     "spawn": {"type": "boolean", "description": "Allow starting a NEW session when routing says NEW.", "default": false},
                     "dir": s("Working directory for a spawned session."),
@@ -305,7 +306,7 @@ fn tool_route(args: &Map<String, Value>) -> std::result::Result<Map<String, Valu
 }
 
 fn tool_send(args: &Map<String, Value>) -> std::result::Result<Map<String, Value>, ToolFailure> {
-    use crate::send::{send, send_inbox, spawn};
+    use crate::send::{send_for, send_inbox, spawn_for};
     let text = str_arg(args, "text", true)?;
     let to = str_arg(args, "to", false)?;
     let hours = hours_arg(args)?;
@@ -347,7 +348,50 @@ fn tool_send(args: &Map<String, Value>) -> std::result::Result<Map<String, Value
         }
         return Ok(out);
     }
-    let env = crate::send::hop_env().map_err(ToolFailure::Tool)?;
+    let idempotency_key = str_arg(args, "idempotency_key", false)?;
+    if crate::peer::target(&to).is_ok() {
+        if exact_ids {
+            return Err(err2(2, "Gateway remote destinations are not allowed; use an authorized exact local session id."));
+        }
+        if spawn_ok || mode == "resume" || wait != 0.0 {
+            return Err(err2(
+                2,
+                "Remote sends are inbox-only; no spawn, resume, or wait. Poll everett peer status.",
+            ));
+        }
+        let value = crate::peer::send(
+            &to,
+            &text,
+            if idempotency_key.is_empty() {
+                None
+            } else {
+                Some(&idempotency_key)
+            },
+            if caller.is_empty() {
+                None
+            } else {
+                Some(&caller)
+            },
+        )
+        .map_err(ToolFailure::Tool)?;
+        let mut out = value
+            .as_object()
+            .cloned()
+            .ok_or_else(|| err2(6, "invalid remote send result"))?;
+        out.insert("decision".into(), json!("SESSION"));
+        out.insert("router".into(), json!("direct-remote"));
+        out.insert("mode".into(), json!("inbox"));
+        out.insert("queued".into(), json!(true));
+        out.insert("wake".into(), json!(false));
+        return Ok(out);
+    }
+    let caller = if caller.is_empty() {
+        None
+    } else {
+        Some(caller.as_str())
+    };
+    crate::send::guard_delivery(&mode, spawn_ok, caller).map_err(ToolFailure::Tool)?;
+    let env = crate::send::hop_env_for(caller).map_err(ToolFailure::Tool)?;
     let mut decision = Map::new();
     let session;
     if !to.is_empty() {
@@ -375,13 +419,7 @@ fn tool_send(args: &Map<String, Value>) -> std::result::Result<Map<String, Value
         decision.insert("confidence".into(), json!(1.0));
     } else {
         let sessions = crate::registry::scan(hours, false, Some(crate::registry::CAP), "");
-        let r = crate::route::route(
-            &text,
-            &sessions,
-            None,
-            if caller.is_empty() { None } else { Some(&caller) },
-        )
-        .map_err(ToolFailure::Tool)?;
+        let r = crate::route::route(&text, &sessions, None, caller).map_err(ToolFailure::Tool)?;
         decision.insert("decision".into(), r.get("decision").cloned().unwrap_or(Value::Null));
         decision.insert("confidence".into(), r.get("confidence").cloned().unwrap_or(Value::Null));
         decision.insert("router".into(), r.get("router").cloned().unwrap_or(Value::Null));
@@ -411,7 +449,8 @@ fn tool_send(args: &Map<String, Value>) -> std::result::Result<Map<String, Value
                     }
                 }
             };
-            let result = spawn(&harness, &text, &cwd, timeout, Some(&env)).map_err(ToolFailure::Tool)?;
+            let result = spawn_for(&harness, &text, &cwd, timeout, Some(&env), caller)
+                .map_err(ToolFailure::Tool)?;
             let mut out = decision.clone();
             out.insert("delivered".into(), json!(true));
             out.insert("spawned".into(), json!(true));
@@ -437,9 +476,9 @@ fn tool_send(args: &Map<String, Value>) -> std::result::Result<Map<String, Value
         };
         session = Session::from_dict(session_obj);
     }
-    refuse_self(&session, if caller.is_empty() { None } else { Some(&caller) }).map_err(ToolFailure::Tool)?;
-    if delivery_mode(&session, &mode, None)? == "inbox" {
-        let result = send_inbox(&session, &text, wait, if caller.is_empty() { None } else { Some(&caller) }, 1.0).map_err(ToolFailure::Tool)?;
+    refuse_self(&session, caller).map_err(ToolFailure::Tool)?;
+    if crate::send::delivery_mode_for(&session, &mode, None, caller)? == "inbox" {
+        let result = send_inbox(&session, &text, wait, caller, 1.0).map_err(ToolFailure::Tool)?;
         let note = if crate::adapters::external::is_external(&session.harness) {
             "Queued for the external agent to poll through MCP. \
              No provider wake-up or consumption is confirmed. Read replies with everett_inbox.".to_string()
@@ -463,7 +502,15 @@ fn tool_send(args: &Map<String, Value>) -> std::result::Result<Map<String, Value
         return Ok(out);
     }
     crate::send::command_for(&session, &text).map_err(ToolFailure::Tool)?;
-    let result = send(&session, &text, timeout, crate::send::IDLE_WAIT, Some(&env)).map_err(ToolFailure::Tool)?;
+    let result = send_for(
+        &session,
+        &text,
+        timeout,
+        crate::send::IDLE_WAIT,
+        Some(&env),
+        caller,
+    )
+    .map_err(ToolFailure::Tool)?;
     let mut out = decision;
     out.insert("delivered".into(), json!(true));
     out.insert("session".into(), Value::Object(brief(&session)));
@@ -592,6 +639,37 @@ fn tool_inbox(args: &Map<String, Value>) -> std::result::Result<Map<String, Valu
         for k in ["id", "kind", "from", "from_harness", "from_card", "text", "reply_to", "hops", "ts"] {
             msg.insert(k.to_string(), m.get(k).cloned().unwrap_or(Value::Null));
         }
+        if m.contains_key("relay_device") {
+            for k in [
+                "external",
+                "untrusted",
+                "trust",
+                "instruction_source",
+                "relay_message_id",
+                "relay_sender_owner",
+                "relay_recipient_owner",
+                "relay_grant_id",
+                "relay_device",
+                "relay_recipient_device",
+                "relay_parent",
+            ] {
+                msg.insert(k.into(), m.get(k).cloned().unwrap_or(Value::Null));
+            }
+        }
+        if crate::inbox::external(m) {
+            for k in [
+                "external",
+                "untrusted",
+                "trust",
+                "instruction_source",
+                "relay_lineage",
+            ] {
+                if let Some(value) = m.get(k) {
+                    msg.insert(k.into(), value.clone());
+                }
+            }
+            msg.insert("text".into(), json!(crate::inbox::consumption_text(m)));
+        }
         messages.push(Value::Object(msg));
         out.insert("messages".into(), json!(messages));
         if size_of(&out) > MAX_TOOL_RESULT {
@@ -619,11 +697,14 @@ fn tool_inbox(args: &Map<String, Value>) -> std::result::Result<Map<String, Valu
             break;
         }
     }
+    let ids: Vec<&str> = messages
+        .iter()
+        .filter_map(|m| m.get("id").and_then(Value::as_str))
+        .collect();
+    // Peek still exposes remote data: preserve its provenance/lineage before returning,
+    // without recording a claimed observation or marking the inbox consumed.
+    crate::inbox::persist_relay_context(&sid, &ids)?;
     if !peek {
-        let ids: Vec<&str> = messages
-            .iter()
-            .filter_map(|m| m.get("id").and_then(|v| v.as_str()))
-            .collect();
         crate::inbox::mark_done(&sid, &ids);
         if let Some(hops) = items.iter().filter(|m| m.contains_key("peer_client") || m.contains_key("peer_reply_id") || m.contains_key("relay_device"))
             .filter(|m| m.get("id").and_then(Value::as_str).is_some_and(|id| ids.contains(&id)))

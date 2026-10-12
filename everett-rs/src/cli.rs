@@ -478,6 +478,10 @@ pub fn cmd_send(args: &Args) -> i32 {
         eprintln!("everett: --timeout must be a finite number greater than zero.");
         return 2;
     }
+    if let Err(e) = crate::send::guard_delivery(&args.mode, args.spawn, None) {
+        eprintln!("everett: {}", e.message);
+        return e.code;
+    }
     if let Err(e) = crate::send::hop_env() {
         eprintln!("everett: {}", e.message);
         return e.code;
@@ -735,6 +739,14 @@ pub fn cmd_inbox(args: &Args) -> i32 {
         .clone()
         .unwrap_or(if caller.is_empty() { crate::inbox::HUMAN.to_string() } else { caller });
     let items = crate::inbox::pending(&sid, None);
+    let viewed_ids: Vec<&str> = items
+        .iter()
+        .filter_map(|m| m.get("id").and_then(Value::as_str))
+        .collect();
+    if let Err(error) = crate::inbox::persist_relay_context(&sid, &viewed_ids) {
+        eprintln!("everett: {error}");
+        return error.code;
+    }
     if !args.peek {
         let ids: Vec<&str> = items
             .iter()
@@ -749,7 +761,7 @@ pub fn cmd_inbox(args: &Args) -> i32 {
     if args.json {
         println!(
             "{}",
-            serde_json::to_string_pretty(&json!({"session": sid, "messages": items})).unwrap_or_default()
+            serde_json::to_string_pretty(&json!({"session": sid, "messages": items.iter().cloned().map(crate::inbox::consumption_message).collect::<Vec<_>>()})).unwrap_or_default()
         );
         return 0;
     }
@@ -770,7 +782,7 @@ pub fn cmd_inbox(args: &Args) -> i32 {
             m.get("from").and_then(|v| v.as_str()).unwrap_or(""),
             kind
         );
-        let text = m.get("text").and_then(|v| v.as_str()).unwrap_or("");
+        let text = crate::inbox::consumption_text(m);
         println!("  {}", text.replace('\n', "\n  "));
     }
     0

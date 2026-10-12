@@ -2,21 +2,41 @@
 
 ## Unreleased
 
-- Add a second per-peer Convex transport: `relay register`, `relay devices`, `peer add-relay`,
-  and long-running `relay` WebSocket subscriptions, with inbox-only message/reply delivery
-  behind NAT and no SSH/Tailscale or session wake-up.
-- Encrypt messages, replies and pickup receipts with X25519/HKDF/ChaCha20-Poly1305 and
-  sign with the existing Ed25519 device identity. OIDC JWT ownership gates the deployable
-  Convex schema/functions; manual fingerprints pin the full device bundle.
+- Extend the Rust-only client's per-peer Convex transport to same-owner/account or org
+  chat over live WebSocket subscriptions behind NAT, with explicit full session IDs,
+  inbox-only messages/replies and no SSH/Tailscale dependency or session wake-up. Keep
+  SSH transport independent; no automatic fallback.
+- **Relay v2 is incompatible with v1 envelopes/pins/schema.** Require verified OIDC ID
+  tokens with issuer-controlled agent/org/role claims plus authoritative active membership
+  and a distinct per-agent revocable credential on every public function. Add operator-only
+  provisioning, `relay whoami`, `revoke-agent`, `revoke-member`, signed key `rotate`, and
+  existing-subscription revocation dependencies; still-valid JWTs cannot re-register a
+  revoked agent. No public enrollment or owner-wide impersonation token.
+- Add bilateral admin-only named-agent cross-org grants: `relay grant invite`, `accept`,
+  `reconfirm`, `revoke`, `get`, `list`; pin both bundles/fingerprints, optional expiry,
+  either-side revocation, per-grant shared rate and serialized-body caps. Key changes
+  block until independent bilateral reconfirmation and explicit local re-pins.
+- Encrypt message/reply bodies with independent X25519 + HKDF-SHA256 +
+  ChaCha20Poly1305 keys and sign envelopes/bundles with independent relay Ed25519 keys,
+  not SSH identity keys. Signed visible routing binds owners, grant, fingerprints and
+  parent/hop lineage. Preserve external/untrusted agent-data labels in local inbox,
+  CLI/hooks/MCP, replies and forwarding; refuse provenance-less external SSH forwarding.
 - Persist ID tokens at login/refresh; keep local/SSH commands usable without sign-in.
-  Add encrypted retry records, strict idempotency/hops/body caps, observed delivery states,
-  one-hour envelopes, signed ciphertext deletion, TTL cleanup, and offline backend/Rust tests.
-- Document Convex deployment, two-machine setup, account isolation, expiry, and trust limits.
+  Add encrypted exact-ciphertext retry/staging, permanent replay/idempotency metadata,
+  observed queued/delivered/claimed/replied states, three-hop end-to-end lineage,
+  one-hour undelivered client TTL and bounded cron cleanup. Signed delivery deletes the
+  live ciphertext row; state observations are signed metadata, not encrypted receipts.
+- Extend offline actual-function `convex-test` and Rust fixtures for authorization,
+  grants/revocation/rotation, tampering, caps/rates, duplicates, hops, TTL and inbox safety.
+  Document cloud/self-hosted deployment, native Keycloak/provider provisioning and exact
+  two-machine/two-org journeys plus metadata/retention/crypto threat model. Live
+  deployment/OIDC/WebSocket journeys remain operator verification gates, not implied
+  by offline coverage.
 - Add SSH-only cross-device peers: `peer add`, `serve`, `ls`, `card`, `status`, `identity`,
   `list`, `remove`, and `revoke`, plus `ls --peer` and explicit remote inbox sends.
   Pairing verifies host/device fingerprints, pins host keys, and installs a tagged restricted
   forced command in the receiver's real `~/.ssh/authorized_keys`.
-- Return cross-device replies only through status polling, with idempotent send/reply recovery,
+- For SSH, return cross-device replies only through status polling, with idempotent send/reply recovery,
   observed queued/delivered/replied states, a three-hop end-to-end limit, 64 KiB request frames,
   and 20-second deadlines. Offline peers fail without a local retry queue.
 - Document manual SSH setup and real-machine sshd checks in `docs/cross-device.md`.

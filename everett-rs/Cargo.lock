@@ -854,6 +854,7 @@ dependencies = [
  "chrono",
  "clap",
  "convex",
+ "convex_sync_types",
  "crossterm",
  "ed25519-dalek",
  "expectrl",

@@ -441,15 +441,88 @@ fn transport_and_server_time_out() {
     drop(input);
 }
 
+fn mcp_new_remote_send_is_idempotent_and_never_wakes() {
+    let p = Pair::new();
+    checked(p.add());
+    let calls: String = (1..=2).map(|id| json!({"jsonrpc":"2.0","id":id,"method":"tools/call","params":{"name":"everett_send","arguments":{"to":"linux/openai-dot/worker","text":MESSAGE,"idempotency_key":"mcp-new","session_id":"local-sender"}}}).to_string() + "\n").collect();
+    let mut child = p
+        .command(false)
+        .arg("mcp")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    child
+        .stdin
+        .take()
+        .unwrap()
+        .write_all(calls.as_bytes())
+        .unwrap();
+    let out = child.wait_with_output().unwrap();
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let rows: Vec<Value> = String::from_utf8(out.stdout)
+        .unwrap()
+        .lines()
+        .map(|line| serde_json::from_str(line).unwrap())
+        .collect();
+    for row in &rows {
+        assert_eq!(row["result"]["isError"], false, "{row}");
+        let result = &row["result"]["structuredContent"];
+        assert_eq!(result["idempotency_key"], "mcp-new");
+        assert_eq!(result["mode"], "inbox");
+        assert_eq!(result["router"], "direct-remote");
+        assert_eq!(result["wake"], false);
+    }
+    assert_eq!(
+        rows[0]["result"]["structuredContent"]["message_id"],
+        rows[1]["result"]["structuredContent"]["message_id"]
+    );
+    let inbox = fs::read_to_string(p.remote.path().join(".everett/inbox/worker.jsonl")).unwrap();
+    assert_eq!(inbox.lines().count(), 1);
+    let message: Value = serde_json::from_str(inbox.trim()).unwrap();
+    assert_eq!(message["peer_sender"], "local-sender");
+    assert_eq!(message["text"], MESSAGE);
+}
+
 type Case = (&'static str, fn());
 const CASES: &[Case] = &[
-    ("pairing_pins_and_restricts_real_authorized_file", pairing_pins_and_restricts_real_authorized_file),
-    ("mismatches_refuse_first_pair_and_changed_host", mismatches_refuse_first_pair_and_changed_host),
-    ("incomplete_pairing_and_local_revocation_fail_closed", incomplete_pairing_and_local_revocation_fail_closed),
-    ("mcp_pickup_and_reply_use_the_same_peer_inbox", mcp_pickup_and_reply_use_the_same_peer_inbox),
-    ("queued_delivered_replied_and_deduplicated", queued_delivered_replied_and_deduplicated),
-    ("body_hops_authorization_and_offline_are_bounded", body_hops_authorization_and_offline_are_bounded),
-    ("transport_and_server_time_out", transport_and_server_time_out),
+    (
+        "pairing_pins_and_restricts_real_authorized_file",
+        pairing_pins_and_restricts_real_authorized_file,
+    ),
+    (
+        "mismatches_refuse_first_pair_and_changed_host",
+        mismatches_refuse_first_pair_and_changed_host,
+    ),
+    (
+        "incomplete_pairing_and_local_revocation_fail_closed",
+        incomplete_pairing_and_local_revocation_fail_closed,
+    ),
+    (
+        "mcp_pickup_and_reply_use_the_same_peer_inbox",
+        mcp_pickup_and_reply_use_the_same_peer_inbox,
+    ),
+    (
+        "mcp_new_remote_send_is_idempotent_and_never_wakes",
+        mcp_new_remote_send_is_idempotent_and_never_wakes,
+    ),
+    (
+        "queued_delivered_replied_and_deduplicated",
+        queued_delivered_replied_and_deduplicated,
+    ),
+    (
+        "body_hops_authorization_and_offline_are_bounded",
+        body_hops_authorization_and_offline_are_bounded,
+    ),
+    (
+        "transport_and_server_time_out",
+        transport_and_server_time_out,
+    ),
 ];
 
 fn main() {

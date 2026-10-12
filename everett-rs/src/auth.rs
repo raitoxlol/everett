@@ -3,7 +3,7 @@
 //! ever printed or logged.
 
 use std::fs;
-use std::io;
+use std::io::{self, Write};
 use std::os::unix::fs::PermissionsExt;
 use std::process::Command;
 use std::thread::sleep;
@@ -82,12 +82,16 @@ pub fn load() -> Option<Stored> {
 
 pub fn save(stored: &Stored) -> io::Result<()> {
     let path = auth_path();
-    fs::create_dir_all(path.parent().unwrap())?;
-    let tmp = path.with_extension("json.tmp");
-    fs::write(&tmp, serde_json::to_string_pretty(stored).unwrap())?;
-    fs::set_permissions(&tmp, fs::Permissions::from_mode(0o600))?;
-    fs::rename(&tmp, &path)?;
-    Ok(())
+    let parent = path.parent().unwrap();
+    crate::peer::private_dir_io(parent)?;
+    // Exclusive mode-0600 creation precedes writing any token bytes.
+    let mut tmp = tempfile::NamedTempFile::new_in(parent)?;
+    tmp.as_file()
+        .set_permissions(fs::Permissions::from_mode(0o600))?;
+    tmp.write_all(serde_json::to_string_pretty(stored)?.as_bytes())?;
+    tmp.as_file().sync_all()?;
+    tmp.persist(&path).map_err(|e| e.error)?;
+    fs::File::open(parent)?.sync_all()
 }
 
 pub fn clear() {
