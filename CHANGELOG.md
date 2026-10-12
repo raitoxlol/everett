@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+- Add a second per-peer Convex transport: `relay register`, `relay devices`, `peer add-relay`,
+  and long-running `relay` WebSocket subscriptions, with inbox-only message/reply delivery
+  behind NAT and no SSH/Tailscale or session wake-up.
+- Encrypt messages, replies and pickup receipts with X25519/HKDF/ChaCha20-Poly1305 and
+  sign with the existing Ed25519 device identity. OIDC JWT ownership gates the deployable
+  Convex schema/functions; manual fingerprints pin the full device bundle.
+- Persist ID tokens at login/refresh; keep local/SSH commands usable without sign-in.
+  Add encrypted retry records, strict idempotency/hops/body caps, observed delivery states,
+  one-hour envelopes, signed ciphertext deletion, TTL cleanup, and offline backend/Rust tests.
+- Document Convex deployment, two-machine setup, account isolation, expiry, and trust limits.
 - Add SSH-only cross-device peers: `peer add`, `serve`, `ls`, `card`, `status`, `identity`,
   `list`, `remove`, and `revoke`, plus `ls --peer` and explicit remote inbox sends.
   Pairing verifies host/device fingerprints, pins host keys, and installs a tagged restricted
@@ -10,7 +20,7 @@
   observed queued/delivered/replied states, a three-hop end-to-end limit, 64 KiB request frames,
   and 20-second deadlines. Offline peers fail without a local retry queue.
 - Document manual SSH setup and real-machine sshd checks in `docs/cross-device.md`.
-  No registry, sign-in dependency, Convex relay, or Everett listener is part of this slice.
+  SSH itself needs no registry, sign-in dependency, Convex relay, or Everett listener.
 
 ## 1.5.0 — 2026-10-10
 

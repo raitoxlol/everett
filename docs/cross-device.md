@@ -1,10 +1,200 @@
 # Cross-device Everett
 
-Phase 1 implements the smallest shippable slice of [issue #4](https://github.com/raitoxlol/everett/issues/4).
-This revises the [PR #18 design](https://github.com/raitoxlol/everett/pull/18):
-pairing is **one-way**, and replies return **only through status polling**.
+Everett supports two inbox-only transports per peer: manual SSH (phase 1) and an
+end-to-end encrypted Convex relay (phase 2), from [issue #4](https://github.com/raitoxlol/everett/issues/4).
+SSH pairing remains **one-way**, with replies through **status polling**. Convex peers
+pin both directions and exchange messages, replies, and pickup receipts over a live WebSocket.
 
-## Scope
+## Convex relay: owner deployment
+
+The Everett client stays Rust-only. The deployable backend in `convex/` uses Convex's
+TypeScript schema/function runtime. Node is needed only for deployment/backend tests,
+not on machines running the Rust binary. No SSH reachability, port forwarding, or Tailscale
+is needed; both machines make outbound HTTPS/WebSocket connections.
+
+1. Create an OIDC **native/public** application supporting device-code login and refresh
+   tokens, scopes `openid email profile offline_access`, with no client secret. Enable
+   issuance of signed ID tokens both at login and refresh. Note the issuer (including
+   its trailing slash, if any) and the public application/client ID. Convex must be able
+   to reach the issuer's discovery/JWKS endpoints. See [auth setup](auth.md).
+2. Install Node 24 and sign in to your Convex account. From this checkout's root:
+
+   ```sh
+   npm ci
+   npm run typecheck
+   npm test
+   npx convex dev --configure new --once
+   ```
+
+   Choose a **cloud** development deployment. Initial deployment may fail until the
+   following environment values are set; project selection still creates `.env.local`.
+3. Configure the selected development deployment, then push schema/functions:
+
+   ```sh
+   npx convex env set OIDC_ISSUER 'https://YOUR-ISSUER/'
+   npx convex env set OIDC_CLIENT_ID 'YOUR-PUBLIC-CLIENT-ID'
+   npx convex dev --once
+   ```
+
+   For production, configure production **separately** and deploy:
+
+   ```sh
+   npx convex env set --prod OIDC_ISSUER 'https://YOUR-ISSUER/'
+   npx convex env set --prod OIDC_CLIENT_ID 'YOUR-PUBLIC-CLIENT-ID'
+   npx convex deploy
+   ```
+
+   Copy the selected deployment's HTTPS URL from the Convex dashboard (for example
+   `https://YOUR-DEPLOYMENT.convex.cloud`). Do not mix dev and prod URLs. `.env.local`,
+   generated types, deployment keys, and device credentials are ignored by git.
+
+## Convex relay: two-machine trial
+
+On **both** machines, build/install this branch and configure the **same** issuer, public
+client ID, and Convex URL. Sign in as the **same provider user** (same JWT issuer + subject):
+
+```sh
+cargo install --path everett-rs --locked --force
+export EVERETT_AUTH_ISSUER='https://YOUR-ISSUER/'
+export EVERETT_AUTH_CLIENT_ID='YOUR-PUBLIC-CLIENT-ID'
+export EVERETT_CONVEX_URL='https://YOUR-DEPLOYMENT.convex.cloud'
+everett login --force
+everett relay register
+everett relay devices
+```
+
+Alternatively, persist configuration in `~/.everett/config.toml`:
+
+```toml
+[auth]
+issuer = "https://YOUR-ISSUER/"
+client_id = "YOUR-PUBLIC-CLIENT-ID"
+[relay]
+url = "https://YOUR-DEPLOYMENT.convex.cloud"
+```
+
+`relay register` prints this device's `deviceId` and a SHA256 fingerprint covering the
+owner, Ed25519 key, and X25519 key. **Confirm those values on the other machine's terminal
+or another trusted out-of-band channel**, never solely through the registry. The relay
+fingerprint includes the encryption key and is distinct from the SSH fingerprint.
+Private Ed25519 identity is reused from `peer identity`; X25519 private keys are created
+locally. Do not copy `~/.everett` between machines: they must have different device keys.
+
+On A, pin B. On B, pin A (substitute the confirmed IDs/fingerprints):
+
+```sh
+# A
+everett peer add-relay machine-b --device B-DEVICE-ID --fingerprint SHA256:B-CONFIRMED-HEX
+# B
+everett peer add-relay machine-a --device A-DEVICE-ID --fingerprint SHA256:A-CONFIRMED-HEX
+```
+
+An alias selects exactly one transport; an existing SSH alias cannot become a relay alias
+without explicit removal. `peer list` shows both transports. On both machines, leave
+this foreground process running in a separate terminal (Ctrl-C stops it):
+
+```sh
+everett relay
+```
+
+Start a Claude session on A and a Codex session on B. On each machine, run `everett ls --json`
+and note the **full** local session IDs. Convex does not publish session listings or cards;
+remote `ls`/`card` remain SSH-only. From A (substitute the IDs):
+
+```sh
+EVERETT_SESSION_ID=A-CLAUDE-ID EVERETT_HARNESS_NAME=claude \
+  everett send 'Hello from A' --to machine-b/codex/B-CODEX-ID \
+  --idempotency-key two-machine-hello --json
+```
+
+Record the returned `message_id`. On B, the installed hooks or an agent's existing
+`everett_inbox` MCP tool consume the local inbox; explicit terminal pickup also works:
+
+```sh
+everett inbox --session B-CODEX-ID --peek --json  # inspection only
+everett inbox --session B-CODEX-ID --json         # actual pickup
+EVERETT_SESSION_ID=B-CODEX-ID EVERETT_HARNESS_NAME=codex \
+  everett reply MESSAGE-ID 'Hello back from B'
+```
+
+On A, the reply arrives live through its relay and enters the original sender inbox:
+
+```sh
+everett peer status machine-b MESSAGE-ID
+everett inbox --session A-CLAUDE-ID --json
+```
+
+Status is `queued` after Convex acceptance, `delivered` only after A observes B's signed,
+encrypted **inbox pickup receipt**, and `replied` only after A verifies/imports the correlated
+encrypted reply. Arrival on B or a durable local inbox write alone is not `delivered`.
+The backend calls that intermediate state `accepted` and deletes the ciphertext row;
+the CLI still reports `queued` until it observes a receipt. A terminal-origin send returns
+replies to the local `human` inbox. Neither transport wakes a harness session.
+
+### Offline behavior, safety, and limits
+
+- Stop B's relay, send with a **new** idempotency key, and check A reports `queued`.
+  Restart B before expiry; the initial live subscription drains its pending queue.
+  Repeat after expiry: no message is imported and status is `expired`.
+- Each envelope (message, reply, receipt) expires **one hour after creation**. The backend
+  enforces a maximum 24-hour TTL, filters expired rows, and deletes them with a one-minute
+  cron plus bounded continuation batches. If B imported a message before expiry, its local
+  inbox follows Everett's existing local retention policy; the relay TTL no longer applies.
+- If A cannot contact Convex, the command errors: a mode-0600 encrypted local retry record
+  exists, but server queueing is **unconfirmed**. `everett relay` retries before expiry.
+  Retry the same `--idempotency-key` with the exact same sender, destination, and body to
+  reuse the original ciphertext/message ID; changing it is rejected. Expired requests
+  need a new key only when an intentionally new send is wanted.
+- A's relay must run to receive replies/receipts. An `accepted` message can remain CLI
+  `queued` if the pickup receipt expires before A reconnects. Do not infer online presence
+  or successful pickup from server acceptance. Replies are single-shot per original
+  message; retrying the same reply is idempotent, changing its body is rejected.
+- Payload cap is **64 KiB for the serialized plaintext**, including message/card metadata
+  and JSON escaping; ciphertext adds a 16-byte tag. Hops stay encrypted, inherit recent
+  local pickup counts, and increment once per send/reply across all devices; a fourth hop
+  exits 7. Receipts do not consume a message hop.
+- X25519 ephemeral-static agreement, HKDF-SHA256, ChaCha20-Poly1305, and Ed25519 protect
+  content, including sender/recipient **session** IDs, harness names, replies, and receipts.
+  Convex sees ciphertext plus owner/device IDs, envelope IDs/idempotency keys, timestamps,
+  signatures, sizes, and transient acceptance/expiry metadata. Idempotency tombstones
+  contain no content/ciphertext and expire seven days after the envelope TTL.
+- All public functions independently derive owner from the verified OIDC JWT. A claimed
+  client owner is not authority. Unknown/wrong-account devices and changed signatures
+  are rejected. The relay verifies its own pinned keys, AEAD, routing, TTL and hops before
+  local writes. Unknown sessions/unpaired senders remain queued until TTL; the daemon
+  retries cached pending rows when a session/pin becomes available.
+- Device-key replacement is refused; remove a local pin with `peer remove ALIAS` and
+  confirm a new device identity explicitly. For a lost device, remove its pins on every
+  other machine and revoke its refresh tokens at the OIDC provider. Existing access/ID
+  tokens may remain valid until provider expiry; removing local trust stops inbox imports
+  immediately. Protect both devices' OS accounts: there is no forward secrecy against
+  later compromise of a recipient's static key, and no trust in a compromised endpoint.
+- The official Rust Convex client reconnects/resubscribes its WebSocket and refreshes
+  OIDC tokens through a callback. Transient mutation failures retain retry records.
+  An ended subscription, logout, changed owner, or failed authentication stops the daemon
+  honestly; restart it after fixing login/configuration. Requests have 20-second deadlines.
+
+### Offline verification
+
+```sh
+npm ci && npm run typecheck && npm test
+cd everett-rs
+cargo test --locked
+cargo clippy --all-targets -- -D warnings
+cargo build --release --locked
+EVERETT_VERIFY_BINARY=target/release/everett cargo test --locked --test release_journey
+```
+
+`convex-test` runs the **actual backend functions** in memory, with no Convex login/network:
+authentication and account isolation, signature tampering, duplicate idempotency keys,
+expiry, signed acceptance, ciphertext deletion, and retention cleanup. Rust tests cover
+AEAD round trips/tampering, wrong-account/device checks, caps/hops/TTL, Convex number
+serialization, and two isolated device inboxes with pickup, receipts, replies, and replay
+deduplication. CI runs Rust/release and backend checks on Linux and macOS. These fakes do
+not prove production OIDC/JWKS configuration or real NAT/reconnect behavior; run the
+two-machine trial above before rollout.
+
+## SSH transport (phase 1)
 
 Two devices can list sessions, read cards, send inbox messages, and poll delivery and replies
 over manual SSH addresses. There is no registry, Everett sign-in dependency, Convex service,
@@ -193,12 +383,8 @@ machines and verify:
 5. Stop SSH and verify no local queued message, then recover using the same idempotency key.
 6. Confirm effective AuthorizedKeysFile and the stable absolute Everett path on both OSes.
 
-## Later phases
+## Still out of scope
 
-The account backend is Convex for a future device registry: signed device metadata and manual
-out-of-band first-pair trust, not transcripts, shared-core text, or agent-session content.
-Everett login and automatic address discovery are future integration, not prerequisites here.
-A Convex relay for encrypted live cross-device agent chat is a possible later transport from
-the issue discussion; it is **not implemented in this phase**. Neither a registry record nor
-a relay may silently replace an established trust pin. Phone transports, a cross-device dashboard,
-remote shared-core merge, transcript synchronization, and automatic remote wake-up are out of scope.
+Neither a registry record nor a relay may silently replace an established trust pin.
+Phone transports, a cross-device dashboard, remote shared-core merge, transcript
+synchronization, automatic address discovery, and automatic remote wake-up remain out of scope.

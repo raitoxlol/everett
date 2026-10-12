@@ -146,7 +146,7 @@ fn handle(stream: &mut TcpStream, state: &Arc<Mutex<State>>, port: u16) {
                         stream,
                         200,
                         &format!(
-                            r#"{{"access_token":"at-new","refresh_token":"{}","expires_in":3600}}"#,
+                            r#"{{"access_token":"at-new","id_token":"id-new","refresh_token":"{}","expires_in":3600}}"#,
                             st.rotated_refresh
                         ),
                     );
@@ -162,7 +162,7 @@ fn handle(stream: &mut TcpStream, state: &Arc<Mutex<State>>, port: u16) {
                 _ => respond(
                     stream,
                     200,
-                    r#"{"access_token":"at-1","refresh_token":"rt-1","expires_in":3600,"scope":"openid email profile offline_access"}"#,
+                    r#"{"access_token":"at-1","id_token":"id-1","refresh_token":"rt-1","expires_in":3600,"scope":"openid email profile offline_access"}"#,
                 ),
             }
         }
@@ -220,6 +220,7 @@ fn login_happy_path_writes_auth_and_whoami_prints_email() {
     assert_eq!(stored["issuer"], fake.base);
     assert_eq!(stored["client_id"], "client-1");
     assert_eq!(stored["refresh_token"], "rt-1");
+    assert_eq!(stored["id_token"], "id-1");
     assert!(stored["expires_at"].as_f64().unwrap() > 0.0);
 
     let out = f.run(&["whoami"]);
@@ -281,6 +282,7 @@ fn whoami_rotates_refresh_token() {
         serde_json::from_str(&std::fs::read_to_string(auth_path(&f)).unwrap()).unwrap();
     assert_eq!(stored["refresh_token"], "rt-rotated");
     assert_eq!(stored["access_token"], "at-new");
+    assert_eq!(stored["id_token"], "id-new");
 }
 
 #[test]

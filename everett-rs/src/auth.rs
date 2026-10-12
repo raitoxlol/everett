@@ -51,6 +51,8 @@ pub struct Stored {
     pub device_name: String,
     pub access_token: String,
     #[serde(default)]
+    pub id_token: String,
+    #[serde(default)]
     pub refresh_token: String,
     pub expires_at: f64,
     #[serde(default)]
@@ -256,7 +258,7 @@ pub fn userinfo(disc: &Discovery, access_token: &str) -> Result<(String, String,
 }
 
 pub enum Refresh {
-    Rotated { access_token: String, refresh_token: String, expires_in: f64 },
+    Rotated { access_token: String, id_token: String, refresh_token: String, expires_in: f64 },
     Revoked,
 }
 
@@ -279,6 +281,7 @@ pub fn refresh(disc: &Discovery, client_id: &str, refresh_token: &str) -> Result
             .to_string();
         return Ok(Refresh::Rotated {
             access_token: access,
+            id_token: body.get("id_token").and_then(Value::as_str).unwrap_or("").to_string(),
             refresh_token: rotated,
             expires_in: body.get("expires_in").and_then(|v| v.as_f64()).unwrap_or(3600.0),
         });
@@ -324,9 +327,10 @@ pub fn ensure_fresh(stored: &Stored) -> Result<Stored> {
     }
     let disc = discover(&stored.issuer)?;
     match refresh(&disc, &stored.client_id, &stored.refresh_token)? {
-        Refresh::Rotated { access_token, refresh_token, expires_in } => {
+        Refresh::Rotated { access_token, id_token, refresh_token, expires_in } => {
             let mut updated = stored.clone();
             updated.access_token = access_token;
+            if !id_token.is_empty() { updated.id_token = id_token; }
             updated.refresh_token = refresh_token;
             updated.expires_at = now() + expires_in;
             save(&updated).map_err(|e| {
