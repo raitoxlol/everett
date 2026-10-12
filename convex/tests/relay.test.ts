@@ -51,7 +51,70 @@ async function fixture() {
 }
 afterEach(() => vi.useRealTimers());
 
+type Fixture = Awaited<ReturnType<typeof fixture>>;
+async function expectRoutingDenied(f: Fixture, client: Fixture["a"] | Fixture["backend"], reason: RegExp) {
+  const e = seal(f.ka, f.kc);
+  const observation = { deviceId: f.ka.device.deviceId, senderOwner: ownerA, messageId: e.messageId,
+    at: Date.now(), signature: "00".repeat(64) };
+  for (const [name, args] of [
+    ["whoami", {}], ["devices", {}], ["credentials", {}], ["memberships", {}],
+    ["pending", { deviceId: f.ka.device.deviceId }],
+    ["status", { fromDevice: f.ka.device.deviceId, messageId: e.messageId }],
+    ["grants:list", {}], ["grants:get", { grantId: "grant-ab" }],
+  ] as const) await expect(client.query(query(name), args)).rejects.toThrow(reason);
+  for (const [name, args] of [
+    ["register", { device: f.ka.device }],
+    ["rotate", { device: f.ka.device, oldFingerprint: fingerprint(f.ka.device), signature: "00".repeat(64) }],
+    ["revokeAgent", { deviceId: "agent-c" }], ["revokeMember", { subject: "alice-member" }],
+    ["enqueue", { envelope: e }], ["accept", observation],
+    ["observe", { ...observation, state: "delivered" }],
+    ["grants:invite", { grantId: "grant-ab", deviceId: "agent-a", peerOwner: ownerB, peerDeviceId: "agent-b",
+      localFingerprint: fingerprint(f.ka.device), peerFingerprint: fingerprint(f.kb.device),
+      expiresAt: null, ratePerMinute: 30, bodyCapBytes: 65536 }],
+    ["grants:accept", { grantId: "grant-ab", localFingerprint: fingerprint(f.ka.device), peerFingerprint: fingerprint(f.kb.device) }],
+    ["grants:reconfirm", { grantId: "grant-ab", localFingerprint: fingerprint(f.ka.device), peerFingerprint: fingerprint(f.kb.device) }],
+    ["grants:revoke", { grantId: "grant-ab" }],
+  ] as const) await expect(client.mutation(ref(name), args)).rejects.toThrow(reason);
+}
+
 describe("actual Convex functions, offline", () => {
+  test("every relay and grant entry point rejects missing auth, wrong issuer and legacy claim-only enrollment", async () => {
+    const f = await fixture();
+    await expectRoutingDenied(f, f.backend, /Sign in/);
+    await expectRoutingDenied(f, f.backend.withIdentity({ ...f.identities[0], issuer: "https://evil.example/" }), /membership/);
+    await expectRoutingDenied(f, f.backend.withIdentity({ issuer, subject: "alice", org_id: "org-a", agent_id: "agent-a", jti: "token-1" }), /everett_agent/);
+  });
+  test("signed org changes cannot expose or mutate another namespace's queued messages", async () => {
+    const f = await fixture(), e = seal(f.ka, f.kc);
+    await f.a.mutation(ref("enqueue"), { envelope: e });
+    await expectRoutingDenied(f, f.backend.withIdentity({ ...f.identities[0], everett_org: "org-b" }), /membership/);
+    expect((await f.c.query(query("pending"), { deviceId: "agent-c" })).envelopes[0].envelope).toEqual(e);
+    await f.observe(f.c, f.kc, e);
+    expect(await f.backend.run(ctx => ctx.db.query("messages").collect())).toEqual([]);
+  });
+  test("membership revocation gates every relay and grant entry point with a still-valid identity", async () => {
+    const f = await fixture(), e = seal(f.kc, f.ka);
+    await f.c.mutation(ref("enqueue"), { envelope: e });
+    await f.a.mutation(ref("revokeMember"), { subject: "alice-member" });
+    await expectRoutingDenied(f, f.c, /membership/);
+    expect((await f.backend.run(ctx => ctx.db.query("messages").collect()))[0]).toMatchObject(e);
+  });
+  test("agent MCP credential and membership views are bounded by org and role", async () => {
+    const f = await fixture();
+    const own = await f.c.query(query("credentials"), {});
+    expect(own.credentials.map((row: { agentId: string }) => row.agentId)).toEqual(["agent-c"]);
+    const admin = await f.a.query(query("credentials"), {});
+    expect(admin.credentials.map((row: { agentId: string }) => row.agentId).sort()).toEqual(["agent-a", "agent-c"]);
+    expect(admin.truncated).toBe(false);
+    expect(JSON.stringify(admin)).not.toMatch(/token|secret|signingKey|encryptionKey/);
+    const members = await f.a.query(query("memberships"), {});
+    expect(members.memberships.map((row: { subject: string }) => row.subject).sort()).toEqual(["alice", "alice-member"]);
+    await expect(f.c.query(query("memberships"), {})).rejects.toThrow();
+    await f.a.mutation(ref("revokeAgent"), { deviceId: "agent-c" });
+    await expect(f.c.query(query("credentials"), {})).rejects.toThrow();
+    expect((await f.a.query(query("credentials"), {})).credentials.find((row: { agentId: string }) => row.agentId === "agent-c")?.status).toBe("revoked");
+    await expect(f.backend.query(query("credentials"), {})).rejects.toThrow("Sign in");
+  });
   test("v2 Rust integration vector fixes device, AAD, envelope, rotation, observation and encryption bytes", () => {
     const a = key("agent-a", ownerA, 1), b = key("agent-b", ownerB, 3);
     const e = seal(a, b, { grantId: "grant-ab", createdAt: 1000, expiresAt: 3601000 });

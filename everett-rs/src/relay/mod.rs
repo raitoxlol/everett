@@ -942,6 +942,12 @@ pub fn status(name: &str, mid: &str) -> Result<Value> {
     })
 }
 
+pub fn agent_status(mid: &str) -> Result<Value> {
+    let (_, owner) = account()?;
+    let (_, outgoing) = find_outgoing(&owner, mid)?;
+    status(&outgoing.peer, mid)
+}
+
 fn observe(owner: &str, envelope: &Envelope, mid: &str, state: State) -> Result<()> {
     let _guard = peer::lock(&root().join("outgoing.lock"))?;
     let (path, mut out) = find_outgoing(owner, mid)?;

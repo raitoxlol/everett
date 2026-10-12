@@ -1,4 +1,4 @@
-//! The release journey: CLI, all ten stdio MCP tools, routing, messaging, subscriptions and shared
+//! The release journey: CLI, stdio MCP tools, routing, messaging, subscriptions and shared
 //! memory over an isolated home. Set `EVERETT_VERIFY_BINARY` to check an installed or packaged binary.
 
 use serde_json::{json, Value};
@@ -9,7 +9,8 @@ use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
 use std::time::{Duration, SystemTime};
 
-const TOOLS: [&str; 10] = ["everett_card", "everett_core", "everett_event", "everett_inbox", "everett_learn",
+const TOOLS: [&str; 14] = ["everett_agent_grants", "everett_agent_relay", "everett_agent_send", "everett_agent_status",
+    "everett_card", "everett_core", "everett_event", "everett_inbox", "everett_learn",
     "everett_ls", "everett_route", "everett_send", "everett_subscribe", "everett_whoami"];
 
 fn binary() -> PathBuf {
@@ -144,11 +145,11 @@ fn ids(sessions: &Value) -> BTreeSet<String> {
 }
 
 #[test]
-fn release_journey_over_cli_and_all_ten_mcp_tools() {
+fn release_journey_over_cli_and_all_mcp_tools() {
     let home = Home::new();
     let root = home.path().to_path_buf();
     assert!(home.run(&["--version"], "").starts_with("everett "));
-    assert!(home.run(&["doctor"], "").contains("10 tools over stdio"));
+    assert!(home.run(&["doctor"], "").contains("14 tools over stdio"));
     home.run(&["onboard", "--yes", "--no-backfill"], "");
     assert!(root.join(".claude.json").is_file(), "onboarding missed the CLI without a session store");
     assert!(!home.run(&["doctor"], "").contains("setup needs attention"));
@@ -224,5 +225,16 @@ fn release_journey_over_cli_and_all_ten_mcp_tools() {
     let reply: Value = serde_json::from_str(spawned["reply"].as_str().unwrap()).unwrap();
     assert_eq!(reply["stdin"], "");
     assert_eq!(wire.request("ping", None), json!({}));
+    // No deployment/provider is configured in this isolated home: fail closed over real stdio.
+    for (name, args) in [
+        ("everett_agent_relay", json!({"action":"identity"})),
+        ("everett_agent_grants", json!({"action":"list"})),
+        ("everett_agent_send", json!({"agent":"a".repeat(64),"session":"recipient","harness":"pi","text":"hello","idempotency_key":"key"})),
+        ("everett_agent_status", json!({"message_id":"message"})),
+    ] {
+        let result = wire.request("tools/call",Some(json!({"name":name,"arguments":args})));
+        assert_eq!(result["isError"],true,"{name}: {result}");
+        wire.seen.insert(name.into());
+    }
     assert_eq!(wire.close(), TOOLS.iter().map(|t| t.to_string()).collect());
 }
