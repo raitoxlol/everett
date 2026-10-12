@@ -51,6 +51,22 @@ export const register = mutation({
     return null;
   },
 });
+export const credentials = query({
+  args: {}, handler: async (ctx: Context) => {
+    const p = await authorize(ctx);
+    const rows = p.admin
+      ? await ctx.db.query("credentials").withIndex("by_owner", q => q.eq("owner", p.owner)).take(257)
+      : [p.credential];
+    return { credentials: rows.slice(0, 256).map(row => ({ agentId: row.agentId, subject: row.subject, status: row.status })), truncated: rows.length > 256 };
+  },
+});
+export const memberships = query({
+  args: {}, handler: async (ctx: Context) => {
+    const p = await authorize(ctx); requireAdmin(p);
+    const rows = await ctx.db.query("memberships").withIndex("by_identity", q => q.eq("owner", p.owner)).take(257);
+    return { memberships: rows.slice(0, 256).map(row => ({ subject: row.subject, role: row.role, status: row.status })), truncated: rows.length > 256 };
+  },
+});
 export const rotate = mutation({
   args: { device: deviceValidator, oldFingerprint: v.string(), signature: v.string() },
   handler: async (ctx: WriteContext, args) => {

@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Reconcile the account/device and agent relay implementations into one v2 encrypted
+  transport. Preserve agent MCP identity/pairing, grants, send and status tools with
+  authoritative per-agent revocation and explicit bilateral fingerprint confirmation.
+
 - Extend the Rust-only client's per-peer Convex transport to same-owner/account or org
   chat over live WebSocket subscriptions behind NAT, with explicit full session IDs,
   inbox-only messages/replies and no SSH/Tailscale dependency or session wake-up. Keep

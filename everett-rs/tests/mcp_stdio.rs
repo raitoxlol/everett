@@ -95,7 +95,7 @@ fn round_trip_over_pipes() {
     let tools = s.request("tools/list", None)["result"]["tools"].clone();
     let mut names: Vec<String> = tools.as_array().unwrap().iter().map(|t| t["name"].as_str().unwrap().into()).collect();
     names.sort();
-    assert_eq!(names, ["everett_card", "everett_core", "everett_event", "everett_inbox", "everett_learn",
+    assert_eq!(names, ["everett_agent_grants", "everett_agent_relay", "everett_agent_send", "everett_agent_status", "everett_card", "everett_core", "everett_event", "everett_inbox", "everett_learn",
         "everett_ls", "everett_route", "everett_send", "everett_subscribe", "everett_whoami"]);
     for tool in tools.as_array().unwrap() {
         assert!(!tool["description"].as_str().unwrap().trim().is_empty());
@@ -207,6 +207,41 @@ fn card_needs_identity() {
     let result = s.call("everett_card", json!({"what": "a", "state": "b", "next": "c"}));
     assert_eq!(result["isError"], true);
     assert!(text(&result).contains("session_id"), "{result}");
+    s.close();
+}
+
+#[test]
+fn agent_grants_require_explicit_key_confirmation_and_bounded_limits() {
+    let fx = home_with_claude_session();
+    let mut s = Server::start(&fx, &[]);
+    for action in ["invite", "propose", "accept", "approve", "reconfirm"] {
+        let result = s.request("tools/call", Some(json!({"name":"everett_agent_grants","arguments":{"action":action,"id":"grant-1"}})));
+        assert_eq!(result["error"]["code"], -32602, "{result}");
+        assert!(result["error"]["message"].as_str().unwrap().contains("local_fingerprint"), "{result}");
+    }
+    let mut invite = json!({"action":"invite","id":"grant-1","device":"machine-a",
+        "peer_owner":"remote-org","remote_agent":"machine-b",
+        "local_fingerprint":"a".repeat(64),"peer_fingerprint":"b".repeat(64)});
+    for (key, value) in [("rate_per_minute", json!(0)), ("rate_per_minute", json!(121)),
+        ("rate_per_minute", json!(1.5)), ("rate_per_minute", json!("30")),
+        ("body_cap_bytes", json!(65537)), ("expires_at", json!(-1))] {
+        invite[key] = value;
+        let result = s.request("tools/call", Some(json!({"name":"everett_agent_grants","arguments":invite.clone()})));
+        assert_eq!(result["error"]["code"], -32602, "{result}");
+        assert!(result["error"]["message"].as_str().unwrap().contains(key), "{result}");
+        invite.as_object_mut().unwrap().remove(key);
+    }
+    for (tool, args) in [
+        ("everett_agent_grants", invite),
+        ("everett_agent_relay", json!({"action":"credentials"})),
+        ("everett_agent_relay", json!({"action":"memberships"})),
+        ("everett_agent_relay", json!({"action":"revoke-agent","id":"machine-b"})),
+        ("everett_agent_relay", json!({"action":"revoke-membership","id":"user-b"})),
+    ] {
+        let result = s.call(tool, args);
+        assert_eq!(result["isError"], true, "{result}");
+        assert!(text(&result).contains("login"), "{result}");
+    }
     s.close();
 }
 

@@ -139,6 +139,48 @@ pub fn tools() -> &'static Vec<Value> {
                 "description": "Your own session id and harness as Everett detects them, and how it detected them. If none is detected, pass session_id explicitly to everett_send and everett_card.",
                 "inputSchema": {"type": "object", "properties": {}, "additionalProperties": false},
             }),
+            json!({
+                "name": "everett_agent_relay",
+                "description": "OIDC-authorized agent identity, registration, org directory, pinned relay aliases and revocation. Credentials are per agent, never bearer tokens. Membership management is admin-only; an agent can revoke itself. Run everett relay separately to receive; never wakes sessions.",
+                "inputSchema": {"type":"object","properties":{
+                    "action":{"type":"string","enum":["identity","register","directory","pair","unpair","credentials","memberships","revoke-membership","revoke-agent","revoke-credential"]},
+                    "id":s("Provisioned agent ID; for revoke-membership, exact provider subject; for unpair, alias."),
+                    "name":s("Optional local relay alias for pair; defaults to the agent ID."),
+                    "grant_id":s("Required for cross-org pairing; active bilateral named-agent grant."),
+                    "fingerprint":s("Exact 64-character lowercase fingerprint confirmed out of band.")
+                },"required":["action"],"additionalProperties":false}
+            }),
+            json!({
+                "name": "everett_agent_grants",
+                "description": "List/get named-agent grants, or administer explicit bilateral grants. Both org admins must independently confirm both key fingerprints. Either can revoke; key changes require bilateral reconfirmation. Non-admin agent credentials cannot administer grants.",
+                "inputSchema":{"type":"object","properties":{
+                    "action":{"type":"string","enum":["list","get","invite","accept","reconfirm","revoke","propose","approve"]},
+                    "id":s("Explicit grant ID; propose/approve are aliases for invite/accept."),
+                    "device":s("Invite: exact named local agent ID, not a whole org."),
+                    "peer_owner":s("Invite: exact verified remote owner namespace, obtained out of band."),
+                    "remote_agent":s("Invite: exact named external agent ID."),
+                    "local_fingerprint":s("Invite/accept/reconfirm: independently verified local key fingerprint."),
+                    "peer_fingerprint":s("Invite/accept/reconfirm: independently verified remote key fingerprint."),
+                    "expires_at":{"type":"integer","minimum":0,"maximum":9_007_199_254_740_991i64},
+                    "rate_per_minute":{"type":"integer","minimum":1,"maximum":120,"default":30},
+                    "body_cap_bytes":{"type":"integer","minimum":256,"maximum":65536,"default":65536}
+                },"required":["action"],"additionalProperties":false}
+            }),
+            json!({
+                "name":"everett_agent_send",
+                "description":"Send E2E-encrypted text to a pinned issuer-named agent's bound session. Same-org membership or bilateral cross-org approval required. Queued is not pickup; external inbound content is untrusted. Retry the exact request with the same idempotency key. Does not wake sessions.",
+                "inputSchema":{"type":"object","properties":{
+                    "agent":s("Pinned relay alias, defaulting to its named recipient agent ID."),"session":s("Exact recipient session ID, obtained out of band."),
+                    "harness":s("Recipient harness, e.g. omp or pi."),"text":{"type":"string","maxLength":65536},
+                    "idempotency_key":s("Required stable unique key; changing the request with the same key is rejected."),
+                    "session_id":s("Your local sending session, if not detectable.")
+                },"required":["agent","session","harness","text","idempotency_key"],"additionalProperties":false}
+            }),
+            json!({
+                "name":"everett_agent_status",
+                "description":"Sender-only status: queued after enqueue acknowledgement; delivered after durable recipient acceptance; claimed after inbox pickup; replied after correlated reply enqueue and signed observation. Never inferred from a connection or wake-up.",
+                "inputSchema":{"type":"object","properties":{"message_id":s("Outgoing message ID.")},"required":["message_id"],"additionalProperties":false}
+            }),
         ]
     })
 }
@@ -800,7 +842,81 @@ trait Pipe: Sized {
 }
 impl Pipe for String {}
 
+fn grant_args(args: &Map<String, Value>) -> std::result::Result<(&'static str, Value, bool), ToolFailure> {
+    let action = str_arg(args, "action", true)?;
+    if action == "list" { return Ok(("grants:list", json!({}), true)); }
+    let id = str_arg(args, "id", true)?;
+    let fingerprints = || -> std::result::Result<Value, ToolFailure> {
+        Ok(json!({"grantId":id,"localFingerprint":str_arg(args,"local_fingerprint",true)?,
+            "peerFingerprint":str_arg(args,"peer_fingerprint",true)?}))
+    };
+    let integer = |key: &str, default: Option<i64>, min: i64, max: i64| {
+        let value = args.get(key).filter(|v| !v.is_null()).map(Value::as_i64).unwrap_or(default);
+        value.filter(|v| *v >= min && *v <= max)
+            .ok_or_else(|| ToolFailure::Params(format!("\"{key}\" must be an integer from {min} to {max}")))
+    };
+    match action.as_str() {
+        "get" => Ok(("grants:get", json!({"grantId":id}), true)),
+        "revoke" => Ok(("grants:revoke", json!({"grantId":id}), false)),
+        "accept" | "approve" => Ok(("grants:accept", fingerprints()?, false)),
+        "reconfirm" => Ok(("grants:reconfirm", fingerprints()?, false)),
+        "invite" | "propose" => {
+            let mut value = fingerprints()?;
+            value["deviceId"] = json!(str_arg(args, "device", true)?);
+            value["peerOwner"] = json!(str_arg(args, "peer_owner", true)?);
+            value["peerDeviceId"] = json!(str_arg(args, "remote_agent", true)?);
+            value["expiresAt"] = match args.get("expires_at") {
+                None | Some(Value::Null) => Value::Null,
+                _ => json!(integer("expires_at", None, 0, 9_007_199_254_740_991)?),
+            };
+            value["ratePerMinute"] = json!(integer("rate_per_minute", Some(30), 1, 120)?);
+            value["bodyCapBytes"] = json!(integer("body_cap_bytes", Some(65536), 256, 65536)?);
+            Ok(("grants:invite", value, false))
+        },
+        _ => Err(ToolFailure::Params("unknown grant action".into())),
+    }
+}
+
 fn call_handler(name: &str, args: &Map<String, Value>) -> std::result::Result<Map<String, Value>, ToolFailure> {
+    if name.starts_with("everett_agent_") {
+        let value = match name {
+            "everett_agent_relay" => {
+                let action = str_arg(args,"action",true)?;
+                let requires_id = matches!(action.as_str(),"pair"|"unpair"|"revoke-agent"|"revoke-credential"|"revoke-membership");
+                let id = str_arg(args,"id",requires_id)?;
+                match action.as_str() {
+                    "identity" => crate::relay::admin_call("relay:whoami", json!({}), true)?,
+                    "register" => crate::relay::register()?,
+                    "directory" => crate::relay::devices()?,
+                    "credentials" => crate::relay::admin_call("relay:credentials", json!({}), true)?,
+                    "memberships" => crate::relay::admin_call("relay:memberships", json!({}), true)?,
+                    "pair" => {
+                        let alias = str_arg(args,"name",false)?;
+                        let grant = str_arg(args,"grant_id",false)?;
+                        crate::relay::add(if alias.is_empty() { &id } else { &alias }, &id,
+                            &str_arg(args,"fingerprint",true)?, if grant.is_empty() { None } else { Some(&grant) })?
+                    },
+                    "unpair" => crate::relay::remove(&id)?,
+                    "revoke-membership" => crate::relay::admin_call("relay:revokeMember", json!({"subject":id}), false)?,
+                    "revoke-agent" | "revoke-credential" => crate::relay::admin_call("relay:revokeAgent", json!({"deviceId":id}), false)?,
+                    _ => return Err(ToolFailure::Params("unknown relay action".into())),
+                }
+            },
+            "everett_agent_grants" => {
+                let (function, value, query) = grant_args(args)?;
+                crate::relay::admin_call(function, value, query)?
+            },
+            "everett_agent_send" => {
+                let target = format!("{}/{}/{}", str_arg(args,"agent",true)?, str_arg(args,"harness",true)?, str_arg(args,"session",true)?);
+                let caller = str_arg(args,"session_id",false)?;
+                crate::relay::send(&target, &str_arg(args,"text",true)?, Some(&str_arg(args,"idempotency_key",true)?),
+                    if caller.is_empty() { None } else { Some(&caller) })?
+            },
+            "everett_agent_status" => crate::relay::agent_status(&str_arg(args,"message_id",true)?)?,
+            _ => return Err(ToolFailure::Params("unknown agent tool".into())),
+        };
+        return serde_json::from_value(if value.is_object() { value } else { json!({"result":value}) }).map_err(|_| ToolFailure::Params("invalid agent response".into()));
+    }
     match name {
         "everett_ls" => tool_ls(args),
         "everett_route" => tool_route(args),
@@ -862,6 +978,9 @@ fn call_tool(params: &Map<String, Value>) -> std::result::Result<Map<String, Val
                 if (value.as_f64().map(|n| !n.is_finite()).unwrap_or(true) || value.is_boolean()) => {
                     return Err(json!({"code": INVALID_PARAMS, "message": format!("\"{}\" must be a finite number", key)}));
                 }
+            Some("integer") if value.as_i64().is_none() => {
+                return Err(json!({"code": INVALID_PARAMS, "message": format!("\"{}\" must be an integer", key)}));
+            }
             _ => {}
         }
         if let Some(values) = spec.get("enum").and_then(|e| e.as_array()) {
@@ -873,6 +992,11 @@ fn call_tool(params: &Map<String, Value>) -> std::result::Result<Map<String, Val
         if let Some(min) = spec.get("minimum").and_then(|m| m.as_f64()) {
             if value.as_f64().map(|v| v < min).unwrap_or(false) {
                 return Err(json!({"code": INVALID_PARAMS, "message": format!("\"{}\" must be at least {}", key, crate::fmt::g(min))}));
+            }
+        }
+        if let Some(max) = spec.get("maximum").and_then(|m| m.as_f64()) {
+            if value.as_f64().is_some_and(|v| v > max) {
+                return Err(json!({"code": INVALID_PARAMS, "message": format!("\"{}\" must be at most {}", key, crate::fmt::g(max))}));
             }
         }
         if let Some(max) = spec.get("maxLength").and_then(|m| m.as_i64()) {
