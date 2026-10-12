@@ -14,6 +14,7 @@ const ref = (name: string) => makeFunctionReference<"mutation">(`relay:${name}`)
 const query = (name: string) => makeFunctionReference<"query">(`relay:${name}`);
 const hex = (b: Uint8Array) => Buffer.from(b).toString("hex");
 const issuer = "https://owner.example/";
+process.env.OIDC_ISSUER = issuer;
 const owner = JSON.stringify([issuer, "alice"]);
 const aliceIdentity = { issuer, subject: "alice" };
 
@@ -75,7 +76,7 @@ describe("real Convex functions against an in-memory backend (no network)", () =
     await expect(f.bob.query(query("status"), { fromDevice: f.a.device.deviceId, messageId: f.envelope.messageId })).rejects.toThrow();
     await expect(f.bob.mutation(ref("accept"), { deviceId: f.b.device.deviceId, messageId: f.envelope.messageId, at: Date.now(), signature: "00".repeat(64) })).rejects.toThrow();
     const sameSubjectOtherIssuer = f.backend.withIdentity({ issuer: "https://different.example/", subject: "alice" });
-    expect(await sameSubjectOtherIssuer.query(query("devices"), {})).toEqual([]);
+    await expect(sameSubjectOtherIssuer.query(query("devices"), {})).rejects.toThrow("issuer");
   });
 
   test("idempotency survives acceptance and rejects a changed envelope", async () => {

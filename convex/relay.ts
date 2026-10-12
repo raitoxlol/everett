@@ -9,6 +9,7 @@ import { v, type Infer } from "convex/values";
 import nacl from "tweetnacl";
 import { sha256 } from "@noble/hashes/sha256";
 import schema, { deviceFields, envelopeFields } from "./schema";
+import { principal, remember, limit } from "./identity";
 
 type Model = DataModelFromSchemaDefinition<typeof schema>;
 type Context = GenericQueryCtx<Model>;
@@ -31,14 +32,14 @@ export function envelopeBytes(e: Envelope) {
   return encode([aad, e.ciphertext]);
 }
 
-function hex(value: string, bytes?: number) {
+export function hex(value: string, bytes?: number) {
   if (!/^(?:[0-9a-f]{2})+$/.test(value) || (bytes !== undefined && value.length !== bytes * 2)) {
     throw new Error("Invalid cryptographic field");
   }
   return Uint8Array.from(value.match(/../g)!.map((b) => parseInt(b, 16)));
 }
 
-function verify(key: string, signature: string, bytes: Uint8Array) {
+export function verify(key: string, signature: string, bytes: Uint8Array) {
   if (!nacl.sign.detached.verify(bytes, hex(signature, 64), hex(key, 32))) {
     throw new Error("Invalid device signature");
   }
@@ -49,9 +50,9 @@ function identifier(value: string) {
 }
 
 async function owner(ctx: Context) {
-  const identity = await ctx.auth.getUserIdentity();
-  if (!identity) throw new Error("Sign in required");
-  return JSON.stringify([identity.issuer, identity.subject]);
+  const p = await principal(ctx);
+  if (p.agent) throw new Error("Agent identities must use the scoped agent relay");
+  return p.owner;
 }
 
 async function device(ctx: Context, account: string, id: string) {
@@ -59,6 +60,7 @@ async function device(ctx: Context, account: string, id: string) {
   const row = await ctx.db.query("devices")
     .withIndex("by_owner_device", (q) => q.eq("owner", account).eq("deviceId", id)).unique();
   if (!row) throw new Error("Device is not registered to this owner");
+  if (row.org !== (await principal(ctx)).org) throw new Error("Wrong org membership");
   return row;
 }
 
@@ -66,6 +68,8 @@ export const register = mutation({
   args: { device: deviceValidator },
   handler: async (ctx: WriteContext, { device: d }) => {
     const account = await owner(ctx);
+    const p = await principal(ctx);
+    await remember(ctx, p);
     if (d.owner !== account) throw new Error("Wrong account");
     identifier(d.deviceId);
     hex(d.encryptionKey, 32);
@@ -73,11 +77,13 @@ export const register = mutation({
     const existing = await ctx.db.query("devices")
       .withIndex("by_owner_device", (q) => q.eq("owner", account).eq("deviceId", d.deviceId)).unique();
     if (existing) {
+      if (existing.org !== p.org) throw new Error("Wrong org membership");
       if (existing.signingKey !== d.signingKey || existing.encryptionKey !== d.encryptionKey) {
         throw new Error("Device keys cannot be replaced; use a new device identity and confirm new pins");
       }
     } else {
-      await ctx.db.insert("devices", d);
+      await limit(ctx, account, p.org, "register", 16);
+      await ctx.db.insert("devices", { ...d, org: p.org });
     }
     return null;
   },
@@ -89,7 +95,8 @@ export const devices = query({
     const account = await owner(ctx);
     const rows = await ctx.db.query("devices")
       .withIndex("by_owner_device", (q) => q.eq("owner", account)).take(256);
-    return rows.map(({ owner, deviceId, signingKey, encryptionKey, signature }) =>
+    const p = await principal(ctx);
+    return rows.filter(row => row.org === p.org).map(({ owner, deviceId, signingKey, encryptionKey, signature }) =>
       ({ owner, deviceId, signingKey, encryptionKey, signature }));
   },
 });
@@ -113,6 +120,7 @@ export const enqueue = mutation({
     const previous = await ctx.db.query("attempts")
       .withIndex("by_key", (q) => q.eq("owner", account).eq("fromDevice", e.fromDevice).eq("idempotencyKey", e.idempotencyKey)).unique();
     if (previous) {
+      if (previous.org !== (await principal(ctx)).org) throw new Error("Wrong org membership");
       if (previous.digest !== digest) throw new Error("Idempotency key already used for a different request");
       return { messageId: previous.messageId, state: previous.state === "queued" && previous.expiresAt <= Date.now() ? "expired" : previous.state };
     }
@@ -122,9 +130,13 @@ export const enqueue = mutation({
     if (await ctx.db.query("attempts").withIndex("by_message", (q) => q.eq("owner", account).eq("messageId", e.messageId)).unique()) {
       throw new Error("Message ID already used");
     }
-    await ctx.db.insert("messages", e);
+    const p = await principal(ctx);
+    await limit(ctx, account, p.org, "enqueue", 60);
+    await limit(ctx, p.owner, p.org, "org-enqueue", 600, p.org);
+    if ((await ctx.db.query("messages").withIndex("by_recipient", q => q.eq("owner", account).eq("toDevice", e.toDevice)).take(256)).length >= 256) throw new Error("Recipient queue full");
+    await ctx.db.insert("messages", { ...e, org: p.org });
     await ctx.db.insert("attempts", {
-      owner: account, fromDevice: e.fromDevice, toDevice: e.toDevice,
+      owner: account, org: p.org, fromDevice: e.fromDevice, toDevice: e.toDevice,
       messageId: e.messageId, idempotencyKey: e.idempotencyKey, digest,
       expiresAt: e.expiresAt, retainUntil: e.expiresAt + 7 * 86400000, state: "queued",
     });
@@ -140,7 +152,8 @@ export const pending = query({
     const rows = await ctx.db.query("messages")
       .withIndex("by_recipient", (q) => q.eq("owner", account).eq("toDevice", deviceId))
       .filter((q) => q.gt(q.field("expiresAt"), Date.now())).take(64);
-    return rows.map(({ _id, _creationTime, ...envelope }) => envelope);
+    const p = await principal(ctx);
+    return rows.filter(row => row.org === p.org).map(({ _id, _creationTime, org, ...envelope }) => envelope);
   },
 });
 
@@ -153,7 +166,7 @@ export const accept = mutation({
     verify(recipient.signingKey, args.signature, encode(["everett-accept-v1", account, args.deviceId, args.messageId, args.at]));
     const attempt = await ctx.db.query("attempts")
       .withIndex("by_message", (q) => q.eq("owner", account).eq("messageId", args.messageId)).unique();
-    if (!attempt || attempt.toDevice !== args.deviceId) throw new Error("No message for this device");
+    if (!attempt || attempt.toDevice !== args.deviceId || attempt.org !== (await principal(ctx)).org) throw new Error("No message for this device");
     if (attempt.state !== "accepted" && attempt.expiresAt <= Date.now()) throw new Error("Message TTL expired");
     if (attempt.state !== "accepted") {
       await ctx.db.patch(attempt._id, { state: "accepted" });
@@ -172,7 +185,7 @@ export const status = query({
     await device(ctx, account, fromDevice);
     const attempt = await ctx.db.query("attempts")
       .withIndex("by_message", (q) => q.eq("owner", account).eq("messageId", messageId)).unique();
-    if (!attempt || attempt.fromDevice !== fromDevice) throw new Error("No message for this device");
+    if (!attempt || attempt.fromDevice !== fromDevice || attempt.org !== (await principal(ctx)).org) throw new Error("No message for this device");
     return { state: attempt.state === "queued" && attempt.expiresAt <= Date.now() ? "expired" : attempt.state };
   },
 });

@@ -1,4 +1,5 @@
 pub mod crypto;
+pub mod agents;
 
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
 use convex::{ConvexClient, FunctionResult};
@@ -113,7 +114,7 @@ struct Outgoing {
     state: State,
 }
 
-#[derive(Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 enum State {
     Queued,
@@ -620,6 +621,9 @@ fn observe(owner: &str, device: &str, mid: &str, state: State) -> Result<()> {
 }
 
 pub fn import(keys: &Keys, envelope: &Envelope, now: i64) -> Result<()> {
+    if envelope.scope.is_some() {
+        return Err(bad("scoped agent envelopes require the agent relay"));
+    }
     let (_, pin) = trusted(&envelope.from_device, &keys.device.owner)?;
     let payload = keys.open(&pin.device, envelope, now)?;
     let _guard = peer::lock(&root().join("inbox.lock"))?;

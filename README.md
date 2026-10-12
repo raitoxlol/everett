@@ -345,6 +345,15 @@ Everett is mostly used by agents. `everett mcp` is a stdio MCP server (JSON-RPC 
 | `everett_inbox` | `session_id?`, `peek?` | The Everett messages (requests, replies, events) waiting for you; marks them delivered. |
 | `everett_event` | `kind`, `message`, `project?`, `session_id?` | Records done / blocked / needs-input / info for your session. |
 | `everett_subscribe` | `target`, `unsubscribe?`, `session_id?` | Follows a session's or project's events in your inbox. |
+| `everett_agent_relay` | `action`, `id?`, `fingerprint?` | Issuer identity, registration, directory/pins, credential and membership revocation controls. |
+| `everett_agent_grants` | `action`, `id?`, `remote_agent?` | Named-agent cross-org grants: both admins approve, either can revoke. |
+| `everett_agent_send` | `agent`, `session`, `harness`, `text`, `idempotency_key`, `session_id?` | Device-side encrypted send to a pinned named agent. No wake-up or implicit routing. |
+| `everett_agent_status` | `message_id` | Sender-only queue/import status plus verified encrypted delivery/reply observations. |
+
+For named agents in one or multiple organizations, see the [agent relay setup](docs/agent-relay.md)
+and [relay threat model](docs/relay-threat-model.md). OIDC controls org/agent identity;
+cross-org delivery is denied without bilateral admin approval. External inbox text
+is labeled untrusted. Existing Jev routing, SSH, OMP, and Pi integration is unchanged.
 
 Listing, routing and sending default to a 72-hour window. Pass the same larger `hours` value
 to these MCP tools when continuing an older session. Resume/spawn children have closed stdin;
@@ -431,7 +440,7 @@ to a cloud service for plain `ls`, local routing, or inbox delivery.
 | --- | --- |
 | `everett: command not found` | Add the install directory (default `~/.local/bin`; `~/.cargo/bin` for cargo) to `PATH`, open a new terminal, then `everett --version`. |
 | `No module named everett` / hooks call `python3` | A registration still points at the retired Python package. Run `everett install-hooks --apply` and `everett install-mcp --apply`. |
-| MCP client shows zero tools | Run `everett doctor`. It must list **10 tools over stdio**. For a stale/disabled launcher, run `everett install-mcp --claude --repair --apply` (replace `--claude` with `--codex`, `--omp`, `--grok` or `--devin`), then restart/enable the server in the client. Fix malformed config before repair. |
+| MCP client shows zero tools | Run `everett doctor`. It must list **14 tools over stdio**. For a stale/disabled launcher, run `everett install-mcp --claude --repair --apply` (replace `--claude` with `--codex`, `--omp`, `--grok` or `--devin`), then restart/enable the server in the client. Fix malformed config before repair. |
 | Session not found / no live reply | Start a harness session or run `everett --hours 168 ls` for older ones; send to its exact id or title. In MCP, pass `hours: 168` to listing and sending. Hook injection needs enabled/trusted hooks; Pi/Hermes poll `everett_inbox`. A queued message is not a read receipt. |
 | Codex reports `Interrupted system call (os error 4)` | Delivery is unconfirmed. Check the target session before retrying; for an open session with Everett hooks, use `--mode inbox` (MCP: `mode: "inbox"`). Failed resumes are not retried automatically. |
 | Shared fact missing / scheduling unavailable | Run `everett trunk merge --llm none`, then `everett core`. Automatic launchd scheduling and default desktop notifications require macOS; manual merging works on Linux. |

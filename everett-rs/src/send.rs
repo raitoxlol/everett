@@ -698,6 +698,9 @@ pub fn reply(message_id: &str, text: &str, caller: Option<&str>) -> Result<Map<S
     };
     let hops = inbox::reply_hops(&original, current_hops())?;
     let who = sender_info(caller);
+    if original.contains_key("agent_sender") {
+        return crate::relay::agents::reply(&original, text, &who, hops);
+    }
     if original.contains_key("relay_device") {
         return crate::relay::retain_reply(&original, text, &who, hops);
     }

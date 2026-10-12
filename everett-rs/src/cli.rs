@@ -741,7 +741,7 @@ pub fn cmd_inbox(args: &Args) -> i32 {
             .filter_map(|m| m.get("id").and_then(|v| v.as_str()))
             .collect();
         crate::inbox::mark_done(&sid, &ids);
-        if let Some(hops) = items.iter().filter(|m| m.contains_key("peer_client") || m.contains_key("peer_reply_id") || m.contains_key("relay_device"))
+        if let Some(hops) = items.iter().filter(|m| m.contains_key("peer_client") || m.contains_key("peer_reply_id") || m.contains_key("relay_device") || m.contains_key("agent_sender"))
             .filter_map(|m| m.get("hops").and_then(Value::as_i64)).max() {
             crate::inbox::record_hops(&sid, hops);
         }
