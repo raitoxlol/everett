@@ -135,7 +135,9 @@ Done. MAX_RETRIES is now 5 and the backoff test covers the cap.
 | `everett ls [--json] [--all] [--harness H]` | Recent sessions from every harness, one line each. `--all` includes scripted runs. |
 | `everett ls --peer <name> [--json]` | Sessions on one paired SSH device, with `peer/harness/session-id` IDs. |
 | `everett peer add <name> --ssh user@host --binary /absolute/everett --host-key SHA256:... --device-key SHA256:...` | Pair with confirmed fingerprints; install a restricted key in the receiver's `~/.ssh/authorized_keys`. |
-| `everett peer status <name> <message-id>` | Poll remote queued/delivered/replied state; import a retained reply once into the sender's inbox. |
+| `everett peer status <name> <message-id>` | Inspect queued/delivered/replied state; SSH polls/imports replies, Convex uses encrypted observations from the local relay. |
+| `everett relay [register\|devices]` | Register/list same-owner Convex devices, or hold a live encrypted WebSocket inbox subscription; never wake sessions. |
+| `everett peer add-relay <name> --device ID --fingerprint SHA256:...` | Select Convex for a peer after out-of-band confirmation of its signed device-key bundle. |
 | `everett peer identity / list / remove <name> / revoke <client-id>` | Inspect device keys/peers; remove a remote authorization or revoke a local tagged client key. |
 | `everett dashboard [--port 7347] [--no-open]` | Native Rust binary only: read-only local browser dashboard with session cards, filters, activity state, and copyable CLI actions. |
 | `everett route "<text>" [--router local\|jev] [--json]` | Picks the session a request continues: `SESSION`, `NEW`, or `ASK`, with a confidence and the resume command. It never sends. |
@@ -202,9 +204,18 @@ Safety rails for agents that call `send`:
 
 Exit codes: 2 bad input, 3 no Jev key with `--router jev`, 4 session stayed busy, 5 harness did not start or timed out, 6 harness failed, 7 hop limit reached.
 
-## Cross-device peers (manual SSH)
+## Cross-device peers (SSH or encrypted Convex)
 
-Pair once using the receiving machine's host/device fingerprints and absolute Everett path.
+For devices behind NAT, deploy the backend in `convex/`, configure your OIDC provider,
+and run `everett relay` on each device. Confirm and pin device fingerprints in both
+directions with `peer add-relay`. The same `send --to PEER/HARNESS/SESSION-ID` and `reply`
+commands then exchange end-to-end encrypted messages, replies, and pickup receipts over
+Convex's live WebSocket subscriptions. Convex stores ciphertext and routing metadata,
+not message content; offline recipients stay queued for one hour. No Tailscale/SSH,
+incoming port, session sync, or automatic wake-up is required. Session IDs remain explicit.
+See [deployment and the exact two-machine trial](docs/cross-device.md#convex-relay-owner-deployment).
+
+For **SSH**, pair once using the receiving machine's host/device fingerprints and absolute Everett path.
 Existing noninteractive SSH login access is required for setup. The dedicated peer key can
 only run Everett RPC: no shell, PTY, or forwarding. Host-key changes fail closed.
 
@@ -214,14 +225,14 @@ everett send --to linux-box/claude/<full-session-id> --idempotency-key task-42 -
 everett peer status linux-box <returned-message-id>
 ```
 
-Remote delivery is inbox-only; it never resumes/spawns a harness or silently queues on your
+SSH delivery is inbox-only; it never resumes/spawns a harness or silently queues on your
 device. The receiving agent replies normally, but Everett retains that reply on the receiver
 until the sender polls `peer status`. No reverse SSH pairing is needed for replies.
 `queued` means inbox write, `delivered` means inbox pickup (`.done`), and `replied` means a
 correlated reply exists. A timeout can leave remote delivery uncertain: retry the same explicit
 idempotency key. Requests have a 64 KiB cap, 20-second deadline, and three-hop end-to-end limit.
 
-No registry, account sign-in, Convex relay, or Everett listener is involved. See
+SSH needs no registry, account sign-in, Convex relay, or Everett listener. See
 [cross-device setup, protocol, revocation, and real-machine checks](docs/cross-device.md).
 
 ## Live delivery

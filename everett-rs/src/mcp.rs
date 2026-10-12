@@ -625,7 +625,7 @@ fn tool_inbox(args: &Map<String, Value>) -> std::result::Result<Map<String, Valu
             .filter_map(|m| m.get("id").and_then(|v| v.as_str()))
             .collect();
         crate::inbox::mark_done(&sid, &ids);
-        if let Some(hops) = items.iter().filter(|m| m.contains_key("peer_client") || m.contains_key("peer_reply_id"))
+        if let Some(hops) = items.iter().filter(|m| m.contains_key("peer_client") || m.contains_key("peer_reply_id") || m.contains_key("relay_device"))
             .filter(|m| m.get("id").and_then(Value::as_str).is_some_and(|id| ids.contains(&id)))
             .filter_map(|m| m.get("hops").and_then(Value::as_i64)).max() {
             crate::inbox::record_hops(&sid, hops);

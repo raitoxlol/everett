@@ -73,12 +73,12 @@ fn root() -> PathBuf {
     session::home().join(".everett/peer")
 }
 
-fn private_dir(path: &Path) -> Result<()> {
+pub(crate) fn private_dir(path: &Path) -> Result<()> {
     fs::create_dir_all(path).map_err(io_error)?;
     fs::set_permissions(path, fs::Permissions::from_mode(0o700)).map_err(io_error)
 }
 
-fn save(path: &Path, bytes: &[u8]) -> Result<()> {
+pub(crate) fn save(path: &Path, bytes: &[u8]) -> Result<()> {
     let mut temp =
         tempfile::NamedTempFile::new_in(path.parent().ok_or_else(|| bad("missing parent"))?).map_err(io_error)?;
     temp.as_file().set_permissions(fs::Permissions::from_mode(0o600)).map_err(io_error)?;
@@ -88,7 +88,7 @@ fn save(path: &Path, bytes: &[u8]) -> Result<()> {
     Ok(())
 }
 
-fn lock(path: &Path) -> Result<File> {
+pub(crate) fn lock(path: &Path) -> Result<File> {
     let file = OpenOptions::new()
         .create(true)
         .truncate(false)
@@ -136,6 +136,15 @@ fn load(name: &str) -> Result<Peer> {
     let path = config_path(name)?;
     let raw = fs::read(path).map_err(|_| bad(format!("unknown peer {name:?}; use everett peer add")))?;
     serde_json::from_slice(&raw).map_err(|e| bad(format!("invalid peer config: {e}")))
+}
+
+pub fn listing() -> Result<Value> {
+    let mut list: serde_json::Map<String, Value> = peers()?.into_iter()
+        .map(|(name, peer)| serde_json::to_value(peer).map(|value| (name, value)))
+        .collect::<std::result::Result<_, _>>().map_err(|e| bad(e.to_string()))?;
+    let relay = crate::relay::list()?;
+    list.extend(relay.as_object().ok_or_else(|| bad("invalid relay peer list"))?.clone());
+    Ok(Value::Object(list))
 }
 
 fn run(mut command: Command, input: Vec<u8>, cap: usize) -> Result<Vec<u8>> {
@@ -304,6 +313,7 @@ pub fn add(
 ) -> Result<Value> {
     valid(name)?;
     address_valid(address)?;
+    if crate::relay::configured(name) { return Err(bad("alias already selects Convex; use a different alias")); }
     if port == 0 || !Path::new(binary).is_absolute() || binary.chars().any(char::is_control) {
         return Err(bad("use a nonzero port and --binary with the remote binary's absolute path"));
     }
@@ -616,6 +626,7 @@ pub fn retain_reply(
 }
 
 pub fn ls(name: &str, hours: f64, all: bool, harness: &str) -> Result<Value> {
+    if crate::relay::configured(name) { return Err(bad("Convex peers use explicit session IDs; remote ls/card are SSH-only")); }
     let mut rows = rpc(name, &Request::Ls { hours, all, harness: harness.into() })?;
     let rows_array = rows.as_array_mut().ok_or_else(|| bad("peer listing is not an array"))?;
     for row in rows_array {
@@ -642,6 +653,7 @@ pub fn target(value: &str) -> Result<(&str, &str, &str)> {
 
 pub fn card(value: &str) -> Result<Value> {
     let (name, harness, session) = target(value)?;
+    if crate::relay::configured(name) { return Err(bad("Convex peers use explicit session IDs; remote ls/card are SSH-only")); }
     rpc(name, &Request::Card { session: session.into(), harness: harness.into() })
 }
 
@@ -655,6 +667,7 @@ fn receipt_path(name: &str, message_id: &str) -> Result<PathBuf> {
 
 pub fn send(value: &str, text: &str, key: Option<&str>, caller: Option<&str>) -> Result<Value> {
     let (name, harness, session) = target(value)?;
+    if crate::relay::configured(name) { return crate::relay::send(value, text, key, caller); }
     let who = send::sender_info(caller);
     let sender = who["sender"].as_str().unwrap_or(inbox::HUMAN);
     let hops = send::current_hops().max(inbox::session_hops(sender));
@@ -690,6 +703,7 @@ pub fn send(value: &str, text: &str, key: Option<&str>, caller: Option<&str>) ->
 }
 
 pub fn status(name: &str, message_id: &str) -> Result<Value> {
+    if crate::relay::configured(name) { return crate::relay::status(name, message_id); }
     let receipt: Receipt = serde_json::from_slice(&fs::read(receipt_path(name, message_id)?).map_err(io_error)?)
         .map_err(|e| bad(format!("invalid outgoing receipt: {e}")))?;
     let mut result = rpc(name, &Request::Status { message_id: message_id.into() })?;
@@ -728,6 +742,7 @@ pub fn status(name: &str, message_id: &str) -> Result<Value> {
 }
 
 pub fn remove(name: &str) -> Result<Value> {
+    if crate::relay::configured(name) { return crate::relay::remove(name); }
     rpc(name, &Request::Revoke)?;
     fs::remove_file(config_path(name)?).map_err(io_error)?;
     fs::remove_file(known_hosts(name)?).map_err(io_error)?;

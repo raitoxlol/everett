@@ -13,7 +13,8 @@ const TOOLS: [&str; 10] = ["everett_card", "everett_core", "everett_event", "eve
     "everett_ls", "everett_route", "everett_send", "everett_subscribe", "everett_whoami"];
 
 fn binary() -> PathBuf {
-    std::env::var_os("EVERETT_VERIFY_BINARY").map(PathBuf::from).unwrap_or_else(|| env!("CARGO_BIN_EXE_everett").into())
+    let path = std::env::var_os("EVERETT_VERIFY_BINARY").map(PathBuf::from).unwrap_or_else(|| env!("CARGO_BIN_EXE_everett").into());
+    std::fs::canonicalize(path).expect("verification binary must exist")
 }
 
 struct Home {

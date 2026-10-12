@@ -18,8 +18,9 @@ Status: design for issue #4. Implemented surface is listed at the end; everythin
   until the hosted tenant exists, so `login` exits 2 with configuration instructions.
 - `everett doctor` prints `account: <email> via <issuer> (<device>)` or
   `account: not signed in (optional)`.
-- Everything else in this document (device lists, `--browser`, transport of sessions or
-  core) remains scope.
+- Convex relay retains the OIDC ID token and uses it as a verified JWT; device registration,
+  encrypted inbox transport, and owner deployment are in [cross-device setup](cross-device.md).
+  Local/SSH operations stay unauthenticated. Browser-callback login and core sync remain scope.
 
 ## What an Everett account is
 
@@ -70,6 +71,7 @@ File: `~/.everett/auth.json` (honours `EVERETT_HOME`), mode `0600`, written atom
   "name": "Alex",
   "device_name": "mac-studio",
   "access_token": "…",
+  "id_token": "…",
   "refresh_token": "…",
   "expires_at": 1791600000,
   "scope": "openid email profile offline_access"
@@ -81,9 +83,13 @@ File: `~/.everett/auth.json` (honours `EVERETT_HOME`), mode `0600`, written atom
   file is removed and the user is told to run `everett login` again.
 - `device_name` defaults to the hostname and can be set with `--device <name>`; it is sent to the
   provider as `device_name`-style metadata only when the provider accepts it, otherwise it is local.
-- `auth.json` is never read by hooks, adapters, `ls`, `route`, `send`, inbox or MCP tools. Nothing
-  in the current product requires being signed in; sign-in is the foundation for later
-  cross-device features, not a gate on local use.
+- `id_token` is the signed OIDC JWT Convex verifies against the provider's JWKS and public
+  client audience. Older credentials default to an empty ID token; run `login --force` before
+  relay setup. Refresh persists a replacement when the provider returns one; an expired or
+  missing ID token stops relay use rather than falling back to an opaque access token.
+- Hooks, adapters, local `ls`/`route`/`send`/inbox and SSH peers do not need sign-in. Only
+  Convex registration/peer setup/transport require `auth.json`; agent MCP sends/replies
+  to Convex peers use the same local credential. Tokens are never returned by MCP tools.
 - Logs (`~/.everett/mcp.log`, hook output, `doctor`) print the email and issuer only, never a token.
 
 ## Revoking a lost device
@@ -130,9 +136,9 @@ Any RFC 8628 issuer works. Minimal provider setup (what the hosted tenant also u
 
 ## Out of scope for this change
 
-Transporting sessions, inbox messages or shared core between devices; a device list in the CLI;
-a browser-callback login (`--browser`); a Python port of the client (the Rust binary is the
-primary Everett since 1.4.0).
+Transcript/session synchronization, shared-core sync, a provider-management device list,
+and browser-callback login (`--browser`). Convex's public-key device registry and encrypted
+inbox transport are implemented separately; the client remains Rust-only.
 
 ## Implementation notes (for everett-rs)
 

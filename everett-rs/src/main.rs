@@ -22,6 +22,11 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Cmd {
+    /// live encrypted Convex relay; writes inboxes, never wakes sessions
+    Relay {
+        #[command(subcommand)]
+        action: Option<RelayCmd>,
+    },
     /// pair devices and make restricted SSH inbox requests
     Peer {
         #[command(subcommand)]
@@ -296,6 +301,14 @@ enum Cmd {
 
 #[derive(Subcommand)]
 enum PeerCmd {
+    /// pin a Convex device after out-of-band fingerprint confirmation
+    AddRelay {
+        name: String,
+        #[arg(long)]
+        device: String,
+        #[arg(long)]
+        fingerprint: String,
+    },
     /// pair one SSH direction; replies return through status polling
     Add {
         name: String,
@@ -352,6 +365,14 @@ fn peer_output(result: everett::error::Result<serde_json::Value>) -> i32 {
 }
 
 #[derive(Subcommand)]
+enum RelayCmd {
+    /// register this device and print its public bundle and fingerprint
+    Register,
+    /// list devices belonging to the signed-in owner
+    Devices,
+}
+
+#[derive(Subcommand)]
 enum ExternalCmd {
     /// add an inbox registration (does not connect to a provider)
     Add {
@@ -383,9 +404,15 @@ fn main() {
         ..Default::default()
     };
     let code = match cli.cmd {
+        Cmd::Relay { action } => match action {
+            None => peer_output(everett::relay::run()),
+            Some(RelayCmd::Register) => peer_output(everett::relay::register()),
+            Some(RelayCmd::Devices) => peer_output(everett::relay::devices()),
+        },
         Cmd::Peer { action } => match action {
+            PeerCmd::AddRelay { name, device, fingerprint } => peer_output(everett::relay::add(&name, &device, &fingerprint)),
             PeerCmd::Add { name, ssh, port, binary, host_key, device_key } => peer_output(everett::peer::add(&name, &ssh, port, &binary, &host_key, &device_key)),
-            PeerCmd::List => peer_output(everett::peer::peers().map(|p| serde_json::json!(p))),
+            PeerCmd::List => peer_output(everett::peer::listing()),
             PeerCmd::Identity => peer_output(everett::peer::identity()),
             PeerCmd::Remove { name } => peer_output(everett::peer::remove(&name)),
             PeerCmd::Revoke { client } => peer_output(everett::peer::revoke(&client)),

@@ -449,7 +449,7 @@ fn cmd_remote_send(args: &Args, to: &str) -> i32 {
     if args.dry_run {
         return match crate::peer::target(to) {
             Ok((peer, _, _)) => {
-                println!("{}", json!({"peer":peer,"target":to,"mode":"inbox","dry_run":true,"pickup":"status polling"}));
+                println!("{}", json!({"peer":peer,"target":to,"mode":"inbox","dry_run":true,"pickup":if crate::relay::configured(peer) {"live Convex relay"} else {"status polling"}}));
                 0
             }
             Err(e) => { eprintln!("everett: {e}"); e.code }
@@ -741,7 +741,7 @@ pub fn cmd_inbox(args: &Args) -> i32 {
             .filter_map(|m| m.get("id").and_then(|v| v.as_str()))
             .collect();
         crate::inbox::mark_done(&sid, &ids);
-        if let Some(hops) = items.iter().filter(|m| m.contains_key("peer_client") || m.contains_key("peer_reply_id"))
+        if let Some(hops) = items.iter().filter(|m| m.contains_key("peer_client") || m.contains_key("peer_reply_id") || m.contains_key("relay_device"))
             .filter_map(|m| m.get("hops").and_then(Value::as_i64)).max() {
             crate::inbox::record_hops(&sid, hops);
         }
@@ -1262,6 +1262,7 @@ pub fn cmd_login(args: &Args) -> i32 {
         name,
         device_name: device_name.clone(),
         access_token: access,
+        id_token: token.get("id_token").and_then(Value::as_str).unwrap_or("").to_string(),
         refresh_token: token.get("refresh_token").and_then(|v| v.as_str()).unwrap_or("").to_string(),
         expires_at: crate::session::now()
             + token.get("expires_in").and_then(|v| v.as_f64()).unwrap_or(3600.0),
