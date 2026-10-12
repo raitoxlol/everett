@@ -456,7 +456,10 @@ revocation tombstones to work around denial. See [auth revocation](auth.md#priva
   may lower the cap to 256..65536 bytes. Backend checks ciphertext length minus tag;
   clients verify AEAD and plaintext fields. Grant rate is 1..120 new envelopes per
   fixed UTC minute **shared across both directions** (default 30); each sender agent
-  also has 120/minute. Identical retries do not consume quota. Boundary bursts can
+  also has 120/minute, shared with its issuer/subject account's other credentials
+  in the same organization. Organization sends are capped at 600/minute total;
+  each recipient holds at most 256 unexpired ciphertext rows. Delivery or TTL
+  frees queue capacity. Identical retries do not consume quota or capacity. Boundary bursts can
   approach twice a window's limit; these are abuse controls, not guaranteed bandwidth.
 - Signed visible parent/hop lineage is checked against the permanent observed parent
   and exact receiving credential. Roots start at 1; replies/forwards increment across
