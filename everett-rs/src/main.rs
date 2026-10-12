@@ -308,6 +308,9 @@ enum PeerCmd {
         device: String,
         #[arg(long)]
         fingerprint: String,
+        /// active bilateral grant for a named cross-org agent
+        #[arg(long)]
+        grant: Option<String>,
     },
     /// pair one SSH direction; replies return through status polling
     Add {
@@ -368,8 +371,111 @@ fn peer_output(result: everett::error::Result<serde_json::Value>) -> i32 {
 enum RelayCmd {
     /// register this device and print its public bundle and fingerprint
     Register,
-    /// list devices belonging to the signed-in owner
+    /// list active registered credentials/devices in the verified namespace
+    #[command(alias = "credentials")]
     Devices,
+    /// verified namespace, agent credential ID and authoritative role
+    Whoami,
+    /// permanently revoke this or an admin-selected agent/device credential
+    #[command(alias = "revoke-device")]
+    RevokeAgent { device: String },
+    /// permanently revoke an org membership (admin only)
+    RevokeMember { subject: String },
+    /// rotate both independent relay keys; requires the old signing key
+    Rotate,
+    /// bilateral admin-only named-agent cross-org permissions
+    Grant {
+        #[command(subcommand)]
+        action: GrantCmd,
+    },
+}
+
+#[derive(Subcommand)]
+enum GrantCmd {
+    Invite {
+        grant_id: String,
+        #[arg(long)]
+        device: String,
+        #[arg(long)]
+        peer_owner: String,
+        #[arg(long)]
+        peer_device: String,
+        #[arg(long)]
+        local_fingerprint: String,
+        #[arg(long)]
+        peer_fingerprint: String,
+        /// Unix milliseconds; absent means no grant expiry
+        #[arg(long)]
+        expires_at: Option<i64>,
+        #[arg(long, default_value_t = 30)]
+        rate_per_minute: u32,
+        #[arg(long, default_value_t = 65536)]
+        body_cap_bytes: u32,
+    },
+    Accept {
+        grant_id: String,
+        #[arg(long)]
+        local_fingerprint: String,
+        #[arg(long)]
+        peer_fingerprint: String,
+    },
+    Reconfirm {
+        grant_id: String,
+        #[arg(long)]
+        local_fingerprint: String,
+        #[arg(long)]
+        peer_fingerprint: String,
+    },
+    Revoke {
+        grant_id: String,
+    },
+    Get {
+        grant_id: String,
+    },
+    List,
+}
+
+fn grant_command(action: GrantCmd) -> everett::error::Result<serde_json::Value> {
+    use serde_json::json;
+    let (name, args, query) = match action {
+        GrantCmd::Invite {
+            grant_id,
+            device,
+            peer_owner,
+            peer_device,
+            local_fingerprint,
+            peer_fingerprint,
+            expires_at,
+            rate_per_minute,
+            body_cap_bytes,
+        } => (
+            "grants:invite",
+            json!({"grantId":grant_id,"deviceId":device,"peerOwner":peer_owner,"peerDeviceId":peer_device,"localFingerprint":local_fingerprint,"peerFingerprint":peer_fingerprint,"expiresAt":expires_at,"ratePerMinute":rate_per_minute,"bodyCapBytes":body_cap_bytes}),
+            false,
+        ),
+        GrantCmd::Accept {
+            grant_id,
+            local_fingerprint,
+            peer_fingerprint,
+        } => (
+            "grants:accept",
+            json!({"grantId":grant_id,"localFingerprint":local_fingerprint,"peerFingerprint":peer_fingerprint}),
+            false,
+        ),
+        GrantCmd::Reconfirm {
+            grant_id,
+            local_fingerprint,
+            peer_fingerprint,
+        } => (
+            "grants:reconfirm",
+            json!({"grantId":grant_id,"localFingerprint":local_fingerprint,"peerFingerprint":peer_fingerprint}),
+            false,
+        ),
+        GrantCmd::Revoke { grant_id } => ("grants:revoke", json!({"grantId":grant_id}), false),
+        GrantCmd::Get { grant_id } => ("grants:get", json!({"grantId":grant_id}), true),
+        GrantCmd::List => ("grants:list", json!({}), true),
+    };
+    everett::relay::admin_call(name, args, query)
 }
 
 #[derive(Subcommand)]
@@ -408,10 +514,51 @@ fn main() {
             None => peer_output(everett::relay::run()),
             Some(RelayCmd::Register) => peer_output(everett::relay::register()),
             Some(RelayCmd::Devices) => peer_output(everett::relay::devices()),
+            Some(RelayCmd::Whoami) => peer_output(everett::relay::admin_call(
+                "relay:whoami",
+                serde_json::json!({}),
+                true,
+            )),
+            Some(RelayCmd::Rotate) => peer_output(everett::relay::rotate()),
+            Some(RelayCmd::RevokeAgent { device }) => peer_output(everett::relay::admin_call(
+                "relay:revokeAgent",
+                serde_json::json!({"deviceId":device}),
+                false,
+            )),
+            Some(RelayCmd::RevokeMember { subject }) => peer_output(everett::relay::admin_call(
+                "relay:revokeMember",
+                serde_json::json!({"subject":subject}),
+                false,
+            )),
+            Some(RelayCmd::Grant { action }) => peer_output(grant_command(action)),
         },
         Cmd::Peer { action } => match action {
-            PeerCmd::AddRelay { name, device, fingerprint } => peer_output(everett::relay::add(&name, &device, &fingerprint)),
-            PeerCmd::Add { name, ssh, port, binary, host_key, device_key } => peer_output(everett::peer::add(&name, &ssh, port, &binary, &host_key, &device_key)),
+            PeerCmd::AddRelay {
+                name,
+                device,
+                fingerprint,
+                grant,
+            } => peer_output(everett::relay::add(
+                &name,
+                &device,
+                &fingerprint,
+                grant.as_deref(),
+            )),
+            PeerCmd::Add {
+                name,
+                ssh,
+                port,
+                binary,
+                host_key,
+                device_key,
+            } => peer_output(everett::peer::add(
+                &name,
+                &ssh,
+                port,
+                &binary,
+                &host_key,
+                &device_key,
+            )),
             PeerCmd::List => peer_output(everett::peer::listing()),
             PeerCmd::Identity => peer_output(everett::peer::identity()),
             PeerCmd::Remove { name } => peer_output(everett::peer::remove(&name)),

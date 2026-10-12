@@ -300,3 +300,103 @@ fn registered_command_actually_serves() {
     let out = child.wait_with_output().unwrap();
     assert_eq!(serde_json::from_slice::<Value>(&out.stdout).unwrap(), json!({"jsonrpc": "2.0", "id": 1, "result": {}}));
 }
+
+#[test]
+fn remote_lineage_guard_honors_explicit_caller_and_durable_hops_over_stdio() {
+    let fx = home_with_claude_session();
+    fx.write(".everett/inbox/relay-context/remote.json", &json!({"relay_message_id":"parent","relay_sender_owner":"synthetic-owner","hops":2,"external":true,"untrusted":true}).to_string());
+    fx.write(
+        ".everett/inbox/live/remote.json",
+        &json!({"hops_ts":0,"hops":3}).to_string(),
+    );
+    let mut server = Server::start(&fx, &[("EVERETT_SESSION_ID", "unrelated")]);
+    for args in [
+        json!({"text":"untrusted","to":"c-1","mode":"resume","session_id":"remote"}),
+        json!({"text":"untrusted","spawn":true,"session_id":"remote"}),
+    ] {
+        let result = server.call("everett_send", args);
+        assert_eq!(result["isError"], true);
+        assert!(
+            text(&result).contains("Remote-derived callers are inbox-only"),
+            "{result}"
+        );
+    }
+    let result = server.call(
+        "everett_send",
+        json!({"text":"untrusted","to":"c-1","session_id":"remote"}),
+    );
+    assert_eq!(result["isError"], false, "{result}");
+    assert_eq!(result["structuredContent"]["mode"], "inbox");
+    let messages = std::fs::read_to_string(fx.home().join(".everett/inbox/c-1.jsonl")).unwrap();
+    let message: Value = serde_json::from_str(messages.lines().next().unwrap()).unwrap();
+    assert_eq!(message["hops"], 3);
+    assert_eq!(message["external"], true);
+    assert_eq!(message["relay_lineage"]["relay_message_id"], "parent");
+    // Explicit clean caller is authoritative, even when env identity is remote.
+    server.close();
+    let mut server = Server::start(&fx, &[("EVERETT_SESSION_ID", "remote")]);
+    let result = server.call(
+        "everett_send",
+        json!({"text":"local","to":"c-1","mode":"inbox","session_id":"clean"}),
+    );
+    assert_eq!(result["isError"], false);
+    let messages = std::fs::read_to_string(fx.home().join(".everett/inbox/c-1.jsonl")).unwrap();
+    let message: Value = serde_json::from_str(messages.lines().last().unwrap()).unwrap();
+    assert_eq!(message["hops"], 1);
+    assert_eq!(message["from"], "clean");
+    assert_ne!(message["external"], true);
+    fx.write(
+        ".everett/inbox/relay-context/remote.json",
+        &json!({"relay_message_id":"parent","hops":3,"external":true}).to_string(),
+    );
+    let result = server.call(
+        "everett_send",
+        json!({"text":"hop 4","to":"c-1","mode":"inbox","session_id":"remote"}),
+    );
+    assert!(text(&result).contains("Hop limit"), "{result}");
+    server.close();
+}
+
+#[test]
+fn explicit_remote_dispatch_is_bounded_and_gateway_cannot_gain_remote_power() {
+    let fx = home_with_claude_session();
+    let mut server = Server::start(&fx, &[]);
+    let tools = server.request("tools/list", None);
+    let send = tools["result"]["tools"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|t| t["name"] == "everett_send")
+        .unwrap();
+    assert_eq!(
+        send["inputSchema"]["properties"]["idempotency_key"]["type"],
+        "string"
+    );
+    for extra in [
+        json!({"mode":"resume"}),
+        json!({"spawn":true}),
+        json!({"wait":1}),
+    ] {
+        let mut args =
+            json!({"to":"remote/codex/session","text":"synthetic","idempotency_key":"test-retry"});
+        args.as_object_mut()
+            .unwrap()
+            .extend(extra.as_object().unwrap().clone());
+        let result = server.call("everett_send", args);
+        assert!(
+            text(&result).contains("Remote sends are inbox-only"),
+            "{result}"
+        );
+    }
+    server.close();
+    let mut gateway = Server::start(&fx, &[("EVERETT_GATEWAY_EXACT_IDS", "1")]);
+    let result = gateway.call(
+        "everett_send",
+        json!({"to":"remote/codex/session","text":"synthetic","mode":"inbox"}),
+    );
+    assert!(
+        text(&result).contains("Gateway remote destinations are not allowed"),
+        "{result}"
+    );
+    gateway.close();
+}

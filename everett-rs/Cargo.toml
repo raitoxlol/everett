@@ -56,6 +56,7 @@ rusqlite = { version = "0.32", features = ["bundled"] }
 tempfile = "3"
 expectrl = "0.7"
 vt100 = "0.15"
+convex_sync_types = "=0.10.4"
 
 [[test]]
 name = "gateway_native"

@@ -26,7 +26,7 @@ pub struct Device {
 impl Device {
     pub fn signed_bytes(&self) -> Vec<u8> {
         json!([
-            "everett-device-v1",
+            "everett-device-v2",
             self.owner,
             self.device_id,
             self.signing_key,
@@ -43,10 +43,7 @@ impl Device {
     }
 
     pub fn fingerprint(&self) -> String {
-        format!(
-            "SHA256:{}",
-            hex::encode(Sha256::digest(self.signed_bytes()))
-        )
+        hex::encode(Sha256::digest(self.signed_bytes()))
     }
 }
 
@@ -79,6 +76,7 @@ impl Keys {
         hex::encode(self.signing.sign(bytes).to_bytes())
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub fn seal(
         &self,
         recipient: &Device,
@@ -86,10 +84,21 @@ impl Keys {
         payload: &Payload,
         now: i64,
         ttl: i64,
+        grant_id: Option<String>,
+        parent: Option<Parent>,
     ) -> Result<Envelope> {
         recipient.verify()?;
-        if recipient.owner != self.device.owner {
-            return Err(bad("peer belongs to another account"));
+        if (recipient.owner == self.device.owner) != grant_id.is_none() {
+            return Err(bad(
+                "cross-org requires a grant; same-org must not use a grant",
+            ));
+        }
+        let hop = parent.as_ref().map_or(1, |_| match payload {
+            Payload::Inbox { hops, .. } => *hops,
+            _ => 1,
+        });
+        if !(1..=3).contains(&hop) || (parent.is_none() && hop != 1) {
+            return Err(bad("invalid relay hop/parent"));
         }
         valid(key)?;
         payload.validate()?;
@@ -108,6 +117,12 @@ impl Keys {
             .ok_or_else(|| bad("invalid timestamp"))?;
         let mut envelope = Envelope {
             owner: self.device.owner.clone(),
+            recipient_owner: recipient.owner.clone(),
+            grant_id,
+            parent,
+            hop,
+            sender_fingerprint: self.device.fingerprint(),
+            recipient_fingerprint: recipient.fingerprint(),
             from_device: self.device.device_id.clone(),
             to_device: recipient.device_id.clone(),
             message_id: uuid::Uuid::new_v4().to_string(),
@@ -119,6 +134,7 @@ impl Keys {
             ciphertext: String::new(),
             signature: String::new(),
         };
+        envelope.validate_metadata(now)?;
         let cipher = cipher(&secret, &recipient.encryption_key, &envelope.aad())?;
         envelope.ciphertext = hex::encode(
             cipher
@@ -136,11 +152,31 @@ impl Keys {
     }
 
     pub fn open(&self, sender: &Device, envelope: &Envelope, now: i64) -> Result<Payload> {
+        let body = self.open_bytes(sender, envelope, now)?;
+        let payload: Payload = serde_json::from_slice(&body).map_err(bad)?;
+        payload.validate()?;
+        if let Payload::Inbox { hops, .. } = &payload {
+            if *hops != envelope.hop {
+                return Err(bad("plaintext hops do not match signed lineage"));
+            }
+        }
+        Ok(payload)
+    }
+
+    pub(crate) fn open_bytes(
+        &self,
+        sender: &Device,
+        envelope: &Envelope,
+        now: i64,
+    ) -> Result<Vec<u8>> {
         sender.verify()?;
-        if sender.owner != self.device.owner
-            || envelope.owner != self.device.owner
+        if envelope.owner != sender.owner
+            || envelope.recipient_owner != self.device.owner
             || envelope.to_device != self.device.device_id
             || envelope.from_device != sender.device_id
+            || envelope.sender_fingerprint != sender.fingerprint()
+            || envelope.recipient_fingerprint != self.device.fingerprint()
+            || (sender.owner == self.device.owner) != envelope.grant_id.is_none()
         {
             return Err(bad("relay account or device mismatch"));
         }
@@ -165,16 +201,29 @@ impl Keys {
         if body.len() > crate::peer::BODY_CAP {
             return Err(bad("relay plaintext exceeds 64 KiB"));
         }
-        let payload: Payload = serde_json::from_slice(&body).map_err(bad)?;
-        payload.validate()?;
-        Ok(payload)
+        Ok(body)
     }
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct Parent {
+    pub owner: String,
+    #[serde(rename = "messageId")]
+    pub message_id: String,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Envelope {
     pub owner: String,
+    pub recipient_owner: String,
+    pub grant_id: Option<String>,
+    pub parent: Option<Parent>,
+    #[serde(deserialize_with = "timestamp")]
+    pub hop: i64,
+    pub sender_fingerprint: String,
+    pub recipient_fingerprint: String,
     pub from_device: String,
     pub to_device: String,
     pub message_id: String,
@@ -189,7 +238,7 @@ pub struct Envelope {
     pub signature: String,
 }
 
-fn timestamp<'de, D: serde::Deserializer<'de>>(
+pub(super) fn timestamp<'de, D: serde::Deserializer<'de>>(
     deserializer: D,
 ) -> std::result::Result<i64, D::Error> {
     let value = serde_json::Value::deserialize(deserializer)?;
@@ -205,14 +254,20 @@ fn timestamp<'de, D: serde::Deserializer<'de>>(
 impl Envelope {
     pub fn aad(&self) -> Vec<u8> {
         json!([
-            "everett-relay-v1",
+            "everett-relay-v2",
             self.owner,
+            self.recipient_owner,
+            self.grant_id,
             self.from_device,
             self.to_device,
             self.message_id,
             self.idempotency_key,
+            self.parent.as_ref().map(|p| json!([p.owner, p.message_id])),
+            self.hop,
             self.created_at,
             self.expires_at,
+            self.sender_fingerprint,
+            self.recipient_fingerprint,
             self.ephemeral_key,
             self.nonce
         ])
@@ -227,6 +282,22 @@ impl Envelope {
     }
 
     pub fn validate(&self, now: i64) -> Result<()> {
+        self.validate_metadata(now)?;
+        if self.ciphertext.len() < 32
+            || self.ciphertext.len() > (crate::peer::BODY_CAP + 16) * 2
+            || !self
+                .ciphertext
+                .bytes()
+                .all(|c| c.is_ascii_digit() || (b'a'..=b'f').contains(&c))
+        {
+            return Err(bad(
+                "relay ciphertext has invalid length/hex or exceeds body cap",
+            ));
+        }
+        Ok(())
+    }
+
+    fn validate_metadata(&self, now: i64) -> Result<()> {
         for id in [
             &self.from_device,
             &self.to_device,
@@ -235,17 +306,27 @@ impl Envelope {
         ] {
             valid(id)?;
         }
+        if let Some(id) = &self.grant_id {
+            valid(id)?;
+        }
+        if let Some(parent) = &self.parent {
+            valid(&parent.message_id)?;
+        }
+        if self.hop < 1 || self.hop > 3 || (self.parent.is_none() != (self.hop == 1)) {
+            return Err(bad("invalid signed hop lineage"));
+        }
+        decode::<32>(&self.sender_fingerprint)?;
+        decode::<32>(&self.recipient_fingerprint)?;
         let lifetime = self.expires_at.checked_sub(self.created_at).unwrap_or(0);
-        if self.expires_at <= now
+        if self.created_at < 0
+            || self.expires_at > 9_007_199_254_740_991
+            || self.expires_at <= now
             || self.created_at > now.saturating_add(300_000)
             || !(1..=86_400_000).contains(&lifetime)
         {
             return Err(bad(
                 "relay envelope expired or invalid TTL (maximum 24 hours)",
             ));
-        }
-        if self.ciphertext.len() > (crate::peer::BODY_CAP + 16) * 2 {
-            return Err(bad("relay ciphertext exceeds body cap"));
         }
         decode::<32>(&self.ephemeral_key)?;
         decode::<12>(&self.nonce)?;
@@ -259,13 +340,19 @@ fn cipher(secret: &StaticSecret, public: &str, context: &[u8]) -> Result<ChaCha2
         return Err(bad("invalid X25519 public key"));
     }
     let mut key = [0u8; 32];
-    Hkdf::<Sha256>::new(Some(b"everett-relay-v1"), shared.as_bytes())
+    Hkdf::<Sha256>::new(Some(b"everett-relay-v2"), shared.as_bytes())
         .expand(context, &mut key)
         .map_err(bad)?;
     Ok(ChaCha20Poly1305::new((&key).into()))
 }
 
 pub fn decode<const N: usize>(value: &str) -> Result<[u8; N]> {
+    if !value
+        .bytes()
+        .all(|c| c.is_ascii_digit() || (b'a'..=b'f').contains(&c))
+    {
+        return Err(bad("hex must be lowercase"));
+    }
     hex::decode(value)
         .map_err(bad)?
         .try_into()

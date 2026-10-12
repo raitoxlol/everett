@@ -244,3 +244,117 @@ fn spawn_dir_defaults_to_best_match() {
     assert_eq!(everett::route::best_dir("atlas docs", std::slice::from_ref(&s)), "/work/atlas");
     assert_eq!(everett::route::best_dir("penguins", &[s]), "");
 }
+
+#[test]
+fn cli_remote_derived_delivery_is_inbox_only_and_durable_hops_do_not_expire() {
+    let fx = fixture();
+    common::plant(&fx, "claude.jsonl", ".claude/projects/-work-app/c-1.jsonl");
+    fx.write(".everett/inbox/relay-context/caller.json", &json!({"relay_message_id":"parent","relay_sender_owner":"synthetic-owner","hops":2,"external":true}).to_string());
+    fx.write(
+        ".everett/inbox/live/caller.json",
+        &json!({"hops_ts":0,"hops":3}).to_string(),
+    );
+    for args in [
+        vec!["send", "--to", "c-1", "--mode", "resume", "untrusted"],
+        vec!["send", "--spawn", "untrusted"],
+    ] {
+        let out = fx.run_stdin(
+            &args,
+            "",
+            &[("EVERETT_SESSION_ID", "caller"), ("EVERETT_HOPS", "0")],
+        );
+        assert_eq!(out.status.code(), Some(2));
+        assert!(
+            String::from_utf8_lossy(&out.stderr).contains("Remote-derived callers are inbox-only")
+        );
+    }
+    let out = fx.run_stdin(
+        &["send", "--to", "c-1", "--json", "untrusted"],
+        "",
+        &[("EVERETT_SESSION_ID", "caller"), ("EVERETT_HOPS", "0")],
+    );
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let value: Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(value["mode"], "inbox");
+    let message: Value = serde_json::from_str(
+        std::fs::read_to_string(fx.home().join(".everett/inbox/c-1.jsonl"))
+            .unwrap()
+            .trim(),
+    )
+    .unwrap();
+    assert_eq!(message["hops"], 3);
+    assert_eq!(message["external"], true);
+    fx.write(
+        ".everett/inbox/relay-context/caller.json",
+        &json!({"relay_message_id":"parent","hops":3,"external":true}).to_string(),
+    );
+    let out = fx.run_stdin(
+        &["send", "--to", "c-1", "--mode", "inbox", "hop 4"],
+        "",
+        &[("EVERETT_SESSION_ID", "caller"), ("EVERETT_HOPS", "0")],
+    );
+    assert_eq!(out.status.code(), Some(7));
+    for extra in [
+        vec!["--mode", "resume"],
+        vec!["--spawn"],
+        vec!["--wait", "1"],
+    ] {
+        let mut args = vec!["send", "--to", "peer/codex/session", "remote"];
+        args.extend(extra);
+        let out = fx.run(&args);
+        assert_eq!(out.status.code(), Some(2));
+        assert!(String::from_utf8_lossy(&out.stderr).contains("inbox-only"));
+    }
+}
+
+#[test]
+fn local_reply_from_remote_derived_session_preserves_external_context_and_local_hops() {
+    let _home = lib_home();
+    let remote_extra = serde_json::from_value(json!({"relay_message_id":"remote-parent","relay_sender_owner":"synthetic-owner","external":true,"untrusted":true})).unwrap();
+    let remote = everett::inbox::post(
+        "caller",
+        "external synthetic",
+        "remote",
+        "message",
+        "",
+        2,
+        "codex",
+        "",
+        Some(remote_extra),
+    )
+    .unwrap();
+    everett::inbox::persist_relay_context("caller", &[remote["id"].as_str().unwrap()]).unwrap();
+    let original = everett::inbox::post(
+        "caller",
+        "local question",
+        "recipient",
+        "message",
+        "",
+        1,
+        "claude",
+        "",
+        None,
+    )
+    .unwrap();
+    let result = everett::send::reply(
+        original["id"].as_str().unwrap(),
+        "external-derived answer",
+        Some("caller"),
+    )
+    .unwrap();
+    assert_eq!(result["mode"], "reply");
+    let reply = everett::inbox::pending("recipient", None).pop().unwrap();
+    assert!(everett::inbox::external(&reply));
+    assert_eq!(reply["hops"], 3);
+    assert_eq!(reply["relay_lineage"]["relay_message_id"], "remote-parent");
+    assert!(everett::inbox::take("recipient").contains("EXTERNAL / UNTRUSTED"));
+    assert!(everett::inbox::external(
+        &everett::inbox::relay_context("recipient").unwrap()
+    ));
+    assert!(everett::send::hop_env_for(Some("recipient")).is_err());
+    assert!(everett::send::require_local_prompt(Some("recipient")).is_err());
+}

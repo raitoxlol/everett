@@ -1,4 +1,72 @@
 {
-  "device": {"owner":"[\"https://owner.example/\",\"alice\"]","deviceId":"a","signingKey":"8a88e3dd7409f195fd52db2d3cba5d72ca6709bf1d94121bf3748801b40f6f5c","encryptionKey":"ce8d3ad1ccb633ec7b70c17814a5c76ecd029685050d344745ba05870e587d59","signature":"f53d41c25c4543de44c713ef015832e1876987f5ec27d2a709e192c7649766a29f183e1dfaf314680a13adaffd58f98b37605a2b31d22045f9c6970fa5d25f07"},
-  "envelope": {"owner":"[\"https://owner.example/\",\"alice\"]","fromDevice":"a","toDevice":"b","messageId":"wire-1","idempotencyKey":"key","createdAt":1000,"expiresAt":3601000,"ephemeralKey":"1111111111111111111111111111111111111111111111111111111111111111","nonce":"222222222222222222222222","ciphertext":"3333333333333333333333333333333333333333333333333333333333333333","signature":"402a9f4cc62fbbd0087f318352618f676050d1fd5690b3ecb6eaefe278389c1de377b97aa6a05a5b867a255441fb57b63b467ccd6fff9b8221006221260c140c"}
+  "version": 2,
+  "testOnlySeeds": {
+    "senderSigning": 1,
+    "senderEncryption": 2,
+    "recipientSigning": 3,
+    "recipientEncryption": 4,
+    "ephemeralEncryption": 7,
+    "newSenderSigning": 13,
+    "newSenderEncryption": 14
+  },
+  "device": {
+    "owner": "[\"https://issuer.example/\",\"org\",\"org-a\"]",
+    "deviceId": "agent-a",
+    "signingKey": "8a88e3dd7409f195fd52db2d3cba5d72ca6709bf1d94121bf3748801b40f6f5c",
+    "encryptionKey": "ce8d3ad1ccb633ec7b70c17814a5c76ecd029685050d344745ba05870e587d59",
+    "signature": "b0936d07e523784c1dc79f4df7381eb6d749731d5defa412d6846b6c075ff091557b6635bec656f360efe7bc1767bafd1cf7206a4b4916fb224616fba8a12401"
+  },
+  "recipient": {
+    "owner": "[\"https://issuer.example/\",\"org\",\"org-b\"]",
+    "deviceId": "agent-b",
+    "signingKey": "ed4928c628d1c2c6eae90338905995612959273a5c63f93636c14614ac8737d1",
+    "encryptionKey": "ac01b2209e86354fb853237b5de0f4fab13c7fcbf433a61c019369617fecf10b",
+    "signature": "76f009ea6f117c21c2a206dcf44fe3ebf4069c5ecb5bcd1257f593994784db239d243b5c7553777b98cf02cde05e0e60d102e84397256529fe62be34ab9d0e04"
+  },
+  "newDevice": {
+    "owner": "[\"https://issuer.example/\",\"org\",\"org-a\"]",
+    "deviceId": "agent-a",
+    "signingKey": "91a28a0b74381593a4d9469579208926afc8ad82c8839b7644359b9eba9a4b3a",
+    "encryptionKey": "5855784cb3c8c796d84ac93e8f4a53dab0bb31e80960042cfa87f03a4293b308",
+    "signature": "9214cef0ebb930c13ee6a40a5e0e8a455666e354926baf0908d0fb950d75442ee85b6f18063d7535e27e38c605f22b5a87fe57dd487cfeda47d68fd80846710a"
+  },
+  "deviceSignedUtf8": "[\"everett-device-v2\",\"[\\\"https://issuer.example/\\\",\\\"org\\\",\\\"org-a\\\"]\",\"agent-a\",\"8a88e3dd7409f195fd52db2d3cba5d72ca6709bf1d94121bf3748801b40f6f5c\",\"ce8d3ad1ccb633ec7b70c17814a5c76ecd029685050d344745ba05870e587d59\"]",
+  "fingerprint": "cde69fa45f898d4c5f4582fca0ab4c78871d030150cee20b677695631a259520",
+  "envelope": {
+    "owner": "[\"https://issuer.example/\",\"org\",\"org-a\"]",
+    "recipientOwner": "[\"https://issuer.example/\",\"org\",\"org-b\"]",
+    "grantId": "grant-ab",
+    "fromDevice": "agent-a",
+    "toDevice": "agent-b",
+    "messageId": "message-1",
+    "idempotencyKey": "request-1",
+    "parent": null,
+    "hop": 1,
+    "createdAt": 1000,
+    "expiresAt": 3601000,
+    "senderFingerprint": "cde69fa45f898d4c5f4582fca0ab4c78871d030150cee20b677695631a259520",
+    "recipientFingerprint": "5a2f39c8f943f74c99a12210b7d53f652dde40f7e95dab7513dc928a5dfeca07",
+    "ephemeralKey": "13be4feaeaf204c7fd3358fc9c00721881d174278128227ec674f37f7fe97b6d",
+    "nonce": "222222222222222222222222",
+    "ciphertext": "42db7afc42b7e79474d38946b60d316cb9ab50411dbd739d827b47f63fe8d943fe0c23621cbfe547580ec1d1a00e093892",
+    "signature": "eb46917a8ff9821a2b97160f161c080e15524c10cd7cb7a04dc0547f92516dca9f9856660ab945ab0b4691d41141fe7b19709a561c638163812cc67f625cb802"
+  },
+  "plaintextUtf8": "{\"text\":\"hello\",\"kind\":\"message\"}",
+  "aadUtf8": "[\"everett-relay-v2\",\"[\\\"https://issuer.example/\\\",\\\"org\\\",\\\"org-a\\\"]\",\"[\\\"https://issuer.example/\\\",\\\"org\\\",\\\"org-b\\\"]\",\"grant-ab\",\"agent-a\",\"agent-b\",\"message-1\",\"request-1\",null,1,1000,3601000,\"cde69fa45f898d4c5f4582fca0ab4c78871d030150cee20b677695631a259520\",\"5a2f39c8f943f74c99a12210b7d53f652dde40f7e95dab7513dc928a5dfeca07\",\"13be4feaeaf204c7fd3358fc9c00721881d174278128227ec674f37f7fe97b6d\",\"222222222222222222222222\"]",
+  "envelopeSignedUtf8": "[\"[\\\"everett-relay-v2\\\",\\\"[\\\\\\\"https://issuer.example/\\\\\\\",\\\\\\\"org\\\\\\\",\\\\\\\"org-a\\\\\\\"]\\\",\\\"[\\\\\\\"https://issuer.example/\\\\\\\",\\\\\\\"org\\\\\\\",\\\\\\\"org-b\\\\\\\"]\\\",\\\"grant-ab\\\",\\\"agent-a\\\",\\\"agent-b\\\",\\\"message-1\\\",\\\"request-1\\\",null,1,1000,3601000,\\\"cde69fa45f898d4c5f4582fca0ab4c78871d030150cee20b677695631a259520\\\",\\\"5a2f39c8f943f74c99a12210b7d53f652dde40f7e95dab7513dc928a5dfeca07\\\",\\\"13be4feaeaf204c7fd3358fc9c00721881d174278128227ec674f37f7fe97b6d\\\",\\\"222222222222222222222222\\\"]\",\"42db7afc42b7e79474d38946b60d316cb9ab50411dbd739d827b47f63fe8d943fe0c23621cbfe547580ec1d1a00e093892\"]",
+  "observation": {
+    "owner": "[\"https://issuer.example/\",\"org\",\"org-b\"]",
+    "deviceId": "agent-b",
+    "senderOwner": "[\"https://issuer.example/\",\"org\",\"org-a\"]",
+    "messageId": "message-1",
+    "state": "delivered",
+    "at": 2000,
+    "signature": "a7410a38c9cdd66ecb8f3c38e588eff2ac75f8cd9a876cc0c09d98331c7b0d8308bbfaebcdd4b4b902e999a2228d02de710a2ea2a1c28845d7164f616855fd08"
+  },
+  "observationSignedUtf8": "[\"everett-observe-v2\",\"[\\\"https://issuer.example/\\\",\\\"org\\\",\\\"org-b\\\"]\",\"agent-b\",\"[\\\"https://issuer.example/\\\",\\\"org\\\",\\\"org-a\\\"]\",\"message-1\",\"delivered\",2000]",
+  "rotation": {
+    "oldFingerprint": "cde69fa45f898d4c5f4582fca0ab4c78871d030150cee20b677695631a259520",
+    "signature": "7cef24225592f461f7cd565605cd2394c659881de2b6981b5f517ba8f3162b35b15aca1b65704eed5846e29d78109aae19b92dcadf007f01b11c49e52cfdd906"
+  },
+  "rotationSignedUtf8": "[\"everett-rotate-v2\",\"[\\\"https://issuer.example/\\\",\\\"org\\\",\\\"org-a\\\"]\",\"agent-a\",\"cde69fa45f898d4c5f4582fca0ab4c78871d030150cee20b677695631a259520\",\"0c110f3c27b3e57fa12f83a17e0750e65029165d1d7d1ad8a0efcd1799463791\"]"
 }

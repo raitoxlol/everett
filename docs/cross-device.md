@@ -1,178 +1,486 @@
 # Cross-device Everett
 
-Everett supports two inbox-only transports per peer: manual SSH (phase 1) and an
-end-to-end encrypted Convex relay (phase 2), from [issue #4](https://github.com/raitoxlol/everett/issues/4).
-SSH pairing remains **one-way**, with replies through **status polling**. Convex peers
-pin both directions and exchange messages, replies, and pickup receipts over a live WebSocket.
+Everett supports two **independent, inbox-only transports per peer**: manual SSH
+and an end-to-end encrypted Convex relay. SSH pairing remains one-way, with replies
+through status polling; its setup below is unchanged. Relay peers pin both directions
+and exchange encrypted messages/replies through live Convex WebSocket subscriptions,
+with separate signed delivery observations. Neither transport wakes/resumes/spawns sessions.
+
+Relay v2 supports the same owner/account or org across harnesses/devices behind NAT;
+cross-namespace chat requires **both org admins' explicit consent for named agents**.
+Here an agent is one provisioned device credential, not an individual harness session.
+Local harnesses under that OS account share it. An alias chooses exactly one transport;
+there is no relay-to-SSH fallback or backend SSH configuration.
 
 ## Convex relay: owner deployment
 
-The Everett client stays Rust-only. The deployable backend in `convex/` uses Convex's
-TypeScript schema/function runtime. Node is needed only for deployment/backend tests,
-not on machines running the Rust binary. No SSH reachability, port forwarding, or Tailscale
-is needed; both machines make outbound HTTPS/WebSocket connections.
+The client stays Rust-only. Node 24 is needed on the **operator/development machine**
+for the TypeScript backend in `convex/`, not on machines running the installed binary.
+Agents need outbound HTTPS/WebSocket access only. First configure an OIDC public/native
+application with device-code login, refresh and signed per-agent ID tokens. Follow the
+[Keycloak/native-provider recipe](auth.md#practical-keycloak-device-code-setup); a normal
+shared user token is insufficient. `everett_agent`, `everett_org`, and `everett_role`
+must be issuer-controlled, not client-editable. There is no public enrollment API.
 
-1. Create an OIDC **native/public** application supporting device-code login and refresh
-   tokens, scopes `openid email profile offline_access`, with no client secret. Enable
-   issuance of signed ID tokens both at login and refresh. Note the issuer (including
-   its trailing slash, if any) and the public application/client ID. Convex must be able
-   to reach the issuer's discovery/JWKS endpoints. See [auth setup](auth.md).
-2. Install Node 24 and sign in to your Convex account. From this checkout's root:
+Commands below run from the checkout root unless stated otherwise. Replace example
+URLs, subject UUIDs and fingerprint placeholders. Never put actual tokens/admin keys
+in shell arguments, docs, logs, git, or agent MCP output. These are operator runbooks,
+**not a claim that a cloud/self-hosted deployment or live OIDC journey was executed**.
 
-   ```sh
-   npm ci
-   npm run typecheck
-   npm test
-   npx convex dev --configure new --once
-   ```
+### Convex cloud
 
-   Choose a **cloud** development deployment. Initial deployment may fail until the
-   following environment values are set; project selection still creates `.env.local`.
-3. Configure the selected development deployment, then push schema/functions:
+Use a clean v2 deployment for a first trial. v1 envelopes/pins/schema are incompatible;
+an existing deployment requires a reviewed migration preserving revocation/replay
+records, not deletion/re-enrollment of old identities.
 
-   ```sh
-   npx convex env set OIDC_ISSUER 'https://YOUR-ISSUER/'
-   npx convex env set OIDC_CLIENT_ID 'YOUR-PUBLIC-CLIENT-ID'
-   npx convex dev --once
-   ```
+```sh
+npm ci
+npm run typecheck
+npx convex login
+npx convex dev --configure new --once
+# Select a CLOUD development deployment, not a local deployment.
+```
 
-   For production, configure production **separately** and deploy:
+On a new project the first push can fail because auth environment is not yet set.
+Once project selection has written `.env.local`, configure the selected development
+backend and retry:
 
-   ```sh
-   npx convex env set --prod OIDC_ISSUER 'https://YOUR-ISSUER/'
-   npx convex env set --prod OIDC_CLIENT_ID 'YOUR-PUBLIC-CLIENT-ID'
-   npx convex deploy
-   ```
+```sh
+npx convex env set OIDC_ISSUER 'https://login.example.com/realms/everett'
+npx convex env set OIDC_CLIENT_ID 'everett-relay'
+npx convex dev --once
+```
 
-   Copy the selected deployment's HTTPS URL from the Convex dashboard (for example
-   `https://YOUR-DEPLOYMENT.convex.cloud`). Do not mix dev and prod URLs. `.env.local`,
-   generated types, deployment keys, and device credentials are ignored by git.
+For production configure **production separately** and deploy:
+
+```sh
+npx convex env set --prod OIDC_ISSUER 'https://login.example.com/realms/everett'
+npx convex env set --prod OIDC_CLIENT_ID 'everett-relay'
+npx convex deploy
+```
+
+Copy the target HTTPS backend URL from the dashboard, e.g.
+`https://YOUR-DEPLOYMENT.convex.cloud`. Do not use the dashboard or `.convex.site`
+HTTP-actions URL. Dev and prod have separate data/provisioning: add `--prod` to
+**every** operator `convex run` below when using production. Never copy development
+credentials or deployment keys onto agents. See the official
+[Convex OIDC configuration](https://docs.convex.dev/auth/advanced/custom-auth).
+
+### Self-hosted Convex
+
+Read the official [self-hosting guide](https://docs.convex.dev/self-hosting),
+[Docker runbook](https://github.com/get-convex/convex-backend/blob/main/self-hosted/README.md)
+and [own-infrastructure configuration](https://github.com/get-convex/convex-backend/blob/main/self-hosted/advanced/hosting_on_own_infra.md).
+Everett uses custom OIDC, **not the separate Convex Auth package** (whose self-hosted
+setup has different limitations). No frontend app is needed for this CLI relay.
+
+On the operator's Linux server, install Docker Engine/Compose and a TLS reverse proxy
+(e.g. Caddy), configure DNS for the three example domains, and allow public ports
+80/443. **Block direct external access to ports 3210, 3211 and 6791**, including Docker's
+published-port firewall behavior; alternatively bind the compose ports to loopback.
+Protect the dashboard with your operator network/access policy. Then in a dedicated
+service directory (not the Everett checkout):
+
+```sh
+mkdir -p "$HOME/convex-relay-service"
+cd "$HOME/convex-relay-service"
+curl -fsSLo docker-compose.yml \
+  https://raw.githubusercontent.com/get-convex/convex-backend/main/self-hosted/docker/docker-compose.yml
+```
+
+Upstream `main`/`:latest` are moving targets. For production, download this file from a
+reviewed immutable upstream commit instead, and archive it; the image-digest pinning
+steps below make that exact chosen configuration reusable. No specific backend release
+has been compatibility-tested here. Create `.env` alongside it with these **non-secret** origins:
+
+```dotenv
+CONVEX_CLOUD_ORIGIN=https://relay.example.com
+CONVEX_SITE_ORIGIN=https://relay-actions.example.com
+NEXT_PUBLIC_DEPLOYMENT_URL=https://relay.example.com
+```
+
+For a Caddy proxy **on that same server**, the corresponding Caddyfile blocks are:
+
+```caddyfile
+relay.example.com {
+    reverse_proxy 127.0.0.1:3210
+}
+relay-actions.example.com {
+    reverse_proxy 127.0.0.1:3211
+}
+relay-admin.example.com {
+    reverse_proxy 127.0.0.1:6791
+}
+```
+
+Caddy forwards WebSocket upgrades; another proxy must explicitly support long-lived
+WebSockets and TLS. Apply the proxy configuration using your service manager. Start
+Convex and generate an operator key in a private terminal:
+
+```sh
+# Resolve moving image tags once, then retain/reuse the pinned file (Compose v2).
+umask 077
+docker compose pull
+docker compose config --resolve-image-digests > docker-compose.pinned.yml
+sha256sum docker-compose.yml docker-compose.pinned.yml > compose.sha256
+docker compose -f docker-compose.pinned.yml up -d
+# Secret output: put only in the operator's protected secret store/.env.local.
+docker compose -f docker-compose.pinned.yml exec backend ./generate_admin_key.sh
+```
+
+Archive the compose files/checksums, upstream commit, resolved image digests and proxy
+configuration with the deployment record; do not resolve `latest` again on restart.
+The rendered YAML can contain interpolated secrets if you add any: protect it, do not
+commit it. Digest pinning follows Docker's official
+[`compose config` reference](https://docs.docker.com/reference/cli/docker/compose/config/).
+
+The compose volume contains the database; arrange persistent storage/backups and test
+restores. Do not run `down -v` or reset data as a way to recover revoked identities.
+On the operator machine, use a **separate Everett checkout** for this self-hosted target.
+In an ignored mode-0600 `.env.local`, populated through a secret editor/store, set:
+
+```dotenv
+CONVEX_SELF_HOSTED_URL=https://relay.example.com
+CONVEX_SELF_HOSTED_ADMIN_KEY=OPERATOR_KEY_FROM_SECRET_STORE
+```
+
+Do not leave cloud `CONVEX_DEPLOYMENT`/`CONVEX_DEPLOY_KEY` selections in that checkout
+or environment. The repo pins its Convex CLI dependency; use `npm ci` rather than
+silently upgrading it. Push to this target:
+
+```sh
+npm ci
+npx convex env set OIDC_ISSUER 'https://login.example.com/realms/everett'
+npx convex env set OIDC_CLIENT_ID 'everett-relay'
+npx convex dev --once
+# Subsequent non-development pushes may use: npx convex deploy
+```
+
+Internal provisioning below uses the same self-hosted selection, **without `--prod`**.
+Agents set only `EVERETT_CONVEX_URL=https://relay.example.com`, never the operator key.
+The Rust client requires an **HTTPS origin without a path**, so the guide's bare
+`http://127.0.0.1:3210` cannot be used directly by Everett. Ensure the server can reach
+OIDC discovery/JWKS and verify `/version` plus a real authenticated subscription before
+rollout. These infrastructure instructions have not been deployment-tested here.
+
+### Provision authoritative identities
+
+Use the [auth recipe](auth.md) to create three independently controlled identities:
+A = `machine-a`, org A admin; B = `machine-b`, org A member; C = `machine-c`, org B admin.
+Get immutable provider subject UUIDs from the **trusted issuer Admin Console**, not
+from arbitrary client enrollment requests. Replace `A-SUBJECT-UUID`, etc. below.
+Only the deployment operator runs these internal mutations:
+
+```sh
+npx convex run relay:provisionIdentity '{"issuer":"https://login.example.com/realms/everett","subject":"A-SUBJECT-UUID","org":"org-a","agentId":"machine-a","role":"admin"}'
+npx convex run relay:provisionIdentity '{"issuer":"https://login.example.com/realms/everett","subject":"B-SUBJECT-UUID","org":"org-a","agentId":"machine-b","role":"member"}'
+npx convex run relay:provisionIdentity '{"issuer":"https://login.example.com/realms/everett","subject":"C-SUBJECT-UUID","org":"org-b","agentId":"machine-c","role":"admin"}'
+```
+
+For a cloud production journey, insert `--prod` after `convex run` on each command.
+For account fallback provision `org:null`, omit the JWT org claim, and obtain distinct
+issuer-bound agents with the **same subject**; the simple Keycloak per-user recipe does
+not supply that enrollment mechanism. `relay register` never provisions membership.
+Agent IDs, grant IDs, alias names and idempotency keys use `[A-Za-z0-9_.-]{1,160}`.
 
 ## Convex relay: two-machine trial
 
-On **both** machines, build/install this branch and configure the **same** issuer, public
-client ID, and Convex URL. Sign in as the **same provider user** (same JWT issuer + subject):
+On **A and B**, install this branch (or the resulting release binary), set the same
+issuer/public client/Convex URL, and approve login as the distinct provisioned users
+`alice-a` / `alice-b` from the auth recipe. Use the self-hosted URL instead if applicable:
 
 ```sh
 cargo install --path everett-rs --locked --force
-export EVERETT_AUTH_ISSUER='https://YOUR-ISSUER/'
-export EVERETT_AUTH_CLIENT_ID='YOUR-PUBLIC-CLIENT-ID'
+export EVERETT_AUTH_ISSUER='https://login.example.com/realms/everett'
+export EVERETT_AUTH_CLIENT_ID='everett-relay'
 export EVERETT_CONVEX_URL='https://YOUR-DEPLOYMENT.convex.cloud'
 everett login --force
+everett whoami --json
+everett relay whoami
 everett relay register
 everett relay devices
 ```
 
-Alternatively, persist configuration in `~/.everett/config.toml`:
+Configuration can instead be persisted using the [auth config example](auth.md#native-sign-in).
+`relay whoami` must report the same owner namespace for A/B but different `deviceId`s.
+Registration prints `device` and `fingerprint`; the relay fingerprint is **64 lowercase
+hex characters, with no `SHA256:` prefix**. It covers the protocol version, owner,
+agent ID and **both** independent Ed25519/X25519 public keys. It differs from the SSH
+fingerprint/identity; v2 does not reuse SSH private signing keys.
 
-```toml
-[auth]
-issuer = "https://YOUR-ISSUER/"
-client_id = "YOUR-PUBLIC-CLIENT-ID"
-[relay]
-url = "https://YOUR-DEPLOYMENT.convex.cloud"
-```
-
-`relay register` prints this device's `deviceId` and a SHA256 fingerprint covering the
-owner, Ed25519 key, and X25519 key. **Confirm those values on the other machine's terminal
-or another trusted out-of-band channel**, never solely through the registry. The relay
-fingerprint includes the encryption key and is distinct from the SSH fingerprint.
-Private Ed25519 identity is reused from `peer identity`; X25519 private keys are created
-locally. Do not copy `~/.everett` between machines: they must have different device keys.
-
-On A, pin B. On B, pin A (substitute the confirmed IDs/fingerprints):
+Exchange the full printed public bundles, IDs and fingerprints via an authenticated
+out-of-band channel (other machine's terminal, in person, or a previously verified
+channel), never solely from a registry/grant response. Do not copy private keys or
+`~/.everett` between machines. After confirming the values, pin both directions:
 
 ```sh
-# A
-everett peer add-relay machine-b --device B-DEVICE-ID --fingerprint SHA256:B-CONFIRMED-HEX
-# B
-everett peer add-relay machine-a --device A-DEVICE-ID --fingerprint SHA256:A-CONFIRMED-HEX
+# A: replace the placeholder with B's exact 64-character fingerprint.
+everett peer add-relay machine-b --device machine-b --fingerprint B_CONFIRMED_HEX
+# B: replace the placeholder with A's exact fingerprint.
+everett peer add-relay machine-a --device machine-a --fingerprint A_CONFIRMED_HEX
+# Both
+everett peer list
 ```
 
-An alias selects exactly one transport; an existing SSH alias cannot become a relay alias
-without explicit removal. `peer list` shows both transports. On both machines, leave
-this foreground process running in a separate terminal (Ctrl-C stops it):
+An alias already selecting SSH cannot be silently converted. On each machine keep a
+separate terminal running the listener; there is **no `relay run` subcommand**:
 
 ```sh
-everett relay
+everett relay  # foreground; Ctrl-C stops it, not the harness
 ```
 
-Start a Claude session on A and a Codex session on B. On each machine, run `everett ls --json`
-and note the **full** local session IDs. Convex does not publish session listings or cards;
-remote `ls`/`card` remain SSH-only. From A (substitute the IDs):
+Start any supported harness session on each device; this example uses Claude on A,
+Codex on B. Run `everett ls --json` locally and exchange **full exact session IDs**.
+Relay sends do not publish/list remote sessions or cards; `ls --peer` / `peer card`
+remain SSH-only. In command terminals with the same environment/configuration:
 
 ```sh
+# A: substitute the exact local A and remote B session IDs.
 EVERETT_SESSION_ID=A-CLAUDE-ID EVERETT_HARNESS_NAME=claude \
   everett send 'Hello from A' --to machine-b/codex/B-CODEX-ID \
   --idempotency-key two-machine-hello --json
-```
-
-Record the returned `message_id`. On B, the installed hooks or an agent's existing
-`everett_inbox` MCP tool consume the local inbox; explicit terminal pickup also works:
-
-```sh
-everett inbox --session B-CODEX-ID --peek --json  # inspection only
-everett inbox --session B-CODEX-ID --json         # actual pickup
+# A: substitute the send result's message_id.
+everett peer status machine-b A_MESSAGE_ID
+# B: inspection does not claim the message; actual pickup does.
+everett inbox --session B-CODEX-ID --peek --json
+everett inbox --session B-CODEX-ID --json
+# B: use the recipient inbox entry's id, NOT A's wire message_id.
 EVERETT_SESSION_ID=B-CODEX-ID EVERETT_HARNESS_NAME=codex \
-  everett reply MESSAGE-ID 'Hello back from B'
-```
-
-On A, the reply arrives live through its relay and enters the original sender inbox:
-
-```sh
-everett peer status machine-b MESSAGE-ID
+  everett reply B_LOCAL_INBOX_ID 'Hello back from B'
+# A: status queries state from signed observations; replies arrive via A's listener.
+everett peer status machine-b A_MESSAGE_ID
 everett inbox --session A-CLAUDE-ID --json
 ```
 
-Status is `queued` after Convex acceptance, `delivered` only after A observes B's signed,
-encrypted **inbox pickup receipt**, and `replied` only after A verifies/imports the correlated
-encrypted reply. Arrival on B or a durable local inbox write alone is not `delivered`.
-The backend calls that intermediate state `accepted` and deletes the ciphertext row;
-the CLI still reports `queued` until it observes a receipt. A terminal-origin send returns
-replies to the local `human` inbox. Neither transport wakes a harness session.
+B's `id` is a local `relay-…` ID; `relay_message_id` is the originating wire ID used
+for A's status. Existing hooks or MCP `everett_inbox` can do the pickup instead;
+`everett_send(reply_to="B_LOCAL_INBOX_ID", text="…", session_id="B-CODEX-ID")`
+replies inside the receiving session. A terminal-origin send returns replies to the
+local `human` inbox. Receiving only writes inbox state; it never starts a harness.
+
+### Observed states (relay v2, not SSH pickup semantics)
+
+| State | Evidence, not a promise |
+| --- | --- |
+| `unconfirmed` (local only) | Encrypted retry record exists; server enqueue acknowledgment was not observed. |
+| `queued` | Convex enqueue commit acknowledged; no recipient delivery observation. |
+| `delivered` | Recipient validated/persisted encrypted private ingress and committed its signed delivery observation, authorizing local inbox publication; server ciphertext row is deleted. Not session pickup or task completion. Crash recovery can finish publication later. |
+| `claimed` | Listener observed the local inbox's `.done` pickup entry and committed a signed claim. `--peek` alone never claims. |
+| `replied` | Recipient's encrypted correlated reply enqueue was acknowledged and its signed reply observation committed. Does not prove the original sender has imported/read that reply. |
+| `expired` | Envelope TTL elapsed while still undelivered. |
+
+Observations are plaintext **signed state metadata**, not encrypted receipt messages.
+States are monotonic; a connection, query or daemon start is not delivery/pickup/reply.
+The listener reconciles actual pickup with the server; if it is offline, `claimed` can
+lag. Status after grant/agent revocation or key mismatch can **error**, not return a
+historical success state. None of these states means work completion.
+
+## Convex relay: two-org trial
+
+Keep the working A/B org-A trial; add **machine C / `bob-c` / org B admin** provisioned
+above. Both orgs must use this **same Convex deployment and configured issuer**.
+This is not federation between independent deployments. A/C are admins and also the
+named endpoints here; admins could instead authorize other registered named agents
+in their own org. Repeat the install/config/login/whoami/register steps on C with its
+own provider user/agent and start a local session (this example: Claude).
+
+1. A admin and C admin independently exchange and verify **both public bundles,
+   fingerprints, exact owner namespaces and agent IDs** out of band. Verify C reports
+   owner `["https://login.example.com/realms/everett","org","org-b"]`, agent `machine-c`,
+   role `admin`; A must independently have JWT and stored role `admin`. Replace all
+   placeholders below with these verified values. Grant fingerprints are raw hex too.
+2. In A's command terminal, invite only A/C, with an optional one-day expiry, a shared
+   30-new-envelope/minute quota and a 64 KiB serialized-body cap:
+
+   ```sh
+   # Copy the exact owner string from C's verified relay whoami output.
+   C_OWNER='["https://login.example.com/realms/everett","org","org-b"]'
+   GRANT_EXPIRY_MS=$(( ($(date +%s) + 86400) * 1000 ))
+   everett relay grant invite org-a-org-b-1 --device machine-a \
+     --peer-owner "$C_OWNER" --peer-device machine-c \
+     --local-fingerprint A_CONFIRMED_HEX --peer-fingerprint C_CONFIRMED_HEX \
+     --expires-at "$GRANT_EXPIRY_MS" --rate-per-minute 30 --body-cap-bytes 65536
+   everett relay grant get org-a-org-b-1
+   ```
+
+   Omit `--expires-at` for no expiry. No traffic is allowed while `invited`.
+3. C admin accepts, reversing the local/peer fingerprint orientation:
+
+   ```sh
+   everett relay grant accept org-a-org-b-1 \
+     --local-fingerprint C_CONFIRMED_HEX --peer-fingerprint A_CONFIRMED_HEX
+   everett relay grant get org-a-org-b-1
+   everett relay grant list
+   # A also runs get/list and checks access=active and both pinned bundles.
+   ```
+
+   Non-admin acceptance, another org, another agent pair, or changed keys are rejected.
+   The two sides must both confirm the exact bundles; a self-signature alone is not trust.
+4. After verifying `access=active`, pin on **the actual named endpoint devices**:
+
+   ```sh
+   # A
+   everett peer add-relay org-b-c --device machine-c \
+     --fingerprint C_CONFIRMED_HEX --grant org-a-org-b-1
+   # C
+   everett peer add-relay org-a-a --device machine-a \
+     --fingerprint A_CONFIRMED_HEX --grant org-a-org-b-1
+   everett relay  # C's separate listener terminal; A's listener remains running
+   ```
+
+5. Exchange exact session IDs out of band, then send/pickup/reply/status:
+
+   ```sh
+   # A
+   EVERETT_SESSION_ID=A-CLAUDE-ID EVERETT_HARNESS_NAME=claude \
+     everett send 'Cross-org test: agent data only' --to org-b-c/claude/C-CLAUDE-ID \
+     --idempotency-key two-org-hello --json
+   everett peer status org-b-c A_CROSS_ORG_MESSAGE_ID
+   # C: verify external/untrusted label even with --peek/--json or MCP.
+   everett inbox --session C-CLAUDE-ID --peek --json
+   everett inbox --session C-CLAUDE-ID --json
+   EVERETT_SESSION_ID=C-CLAUDE-ID EVERETT_HARNESS_NAME=claude \
+     everett reply C_LOCAL_INBOX_ID 'External agent reply, not owner instructions'
+   # A
+   everett peer status org-b-c A_CROSS_ORG_MESSAGE_ID
+   everett inbox --session A-CLAUDE-ID --json
+   ```
+
+   Cross-org content is **external/untrusted agent data**, including replies and local
+   forwards. CLI, hooks and MCP label/quote it so it is not represented as owner/system
+   instructions. No receiving agent should execute embedded instructions just because
+   transport authentication succeeded. External-tainted SSH forwarding is refused:
+   the separate SSH wire cannot carry this provenance. Use relay/local inbox instead.
+6. Either admin revokes, including while the other endpoint is offline:
+
+   ```sh
+   # C or A, active org admin
+   everett relay grant revoke org-a-org-b-1
+   everett relay grant get org-a-org-b-1
+   # A: this new send must fail; old status can also deny after revoke.
+   everett send 'Must be denied' --to org-b-c/claude/C-CLAUDE-ID \
+     --idempotency-key after-grant-revoke --json
+   ```
+
+   Queued ciphertext cannot newly deliver after revocation; existing subscriptions
+   depend on grant/credential/membership records, and publication reauthorizes through
+   a signed mutation barrier. Already local plaintext cannot be recalled. The revoked
+   grant ID is terminal; a new grant requires another independent invite/accept.
+
+### Rotation and revocation
+
+Do this rotation trial **before** revoking the grant, or use a newly accepted grant.
+Stop the affected device's listener with Ctrl-C first, then rotate (old signing key
+required), register/print its new bundle and communicate it over the trusted channel:
+
+```sh
+# A
+everett relay rotate
+everett relay register
+# Existing cross-org traffic is now blocked (get reports access=key_changed).
+everett relay grant get org-a-org-b-1
+# A admin: first confirmation alone still blocks traffic.
+everett relay grant reconfirm org-a-org-b-1 \
+  --local-fingerprint A_NEW_CONFIRMED_HEX --peer-fingerprint C_CONFIRMED_HEX
+# C admin: independent confirmation of the same current pair.
+everett relay grant reconfirm org-a-org-b-1 \
+  --local-fingerprint C_CONFIRMED_HEX --peer-fingerprint A_NEW_CONFIRMED_HEX
+```
+
+Both sides check `access=active` again. Views return **pinned** bundles, not a reason
+to trust an arbitrary new key. Explicitly re-pin changed aliases; C removes/re-adds A:
+
+```sh
+# C
+everett peer remove org-a-a
+everett peer add-relay org-a-a --device machine-a \
+  --fingerprint A_NEW_CONFIRMED_HEX --grant org-a-org-b-1
+# B (same org, no grant): re-pin A's changed key too.
+everett peer remove machine-a
+everett peer add-relay machine-a --device machine-a --fingerprint A_NEW_CONFIRMED_HEX
+# A: restart listener in its separate terminal.
+everett relay
+```
+
+Old queued envelopes still bind the **old** fingerprints and remain blocked until TTL;
+reconfirmation never silently decrypts/re-encrypts them. Intentionally new requests need
+new keys/IDs. Same-org peers need explicit out-of-band re-pins too, but no bilateral grant.
+If old signing keys were lost/compromised, revoke/provision a fresh agent instead of
+attempting JWT-only replacement. Revoking an agent blocks both its signing/encryption
+bundle and JWT credential in backend routing. For the lost-B trial, from still-active A:
+
+```sh
+# A command terminal
+everett relay revoke-agent machine-b     # alias: revoke-device
+# B command terminal: its already subscribed listener must also deny/stop.
+everett relay whoami                    # denied with still-valid B JWT
+everett relay register                  # denied; cannot re-enroll old agent ID
+# A command terminal: optional permanent removal uses the trusted subject UUID.
+everett relay revoke-member B-SUBJECT-UUID
+```
+
+Use B's terminal for the two denial commands, not A's. Also revoke issuer sessions/
+refresh/offline tokens; deleting local pins or `logout` is not sufficient. A revoked
+credential requires a new ID; revoked membership requires a new subject. Never erase
+revocation tombstones to work around denial. See [auth revocation](auth.md#private-storage-and-revocation).
 
 ### Offline behavior, safety, and limits
 
-- Stop B's relay, send with a **new** idempotency key, and check A reports `queued`.
-  Restart B before expiry; the initial live subscription drains its pending queue.
-  Repeat after expiry: no message is imported and status is `expired`.
-- Each envelope (message, reply, receipt) expires **one hour after creation**. The backend
-  enforces a maximum 24-hour TTL, filters expired rows, and deletes them with a one-minute
-  cron plus bounded continuation batches. If B imported a message before expiry, its local
-  inbox follows Everett's existing local retention policy; the relay TTL no longer applies.
-- If A cannot contact Convex, the command errors: a mode-0600 encrypted local retry record
-  exists, but server queueing is **unconfirmed**. `everett relay` retries before expiry.
-  Retry the same `--idempotency-key` with the exact same sender, destination, and body to
-  reuse the original ciphertext/message ID; changing it is rejected. Expired requests
-  need a new key only when an intentionally new send is wanted.
-- A's relay must run to receive replies/receipts. An `accepted` message can remain CLI
-  `queued` if the pickup receipt expires before A reconnects. Do not infer online presence
-  or successful pickup from server acceptance. Replies are single-shot per original
-  message; retrying the same reply is idempotent, changing its body is rejected.
-- Payload cap is **64 KiB for the serialized plaintext**, including message/card metadata
-  and JSON escaping; ciphertext adds a 16-byte tag. Hops stay encrypted, inherit recent
-  local pickup counts, and increment once per send/reply across all devices; a fourth hop
-  exits 7. Receipts do not consume a message hop.
-- X25519 ephemeral-static agreement, HKDF-SHA256, ChaCha20-Poly1305, and Ed25519 protect
-  content, including sender/recipient **session** IDs, harness names, replies, and receipts.
-  Convex sees ciphertext plus owner/device IDs, envelope IDs/idempotency keys, timestamps,
-  signatures, sizes, and transient acceptance/expiry metadata. Idempotency tombstones
-  contain no content/ciphertext and expire seven days after the envelope TTL.
-- All public functions independently derive owner from the verified OIDC JWT. A claimed
-  client owner is not authority. Unknown/wrong-account devices and changed signatures
-  are rejected. The relay verifies its own pinned keys, AEAD, routing, TTL and hops before
-  local writes. Unknown sessions/unpaired senders remain queued until TTL; the daemon
-  retries cached pending rows when a session/pin becomes available.
-- Device-key replacement is refused; remove a local pin with `peer remove ALIAS` and
-  confirm a new device identity explicitly. For a lost device, remove its pins on every
-  other machine and revoke its refresh tokens at the OIDC provider. Existing access/ID
-  tokens may remain valid until provider expiry; removing local trust stops inbox imports
-  immediately. Protect both devices' OS accounts: there is no forward secrecy against
-  later compromise of a recipient's static key, and no trust in a compromised endpoint.
-- The official Rust Convex client reconnects/resubscribes its WebSocket and refreshes
-  OIDC tokens through a callback. Transient mutation failures retain retry records.
-  An ended subscription, logout, changed owner, or failed authentication stops the daemon
-  honestly; restart it after fixing login/configuration. Requests have 20-second deadlines.
+- Before running the permanent revocation trial, stop B's relay, send from A with a
+  **new** idempotency key, and check `queued`. Restart B before expiry to drain pending
+  pages. Repeat with B offline beyond TTL: no new inbox publication and `expired`
+  (provided the route/credentials/grant are still valid).
+- Rust envelopes (messages/replies) expire **one hour after creation**; backend maximum
+  TTL is 24 hours. Undelivered expired rows are filtered on fresh reads and deleted by
+  minute cron in batches of 64 with bounded continuation. Clock time alone does not
+  invalidate a subscription: expiry invalidation is normally within a minute **plus
+  scheduler delay**, not an exact-time event. Clients re-query/recheck server time and
+  expiry before new delivery. Grant expiry is similarly enforced and persisted by cron.
+- Once signed delivery committed, relay TTL no longer applies to the delivered local
+  copy or later `claimed`/`replied` observations. Private staging can recover an uncertain
+  committed delivery after TTL only if the backend again authorizes it. Ordinary local
+  undelivered inbox retention is seven days; revocation cannot erase downloaded plaintext.
+- When A cannot confirm enqueue, it errors and retains a mode-0600 **encrypted** local
+  retry record; `peer status` can report `unconfirmed`. `everett relay` retries before
+  expiry. Reuse the same `--idempotency-key` with the exact sender, target, text and
+  lineage to reuse the **same ciphertext/message ID**. Changing any of it is rejected.
+  Backend replay/idempotency metadata is permanent, even after ciphertext deletion/TTL.
+  After expiry, only an intentionally new send should use a new key. Replies are
+  single-shot per original request; an identical retry is idempotent, changed text denied.
+- A's listener must run to import replies; status separately queries backend state
+  resulting from signed observation commits (not a signed status response). Do not infer
+  presence or pickup from enqueue, a WebSocket connection, `delivered`, or even `replied`.
+  An undelivered reply can expire independently.
+- Global body cap: **65536 serialized plaintext bytes**, including routing/session/card
+  fields and JSON escaping, not just visible text; AEAD adds a 16-byte tag. A grant
+  may lower the cap to 256..65536 bytes. Backend checks ciphertext length minus tag;
+  clients verify AEAD and plaintext fields. Grant rate is 1..120 new envelopes per
+  fixed UTC minute **shared across both directions** (default 30); each sender agent
+  also has 120/minute. Identical retries do not consume quota. Boundary bursts can
+  approach twice a window's limit; these are abuse controls, not guaranteed bandwidth.
+- Signed visible parent/hop lineage is checked against the permanent observed parent
+  and exact receiving credential. Roots start at 1; replies/forwards increment across
+  devices/orgs; maximum **3 end to end**. Local pickup persists lineage/external taint
+  for later sends, not merely a transient environment variable. Fourth hops fail.
+  A malicious endpoint can manually invent a new root; encryption cannot prove semantic
+  ancestry. Hop limits are not a sandbox or general loop-proofing against adversaries.
+- X25519 ephemeral-static agreement, HKDF-SHA256, ChaCha20Poly1305 and Ed25519 protect
+  serialized message/reply content, session IDs, harness names and card snippets. Sender/
+  recipient namespaces/devices, grant, parent/hops, both fingerprints and timing are
+  **visible signed metadata**; observations are visible too. See the complete
+  [metadata/retention inventory and crypto limits](relay-threat-model.md).
+- Public functions verify JWT **and** stored membership **and** their own revocable
+  agent credential. Existing query dependencies invalidate on revocation; ingress
+  publication also requires a signed authoritative observation, rejecting stale cached
+  rows. Unknown sessions or unpinned senders are refused locally and remain queued until
+  TTL; fresh pending queries retry when a session/pin becomes available. The client
+  pages even through empty filtered pages, holding a final-page live subscription.
+- The official Rust Convex client handles reconnect/resubscribe and uses an OIDC refresh
+  callback. Revoked credentials, denied/ended subscriptions, logout or changed owner/
+  agent stop the daemon. Fix provisioning/auth/config and restart; never bypass denial
+  using a cached row. Transient failures retain private encrypted staging/retries, not
+  visible unauthenticated messages. Requests have 20-second deadlines. No service manager
+  or automatic session wake-up is installed by `everett relay`.
 
 ### Offline verification
 
@@ -185,14 +493,22 @@ cargo build --release --locked
 EVERETT_VERIFY_BINARY=target/release/everett cargo test --locked --test release_journey
 ```
 
-`convex-test` runs the **actual backend functions** in memory, with no Convex login/network:
-authentication and account isolation, signature tampering, duplicate idempotency keys,
-expiry, signed acceptance, ciphertext deletion, and retention cleanup. Rust tests cover
-AEAD round trips/tampering, wrong-account/device checks, caps/hops/TTL, Convex number
-serialization, and two isolated device inboxes with pickup, receipts, replies, and replay
-deduplication. CI runs Rust/release and backend checks on Linux and macOS. These fakes do
-not prove production OIDC/JWKS configuration or real NAT/reconnect behavior; run the
-two-machine trial above before rollout.
+These are **verification commands to run**, not results claimed by this documentation
+update. `convex-test` executes actual functions offline with fake identities: wrong org,
+missing/revoked grants, agent revocation/re-registration, key changes/reconfirmation,
+external labels, quotas/caps, durable duplicate keys, lineage/hops, TTL and ciphertext
+row deletion. Its crypto helper covers public interoperability bytes and tampered
+bodies; Rust unit/native fixtures cover encryption and isolated same-/cross-org inbox
+journeys. Check the current test results before claiming these pass. Linux/macOS CI
+workflows are configured for backend checks, Rust tests/clippy and the release journey.
+
+Offline fakes do **not** validate real OIDC/JWKS, native-provider refresh, live WebSocket
+revocation/reconnect/cache behavior, TLS/self-hosted infrastructure, or two real NATed
+machines. Owner/operator release gate: run both journeys above, including already-open
+subscriptions during agent/grant revocation, empty/final-cursor pending pages, rotation
+and bilateral reconfirmation, offline TTL/recovery, idempotent retry and local external
+CLI/hooks/MCP formatting. Record exact environments/results; do not represent an
+unexecuted deployment or broad test suite as passed.
 
 ## SSH transport (phase 1)
 
