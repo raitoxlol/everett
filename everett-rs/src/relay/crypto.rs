@@ -87,8 +87,39 @@ impl Keys {
         now: i64,
         ttl: i64,
     ) -> Result<Envelope> {
+        self.seal_scoped(recipient, key, payload, now, ttl, None)
+    }
+
+    pub fn seal_agent(
+        &self,
+        recipient: &Device,
+        key: &str,
+        payload: &Payload,
+        now: i64,
+        scope: Scope,
+    ) -> Result<Envelope> {
+        if scope.from_owner != self.device.owner || scope.to_owner != recipient.owner {
+            return Err(bad("agent scope does not match the pinned accounts"));
+        }
+        for id in [&scope.from_org, &scope.to_org, &scope.from_agent, &scope.to_agent] {
+            if id.len() != 64 || !id.bytes().all(|b| b.is_ascii_hexdigit()) {
+                return Err(bad("invalid issuer-derived agent scope"));
+            }
+        }
+        self.seal_scoped(recipient, key, payload, now, super::TTL, Some(scope))
+    }
+
+    fn seal_scoped(
+        &self,
+        recipient: &Device,
+        key: &str,
+        payload: &Payload,
+        now: i64,
+        ttl: i64,
+        scope: Option<Scope>,
+    ) -> Result<Envelope> {
         recipient.verify()?;
-        if recipient.owner != self.device.owner {
+        if scope.is_none() && recipient.owner != self.device.owner {
             return Err(bad("peer belongs to another account"));
         }
         valid(key)?;
@@ -118,6 +149,7 @@ impl Keys {
             nonce: hex::encode(nonce),
             ciphertext: String::new(),
             signature: String::new(),
+            scope,
         };
         let cipher = cipher(&secret, &recipient.encryption_key, &envelope.aad())?;
         envelope.ciphertext = hex::encode(
@@ -137,8 +169,12 @@ impl Keys {
 
     pub fn open(&self, sender: &Device, envelope: &Envelope, now: i64) -> Result<Payload> {
         sender.verify()?;
-        if sender.owner != self.device.owner
-            || envelope.owner != self.device.owner
+        let accounts_match = match &envelope.scope {
+            Some(scope) => scope.from_owner == sender.owner && scope.to_owner == self.device.owner,
+            None => sender.owner == self.device.owner && envelope.owner == self.device.owner,
+        };
+        if !accounts_match
+            || envelope.owner != sender.owner
             || envelope.to_device != self.device.device_id
             || envelope.from_device != sender.device_id
         {
@@ -187,6 +223,19 @@ pub struct Envelope {
     pub nonce: String,
     pub ciphertext: String,
     pub signature: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scope: Option<Scope>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct Scope {
+    pub from_owner: String,
+    pub to_owner: String,
+    pub from_org: String,
+    pub to_org: String,
+    pub from_agent: String,
+    pub to_agent: String,
 }
 
 fn timestamp<'de, D: serde::Deserializer<'de>>(
@@ -204,6 +253,15 @@ fn timestamp<'de, D: serde::Deserializer<'de>>(
 
 impl Envelope {
     pub fn aad(&self) -> Vec<u8> {
+        if let Some(scope) = &self.scope {
+            return json!([
+                "everett-agent-relay-v2", self.owner, self.from_device, self.to_device,
+                self.message_id, self.idempotency_key, self.created_at, self.expires_at,
+                self.ephemeral_key, self.nonce,
+                [scope.from_owner.clone(), scope.to_owner.clone(), scope.from_org.clone(),
+                 scope.to_org.clone(), scope.from_agent.clone(), scope.to_agent.clone()]
+            ]).to_string().into_bytes();
+        }
         json!([
             "everett-relay-v1",
             self.owner,
@@ -227,6 +285,13 @@ impl Envelope {
     }
 
     pub fn validate(&self, now: i64) -> Result<()> {
+        if let Some(scope) = &self.scope {
+            for id in [&scope.from_org, &scope.to_org, &scope.from_agent, &scope.to_agent] {
+                if id.len() != 64 || !id.bytes().all(|b| b.is_ascii_hexdigit()) {
+                    return Err(bad("invalid issuer-derived agent scope"));
+                }
+            }
+        }
         for id in [
             &self.from_device,
             &self.to_device,

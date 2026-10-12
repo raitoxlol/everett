@@ -95,7 +95,7 @@ fn round_trip_over_pipes() {
     let tools = s.request("tools/list", None)["result"]["tools"].clone();
     let mut names: Vec<String> = tools.as_array().unwrap().iter().map(|t| t["name"].as_str().unwrap().into()).collect();
     names.sort();
-    assert_eq!(names, ["everett_card", "everett_core", "everett_event", "everett_inbox", "everett_learn",
+    assert_eq!(names, ["everett_agent_grants", "everett_agent_relay", "everett_agent_send", "everett_agent_status", "everett_card", "everett_core", "everett_event", "everett_inbox", "everett_learn",
         "everett_ls", "everett_route", "everett_send", "everett_subscribe", "everett_whoami"]);
     for tool in tools.as_array().unwrap() {
         assert!(!tool["description"].as_str().unwrap().trim().is_empty());

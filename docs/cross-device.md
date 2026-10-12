@@ -7,6 +7,11 @@ pin both directions and exchange messages, replies, and pickup receipts over a l
 
 ## Convex relay: owner deployment
 
+For issuer-named agents, organization membership, revocable credentials, and
+bilateral cross-org grants, use the [agent relay guide](agent-relay.md). The
+[threat model](relay-threat-model.md) describes residual server visibility and
+deployment/migration requirements. Agent identities cannot use this owner-only path.
+
 The Everett client stays Rust-only. The deployable backend in `convex/` uses Convex's
 TypeScript schema/function runtime. Node is needed only for deployment/backend tests,
 not on machines running the Rust binary. No SSH reachability, port forwarding, or Tailscale

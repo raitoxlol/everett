@@ -138,6 +138,39 @@ pub fn tools() -> &'static Vec<Value> {
                 "description": "Your own session id and harness as Everett detects them, and how it detected them. If none is detected, pass session_id explicitly to everett_send and everett_card.",
                 "inputSchema": {"type": "object", "properties": {}, "additionalProperties": false},
             }),
+            json!({
+                "name": "everett_agent_relay",
+                "description": "Issuer-authenticated relay identity, registration, org directory and fingerprint-confirmed pairing. Admin-only agent revocation; token revocation stops one issuer credential. No caller-supplied sender/org identity. Run everett relay agent --session ID --harness HARNESS separately to receive; never wakes sessions.",
+                "inputSchema": {"type":"object","properties":{
+                    "action":{"type":"string","enum":["identity","register","directory","pair","unpair","credentials","memberships","revoke-membership","revoke-agent","revoke-credential"]},
+                    "id":s("Issuer-derived agent ID, credential handle or membership ID, as returned by the server."),
+                    "fingerprint":s("Confirm org, agent identity and fingerprint out of band before pairing.")
+                },"required":["action"],"additionalProperties":false}
+            }),
+            json!({
+                "name": "everett_agent_grants",
+                "description": "List your named-agent grants, or (org admins only) propose, approve or revoke a cross-org pair. Denied by default. Both org admins must explicitly approve; either can revoke. Agent tokens cannot administer grants.",
+                "inputSchema":{"type":"object","properties":{
+                    "action":{"type":"string","enum":["list","propose","approve","revoke"]},
+                    "id":s("For propose: your org's named agent ID. For approve/revoke: server-issued grant ID."),
+                    "remote_agent":s("Only for propose: external issuer-derived named agent ID, obtained out of band.")
+                },"required":["action"],"additionalProperties":false}
+            }),
+            json!({
+                "name":"everett_agent_send",
+                "description":"Send E2E-encrypted text to a pinned issuer-named agent's bound session. Same-org membership or bilateral cross-org approval required. Queued is not pickup; external inbound content is untrusted. Retry the exact request with the same idempotency key. Does not wake sessions.",
+                "inputSchema":{"type":"object","properties":{
+                    "agent":s("Pinned issuer-derived recipient agent ID."),"session":s("Exact recipient session ID, obtained out of band."),
+                    "harness":s("Recipient harness, e.g. omp or pi."),"text":{"type":"string","maxLength":65536},
+                    "idempotency_key":s("Required stable unique key; changing the request with the same key is rejected."),
+                    "session_id":s("Your local sending session, if not detectable.")
+                },"required":["agent","session","harness","text","idempotency_key"],"additionalProperties":false}
+            }),
+            json!({
+                "name":"everett_agent_status",
+                "description":"Sender-only delivery observation for an encrypted agent message. Server accepted means ciphertext deleted after durable import, not pickup. delivered/replied require signed encrypted receipts/replies observed locally.",
+                "inputSchema":{"type":"object","properties":{"message_id":s("Outgoing message ID.")},"required":["message_id"],"additionalProperties":false}
+            }),
         ]
     })
 }
@@ -720,6 +753,28 @@ trait Pipe: Sized {
 impl Pipe for String {}
 
 fn call_handler(name: &str, args: &Map<String, Value>) -> std::result::Result<Map<String, Value>, ToolFailure> {
+    if name.starts_with("everett_agent_") {
+        let value = match name {
+            "everett_agent_relay" => {
+                let action = str_arg(args,"action",true)?;
+                if !matches!(action.as_str(),"identity"|"register"|"directory"|"pair"|"unpair"|"credentials"|"memberships"|"revoke-membership"|"revoke-agent"|"revoke-credential") { return Err(ToolFailure::Params("unknown relay action".into())); }
+                let requires_id = matches!(action.as_str(),"pair"|"unpair"|"revoke-agent"|"revoke-credential"|"revoke-membership");
+                crate::relay::agents::control(&action, &str_arg(args,"id",requires_id)?, "", &str_arg(args,"fingerprint",action == "pair")?)?
+            },
+            "everett_agent_grants" => {
+                let action = str_arg(args,"action",true)?;
+                if !matches!(action.as_str(),"list"|"propose"|"approve"|"revoke") { return Err(ToolFailure::Params("unknown grant action".into())); }
+                let backend_action = match action.as_str() { "list"=>"grants", "revoke"=>"revoke-grant", other=>other };
+                crate::relay::agents::control(backend_action, &str_arg(args,"id",action != "list")?, &str_arg(args,"remote_agent",action == "propose")?, "")?
+            },
+            "everett_agent_send" => crate::relay::agents::send(&str_arg(args,"agent",true)?, &str_arg(args,"session",true)?,
+                &str_arg(args,"harness",true)?, &str_arg(args,"text",true)?, &str_arg(args,"idempotency_key",true)?,
+                args.get("session_id").and_then(Value::as_str))?,
+            "everett_agent_status" => crate::relay::agents::status(&str_arg(args,"message_id",true)?)?,
+            _ => return Err(ToolFailure::Params("unknown agent tool".into())),
+        };
+        return serde_json::from_value(if value.is_object() { value } else { json!({"result":value}) }).map_err(|_| ToolFailure::Params("invalid agent response".into()));
+    }
     match name {
         "everett_ls" => tool_ls(args),
         "everett_route" => tool_route(args),

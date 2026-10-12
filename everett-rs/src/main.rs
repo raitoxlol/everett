@@ -366,6 +366,13 @@ fn peer_output(result: everett::error::Result<serde_json::Value>) -> i32 {
 
 #[derive(Subcommand)]
 enum RelayCmd {
+    /// receive for one issuer-named agent, bound to exactly one local session
+    Agent {
+        #[arg(long)]
+        session: String,
+        #[arg(long)]
+        harness: String,
+    },
     /// register this device and print its public bundle and fingerprint
     Register,
     /// list devices belonging to the signed-in owner
@@ -408,6 +415,7 @@ fn main() {
             None => peer_output(everett::relay::run()),
             Some(RelayCmd::Register) => peer_output(everett::relay::register()),
             Some(RelayCmd::Devices) => peer_output(everett::relay::devices()),
+            Some(RelayCmd::Agent { session, harness }) => peer_output(everett::relay::agents::run(&session, &harness)),
         },
         Cmd::Peer { action } => match action {
             PeerCmd::AddRelay { name, device, fingerprint } => peer_output(everett::relay::add(&name, &device, &fingerprint)),
