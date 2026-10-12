@@ -175,7 +175,12 @@ export const enqueue = mutation({
       if (!parent || parent.recipientOwner !== p.owner || parent.toDevice !== p.agentId || !["delivered", "claimed", "replied"].includes(parent.state)) throw new Error("Parent not observed by this agent");
       if (e.hop <= parent.hop) throw new Error("Hop lineage mismatch");
     }
+    const queued = await ctx.db.query("messages").withIndex("by_recipient", (q) =>
+      q.eq("recipientOwner", e.recipientOwner).eq("toDevice", e.toDevice).gt("expiresAt", now)).take(256);
+    if (queued.length >= 256) throw new Error("Recipient queue full");
     await rate(ctx, JSON.stringify(["agent", p.owner, p.agentId]), 120, now);
+    await rate(ctx, JSON.stringify(["account", p.owner, p.member.issuer, p.member.subject]), 120, now);
+    await rate(ctx, JSON.stringify(["org", p.owner]), 600, now);
     if (grant) await rate(ctx, JSON.stringify(["grant", grant.grantId]), grant.ratePerMinute, now);
     await ctx.db.insert("messages", e);
     const { ciphertext, signature, ephemeralKey, nonce, createdAt, ...metadata } = e;

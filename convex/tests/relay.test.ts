@@ -323,6 +323,57 @@ describe("actual Convex functions, offline", () => {
     await f.a.mutation(ref("enqueue"), { envelope: e });
     await expect(f.b.mutation(ref("enqueue"), { envelope: seal(f.kb, f.ka, { grantId: "grant-ab", messageId: "m2", idempotencyKey: "k2" }) })).rejects.toThrow("rate");
   });
+  test("account quota spans issuer-provisioned credentials and retries do not consume it", async () => {
+    vi.useFakeTimers(); const f = await fixture();
+    const extra = key("agent-extra", ownerA, 11);
+    await f.backend.mutation(ref("provisionIdentity"), { issuer, subject: "alice", org: "org-a", agentId: "agent-extra", role: "admin" });
+    const client = f.backend.withIdentity({ ...f.identities[0], everett_agent: "agent-extra" });
+    await client.mutation(ref("register"), { device: extra.device });
+    const scope = JSON.stringify(["account", ownerA, issuer, "alice"]);
+    await f.backend.run(ctx => ctx.db.insert("rates", { scope, window: Math.floor(Date.now() / 60000), count: 119 }));
+    const e = seal(f.ka, f.kc);
+    await f.a.mutation(ref("enqueue"), { envelope: e });
+    await f.a.mutation(ref("enqueue"), { envelope: e });
+    await expect(client.mutation(ref("enqueue"), { envelope: seal(extra, f.kc, { messageId: "over-account", idempotencyKey: "over-account" }) })).rejects.toThrow("rate");
+    await f.c.mutation(ref("enqueue"), { envelope: seal(f.kc, f.ka, { messageId: "other-account", idempotencyKey: "other-account" }) });
+    const rows = await f.backend.run(ctx => ctx.db.query("rates").collect());
+    expect(rows.find(row => row.scope === scope)?.count).toBe(120);
+    expect(rows.find(row => row.scope === JSON.stringify(["agent", ownerA, "agent-extra"]))).toBeUndefined();
+    expect(await f.backend.run(ctx => ctx.db.query("attempts").collect())).toHaveLength(2);
+  });
+  test("organization quota spans subjects but never another organization", async () => {
+    vi.useFakeTimers(); const f = await fixture();
+    const scope = JSON.stringify(["org", ownerA]);
+    await f.backend.run(ctx => ctx.db.insert("rates", { scope, window: Math.floor(Date.now() / 60000), count: 599 }));
+    const e = seal(f.ka, f.kc);
+    await f.a.mutation(ref("enqueue"), { envelope: e });
+    await f.a.mutation(ref("enqueue"), { envelope: e });
+    await expect(f.c.mutation(ref("enqueue"), { envelope: seal(f.kc, f.ka, { messageId: "over-org", idempotencyKey: "over-org" }) })).rejects.toThrow("rate");
+    await f.b.mutation(ref("enqueue"), { envelope: seal(f.kb, f.kd, { messageId: "other-org", idempotencyKey: "other-org" }) });
+    expect((await f.backend.run(ctx => ctx.db.query("rates").collect())).find(row => row.scope === scope)?.count).toBe(600);
+    expect(await f.backend.run(ctx => ctx.db.query("attempts").collect())).toHaveLength(2);
+  });
+  test("recipient queue cap spans minute windows, permits retries and frees capacity on delivery or TTL", async () => {
+    vi.useFakeTimers(); const f = await fixture(), now = Date.now();
+    const first = seal(f.ka, f.kc, { messageId: "queued-0", idempotencyKey: "queued-0" });
+    for (let i = 0; i < 256; i++) {
+      vi.setSystemTime(now + Math.floor(i / 120) * 60000);
+      const e = i === 0 ? first : seal(f.ka, f.kc, { messageId: `queued-${i}`, idempotencyKey: `queued-${i}` });
+      await f.a.mutation(ref("enqueue"), { envelope: e });
+    }
+    const overflow = seal(f.ka, f.kc, { messageId: "overflow", idempotencyKey: "overflow" });
+    await expect(f.a.mutation(ref("enqueue"), { envelope: overflow })).rejects.toThrow("queue full");
+    await f.a.mutation(ref("enqueue"), { envelope: first });
+    expect(await f.backend.run(ctx => ctx.db.query("messages").collect())).toHaveLength(256);
+    expect(await f.backend.run(ctx => ctx.db.query("attempts").collect())).toHaveLength(256);
+    await f.b.mutation(ref("enqueue"), { envelope: seal(f.kb, f.kd, { messageId: "other-recipient", idempotencyKey: "other-recipient" }) });
+    await f.observe(f.c, f.kc, first);
+    await f.a.mutation(ref("enqueue"), { envelope: overflow });
+    vi.setSystemTime(overflow.expiresAt + 1);
+    const fresh = seal(f.ka, f.kc, { messageId: "after-expiry", idempotencyKey: "after-expiry" });
+    await f.a.mutation(ref("enqueue"), { envelope: fresh });
+    expect((await f.c.query(query("pending"), { deviceId: "agent-c" })).envelopes).toEqual([{ envelope: fresh, trust: "same-org" }]);
+  }, 20000);
   test("serialized encrypted body cap is independently enforced per grant", async () => {
     const f = await fixture(); await f.activate(4, 256);
     await expect(f.a.mutation(ref("enqueue"), { envelope: seal(f.ka, f.kb, { grantId: "grant-ab" }, JSON.stringify({ text: "x".repeat(256) })) })).rejects.toThrow("body cap");
