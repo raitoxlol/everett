@@ -7,6 +7,7 @@ permissions:
 
 jobs:
   test:
+    name: Convex backend (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
