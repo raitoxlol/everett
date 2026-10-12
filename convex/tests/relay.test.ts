@@ -9,6 +9,7 @@ import wire from "../../everett-rs/tests/fixtures/relay-wire.json";
 const modules = {
   "../_generated/server.ts": async () => ({}),
   "../relay.ts": () => import("../relay"),
+  "../agents.ts": () => import("../agents"),
 };
 const ref = (name: string) => makeFunctionReference<"mutation">(`relay:${name}`);
 const query = (name: string) => makeFunctionReference<"query">(`relay:${name}`);
@@ -28,9 +29,9 @@ function key(id: string, account = owner) {
   return { device, pair };
 }
 
-async function fixture() {
+async function fixture(identity: typeof aliceIdentity & { org_id?: string } = aliceIdentity) {
   const backend = convexTest(schema, modules);
-  const alice = backend.withIdentity(aliceIdentity);
+  const alice = backend.withIdentity(identity);
   const bob = backend.withIdentity({ issuer, subject: "bob" });
   const a = key("device-a"), b = key("device-b");
   await alice.mutation(ref("register"), { device: a.device });
@@ -45,16 +46,36 @@ async function fixture() {
     envelope.signature = hex(nacl.sign.detached(envelopeBytes(envelope), a.pair.secretKey));
   };
   sign();
-  const accept = () => {
+  const acknowledgement = () => {
     const at = Date.now();
-    return alice.mutation(ref("accept"), {
+    return {
       deviceId: b.device.deviceId, messageId: envelope.messageId, at,
       signature: hex(nacl.sign.detached(new TextEncoder().encode(JSON.stringify([
         "everett-accept-v1", owner, b.device.deviceId, envelope.messageId, at,
       ])), b.pair.secretKey)),
-    });
+    };
   };
-  return { backend, alice, bob, a, b, envelope, sign, accept };
+  const accept = () => alice.mutation(ref("accept"), acknowledgement());
+  return { backend, alice, bob, a, b, envelope, sign, accept, acknowledgement };
+}
+
+type Fixture = Awaited<ReturnType<typeof fixture>>;
+
+async function expectOwnerCallsRejected(f: Fixture, client: Fixture["alice"], reason: string) {
+  for (const [name, args] of [
+    ["devices", {}],
+    ["pending", { deviceId: f.b.device.deviceId }],
+    ["status", { fromDevice: f.a.device.deviceId, messageId: f.envelope.messageId }],
+  ] as const) {
+    await expect(client.query(query(name), args)).rejects.toThrow(reason);
+  }
+  for (const [name, args] of [
+    ["register", { device: f.a.device }],
+    ["enqueue", { envelope: f.envelope }],
+    ["accept", f.acknowledgement()],
+  ] as const) {
+    await expect(client.mutation(ref(name), args)).rejects.toThrow(reason);
+  }
 }
 
 afterEach(() => vi.useRealTimers());
@@ -77,6 +98,46 @@ describe("real Convex functions against an in-memory backend (no network)", () =
     await expect(f.bob.mutation(ref("accept"), { deviceId: f.b.device.deviceId, messageId: f.envelope.messageId, at: Date.now(), signature: "00".repeat(64) })).rejects.toThrow();
     const sameSubjectOtherIssuer = f.backend.withIdentity({ issuer: "https://different.example/", subject: "alice" });
     await expect(sameSubjectOtherIssuer.query(query("devices"), {})).rejects.toThrow("issuer");
+  });
+
+  test("every owner relay entry point rejects missing auth, wrong issuer and agent tokens", async () => {
+    const f = await fixture();
+    await f.alice.mutation(ref("enqueue"), { envelope: f.envelope });
+    await expectOwnerCallsRejected(f, f.backend, "Sign in");
+    await expectOwnerCallsRejected(f, f.backend.withIdentity({ ...aliceIdentity, issuer: "https://evil.example/" }), "issuer");
+    await expectOwnerCallsRejected(f, f.backend.withIdentity({ ...aliceIdentity, org_id: "team-a", agent_id: "agent-a", jti: "credential-a" }), "scoped agent relay");
+    expect(await f.alice.query(query("pending"), { deviceId: f.b.device.deviceId })).toEqual([f.envelope]);
+    expect(await f.alice.query(query("status"), { fromDevice: f.a.device.deviceId, messageId: f.envelope.messageId })).toEqual({ state: "queued" });
+  });
+
+  test("a signed org change cannot expose the same subject's personal devices or queued messages", async () => {
+    const f = await fixture();
+    await f.alice.mutation(ref("enqueue"), { envelope: f.envelope });
+    const otherOrg = f.backend.withIdentity({ ...aliceIdentity, org_id: "team-a" });
+    expect(await otherOrg.query(query("devices"), {})).toEqual([]);
+    for (const [name, args] of [
+      ["pending", { deviceId: f.b.device.deviceId }],
+      ["status", { fromDevice: f.a.device.deviceId, messageId: f.envelope.messageId }],
+    ] as const) await expect(otherOrg.query(query(name), args)).rejects.toThrow("org membership");
+    for (const [name, args] of [
+      ["register", { device: f.a.device }],
+      ["enqueue", { envelope: f.envelope }],
+      ["accept", f.acknowledgement()],
+    ] as const) await expect(otherOrg.mutation(ref(name), args)).rejects.toThrow("org membership");
+    expect(await f.alice.query(query("pending"), { deviceId: f.b.device.deviceId })).toEqual([f.envelope]);
+    await f.accept();
+    expect(await f.backend.run(ctx => ctx.db.query("messages").collect())).toEqual([]);
+  });
+
+  test("membership revocation gates every owner relay entry point even for a still-signed token", async () => {
+    const f = await fixture({ ...aliceIdentity, org_id: "team-a" });
+    await f.alice.mutation(ref("enqueue"), { envelope: f.envelope });
+    const membership = (await f.backend.run(ctx => ctx.db.query("memberships").collect()))[0];
+    const admin = f.backend.withIdentity({ issuer, subject: "admin-a", org_id: "team-a", org_role: "admin" });
+    await admin.mutation(makeFunctionReference<"mutation">("agents:revokeMembership"), { membershipId: membership._id });
+    await expectOwnerCallsRejected(f, f.alice, "membership revoked");
+    expect((await f.backend.run(ctx => ctx.db.query("messages").collect()))[0]).toMatchObject(f.envelope);
+    expect((await f.backend.run(ctx => ctx.db.query("attempts").collect()))[0].state).toBe("queued");
   });
 
   test("idempotency survives acceptance and rejects a changed envelope", async () => {
