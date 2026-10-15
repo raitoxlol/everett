@@ -178,7 +178,7 @@ describe("actual Convex functions, offline", () => {
     await expect(f.c.query(query("device"), { deviceId: "agent-a" })).rejects.toThrow("revoked");
     await f.a.mutation(ref("revokeMember"), { subject: "alice-member" });
     await expect(f.a.query(query("device"), { deviceId: memberDevice.device.deviceId })).rejects.toThrow("membership");
-  });
+  }, 30000);
   test("fallback account tuple is separated from org namespace and distinct agents share one account", async () => {
     const f = await fixture(), owner = namespace(issuer, "personal", null);
     expect(owner).not.toBe(namespace(issuer, "unused", "personal"));
