@@ -34,8 +34,10 @@ export default defineSchema({
   devices: defineTable({
     ...deviceFields, generation: v.number(), revokedAt: v.optional(v.union(v.null(), v.number())),
     sshDeviceId: v.optional(v.string()), sshPublicKey: v.optional(v.string()), sshSignature: v.optional(v.string()),
+    name: v.optional(v.string()), sshAddress: v.optional(v.union(v.null(), v.string())),
+    lastSeenAt: v.optional(v.number()), metadataSignature: v.optional(v.string()),
   }).index("by_owner_device", ["owner", "deviceId"]).index("by_owner_revoked", ["owner", "revokedAt"])
-    .index("by_owner_ssh", ["owner", "sshDeviceId"]),
+    .index("by_owner_ssh", ["owner", "sshDeviceId"]).index("by_owner_name", ["owner", "name"]),
   grants: defineTable({
     grantId: v.string(), aOwner: v.string(), aDevice: v.string(), bOwner: v.string(), bDevice: v.string(),
     aBundle: deviceValidator, bBundle: deviceValidator, aFingerprint: v.string(), bFingerprint: v.string(),
