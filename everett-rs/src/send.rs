@@ -191,6 +191,38 @@ pub fn send_with(
     env: Option<&HashMap<String, String>>,
     runner: &Runner,
 ) -> Result<SendResult> {
+    send_with_for(session, text, timeout, wait, env, runner, None)
+}
+
+pub fn send_for(
+    session: &Session,
+    text: &str,
+    timeout: f64,
+    wait: f64,
+    env: Option<&HashMap<String, String>>,
+    caller: Option<&str>,
+) -> Result<SendResult> {
+    send_with_for(
+        session,
+        text,
+        timeout,
+        wait,
+        env,
+        &|cmd, cwd, env, t| run_capture(cmd, cwd, env, t),
+        caller,
+    )
+}
+
+fn send_with_for(
+    session: &Session,
+    text: &str,
+    timeout: f64,
+    wait: f64,
+    env: Option<&HashMap<String, String>>,
+    runner: &Runner,
+    caller: Option<&str>,
+) -> Result<SendResult> {
+    require_local_prompt(caller)?;
     let command = command_for(session, text)?;
     if !timeout.is_finite() || timeout <= 0.0 {
         return Err(EverettError::new(2, "--timeout must be a finite number greater than zero."));
@@ -300,7 +332,11 @@ pub const MAX_HOPS: i64 = 3;
 
 /// Env for a delivery: EVERETT_HOPS counts agent-to-agent forwards; refuse past MAX_HOPS.
 pub fn hop_env() -> Result<HashMap<String, String>> {
-    let hops = caller_hops();
+    hop_env_for(None)
+}
+
+pub fn hop_env_for(caller: Option<&str>) -> Result<HashMap<String, String>> {
+    let hops = caller_hops_for(caller);
     if hops >= MAX_HOPS {
         return Err(EverettError::new(
             7,
@@ -326,16 +362,40 @@ pub fn current_hops() -> i64 {
 /// EVERETT_HOPS plus the highest hop take() delivered to the calling live session,
 /// so a live session can't forward forever just because its env hop count is 0.
 pub fn caller_hops() -> i64 {
+    caller_hops_for(None)
+}
+
+pub fn caller_hops_for(caller: Option<&str>) -> i64 {
     let mut hops = current_hops();
-    let sid = caller_identity()
-        .get("session_id")
-        .and_then(|v| v.as_str())
-        .unwrap_or("")
-        .to_string();
+    let sid = caller.map(str::to_string).unwrap_or_else(caller_session_id);
     if !sid.is_empty() {
         hops = hops.max(inbox::session_hops(&sid));
+        hops = hops.max(
+            inbox::relay_context(&sid)
+                .as_ref()
+                .and_then(|m| m.get("hops").and_then(Value::as_i64))
+                .unwrap_or(0),
+        );
     }
     hops
+}
+
+/// Never promote remote agent data into a harness's owner prompt, including
+/// local intermediate deliveries and callers whose transient hop memory expired.
+pub fn require_local_prompt(caller: Option<&str>) -> Result<()> {
+    let sid = caller.map(str::to_string).unwrap_or_else(caller_session_id);
+    if inbox::relay_context(&sid).is_some() {
+        return Err(EverettError::new(2,
+            "Remote-derived callers are inbox-only; resume/spawn would promote agent data to an owner prompt."));
+    }
+    Ok(())
+}
+
+pub fn guard_delivery(mode: &str, spawn: bool, caller: Option<&str>) -> Result<()> {
+    if spawn || mode == "resume" {
+        require_local_prompt(caller)?;
+    }
+    Ok(())
 }
 
 const IDENTITY_ENV: &[(&str, &str)] = &[
@@ -466,6 +526,18 @@ pub fn spawn(
     timeout: f64,
     env: Option<&HashMap<String, String>>,
 ) -> Result<SpawnResult> {
+    spawn_for(harness, text, cwd, timeout, env, None)
+}
+
+pub fn spawn_for(
+    harness: &str,
+    text: &str,
+    cwd: &str,
+    timeout: f64,
+    env: Option<&HashMap<String, String>>,
+    caller: Option<&str>,
+) -> Result<SpawnResult> {
+    require_local_prompt(caller)?;
     if !Path::new(cwd).is_dir() {
         return Err(EverettError::new(2, format!("Directory does not exist: {}", cwd)));
     }
@@ -570,8 +642,22 @@ pub fn attached(session: &Session, ps_out: Option<&str>) -> bool {
 }
 
 pub fn delivery_mode(session: &Session, mode: &str, ps_out: Option<&str>) -> Result<String> {
+    delivery_mode_for(session, mode, ps_out, None)
+}
+
+pub fn delivery_mode_for(
+    session: &Session,
+    mode: &str,
+    ps_out: Option<&str>,
+    caller: Option<&str>,
+) -> Result<String> {
     if !MODES.contains(&mode) {
         return Err(EverettError::new(2, format!("--mode must be one of {}.", MODES.join(", "))));
+    }
+    guard_delivery(mode, false, caller)?;
+    let sid = caller.map(str::to_string).unwrap_or_else(caller_session_id);
+    if inbox::relay_context(&sid).is_some() {
+        return Ok("inbox".into());
     }
     if external::is_external(&session.harness) {
         if mode == "resume" {
@@ -624,10 +710,7 @@ pub fn send_inbox(session: &Session, text: &str, wait: f64, caller: Option<&str>
     }
     let who = sender_info(caller);
     let sender = who.get("sender").and_then(|v| v.as_str()).unwrap_or(inbox::HUMAN);
-    let mut hops = current_hops();
-    if sender != inbox::HUMAN {
-        hops = hops.max(inbox::session_hops(sender));
-    }
+    let hops = caller_hops_for(Some(sender));
     if hops >= MAX_HOPS {
         return Err(EverettError::new(
             7,
@@ -643,7 +726,9 @@ pub fn send_inbox(session: &Session, text: &str, wait: f64, caller: Option<&str>
         hops + 1,
         who.get("from_harness").and_then(|v| v.as_str()).unwrap_or(""),
         who.get("from_card").and_then(|v| v.as_str()).unwrap_or(""),
-        None,
+        inbox::relay_context(sender)
+            .as_ref()
+            .and_then(inbox::forward_provenance),
     )?;
     let mut result = Map::new();
     result.insert("mode".into(), json!("inbox"));
@@ -665,8 +750,16 @@ pub fn send_inbox(session: &Session, text: &str, wait: f64, caller: Option<&str>
     if wait > 0.0 {
         let mid = message.get("id").and_then(|v| v.as_str()).unwrap_or("");
         if let Some(reply) = inbox::wait_reply(sender, mid, wait, poll) {
-            result.insert("reply".into(), reply.get("text").cloned().unwrap_or(Value::Null));
-            result.insert("reply_from".into(), reply.get("from").cloned().unwrap_or(Value::Null));
+            result.insert("reply".into(), json!(inbox::consumption_text(&reply)));
+            if inbox::external(&reply) {
+                result.insert("external".into(), json!(true));
+                result.insert("untrusted".into(), json!(true));
+                result.insert("trust".into(), json!("external-untrusted"));
+            }
+            result.insert(
+                "reply_from".into(),
+                reply.get("from").cloned().unwrap_or(Value::Null),
+            );
         }
     }
     Ok(result)
@@ -696,9 +789,24 @@ pub fn reply(message_id: &str, text: &str, caller: Option<&str>) -> Result<Map<S
             },
         ));
     };
-    let hops = inbox::reply_hops(&original, current_hops())?;
     let who = sender_info(caller);
+    let hops = inbox::reply_hops(
+        &original,
+        caller_hops_for(Some(who["sender"].as_str().unwrap_or(inbox::HUMAN))),
+    )?;
+    if original.contains_key("relay_device") {
+        return crate::relay::retain_reply(&original, text, &who, hops);
+    }
+    if original.contains_key("peer_client") {
+        return crate::peer::retain_reply(&original, text, &who, hops);
+    }
     let to = original.get("from").and_then(|v| v.as_str()).filter(|s| !s.is_empty()).unwrap_or(inbox::HUMAN);
+    let context = inbox::relay_context(who["sender"].as_str().unwrap_or(inbox::HUMAN));
+    let mut provenance = inbox::forward_provenance(&original)
+        .or_else(|| context.as_ref().and_then(inbox::forward_provenance));
+    if context.as_ref().is_some_and(inbox::external) {
+        provenance.get_or_insert_with(Map::new).extend(serde_json::from_value::<Map<String,Value>>(json!({"external":true,"untrusted":true,"trust":"external-untrusted","instruction_source":"agent-data"})).unwrap());
+    }
     let message = inbox::post(
         to,
         text,
@@ -708,7 +816,7 @@ pub fn reply(message_id: &str, text: &str, caller: Option<&str>) -> Result<Map<S
         hops,
         who.get("from_harness").and_then(|v| v.as_str()).unwrap_or(""),
         who.get("from_card").and_then(|v| v.as_str()).unwrap_or(""),
-        None,
+        provenance,
     )?;
     let mut out = Map::new();
     out.insert("mode".into(), json!("reply"));

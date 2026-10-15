@@ -5,3 +5,7 @@ build/
 dist/
 .audit/
 everett-rs/target/
+.everett/
+node_modules/
+.env*
+convex/_generated/
