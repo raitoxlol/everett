@@ -3,7 +3,7 @@
 //! ever printed or logged.
 
 use std::fs;
-use std::io;
+use std::io::{self, Write};
 use std::os::unix::fs::PermissionsExt;
 use std::process::Command;
 use std::thread::sleep;
@@ -51,6 +51,8 @@ pub struct Stored {
     pub device_name: String,
     pub access_token: String,
     #[serde(default)]
+    pub id_token: String,
+    #[serde(default)]
     pub refresh_token: String,
     pub expires_at: f64,
     #[serde(default)]
@@ -80,12 +82,16 @@ pub fn load() -> Option<Stored> {
 
 pub fn save(stored: &Stored) -> io::Result<()> {
     let path = auth_path();
-    fs::create_dir_all(path.parent().unwrap())?;
-    let tmp = path.with_extension("json.tmp");
-    fs::write(&tmp, serde_json::to_string_pretty(stored).unwrap())?;
-    fs::set_permissions(&tmp, fs::Permissions::from_mode(0o600))?;
-    fs::rename(&tmp, &path)?;
-    Ok(())
+    let parent = path.parent().unwrap();
+    crate::peer::private_dir_io(parent)?;
+    // Exclusive mode-0600 creation precedes writing any token bytes.
+    let mut tmp = tempfile::NamedTempFile::new_in(parent)?;
+    tmp.as_file()
+        .set_permissions(fs::Permissions::from_mode(0o600))?;
+    tmp.write_all(serde_json::to_string_pretty(stored)?.as_bytes())?;
+    tmp.as_file().sync_all()?;
+    tmp.persist(&path).map_err(|e| e.error)?;
+    fs::File::open(parent)?.sync_all()
 }
 
 pub fn clear() {
@@ -256,7 +262,7 @@ pub fn userinfo(disc: &Discovery, access_token: &str) -> Result<(String, String,
 }
 
 pub enum Refresh {
-    Rotated { access_token: String, refresh_token: String, expires_in: f64 },
+    Rotated { access_token: String, id_token: String, refresh_token: String, expires_in: f64 },
     Revoked,
 }
 
@@ -279,6 +285,7 @@ pub fn refresh(disc: &Discovery, client_id: &str, refresh_token: &str) -> Result
             .to_string();
         return Ok(Refresh::Rotated {
             access_token: access,
+            id_token: body.get("id_token").and_then(Value::as_str).unwrap_or("").to_string(),
             refresh_token: rotated,
             expires_in: body.get("expires_in").and_then(|v| v.as_f64()).unwrap_or(3600.0),
         });
@@ -324,9 +331,10 @@ pub fn ensure_fresh(stored: &Stored) -> Result<Stored> {
     }
     let disc = discover(&stored.issuer)?;
     match refresh(&disc, &stored.client_id, &stored.refresh_token)? {
-        Refresh::Rotated { access_token, refresh_token, expires_in } => {
+        Refresh::Rotated { access_token, id_token, refresh_token, expires_in } => {
             let mut updated = stored.clone();
             updated.access_token = access_token;
+            if !id_token.is_empty() { updated.id_token = id_token; }
             updated.refresh_token = refresh_token;
             updated.expires_at = now() + expires_in;
             save(&updated).map_err(|e| {

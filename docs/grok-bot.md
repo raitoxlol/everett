@@ -93,8 +93,7 @@ and `EVERETT_HARNESS_NAME=grok-bot` in that process's environment. These are
 logical identity labels, not secrets. The owner should test the endpoint in
 their own conversation before scheduling unattended work.
 
-Local stdio MCP intentionally permits explicit `session_id` arguments; these
-labels are not an authentication boundary. A remote connection must use an
+Local stdio MCP requires host-bound caller identity for delivery and replies. Explicit `session_id` arguments must match an existing host binding and cannot replace it. The local OS account and launcher remain trusted; these labels alone are not remote authentication. A remote connection must use an
 authenticated, identity-bound MCP gateway on the owner-controlled host. Never
 publish the unrestricted stdio tools as an anonymous HTTP endpoint. Registration
 alone does not provide Remote HTTPS transport, TLS, credential provisioning,
@@ -118,7 +117,7 @@ With the connection bound to `ext-grok-wright`, the Bot calls:
    work and report failures explicitly.
 
 The sender reads `everett_inbox` under their own identity for replies. Local
-stdio can explicitly pass `session_id`; remote callers must use the identity
+stdio can explicitly pass a matching `session_id`; remote callers must use the identity
 their authorized gateway connection supplies. These registration and queue
 operations do not require or invoke live Grok Bot services.
 

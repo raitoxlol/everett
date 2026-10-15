@@ -35,7 +35,7 @@ Inbox enqueue is **not proof of pickup**. A T3 result reports `pickup=poll`,
 `poll_session_id`, and `hooked=false` conservatively; Everett does not verify that
 T3's SDK executes native hooks or inherits a user-installed Everett MCP server.
 The receiver must have access to Everett's MCP tools and the same local Everett
-home. Installing Everett in a standalone provider does not prove it is available
+home. Each sending or replying provider session needs its own host-bound MCP caller identity, using `EVERETT_SESSION_ID` in the launch environment when native detection is unavailable. A `session_id` argument must match that binding. Installing Everett in a standalone provider does not prove it is available
 inside a T3-created provider session.
 
 1. List the thread with `everett_ls`. Use the returned provider session `id`.
@@ -53,8 +53,7 @@ mean the queued request was lost.
 
 Use **native provider IDs**, not T3 application thread IDs or internal provider-thread
 IDs. T3 aliases and automatic T3 caller detection are not implemented. If
-`everett_whoami` has no caller identity, pass `session_id` explicitly. Known native
-identity enables existing self-send protection; unknown identity is not a guarantee.
+`everett_whoami` has no caller identity, the owner must configure that provider session's MCP launch environment with its exact `EVERETT_SESSION_ID` before delivery or replies. A model-supplied `session_id` does not authenticate the caller. Rebind or restart the MCP process after switching provider sessions.
 
 Once Everett's MCP tools are available, `everett_core(project=<workspace>)` reads the
 shared core and `everett_learn(fact=..., project=<workspace>)` queues a learning.
