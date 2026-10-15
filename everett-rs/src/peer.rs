@@ -385,6 +385,57 @@ fn address_valid(address: &str) -> Result<()> {
     Ok(())
 }
 
+pub(crate) fn parse_registry_address(value: &str) -> Result<(String, u16)> {
+    let pattern = regex::Regex::new(
+        r"^([A-Za-z0-9_.-]+@(?:[A-Za-z0-9_.-]+|\[[0-9a-fA-F:]+\]))(?::([0-9]{1,5}))?$",
+    )
+    .unwrap();
+    let parts = pattern
+        .captures(value)
+        .filter(|_| value.len() <= 512)
+        .ok_or_else(|| bad("SSH registry address must be user@host[:port]; bracket IPv6 hosts"))?;
+    let address = parts[1].to_string();
+    address_valid(&address)?;
+    let port = parts
+        .get(2)
+        .map_or(Ok(22), |p| p.as_str().parse::<u16>())
+        .map_err(|_| bad("SSH registry port must be between 1 and 65535"))?;
+    if port == 0 {
+        return Err(bad("SSH registry port must be between 1 and 65535"));
+    }
+    Ok((address, port))
+}
+
+pub fn discover_address(name: &str, ssh: Option<&str>, port: Option<u16>) -> Result<(String, u16)> {
+    valid(name)?;
+    let configured = crate::auth::load().is_some()
+        && !crate::config::get("relay.url", Some("EVERETT_CONVEX_URL"), "").is_empty();
+    let discovered = if ssh.is_none() || configured {
+        crate::device_registry::resolve(name)?
+            .map(|address| parse_registry_address(&address))
+            .transpose()?
+    } else {
+        None
+    };
+    if let Some(address) = ssh {
+        address_valid(address)?;
+        let port = port.unwrap_or(22);
+        if discovered
+            .as_ref()
+            .is_some_and(|(found, found_port)| found != address || *found_port != port)
+        {
+            return Err(bad("explicit --ssh/--port conflicts with the registry address; verify the device address before pairing"));
+        }
+        return Ok((address.into(), port));
+    }
+    let (address, found_port) = discovered
+        .ok_or_else(|| bad("device has no published SSH address; use --ssh user@host"))?;
+    if port.is_some_and(|port| port != found_port) {
+        return Err(bad("--port conflicts with the registry address"));
+    }
+    Ok((address, found_port))
+}
+
 fn ssh(peer: &Peer, pin: &Path, restricted: bool, first: bool) -> Command {
     let mut cmd = Command::new("ssh");
     cmd.args([
@@ -486,98 +537,105 @@ pub fn add(
     }
     // Claim the alias before generating identity, probing/pinning hosts or
     // installing a remote key. The same lock remains held through commit.
-    claim_alias(name, "Convex", || Ok(crate::relay::configured(name)), || {
-    let ident = identity()?;
-    let _guard = lock(&root().join("pairing.lock"))?;
-    let pin = known_hosts(name)?;
-    let temporary = tempfile::NamedTempFile::new_in(root()).map_err(io_error)?;
-    let mut peer = Peer {
-        address: address.into(),
-        port,
-        device_id: String::new(),
-        host_fingerprint: fingerprint.into(),
-    };
-    let mut expected_device = None;
-    if config_path(name)?.exists() {
-        let existing = load(name)?;
-        if existing.address != address
-            || existing.port != port
-            || existing.host_fingerprint != fingerprint
-        {
-            return Err(bad(
+    claim_alias(
+        name,
+        "Convex",
+        || Ok(crate::relay::configured(name)),
+        || {
+            let ident = identity()?;
+            let _guard = lock(&root().join("pairing.lock"))?;
+            let pin = known_hosts(name)?;
+            let temporary = tempfile::NamedTempFile::new_in(root()).map_err(io_error)?;
+            let mut peer = Peer {
+                address: address.into(),
+                port,
+                device_id: String::new(),
+                host_fingerprint: fingerprint.into(),
+            };
+            let mut expected_device = None;
+            if config_path(name)?.exists() {
+                let existing = load(name)?;
+                if existing.address != address
+                    || existing.port != port
+                    || existing.host_fingerprint != fingerprint
+                {
+                    return Err(bad(
                 "peer already pinned; remove and explicitly re-pair to change its address or key",
             ));
-        }
-        expected_device = Some(existing.device_id);
-    }
-    if pin.exists() {
-        if key_fingerprint(&pin)? != fingerprint {
-            return Err(bad("pinned SSH host-key mismatch"));
-        }
-        fs::copy(&pin, temporary.path()).map_err(io_error)?;
-    }
-    let first = !pin.exists();
-    let mut probe = ssh(&peer, temporary.path(), false, first);
-    probe.arg("true");
-    run(probe, Vec::new(), 8192)?;
-    if key_fingerprint(temporary.path())? != fingerprint {
-        return Err(bad(
-            "SSH host-key fingerprint mismatch; pairing refused before key installation",
-        ));
-    }
-    save(&pin, &fs::read(temporary.path()).map_err(io_error)?)?;
-    let mut inspect = ssh(&peer, &pin, false, false);
-    inspect.arg(format!(
-        "{} peer identity",
-        crate::proc::shlex_join(&[binary.into()])
-    ));
-    let remote_identity: Value =
-        serde_json::from_slice(&run(inspect, Vec::new(), 8192)?).map_err(|e| bad(e.to_string()))?;
-    if remote_identity["fingerprint"] != device_fingerprint {
-        return Err(bad(
+                }
+                expected_device = Some(existing.device_id);
+            }
+            if pin.exists() {
+                if key_fingerprint(&pin)? != fingerprint {
+                    return Err(bad("pinned SSH host-key mismatch"));
+                }
+                fs::copy(&pin, temporary.path()).map_err(io_error)?;
+            }
+            let first = !pin.exists();
+            let mut probe = ssh(&peer, temporary.path(), false, first);
+            probe.arg("true");
+            run(probe, Vec::new(), 8192)?;
+            if key_fingerprint(temporary.path())? != fingerprint {
+                return Err(bad(
+                    "SSH host-key fingerprint mismatch; pairing refused before key installation",
+                ));
+            }
+            save(&pin, &fs::read(temporary.path()).map_err(io_error)?)?;
+            let mut inspect = ssh(&peer, &pin, false, false);
+            inspect.arg(format!(
+                "{} peer identity",
+                crate::proc::shlex_join(&[binary.into()])
+            ));
+            let remote_identity: Value = serde_json::from_slice(&run(inspect, Vec::new(), 8192)?)
+                .map_err(|e| bad(e.to_string()))?;
+            if remote_identity["fingerprint"] != device_fingerprint {
+                return Err(bad(
             "Everett device-key fingerprint mismatch; pairing refused before key installation",
         ));
-    }
-    let request = Install {
-        client_id: ident["device_id"].as_str().unwrap().into(),
-        public_key: ident["public_key"].as_str().unwrap().into(),
-    };
-    let mut setup = ssh(&peer, &pin, false, false);
-    setup.arg(format!(
-        "{} peer install",
-        crate::proc::shlex_join(&[binary.into()])
-    ));
-    let installed = response(&run(setup, frame(&request)?, RESPONSE_CAP)?)?;
-    peer.device_id = installed["device_id"]
-        .as_str()
-        .ok_or_else(|| bad("peer did not return a device id"))?
-        .into();
-    valid(&peer.device_id)?;
-    if remote_identity["device_id"] != peer.device_id {
-        return Err(bad("remote Everett device identity changed during pairing"));
-    }
-    if expected_device
-        .as_ref()
-        .is_some_and(|id| id != &peer.device_id)
-    {
-        return Err(bad(
-            "remote Everett device identity changed; verify and explicitly re-pair",
-        ));
-    }
-    let hello = response(&run(
-        ssh(&peer, &pin, true, false),
-        frame(&Request::Hello)?,
-        RESPONSE_CAP,
-    )?)?;
-    if hello["device_id"] != peer.device_id {
-        return Err(bad("peer device identity changed during pairing"));
-    }
-    save(
-        &config_path(name)?,
-        &serde_json::to_vec(&peer).map_err(|e| bad(e.to_string()))?,
-    )?;
-    Ok(json!({"peer": name, "device_id": peer.device_id, "host_fingerprint": fingerprint, "replies": "status polling"}))
-    })
+            }
+            let request = Install {
+                client_id: ident["device_id"].as_str().unwrap().into(),
+                public_key: ident["public_key"].as_str().unwrap().into(),
+            };
+            let mut setup = ssh(&peer, &pin, false, false);
+            setup.arg(format!(
+                "{} peer install",
+                crate::proc::shlex_join(&[binary.into()])
+            ));
+            let installed = response(&run(setup, frame(&request)?, RESPONSE_CAP)?)?;
+            peer.device_id = installed["device_id"]
+                .as_str()
+                .ok_or_else(|| bad("peer did not return a device id"))?
+                .into();
+            valid(&peer.device_id)?;
+            if remote_identity["device_id"] != peer.device_id {
+                return Err(bad("remote Everett device identity changed during pairing"));
+            }
+            if expected_device
+                .as_ref()
+                .is_some_and(|id| id != &peer.device_id)
+            {
+                return Err(bad(
+                    "remote Everett device identity changed; verify and explicitly re-pair",
+                ));
+            }
+            let hello = response(&run(
+                ssh(&peer, &pin, true, false),
+                frame(&Request::Hello)?,
+                RESPONSE_CAP,
+            )?)?;
+            if hello["device_id"] != peer.device_id {
+                return Err(bad("peer device identity changed during pairing"));
+            }
+            save(
+                &config_path(name)?,
+                &serde_json::to_vec(&peer).map_err(|e| bad(e.to_string()))?,
+            )?;
+            Ok(
+                json!({"peer": name, "device_id": peer.device_id, "host_fingerprint": fingerprint, "replies": "status polling"}),
+            )
+        },
+    )
 }
 
 fn tag(client: &str) -> String {
@@ -683,6 +741,10 @@ fn read_frame(reader: impl Read) -> Result<Vec<u8>> {
 }
 
 pub fn serve(client: Option<&str>, setup: bool) -> i32 {
+    serve_with_address(client, setup, None)
+}
+
+pub fn serve_with_address(client: Option<&str>, setup: bool, address: Option<&str>) -> i32 {
     let (finished, timeout) = std::sync::mpsc::channel();
     std::thread::spawn(move || {
         if timeout.recv_timeout(TIMEOUT) == Err(std::sync::mpsc::RecvTimeoutError::Timeout) {
@@ -695,6 +757,24 @@ pub fn serve(client: Option<&str>, setup: bool) -> i32 {
             authorized(client.ok_or_else(|| {
                 bad("peer serve requires the forced command's --client identity")
             })?)?;
+            if crate::auth::load().is_some()
+                && crate::device_registry::declared_address(address)?.is_some()
+            {
+                let address = address.map(str::to_string);
+                let (published, publication) = std::sync::mpsc::channel();
+                std::thread::spawn(move || {
+                    let _ = published.send(crate::relay::register_with_address(address.as_deref()));
+                });
+                match publication.recv_timeout(Duration::from_secs(3)) {
+                    Ok(Ok(_)) => (),
+                    Ok(Err(error)) => {
+                        eprintln!("everett: SSH address publication failed: {}", error.message)
+                    }
+                    Err(_) => eprintln!(
+                        "everett: SSH address publication timed out; retry everett relay register"
+                    ),
+                }
+            }
         }
         let bytes = read_frame(std::io::stdin().lock())?;
         if setup {
