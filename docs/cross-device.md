@@ -516,9 +516,10 @@ unexecuted deployment or broad test suite as passed.
 ## SSH transport (phase 1)
 
 Two devices can list sessions, read cards, send inbox messages, and poll delivery and replies
-over manual SSH addresses. There is no registry, Everett sign-in dependency, Convex service,
-Everett network listener, transcript sync, or automatic remote harness wake-up. Local listing
-and routing remain local; remote targets are explicit.
+over explicit SSH addresses or addresses discovered from the signed-in Convex registry.
+Manual SSH pairing needs no sign-in or Convex service. There is no Everett network listener,
+transcript sync, or automatic remote harness wake-up. Local listing and routing remain local;
+remote targets are explicit.
 
 OpenSSH must already be reachable on the receiving device. LAN, VPN, or Tailscale addresses work.
 Each device needs its own Tailscale authentication if Tailscale is used; Everett login does not
@@ -537,7 +538,7 @@ ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub -E sha256
 
 On macOS, enable Remote Login; on Linux, enable the SSH service. Confirm the printed SSH host-key
 and Everett device-key SHA256 fingerprints on the remote terminal or another trusted
-out-of-band channel. Neither an SSH prompt nor a future registry row proves first-pair identity.
+out-of-band channel. Neither an SSH prompt nor a registry row proves first-pair identity.
 Also run `everett peer identity` locally and confirm that this is the caller key the receiver
 intends to authorize. Private keys stay on their device.
 
@@ -563,6 +564,66 @@ A wrong fingerprint fails before authorization. A failed setup can leave a pin o
 tagged line behind, but no usable local peer config: retry with the same confirmed fingerprints,
 or revoke the tag on the receiver. Completion requires a successful restricted RPC handshake.
 Existing pins and paired device identities are never replaced automatically.
+
+### Discover an SSH address by device name
+
+On the receiving device, sign in with its provisioned agent credential and a unique display
+name, for example `everett login --device linux-box`. Names are case-sensitive and use
+`[A-Za-z0-9_.-]{1,160}`. Configure the SSH address that the sender can reach. Everett does
+not detect addresses, create an SSH listener, or configure a tailnet.
+
+```toml
+[peer]
+address = "wright@linux-box.tailnet.ts.net:2222"
+```
+
+Run `everett relay register` to register the public relay bundle and publish this device's
+display name, declared address and signed metadata. Registration publishes a null address
+when `[peer] address` is unset. Login only stores credentials locally because it does not
+imply Convex provisioning. Each authorized `peer serve` startup also attempts publication
+when signed in with a declared address. `peer serve --address user@host[:port] --client ID`
+overrides the config for that invocation. The installed forced command uses the config.
+This is a one-request endpoint invoked by sshd, not a daemon to start by hand.
+
+Startup publication waits at most three seconds. Failures go to stderr and leave the SSH
+request available. Retry `everett relay register` to confirm publication. `lastSeenAt` is
+the server's last registration/publication time, not a heartbeat or proof of reachability.
+Relay key rotation clears the published address; register again to sign it with the new key.
+
+On the sender, sign in to the same account or org namespace and run:
+
+```sh
+everett devices
+everett devices --json
+everett peer add linux-box \
+  --binary /home/wright/.local/bin/everett \
+  --host-key SHA256:<confirmed-host-fingerprint> \
+  --device-key SHA256:<confirmed-everett-fingerprint>
+```
+
+The listing drains registry pages and includes historical devices. Columns are name, device
+ID, last seen in UTC, SSH address and revoked. The revoked column is `-` when the backend
+does not expose `revokedAt`, `no` for null, and `yes` for a timestamp. JSON preserves that
+field when present. `everett relay devices` keeps its original bounded active key-bundle list.
+Legacy rows use the device ID as their name and have no address until they publish one.
+
+Name resolution is an exact owner-scoped query, independent of listing pagination. It
+rejects revoked credentials and verifies the address metadata's device signature. The
+registry supplies only the address. Both out-of-band fingerprints and the remote binary
+path remain required. A registry can still hide rows, replay metadata or advertise an
+unfamiliar device key; its signature is not proof of ownership.
+
+An explicit `--ssh` remains the selected address. When signed in with a configured registry,
+pairing checks that name for conflicts and fails closed if the address or port disagrees,
+or if the registry query fails. Without sign-in/registry configuration, manual `--ssh`
+works offline as before. `--port` defaults to 22 for explicit addresses. Discovery uses the
+published port and rejects a conflicting `--port`. Use `[user@]host` for manual `--ssh`;
+published addresses require `user@host[:port]`, with brackets around IPv6 hosts.
+
+If a discovered address changes for an already-paired alias, pairing reports that the peer
+is already pinned. It preserves the host key and device pin. Verify the change out of band,
+then explicitly remove and pair again. No registry operation refreshes trust. Only public
+device metadata goes to the registry; sessions, cards, messages and shared-core content do not.
 
 ### sshd enforces the restrictions
 
@@ -724,7 +785,8 @@ SSH login, never the restricted peer key.
 Peer authorization grants access to session summaries/cards and inbox message/status operations
 within the same OS account. It is not multi-user isolation or per-project authorization. The
 private key is unencrypted for unattended RPC; protect the device and its OS account. Session
-content and peer keys stay on devices; no backend is contacted for peer operations.
+content and SSH private keys stay on devices. Established peer RPCs use the local pins;
+registry discovery and optional startup metadata publication are separate from RPC content.
 
 ## Verification and real-machine checks
 
@@ -732,6 +794,8 @@ content and peer keys stay on devices; no backend is contacted for peer operatio
 there is no SSH daemon or real network connection in CI. It tests pairing, fingerprint mismatch,
 host-pin changes, tagged restrictions/removal, oversized frames, idempotent send/reply recovery,
 cross-device hops, queued-to-delivered pickup, offline errors, and 20-second timeouts.
+A loopback Convex HTTP stub also checks discovery, explicit-address conflicts, paged JSON
+listing, revoked fields, signed metadata and unchanged pins after an address change.
 The existing Rust and release-journey checks run on macOS and Linux.
 
 A fake SSH fixture **cannot prove sshd enforces key restrictions**. Before rollout, use two real
@@ -749,4 +813,4 @@ machines and verify:
 
 Neither a registry record nor a relay may silently replace an established trust pin.
 Phone transports, a cross-device dashboard, remote shared-core merge, transcript
-synchronization, automatic address discovery, and automatic remote wake-up remain out of scope.
+synchronization, automatic re-pinning, and automatic remote wake-up remain out of scope.

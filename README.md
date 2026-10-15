@@ -136,10 +136,12 @@ Done. MAX_RETRIES is now 5 and the backoff test covers the cap.
 |---|---|
 | `everett ls [--json] [--all] [--harness H]` | Recent sessions from every harness, one line each. `--all` includes scripted runs. |
 | `everett ls --peer <name> [--json]` | Sessions on one paired SSH device, with `peer/harness/session-id` IDs. |
-| `everett peer add <name> --ssh user@host --binary /absolute/everett --host-key SHA256:... --device-key SHA256:...` | Pair with confirmed fingerprints; install a restricted key in the receiver's `~/.ssh/authorized_keys`. |
+| `everett devices [--json]` | List signed-in account/org registry metadata across all pages, including declared SSH addresses and historical devices. |
+| `everett peer add <name> [--ssh user@host] [--port N] --binary /absolute/everett --host-key SHA256:... --device-key SHA256:...` | Resolve the address by registry name or use an explicit address; reject conflicts and require both confirmed fingerprints before pairing. |
+| `everett peer serve [--address user@host[:port]] --client ID` | Restricted sshd endpoint; signed-in devices attempt to publish their declared address, also configurable with `[peer] address`. |
 | `everett peer status <name> <message-id>` | SSH polls/imports replies; relay queries queued/delivered/claimed/replied/expired state from signed observations (not task completion). |
 | `everett relay` | Hold a live Convex WebSocket inbox subscription; never wake sessions. |
-| `everett relay register / devices / whoami` | Register this operator-provisioned agent's keys, list active own-namespace devices, or verify agent/org authorization; no public enrollment. |
+| `everett relay register / devices / whoami` | Register this provisioned agent's keys and publish its display name/declared SSH address, list active key bundles (maximum 256), or verify agent/org authorization. |
 | `everett relay revoke-agent ID / revoke-member SUBJECT / rotate` | Revoke this or an admin-selected agent, remove org membership (admin), or rotate this agent's relay keys using its old signing key. |
 | `everett relay grant invite / accept / reconfirm / revoke / get / list` | Bilateral org-admin consent for named cross-org agents; [exact flags and journey](docs/cross-device.md#convex-relay-two-org-trial). |
 | `everett peer add-relay <name> --device ID --fingerprint HEX [--grant GRANT_ID]` | Select Convex after out-of-band bundle confirmation; fingerprint is raw 64-character lowercase hex, not the SSH `SHA256:` format. |
