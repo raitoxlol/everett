@@ -32,10 +32,12 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Cmd {
-    /// manage registry devices
+    /// list this account's registered device metadata, or manage one device
     Devices {
         #[command(subcommand)]
-        action: Devices,
+        action: Option<Devices>,
+        #[arg(long)]
+        json: bool,
     },
     /// live encrypted Convex relay; writes inboxes, never wakes sessions
     Relay {
@@ -356,9 +358,9 @@ enum PeerCmd {
     Add {
         name: String,
         #[arg(long)]
-        ssh: String,
-        #[arg(long, default_value_t = 22)]
-        port: u16,
+        ssh: Option<String>,
+        #[arg(long)]
+        port: Option<u16>,
         /// absolute path to Everett on the remote machine
         #[arg(long)]
         binary: String,
@@ -400,6 +402,9 @@ enum PeerCmd {
     Serve {
         #[arg(long)]
         client: Option<String>,
+        /// publish this device's declared SSH endpoint when signed in
+        #[arg(long)]
+        address: Option<String>,
     },
     #[command(hide = true)]
     Install,
@@ -561,8 +566,43 @@ fn main() {
         ..Default::default()
     };
     let code = match cli.cmd {
-        Cmd::Devices { action } => match action {
-            Devices::Revoke { device_id } => peer_output(everett::relay::revoke_device(&device_id)),
+        Cmd::Devices {
+            action: Some(Devices::Revoke { device_id }),
+            ..
+        } => peer_output(everett::relay::revoke_device(&device_id)),
+        Cmd::Devices { action: None, json } => match everett::device_registry::devices() {
+            Ok(rows) => {
+                if json {
+                    println!("{}", serde_json::to_string_pretty(&rows).unwrap());
+                } else {
+                    println!("NAME\tDEVICE ID\tLAST SEEN (UTC)\tSSH ADDRESS\tREVOKED");
+                    for row in rows {
+                        let seen = row
+                            .last_seen_at
+                            .and_then(chrono::DateTime::from_timestamp_millis)
+                            .map(|t| t.to_rfc3339())
+                            .unwrap_or_else(|| "-".into());
+                        let revoked = match row.flags.get("revokedAt") {
+                            Some(serde_json::Value::Null) => "no",
+                            Some(serde_json::Value::Number(_)) => "yes",
+                            _ => "-",
+                        };
+                        println!(
+                            "{}\t{}\t{}\t{}\t{}",
+                            row.name,
+                            row.device_id,
+                            seen,
+                            row.ssh_address.as_deref().unwrap_or("-"),
+                            revoked
+                        );
+                    }
+                }
+                0
+            }
+            Err(error) => {
+                eprintln!("everett: {}", error.message);
+                error.code
+            }
         },
         Cmd::Relay { action } => match action {
             None => peer_output(everett::relay::run()),
@@ -605,14 +645,13 @@ fn main() {
                 binary,
                 host_key,
                 device_key,
-            } => peer_output(everett::peer::add(
-                &name,
-                &ssh,
-                port,
-                &binary,
-                &host_key,
-                &device_key,
-            )),
+            } => peer_output(
+                everett::peer::discover_address(&name, ssh.as_deref(), port).and_then(
+                    |(address, port)| {
+                        everett::peer::add(&name, &address, port, &binary, &host_key, &device_key)
+                    },
+                ),
+            ),
             PeerCmd::List => peer_output(everett::peer::listing()),
             PeerCmd::Identity => peer_output(everett::peer::identity()),
             PeerCmd::Remove { name, transport } => {
@@ -623,7 +662,9 @@ fn main() {
             PeerCmd::Status { name, message_id } => {
                 peer_output(everett::peer::status(&name, &message_id))
             }
-            PeerCmd::Serve { client } => everett::peer::serve(client.as_deref(), false),
+            PeerCmd::Serve { client, address } => {
+                everett::peer::serve_with_address(client.as_deref(), false, address.as_deref())
+            }
             PeerCmd::Install => everett::peer::serve(None, true),
             PeerCmd::Ls {
                 name,

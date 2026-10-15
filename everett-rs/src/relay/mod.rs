@@ -232,7 +232,7 @@ fn deployment() -> Result<String> {
     Ok(value.trim_end_matches('/').to_string())
 }
 
-fn account() -> Result<(auth::Stored, String)> {
+pub(crate) fn account() -> Result<(auth::Stored, String)> {
     account_refresh(false)
 }
 
@@ -296,7 +296,7 @@ fn checked_identity(stored: &auth::Stored, claim: &Value, now: f64) -> Result<St
     Ok(owner)
 }
 
-fn claims(token: &str) -> Result<Value> {
+pub(crate) fn claims(token: &str) -> Result<Value> {
     let parts: Vec<_> = token.split('.').collect();
     if parts.len() != 3 || parts.iter().any(|p| p.is_empty()) {
         return Err(bad("OIDC ID token required"));
@@ -528,16 +528,22 @@ fn anyhow_error() -> anyhow::Error {
 }
 
 async fn mutation(client: &mut ConvexClient, name: &str, value: Value) -> Result<Value> {
-    result(
-        tokio::time::timeout(DEADLINE, client.mutation(name, args(value)?))
-            .await
-            .map_err(|_| bad("Convex mutation timed out; delivery unconfirmed"))?
-            .map_err(|e| {
-                bad(format!(
-                    "Convex mutation failed; delivery unconfirmed: {e:#}"
-                ))
-            })?,
-    )
+    let response = tokio::time::timeout(DEADLINE, client.mutation(name, args(value)?))
+        .await
+        .map_err(|_| bad("Convex mutation timed out; delivery unconfirmed"))?
+        .map_err(|e| {
+            bad(format!(
+                "Convex mutation failed; delivery unconfirmed: {e:#}"
+            ))
+        })?;
+    if name == "registry:publish" || name == "relay:register" {
+        match response {
+            FunctionResult::ErrorMessage(message) => return Err(bad(message)),
+            FunctionResult::ConvexError(error) => return Err(bad(error.message)),
+            _ => (),
+        }
+    }
+    result(response)
 }
 
 async fn query(client: &mut ConvexClient, name: &str, value: Value) -> Result<Value> {
@@ -859,13 +865,27 @@ pub fn ssh_binding(device: &Device) -> Result<Option<Value>> {
 }
 
 pub fn register() -> Result<Value> {
-    let (_, owner) = account()?;
+    register_with_address(None)
+}
+
+pub fn register_with_address(address: Option<&str>) -> Result<Value> {
+    let (stored, owner) = account()?;
+    let name = stored.device_name;
+    valid(&name).map_err(|_| bad("device name must use 1-160 letters, digits, '.', '_' or '-'; run everett login --device NAME --force"))?;
+    let address = crate::device_registry::declared_address(address)?;
     let key = verified_keys(&owner)?;
     let device = key.device.clone();
     let args = register_args(&device)?;
     runtime(async move {
         let mut client = client(&owner).await?;
         mutation(&mut client, "relay:register", args).await?;
+        let signature = key.sign(&crate::device_registry::metadata_bytes(
+            &owner,
+            &device.device_id,
+            &name,
+            address.as_deref(),
+        ));
+        mutation(&mut client, "registry:publish", json!({"deviceId":device.device_id,"name":name,"sshAddress":address,"signature":signature})).await?;
         Ok(json!({"device":device, "fingerprint":device.fingerprint()}))
     })
 }
