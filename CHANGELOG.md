@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- Propagate permanent registry device revocations through `everett devices revoke`, best
+  effort `logout --revoke-device`, and doctor cleanup of matching tagged SSH authorizations.
+  Preserve unrelated keys and existing SSH UUIDs; propagation requires the relay agent ID
+  to match the SSH device ID. Doctor reports mismatches. Offline peers retain access until
+  their next successful revocation fetch.
+
 ## 1.6.0 — 2026-10-15
 
 - Require host-bound MCP caller identity for delivery and replies; reject conflicting model

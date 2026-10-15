@@ -50,7 +50,7 @@ async function fixture() {
   };
   return { backend, identities, a, b, c, d, ka, kb, kc, kd, invite, activate, observe };
 }
-afterEach(() => vi.useRealTimers());
+afterEach(() => { vi.useRealTimers(); vi.restoreAllMocks(); });
 
 type Fixture = Awaited<ReturnType<typeof fixture>>;
 async function expectRoutingDenied(f: Fixture, client: Fixture["a"] | Fixture["backend"], reason: RegExp) {
@@ -58,7 +58,7 @@ async function expectRoutingDenied(f: Fixture, client: Fixture["a"] | Fixture["b
   const observation = { deviceId: f.ka.device.deviceId, senderOwner: ownerA, messageId: e.messageId,
     at: Date.now(), signature: "00".repeat(64) };
   for (const [name, args] of [
-    ["whoami", {}], ["devices", {}], ["credentials", {}], ["memberships", {}],
+    ["whoami", {}], ["devices", {}], ["revokedDevices", {}], ["credentials", {}], ["memberships", {}],
     ["pending", { deviceId: f.ka.device.deviceId }],
     ["status", { fromDevice: f.ka.device.deviceId, messageId: e.messageId }],
     ["grants:list", {}], ["grants:get", { grantId: "grant-ab" }],
@@ -66,7 +66,7 @@ async function expectRoutingDenied(f: Fixture, client: Fixture["a"] | Fixture["b
   for (const [name, args] of [
     ["register", { device: f.ka.device }],
     ["rotate", { device: f.ka.device, oldFingerprint: fingerprint(f.ka.device), signature: "00".repeat(64) }],
-    ["revokeAgent", { deviceId: "agent-c" }], ["revokeMember", { subject: "alice-member" }],
+    ["revokeAgent", { deviceId: "agent-c" }], ["revokeDevice", { deviceId: "agent-c" }], ["revokeMember", { subject: "alice-member" }],
     ["enqueue", { envelope: e }], ["accept", observation],
     ["observe", { ...observation, state: "delivered" }],
     ["grants:invite", { grantId: "grant-ab", deviceId: "agent-a", peerOwner: ownerB, peerDeviceId: "agent-b",
@@ -79,6 +79,55 @@ async function expectRoutingDenied(f: Fixture, client: Fixture["a"] | Fixture["b
 }
 
 describe("actual Convex functions, offline", () => {
+  test("self-revocation records a permanent device and credential tombstone", async () => {
+    const f = await fixture();
+    vi.spyOn(Date, "now").mockReturnValue(1700000000000);
+    await f.c.mutation(ref("revokeDevice"), { deviceId: "agent-c" });
+    expect(await f.a.query(query("revokedDevices"), {})).toEqual([{ deviceId: "agent-c", revokedAt: 1700000000000 }]);
+    await expectRoutingDenied(f, f.c, /revoked/);
+    await expect(f.c.mutation(ref("register"), { device: f.kc.device })).rejects.toThrow("revoked");
+    await expect(f.backend.mutation(ref("provisionIdentity"), {
+      issuer, subject: "alice-member", org: "org-a", agentId: "agent-c", role: "member",
+    })).rejects.toThrow("tombstone");
+    await f.a.mutation(ref("revokeDevice"), { deviceId: "agent-c" });
+    expect(await f.a.query(query("revokedDevices"), {})).toEqual([{ deviceId: "agent-c", revokedAt: 1700000000000 }]);
+  });
+  test("admin revokes only its namespace and members cannot revoke other devices", async () => {
+    const f = await fixture();
+    await expect(f.c.mutation(ref("revokeDevice"), { deviceId: "agent-a" })).rejects.toThrow("admin");
+    const forgedAdmin = f.backend.withIdentity({ ...f.identities[2], everett_role: "admin" });
+    await expect(forgedAdmin.mutation(ref("revokeDevice"), { deviceId: "agent-a" })).rejects.toThrow("admin");
+    await expect(f.a.mutation(ref("revokeDevice"), { deviceId: "agent-d" })).rejects.toThrow("organization");
+    await f.a.mutation(ref("revokeDevice"), { deviceId: "agent-c" });
+    await f.b.mutation(ref("revokeDevice"), { deviceId: "agent-d" });
+    expect(await f.a.query(query("revokedDevices"), {})).toEqual([{ deviceId: "agent-c", revokedAt: expect.any(Number) }]);
+    expect(await f.b.query(query("revokedDevices"), {})).toEqual([{ deviceId: "agent-d", revokedAt: expect.any(Number) }]);
+    await expect(f.c.query(query("device"), { deviceId: "agent-a" })).rejects.toThrow("revoked");
+    await expect(f.a.query(query("device"), { deviceId: "agent-c" })).rejects.toThrow("revoked");
+  });
+  test("device tombstones deny registration even if a credential was incorrectly restored", async () => {
+    const f = await fixture();
+    await f.a.mutation(ref("revokeDevice"), { deviceId: "agent-c" });
+    await f.backend.run(async ctx => {
+      const row = await ctx.db.query("credentials").withIndex("by_agent", q => q.eq("issuer", issuer).eq("agentId", "agent-c")).unique();
+      await ctx.db.patch(row!._id, { status: "active" });
+    });
+    await expect(f.c.mutation(ref("register"), { device: f.kc.device })).rejects.toThrow("tombstone");
+    await expect(f.c.query(query("devices"), {})).rejects.toThrow("revoked");
+  });
+  test("revoked devices query filters before its 256-row bound", async () => {
+    const f = await fixture();
+    await f.backend.run(async ctx => {
+      for (let i = 0; i < 260; i++) {
+        await ctx.db.insert("devices", { ...f.kc.device, deviceId: `z-revoked-${String(i).padStart(3, "0")}`, generation: 0, revokedAt: 1000 });
+      }
+    });
+    const revoked = await f.a.query(query("revokedDevices"), {});
+    expect(revoked).toHaveLength(256);
+    expect(revoked[0]).toEqual({ deviceId: "z-revoked-000", revokedAt: 1000 });
+    expect(revoked[255]).toEqual({ deviceId: "z-revoked-255", revokedAt: 1000 });
+    expect(await f.b.query(query("revokedDevices"), {})).toEqual([]);
+  });
   test("every relay and grant entry point rejects missing auth, wrong issuer and legacy claim-only enrollment", async () => {
     const f = await fixture();
     await expectRoutingDenied(f, f.backend, /Sign in/);
@@ -155,12 +204,12 @@ describe("actual Convex functions, offline", () => {
     await f.backend.run(async (ctx) => {
       for (let i = 0; i < 256; i++) {
         const historical = key(`000-revoked-${String(i).padStart(3, "0")}`, ownerA, (i % 180) + 20);
-        await ctx.db.insert("devices", { ...historical.device, generation: 0 });
+        await ctx.db.insert("devices", { ...historical.device, generation: 0, revokedAt: 1000 });
         await ctx.db.insert("credentials", { issuer, agentId: historical.device.deviceId, owner: ownerA, subject: "alice", status: "revoked" });
       }
-      await ctx.db.insert("devices", { ...late.device, generation: 0 });
+      await ctx.db.insert("devices", { ...late.device, generation: 0, revokedAt: null });
       await ctx.db.insert("credentials", { issuer, agentId: late.device.deviceId, owner: ownerA, subject: "alice", status: "active" });
-      await ctx.db.insert("devices", { ...memberDevice.device, generation: 0 });
+      await ctx.db.insert("devices", { ...memberDevice.device, generation: 0, revokedAt: null });
       await ctx.db.insert("credentials", { issuer, agentId: memberDevice.device.deviceId, owner: ownerA, subject: "alice-member", status: "active" });
     });
     expect(await f.a.query(query("devices"), {})).toEqual([]);

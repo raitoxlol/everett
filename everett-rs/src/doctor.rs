@@ -130,6 +130,83 @@ fn line(warnings: &mut Vec<String>, ok: Option<bool>, text: &str) {
     println!("[{}] {}", mark, text);
 }
 
+pub fn device_revocation_checks(
+    fetch: impl FnOnce() -> crate::error::Result<Vec<crate::relay::RevokedDevice>>,
+) -> Vec<(Option<bool>, String)> {
+    if crate::auth::load().is_none() {
+        return vec![(
+            None,
+            "device revocations: not signed in; SSH authorizations unchanged".into(),
+        )];
+    }
+    let mut checks = Vec::new();
+    let ssh = crate::peer::local_device_id();
+    let agent = crate::relay::signed_in_device_id();
+    let binding = match (ssh, agent) {
+        (Ok(Some(ssh)), Ok(agent)) => format!(
+            "SSH device_id: {ssh}; signed-in relay agent: {agent}; {}",
+            if ssh == agent {
+                "IDs match"
+            } else {
+                "IDs DO NOT MATCH; registry revocation cannot prune this SSH identity"
+            }
+        ),
+        (Ok(None), _) => "SSH device_id: not created; no local SSH identity binding".into(),
+        (Err(e), _) | (_, Err(e)) => format!("SSH device_id binding unavailable: {e}"),
+    };
+    checks.push((None, binding));
+    if crate::config::get("relay.url", Some("EVERETT_CONVEX_URL"), "").is_empty() {
+        checks.push((
+            None,
+            "device revocations: relay not configured; SSH authorizations unchanged".into(),
+        ));
+        return checks;
+    }
+    let revoked = match fetch() {
+        Ok(rows) => rows,
+        Err(e) => {
+            checks.push((
+                None,
+                format!("device revocations unavailable: {e}; SSH authorizations unchanged"),
+            ));
+            return checks;
+        }
+    };
+    if revoked.len() == 256 {
+        checks.push((Some(false), "device revocations reached the 256-device bound; additional revocations may be omitted".into()));
+    }
+    let mut removed = false;
+    for row in revoked {
+        match crate::peer::prune_revoked(&row.device_id) {
+            Ok(true) => {
+                removed = true;
+                checks.push((
+                    Some(true),
+                    format!(
+                        "removed SSH authorization for revoked device {}",
+                        row.device_id
+                    ),
+                ));
+            }
+            Ok(false) => (),
+            Err(e) => checks.push((
+                Some(false),
+                format!(
+                    "cannot remove SSH authorization for revoked device {}: {e}",
+                    row.device_id
+                ),
+            )),
+        }
+    }
+    if !removed && !checks.iter().any(|(ok, _)| *ok == Some(false)) {
+        checks.push((
+            Some(true),
+            "device revocations checked; no matching SSH authorizations".into(),
+        ));
+    }
+    checks
+}
+
 pub fn run(hours: f64) -> i32 {
     if !hours.is_finite() || hours < 0.0 {
         eprintln!("everett doctor: --hours must be finite and nonnegative.");
@@ -365,6 +442,9 @@ pub fn run(hours: f64) -> i32 {
             .map(|s| format!("account: {} via {} ({})", s.email, s.issuer, s.device_name))
             .unwrap_or_else(|| "account: not signed in (optional)".to_string()),
     );
+    for (ok, detail) in device_revocation_checks(crate::relay::revoked_devices) {
+        line(&mut warnings, ok, &detail);
+    }
     let warning_count = warnings.len() - problems;
     if warnings.is_empty() {
         println!("ready");
