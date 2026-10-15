@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 1.6.0 — 2026-10-15
+
 - Require host-bound MCP caller identity for delivery and replies; reject conflicting model
   session IDs instead of allowing them to replace provenance or hop lineage. Harnesses
   without native detection must bind `EVERETT_SESSION_ID` in their MCP launch environment.
