@@ -597,6 +597,46 @@ first revoke on the receiver, then remove the obsolete sender config and known-h
 verify the new fingerprints, and pair again. Backups may contain the revoked line; restoring a
 backup can restore access. Revocation takes effect on new SSH connections, not an already-running RPC.
 
+### Propagate device revocation through the registry
+
+Provision each device's issuer-controlled `everett_agent` claim to equal its existing SSH
+`device_id`, shown by `everett peer identity`. SSH generates and preserves its own UUID in
+`~/.everett/peer/device_id`; this release does not bind or migrate SSH identities to relay
+credentials. If the IDs differ, registry revocation does not remove that SSH authorization.
+`everett doctor` shows the local SSH ID, the signed-in relay agent ID, and whether they match.
+See [issuer provisioning](auth.md) before enrolling devices.
+
+From the affected device or an active registered admin in the same owner namespace:
+
+```sh
+everett devices revoke <device-id>
+# On each remaining peer, while signed in with a configured relay:
+everett doctor
+# Best effort self-revocation, followed by local/provider logout even if revocation fails:
+everett logout --revoke-device
+```
+
+Device revocation permanently denies the relay credential and records `revokedAt` on its
+registered device row. The ID cannot re-register or be reprovisioned. The older
+`everett relay revoke-agent` command records the same device tombstone. The revoking device
+also removes matching local SSH peer configuration and known-hosts pins without contacting
+the lost device, plus matching relay pins for the current owner and deployment.
+
+Each peer's next successful doctor fetch removes only lines ending in
+`# everett-peer:<revoked-device-id>` from its own `~/.ssh/authorized_keys`. The locked rewrite
+backs up changed files and preserves unrelated bytes. It never installs keys, changes
+addresses, or replaces pins from registry data. A failed rewrite prints `[warn]` for that ID;
+successful removals print `[ok]`. When not signed in, when the relay is unconfigured, or
+when it is unreachable, doctor prints `[--]` and leaves authorizations unchanged without failing.
+
+Offline peers keep SSH access until they next run doctor and fetch the revocation. This is
+not immediate enforcement, and existing SSH connections are not terminated. A malicious
+registry can hide a revocation. The query returns at most 256 revoked registered devices;
+doctor warns at that bound because additional revocations may be omitted. Use receiver-side
+`peer revoke` for immediate local cleanup, mismatched IDs, or revocations beyond this bound.
+Membership revocation does not produce per-device SSH tombstones; revoke affected devices
+before removing their membership. Preserve tombstones and do not restore revoked keys from backups.
+
 ## Use the peer
 
 ```sh

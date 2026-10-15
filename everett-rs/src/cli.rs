@@ -91,6 +91,7 @@ pub struct Args {
     pub device: Option<String>,
     pub open: bool,
     pub force: bool,
+    pub revoke_device: bool,
 }
 
 fn ago(ts: f64) -> String {
@@ -1323,16 +1324,44 @@ pub fn cmd_logout(args: &Args) -> i32 {
     use crate::auth;
     let Some(stored) = auth::load() else {
         if args.json {
-            println!("{}", serde_json::to_string(&json!({"signed_out": true, "revoked": false})).unwrap());
+            println!(
+                "{}",
+                serde_json::to_string(&json!({"signed_out": true, "revoked": false})).unwrap()
+            );
         } else {
             println!("not signed in");
         }
         return 0;
     };
+    let device_revoked = if args.revoke_device {
+        match crate::relay::signed_in_device_id().and_then(|id| crate::relay::revoke_device(&id)) {
+            Ok(_) => {
+                if !args.json {
+                    println!("Registry device revoked; peers prune matching SSH authorizations on their next doctor fetch.");
+                }
+                true
+            }
+            Err(e) => {
+                eprintln!(
+                    "[warn] registry device revocation failed or local cleanup incomplete: {e}"
+                );
+                false
+            }
+        }
+    } else {
+        false
+    };
+    let stored = auth::load().unwrap_or(stored);
     let revoked = auth::revoke(&stored);
     auth::clear();
     if args.json {
-        println!("{}", serde_json::to_string(&json!({"signed_out": true, "revoked": revoked})).unwrap());
+        println!(
+            "{}",
+            serde_json::to_string(
+                &json!({"signed_out": true, "revoked": revoked, "device_revoked": device_revoked})
+            )
+            .unwrap()
+        );
     } else if revoked {
         println!("Signed out on this device; the provider revoked the refresh token.");
     } else {

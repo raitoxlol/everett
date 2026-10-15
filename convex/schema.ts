@@ -28,7 +28,7 @@ export default defineSchema({
   credentials: defineTable({
     issuer: v.string(), agentId: v.string(), owner: v.string(), subject: v.string(), status,
   }).index("by_agent", ["issuer", "agentId"]).index("by_owner", ["owner"]),
-  devices: defineTable({ ...deviceFields, generation: v.number() }).index("by_owner_device", ["owner", "deviceId"]),
+  devices: defineTable({ ...deviceFields, generation: v.number(), revokedAt: v.union(v.null(), v.number()) }).index("by_owner_device", ["owner", "deviceId"]),
   grants: defineTable({
     grantId: v.string(), aOwner: v.string(), aDevice: v.string(), bOwner: v.string(), bDevice: v.string(),
     aBundle: deviceValidator, bBundle: deviceValidator, aFingerprint: v.string(), bFingerprint: v.string(),

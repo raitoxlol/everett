@@ -76,6 +76,8 @@ Errors reject the operation (there is no success-shaped denial). All functions b
 | `relay:memberships` | query | `{}` | `{memberships: [{subject, role, status}], truncated}`; admin's own org only; at most 256 |
 | `relay:rotate` | mutation | `{device: newDevice, oldFingerprint, signature: oldKeyRotationSignature}` | `{fingerprint: newFingerprint}` |
 | `relay:revokeAgent` | mutation | `{deviceId}` | `null`; self or current org admin; permanent credential tombstone |
+| `relay:revokeDevice` | mutation | `{deviceId}` | `null`; same authorization and permanent credential denial as `revokeAgent`; stamps registered device `revokedAt` once, never clears it |
+| `relay:revokedDevices` | query | `{}` | `[{deviceId, revokedAt: ms}]`; registered active caller, own namespace only, at most 256 revoked registered rows; no public keys or metadata updates |
 | `relay:revokeMember` | mutation | `{subject}` | `null`; current org admin; permanent membership tombstone |
 | `relay:enqueue` | mutation | `{envelope: Envelope}` | `{messageId, state: "queued"|"delivered"|"claimed"|"replied"|"expired"}` |
 | `relay:pending` | query/subscription | `{deviceId: own JWT agent, cursor?: string|null}` | `{serverNow: ms, envelopes: [{envelope: Envelope, trust: "same-org"|"external-untrusted"}], isDone: boolean, continueCursor: string}`; up to 32 inspected rows/page to keep maximum-body results below 8 MiB |
@@ -90,6 +92,22 @@ Errors reject the operation (there is no success-shaped denial). All functions b
 | `grants:list` | query/subscription | `{}` | `{grants: GrantView[], truncated: boolean}`; admins see own-org grants; members see only their endpoint grants; max 128 per side |
 | `relay:provisionIdentity` | INTERNAL mutation | `{issuer, subject, org: string|null, agentId, role: "admin"|"member"}` | `{owner, deviceId}`; deployment operator only |
 | `relay:expire` | INTERNAL mutation | `{}` | `null`; cron every minute, bounded 64-row batches for messages and grants, follow-up scheduled if full |
+
+Device rows also store `generation` and `revokedAt: number|null`; these fields are not
+part of the signed `Device` bundle. Registration inserts `revokedAt:null`; rotation
+preserves it. Both `revokeAgent` and `revokeDevice` permanently revoke the credential
+and stamp any registered row once. An unregistered provisioned credential can also be
+revoked, but has no device row to return from `revokedDevices`. Caller authentication
+requires verified OIDC plus active membership and credential checks; revocation and
+revocation listing also require an active registered caller. Repeated admin revocation
+does not change the original timestamp. Revoked IDs cannot register or be reprovisioned.
+
+The revocation query filters out active rows before applying its 256-row bound. It is
+not paginated; a full response may omit additional tombstones. Doctor warns at the bound.
+Its only SSH effect is removal of matching authorization tags, never adding or re-pinning.
+Operators upgrading existing v2 rows must backfill `revokedAt:null` for active devices
+and a revocation timestamp for retained revoked credentials before enforcing the required
+schema field. Preserve all credential and device tombstones; no automatic migration runs.
 
 `GrantView = {grantId, aOwner, aDevice, bOwner, bDevice, aBundle: Device, bBundle: Device, aFingerprint, bFingerprint, state: "invited"|"active"|"reconfirming"|"revoked"|"expired", confirmation: "a"|"b"|"both", expiresAt: ms|null, ratePerMinute, bodyCapBytes, access: "invited"|"active"|"reconfirming"|"revoked"|"expired"|"key_changed"|"agent_revoked"}`. Views return the **pinned** bundles, not automatically refreshed bundles. Obtain rotated bundles/fingerprints from the other admin over an independently authenticated channel; never silently trust fresh keys just because the server lists them. Key mismatch denies queued/new traffic even before state is changed to `reconfirming`. One side repeating confirmation cannot stand in for the other. Another rotation during reconfirmation restarts confirmation for the newly pinned pair. Revoked grant IDs cannot be reused.
 

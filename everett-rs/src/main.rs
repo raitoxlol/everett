@@ -32,6 +32,11 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Cmd {
+    /// manage registry devices
+    Devices {
+        #[command(subcommand)]
+        action: Devices,
+    },
     /// live encrypted Convex relay; writes inboxes, never wakes sessions
     Relay {
         #[command(subcommand)]
@@ -274,6 +279,9 @@ enum Cmd {
     },
     /// revoke this device's sign-in and delete the local token
     Logout {
+        /// best effort registry revocation before signing out
+        #[arg(long)]
+        revoke_device: bool,
         #[arg(long)]
         json: bool,
     },
@@ -307,6 +315,12 @@ enum Cmd {
         #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
         args: Vec<String>,
     },
+}
+
+#[derive(Subcommand)]
+enum Devices {
+    /// permanently revoke a device and remove its local peer bindings
+    Revoke { device_id: String },
 }
 
 #[derive(Subcommand)]
@@ -531,6 +545,9 @@ fn main() {
         ..Default::default()
     };
     let code = match cli.cmd {
+        Cmd::Devices { action } => match action {
+            Devices::Revoke { device_id } => peer_output(everett::relay::revoke_device(&device_id)),
+        },
         Cmd::Relay { action } => match action {
             None => peer_output(everett::relay::run()),
             Some(RelayCmd::Register) => peer_output(everett::relay::register()),
@@ -807,8 +824,12 @@ fn main() {
             a.json = json;
             cli::cmd_whoami(&a)
         }
-        Cmd::Logout { json } => {
+        Cmd::Logout {
+            json,
+            revoke_device,
+        } => {
             a.json = json;
+            a.revoke_device = revoke_device;
             cli::cmd_logout(&a)
         }
         Cmd::Doctor => cli::cmd_doctor(&a),
