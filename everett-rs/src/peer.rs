@@ -40,10 +40,26 @@ struct Sender {
 #[serde(tag = "op", rename_all = "snake_case", deny_unknown_fields)]
 enum Request {
     Hello,
-    Ls { hours: f64, all: bool, harness: String },
-    Card { session: String, harness: String },
-    Send { session: String, harness: String, text: String, from: Sender, idempotency_key: String, hops: i64 },
-    Status { message_id: String },
+    Ls {
+        hours: f64,
+        all: bool,
+        harness: String,
+    },
+    Card {
+        session: String,
+        harness: String,
+    },
+    Send {
+        session: String,
+        harness: String,
+        text: String,
+        from: Sender,
+        idempotency_key: String,
+        hops: i64,
+    },
+    Status {
+        message_id: String,
+    },
     Revoke,
 }
 
@@ -73,22 +89,51 @@ fn root() -> PathBuf {
     session::home().join(".everett/peer")
 }
 
-fn private_dir(path: &Path) -> Result<()> {
-    fs::create_dir_all(path).map_err(io_error)?;
-    fs::set_permissions(path, fs::Permissions::from_mode(0o700)).map_err(io_error)
+pub(crate) fn private_dir(path: &Path) -> Result<()> {
+    private_dir_io(path).map_err(io_error)
 }
 
-fn save(path: &Path, bytes: &[u8]) -> Result<()> {
+/// Persist each new directory's link in its parent, not just its contents.
+/// Directory fsync is supported on both Linux and macOS; no Linux-only flags.
+pub(crate) fn private_dir_io(path: &Path) -> std::io::Result<()> {
+    use std::os::unix::fs::DirBuilderExt;
+    if !path.is_dir() {
+        let parent = path
+            .parent()
+            .filter(|p| !p.as_os_str().is_empty())
+            .ok_or_else(|| std::io::Error::other("missing directory parent"))?;
+        if !parent.is_dir() {
+            private_dir_io(parent)?;
+        }
+        match fs::DirBuilder::new().mode(0o700).create(path) {
+            Ok(()) => (),
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists && path.is_dir() => (),
+            Err(e) => return Err(e),
+        }
+    }
+    let mode = fs::metadata(path)?.permissions().mode() & 0o700;
+    fs::set_permissions(path, fs::Permissions::from_mode(mode))?;
+    File::open(path)?.sync_all()?;
+    if let Some(parent) = path.parent().filter(|p| !p.as_os_str().is_empty()) {
+        File::open(parent)?.sync_all()?;
+    }
+    Ok(())
+}
+
+pub(crate) fn save(path: &Path, bytes: &[u8]) -> Result<()> {
     let mut temp =
-        tempfile::NamedTempFile::new_in(path.parent().ok_or_else(|| bad("missing parent"))?).map_err(io_error)?;
-    temp.as_file().set_permissions(fs::Permissions::from_mode(0o600)).map_err(io_error)?;
+        tempfile::NamedTempFile::new_in(path.parent().ok_or_else(|| bad("missing parent"))?)
+            .map_err(io_error)?;
+    temp.as_file()
+        .set_permissions(fs::Permissions::from_mode(0o600))
+        .map_err(io_error)?;
     temp.write_all(bytes).map_err(io_error)?;
     temp.as_file().sync_all().map_err(io_error)?;
     temp.persist(path).map_err(|e| io_error(e.error))?;
     Ok(())
 }
 
-fn lock(path: &Path) -> Result<File> {
+pub(crate) fn lock(path: &Path) -> Result<File> {
     let file = OpenOptions::new()
         .create(true)
         .truncate(false)
@@ -99,6 +144,62 @@ fn lock(path: &Path) -> Result<File> {
         .map_err(io_error)?;
     file.lock_exclusive().map_err(io_error)?;
     Ok(file)
+}
+
+/// One ownership lock covers the SSH and Convex alias registries. Holding it
+/// across the final conflict check and commit prevents either transport from
+/// silently shadowing the other.
+fn alias_lock_at(shared: &Path) -> Result<File> {
+    private_dir(shared)?;
+    lock(&shared.join("peer-alias.lock"))
+}
+
+pub(crate) fn alias_lock() -> Result<File> {
+    alias_lock_at(&session::home().join(".everett"))
+}
+
+/// Atomically check the other transport and commit this transport's alias.
+/// Both SSH and Convex use this path so neither can win a check-then-write race.
+pub(crate) fn claim_alias<T>(
+    name: &str,
+    transport: &str,
+    other_configured: impl FnOnce() -> Result<bool>,
+    commit: impl FnOnce() -> Result<T>,
+) -> Result<T> {
+    claim_alias_at(
+        &session::home().join(".everett"),
+        name,
+        transport,
+        other_configured,
+        commit,
+    )
+}
+
+fn claim_alias_at<T>(
+    shared: &Path,
+    name: &str,
+    transport: &str,
+    other_configured: impl FnOnce() -> Result<bool>,
+    commit: impl FnOnce() -> Result<T>,
+) -> Result<T> {
+    valid(name)?;
+    let _guard = alias_lock_at(shared)?;
+    if other_configured()? {
+        return Err(bad(format!(
+            "alias already selects {transport}; use a different alias"
+        )));
+    }
+    commit()
+}
+
+pub(crate) fn assert_alias_unambiguous(name: &str) -> Result<()> {
+    valid(name)?;
+    if config_path(name)?.exists() && crate::relay::configured(name) {
+        return Err(bad(
+            "alias is configured for both SSH and Convex; remove one binding explicitly before use",
+        ));
+    }
+    Ok(())
 }
 
 fn valid(value: &str) -> Result<()> {
@@ -124,7 +225,11 @@ pub fn peers() -> Result<BTreeMap<String, Peer>> {
     }
     let mut peers = BTreeMap::new();
     for file in crate::paths::glob(&root(), "*.json") {
-        let name = file.file_stem().unwrap_or_default().to_string_lossy().to_string();
+        let name = file
+            .file_stem()
+            .unwrap_or_default()
+            .to_string_lossy()
+            .to_string();
         let peer = serde_json::from_slice(&fs::read(&file).map_err(io_error)?)
             .map_err(|e| bad(format!("invalid peer config {}: {e}", file.display())))?;
         peers.insert(name, peer);
@@ -134,13 +239,40 @@ pub fn peers() -> Result<BTreeMap<String, Peer>> {
 
 fn load(name: &str) -> Result<Peer> {
     let path = config_path(name)?;
-    let raw = fs::read(path).map_err(|_| bad(format!("unknown peer {name:?}; use everett peer add")))?;
+    let raw =
+        fs::read(path).map_err(|_| bad(format!("unknown peer {name:?}; use everett peer add")))?;
     serde_json::from_slice(&raw).map_err(|e| bad(format!("invalid peer config: {e}")))
 }
 
+pub fn listing() -> Result<Value> {
+    let mut list: serde_json::Map<String, Value> = peers()?
+        .into_iter()
+        .map(|(name, peer)| serde_json::to_value(peer).map(|value| (name, value)))
+        .collect::<std::result::Result<_, _>>()
+        .map_err(|e| bad(e.to_string()))?;
+    let relay = crate::relay::list()?;
+    let relay = relay
+        .as_object()
+        .ok_or_else(|| bad("invalid relay peer list"))?
+        .clone();
+    for name in relay.keys() {
+        if list.contains_key(name) {
+            return Err(bad("alias is configured for both SSH and Convex; remove one binding explicitly before use"));
+        }
+    }
+    list.extend(relay);
+    Ok(Value::Object(list))
+}
+
 fn run(mut command: Command, input: Vec<u8>, cap: usize) -> Result<Vec<u8>> {
-    command.stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped()).process_group(0);
-    let mut child = command.spawn().map_err(|e| EverettError::new(7, format!("peer unreachable: {e}")))?;
+    command
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .process_group(0);
+    let mut child = command
+        .spawn()
+        .map_err(|e| EverettError::new(7, format!("peer unreachable: {e}")))?;
     let pid = child.id() as i32;
     let mut stdin = child.stdin.take().unwrap();
     let stdout = child.stdout.take().unwrap();
@@ -148,7 +280,10 @@ fn run(mut command: Command, input: Vec<u8>, cap: usize) -> Result<Vec<u8>> {
     let writer = std::thread::spawn(move || stdin.write_all(&input));
     let output = std::thread::spawn(move || {
         let mut bytes = Vec::new();
-        stdout.take((cap + 1) as u64).read_to_end(&mut bytes).map(|_| bytes)
+        stdout
+            .take((cap + 1) as u64)
+            .read_to_end(&mut bytes)
+            .map(|_| bytes)
     });
     let errors = std::thread::spawn(move || {
         let mut bytes = Vec::new();
@@ -163,10 +298,19 @@ fn run(mut command: Command, input: Vec<u8>, cap: usize) -> Result<Vec<u8>> {
         let _ = child.wait();
     }
     let written = writer.join().map_err(|_| bad("peer stdin writer failed"))?;
-    let bytes = output.join().map_err(|_| bad("peer stdout reader failed"))?.map_err(io_error)?;
-    let errors = errors.join().map_err(|_| bad("peer stderr reader failed"))?.map_err(io_error)?;
+    let bytes = output
+        .join()
+        .map_err(|_| bad("peer stdout reader failed"))?
+        .map_err(io_error)?;
+    let errors = errors
+        .join()
+        .map_err(|_| bad("peer stderr reader failed"))?
+        .map_err(io_error)?;
     match status {
-        None => Err(EverettError::new(7, "peer unreachable: SSH request timed out after 20 seconds; no local queue")),
+        None => Err(EverettError::new(
+            7,
+            "peer unreachable: SSH request timed out after 20 seconds; no local queue",
+        )),
         Some(status) if !status.success() => Err(EverettError::new(
             7,
             format!(
@@ -191,7 +335,11 @@ fn key_fingerprint(path: &Path) -> Result<String> {
     if lines.len() != 1 {
         return Err(bad("expected exactly one pinned Ed25519 host key"));
     }
-    lines[0].split_whitespace().nth(1).map(str::to_string).ok_or_else(|| bad("invalid SSH fingerprint"))
+    lines[0]
+        .split_whitespace()
+        .nth(1)
+        .map(str::to_string)
+        .ok_or_else(|| bad("invalid SSH fingerprint"))
 }
 
 pub fn identity() -> Result<Value> {
@@ -209,21 +357,30 @@ pub fn identity() -> Result<Value> {
     let key = root().join("id_ed25519");
     if !key.exists() {
         let mut cmd = Command::new("ssh-keygen");
-        cmd.args(["-q", "-t", "ed25519", "-N", "", "-C"]).arg(format!("everett-peer:{device_id}")).arg("-f").arg(&key);
+        cmd.args(["-q", "-t", "ed25519", "-N", "", "-C"])
+            .arg(format!("everett-peer:{device_id}"))
+            .arg("-f")
+            .arg(&key);
         run(cmd, Vec::new(), 8192)?;
     }
     fs::set_permissions(&key, fs::Permissions::from_mode(0o600)).map_err(io_error)?;
     let public_key = fs::read_to_string(key.with_extension("pub")).map_err(io_error)?;
-    Ok(json!({"device_id": device_id, "public_key": public_key.trim(), "fingerprint": key_fingerprint(&key)?}))
+    Ok(
+        json!({"device_id": device_id, "public_key": public_key.trim(), "fingerprint": key_fingerprint(&key)?}),
+    )
 }
 
 fn address_valid(address: &str) -> Result<()> {
     if address.is_empty()
         || address.starts_with('-')
         || address.split('@').count() > 2
-        || !address.bytes().all(|b| b.is_ascii_alphanumeric() || b"@._-:[]".contains(&b))
+        || !address
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b"@._-:[]".contains(&b))
     {
-        return Err(bad("--ssh must be a literal [user@]host, not a shell expression or SSH alias"));
+        return Err(bad(
+            "--ssh must be a literal [user@]host, not a shell expression or SSH alias",
+        ));
     }
     Ok(())
 }
@@ -255,12 +412,21 @@ fn ssh(peer: &Peer, pin: &Path, restricted: bool, first: bool) -> Command {
         "-o",
         "ControlPath=none",
     ]);
-    cmd.arg("-o").arg(format!("UserKnownHostsFile={}", pin.display()));
-    cmd.arg("-o").arg(if first { "StrictHostKeyChecking=accept-new" } else { "StrictHostKeyChecking=yes" });
+    cmd.arg("-o")
+        .arg(format!("UserKnownHostsFile={}", pin.display()));
+    cmd.arg("-o").arg(if first {
+        "StrictHostKeyChecking=accept-new"
+    } else {
+        "StrictHostKeyChecking=yes"
+    });
     if restricted {
-        cmd.args(["-o", "IdentitiesOnly=yes", "-o", "IdentityAgent=none", "-i"]).arg(root().join("id_ed25519"));
+        cmd.args(["-o", "IdentitiesOnly=yes", "-o", "IdentityAgent=none", "-i"])
+            .arg(root().join("id_ed25519"));
     }
-    cmd.arg("-p").arg(peer.port.to_string()).arg("--").arg(&peer.address);
+    cmd.arg("-p")
+        .arg(peer.port.to_string())
+        .arg("--")
+        .arg(&peer.address);
     cmd
 }
 
@@ -274,14 +440,18 @@ fn frame(value: &impl Serialize) -> Result<Vec<u8>> {
 }
 
 fn response(bytes: &[u8]) -> Result<Value> {
-    let value: Value = serde_json::from_slice(bytes).map_err(|e| bad(format!("invalid peer response: {e}")))?;
+    let value: Value =
+        serde_json::from_slice(bytes).map_err(|e| bad(format!("invalid peer response: {e}")))?;
     if let Some(error) = value.get("error") {
         return Err(EverettError::new(
             error["code"].as_i64().unwrap_or(2) as i32,
             error["message"].as_str().unwrap_or("peer request failed"),
         ));
     }
-    value.get("result").cloned().ok_or_else(|| bad("peer response missing result"))
+    value
+        .get("result")
+        .cloned()
+        .ok_or_else(|| bad("peer response missing result"))
 }
 
 fn rpc(name: &str, request: &Request) -> Result<Value> {
@@ -305,22 +475,38 @@ pub fn add(
     valid(name)?;
     address_valid(address)?;
     if port == 0 || !Path::new(binary).is_absolute() || binary.chars().any(char::is_control) {
-        return Err(bad("use a nonzero port and --binary with the remote binary's absolute path"));
+        return Err(bad(
+            "use a nonzero port and --binary with the remote binary's absolute path",
+        ));
     }
     if !fingerprint.starts_with("SHA256:") || fingerprint.split_whitespace().count() != 1 {
-        return Err(bad("--host-key requires the SHA256 fingerprint verified on the remote machine"));
+        return Err(bad(
+            "--host-key requires the SHA256 fingerprint verified on the remote machine",
+        ));
     }
+    // Claim the alias before generating identity, probing/pinning hosts or
+    // installing a remote key. The same lock remains held through commit.
+    claim_alias(name, "Convex", || Ok(crate::relay::configured(name)), || {
     let ident = identity()?;
     let _guard = lock(&root().join("pairing.lock"))?;
     let pin = known_hosts(name)?;
     let temporary = tempfile::NamedTempFile::new_in(root()).map_err(io_error)?;
-    let mut peer =
-        Peer { address: address.into(), port, device_id: String::new(), host_fingerprint: fingerprint.into() };
+    let mut peer = Peer {
+        address: address.into(),
+        port,
+        device_id: String::new(),
+        host_fingerprint: fingerprint.into(),
+    };
     let mut expected_device = None;
     if config_path(name)?.exists() {
         let existing = load(name)?;
-        if existing.address != address || existing.port != port || existing.host_fingerprint != fingerprint {
-            return Err(bad("peer already pinned; remove and explicitly re-pair to change its address or key"));
+        if existing.address != address
+            || existing.port != port
+            || existing.host_fingerprint != fingerprint
+        {
+            return Err(bad(
+                "peer already pinned; remove and explicitly re-pair to change its address or key",
+            ));
         }
         expected_device = Some(existing.device_id);
     }
@@ -335,37 +521,63 @@ pub fn add(
     probe.arg("true");
     run(probe, Vec::new(), 8192)?;
     if key_fingerprint(temporary.path())? != fingerprint {
-        return Err(bad("SSH host-key fingerprint mismatch; pairing refused before key installation"));
+        return Err(bad(
+            "SSH host-key fingerprint mismatch; pairing refused before key installation",
+        ));
     }
     save(&pin, &fs::read(temporary.path()).map_err(io_error)?)?;
     let mut inspect = ssh(&peer, &pin, false, false);
-    inspect.arg(format!("{} peer identity", crate::proc::shlex_join(&[binary.into()])));
+    inspect.arg(format!(
+        "{} peer identity",
+        crate::proc::shlex_join(&[binary.into()])
+    ));
     let remote_identity: Value =
         serde_json::from_slice(&run(inspect, Vec::new(), 8192)?).map_err(|e| bad(e.to_string()))?;
     if remote_identity["fingerprint"] != device_fingerprint {
-        return Err(bad("Everett device-key fingerprint mismatch; pairing refused before key installation"));
+        return Err(bad(
+            "Everett device-key fingerprint mismatch; pairing refused before key installation",
+        ));
     }
     let request = Install {
         client_id: ident["device_id"].as_str().unwrap().into(),
         public_key: ident["public_key"].as_str().unwrap().into(),
     };
     let mut setup = ssh(&peer, &pin, false, false);
-    setup.arg(format!("{} peer install", crate::proc::shlex_join(&[binary.into()])));
+    setup.arg(format!(
+        "{} peer install",
+        crate::proc::shlex_join(&[binary.into()])
+    ));
     let installed = response(&run(setup, frame(&request)?, RESPONSE_CAP)?)?;
-    peer.device_id = installed["device_id"].as_str().ok_or_else(|| bad("peer did not return a device id"))?.into();
+    peer.device_id = installed["device_id"]
+        .as_str()
+        .ok_or_else(|| bad("peer did not return a device id"))?
+        .into();
     valid(&peer.device_id)?;
     if remote_identity["device_id"] != peer.device_id {
         return Err(bad("remote Everett device identity changed during pairing"));
     }
-    if expected_device.as_ref().is_some_and(|id| id != &peer.device_id) {
-        return Err(bad("remote Everett device identity changed; verify and explicitly re-pair"));
+    if expected_device
+        .as_ref()
+        .is_some_and(|id| id != &peer.device_id)
+    {
+        return Err(bad(
+            "remote Everett device identity changed; verify and explicitly re-pair",
+        ));
     }
-    let hello = response(&run(ssh(&peer, &pin, true, false), frame(&Request::Hello)?, RESPONSE_CAP)?)?;
+    let hello = response(&run(
+        ssh(&peer, &pin, true, false),
+        frame(&Request::Hello)?,
+        RESPONSE_CAP,
+    )?)?;
     if hello["device_id"] != peer.device_id {
         return Err(bad("peer device identity changed during pairing"));
     }
-    save(&config_path(name)?, &serde_json::to_vec(&peer).map_err(|e| bad(e.to_string()))?)?;
+    save(
+        &config_path(name)?,
+        &serde_json::to_vec(&peer).map_err(|e| bad(e.to_string()))?,
+    )?;
     Ok(json!({"peer": name, "device_id": peer.device_id, "host_fingerprint": fingerprint, "replies": "status polling"}))
+    })
 }
 
 fn tag(client: &str) -> String {
@@ -392,7 +604,8 @@ fn edit_authorized(client: &str, replacement: Option<&str>) -> Result<()> {
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Vec::new(),
         Err(e) => return Err(io_error(e)),
     };
-    let text = std::str::from_utf8(&raw).map_err(|_| bad("authorized_keys is not UTF-8; refusing to rewrite"))?;
+    let text = std::str::from_utf8(&raw)
+        .map_err(|_| bad("authorized_keys is not UTF-8; refusing to rewrite"))?;
     let mut next: String = text
         .split_inclusive('\n')
         .filter(|line| !line.trim_end_matches(['\r', '\n']).ends_with(&tag(client)))
@@ -405,7 +618,10 @@ fn edit_authorized(client: &str, replacement: Option<&str>) -> Result<()> {
         next.push('\n');
     }
     if !raw.is_empty() {
-        let backup = dir.join(format!("authorized_keys.everett-{}.bak", uuid::Uuid::new_v4()));
+        let backup = dir.join(format!(
+            "authorized_keys.everett-{}.bak",
+            uuid::Uuid::new_v4()
+        ));
         save(&backup, &raw)?;
     }
     save(&file, next.as_bytes())
@@ -421,7 +637,9 @@ fn install(request: Install) -> Result<Value> {
     let pieces: Vec<_> = request.public_key.split_whitespace().collect();
     if pieces.len() < 2
         || pieces[0] != "ssh-ed25519"
-        || !pieces[1].bytes().all(|b| b.is_ascii_alphanumeric() || b"+/=".contains(&b))
+        || !pieces[1]
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b"+/=".contains(&b))
     {
         return Err(bad("expected an Ed25519 public key"));
     }
@@ -450,12 +668,16 @@ fn install(request: Install) -> Result<Value> {
 
 fn read_frame(reader: impl Read) -> Result<Vec<u8>> {
     let mut bytes = Vec::new();
-    std::io::BufReader::new(reader.take((BODY_CAP + 1) as u64)).read_until(b'\n', &mut bytes).map_err(io_error)?;
+    std::io::BufReader::new(reader.take((BODY_CAP + 1) as u64))
+        .read_until(b'\n', &mut bytes)
+        .map_err(io_error)?;
     if bytes.len() > BODY_CAP {
         return Err(bad("peer request exceeds 64 KiB"));
     }
     if bytes.last() != Some(&b'\n') {
-        return Err(bad("peer request must be one newline-terminated JSON frame"));
+        return Err(bad(
+            "peer request must be one newline-terminated JSON frame",
+        ));
     }
     Ok(bytes)
 }
@@ -470,14 +692,18 @@ pub fn serve(client: Option<&str>, setup: bool) -> i32 {
     });
     let result = (|| {
         if !setup {
-            authorized(client.ok_or_else(|| bad("peer serve requires the forced command's --client identity"))?)?;
+            authorized(client.ok_or_else(|| {
+                bad("peer serve requires the forced command's --client identity")
+            })?)?;
         }
         let bytes = read_frame(std::io::stdin().lock())?;
         if setup {
-            let req = serde_json::from_slice(&bytes).map_err(|e| bad(format!("invalid pairing request: {e}")))?;
+            let req = serde_json::from_slice(&bytes)
+                .map_err(|e| bad(format!("invalid pairing request: {e}")))?;
             install(req)
         } else {
-            let req = serde_json::from_slice(&bytes).map_err(|e| bad(format!("invalid peer request: {e}")))?;
+            let req = serde_json::from_slice(&bytes)
+                .map_err(|e| bad(format!("invalid peer request: {e}")))?;
             dispatch(client.unwrap(), req)
         }
     })();
@@ -487,7 +713,10 @@ pub fn serve(client: Option<&str>, setup: bool) -> i32 {
     };
     let bytes = serde_json::to_vec(&value).unwrap();
     if bytes.len() > RESPONSE_CAP {
-        println!("{}", json!({"error":{"code":2,"message":"peer response exceeds 1 MiB; narrow the listing"}}));
+        println!(
+            "{}",
+            json!({"error":{"code":2,"message":"peer response exceeds 1 MiB; narrow the listing"}})
+        );
     } else {
         println!("{}", String::from_utf8_lossy(&bytes));
     }
@@ -499,15 +728,26 @@ fn dispatch(client: &str, request: Request) -> Result<Value> {
     match request {
         Request::Hello => Ok(json!({"device_id": identity()?["device_id"]})),
         Request::Revoke => revoke(client),
-        Request::Ls { hours, all, harness } => {
+        Request::Ls {
+            hours,
+            all,
+            harness,
+        } => {
             if !hours.is_finite() || hours <= 0.0 {
                 return Err(bad("hours must be positive and finite"));
             }
-            Ok(json!(registry::scan(hours, all, Some(registry::CAP), &harness)))
+            Ok(json!(registry::scan(
+                hours,
+                all,
+                Some(registry::CAP),
+                &harness
+            )))
         }
         Request::Card { session, harness } => {
             let target = remote_session(&session, &harness)?;
-            Ok(json!({"card": target.card, "source": target.card_source, "updated": target.last_active}))
+            Ok(
+                json!({"card": target.card, "source": target.card_source, "updated": target.last_active}),
+            )
         }
         req @ Request::Send { .. } => receive(client, req),
         Request::Status { message_id } => remote_status(client, &message_id),
@@ -529,17 +769,31 @@ fn delivery_lock() -> Result<File> {
 
 fn receive(client: &str, request: Request) -> Result<Value> {
     let digest = format!("{:x}", Sha256::digest(frame(&request)?));
-    let Request::Send { session, harness, text, from, idempotency_key, hops } = request else { unreachable!() };
+    let Request::Send {
+        session,
+        harness,
+        text,
+        from,
+        idempotency_key,
+        hops,
+    } = request
+    else {
+        unreachable!()
+    };
     valid(&session)?;
     valid(&from.session)?;
     valid(&idempotency_key)?;
     if !(1..=inbox::MAX_HOPS).contains(&hops) {
-        return Err(EverettError::new(7, "cross-device hop limit reached (maximum 3)"));
+        return Err(EverettError::new(
+            7,
+            "cross-device hop limit reached (maximum 3)",
+        ));
     }
     let _guard = delivery_lock()?;
     for file in crate::paths::glob(&inbox::inbox_dir(), "*.jsonl") {
         for item in inbox::read(&file.file_stem().unwrap_or_default().to_string_lossy()) {
-            if item.get("peer_client") == Some(&json!(client)) && item.get("peer_key") == Some(&json!(idempotency_key))
+            if item.get("peer_client") == Some(&json!(client))
+                && item.get("peer_key") == Some(&json!(idempotency_key))
             {
                 if item.get("peer_digest") != Some(&json!(digest)) {
                     return Err(bad("idempotency key already used for a different request"));
@@ -573,8 +827,9 @@ fn remote_status(client: &str, message_id: &str) -> Result<Value> {
     let original = inbox::find(message_id)
         .filter(|m| m.get("peer_client") == Some(&json!(client)))
         .ok_or_else(|| bad("no message for this peer client"))?;
-    let reply =
-        inbox::read(&format!("peer-{client}")).into_iter().find(|m| m.get("reply_to") == Some(&json!(message_id)));
+    let reply = inbox::read(&format!("peer-{client}"))
+        .into_iter()
+        .find(|m| m.get("reply_to") == Some(&json!(message_id)));
     let done = inbox::done_ids(original["to"].as_str().unwrap()).contains(message_id);
     Ok(
         json!({"message_id": message_id, "state": if reply.is_some() { "replied" } else if done { "delivered" } else { "queued" }, "reply": reply}),
@@ -587,16 +842,29 @@ pub fn retain_reply(
     who: &Map<String, Value>,
     hops: i64,
 ) -> Result<Map<String, Value>> {
-    let client = original["peer_client"].as_str().ok_or_else(|| bad("missing peer client"))?;
+    let sender = who["sender"].as_str().unwrap_or(inbox::HUMAN);
+    if inbox::external(original)
+        || inbox::relay_context(sender)
+            .as_ref()
+            .is_some_and(inbox::external)
+    {
+        return Err(bad("external/untrusted replies require relay or local inbox; SSH cannot preserve this provenance"));
+    }
+    let client = original["peer_client"]
+        .as_str()
+        .ok_or_else(|| bad("missing peer client"))?;
     valid(client)?;
     let _guard = delivery_lock()?;
     let destination = format!("peer-{client}");
     let mid = original["id"].as_str().unwrap();
-    let message = if let Some(existing) =
-        inbox::read(&destination).into_iter().find(|m| m.get("reply_to") == Some(&json!(mid)))
+    let message = if let Some(existing) = inbox::read(&destination)
+        .into_iter()
+        .find(|m| m.get("reply_to") == Some(&json!(mid)))
     {
         if existing.get("text") != Some(&json!(text.trim())) {
-            return Err(bad("a different reply is already retained for this message"));
+            return Err(bad(
+                "a different reply is already retained for this message",
+            ));
         }
         existing
     } else {
@@ -616,12 +884,35 @@ pub fn retain_reply(
 }
 
 pub fn ls(name: &str, hours: f64, all: bool, harness: &str) -> Result<Value> {
-    let mut rows = rpc(name, &Request::Ls { hours, all, harness: harness.into() })?;
-    let rows_array = rows.as_array_mut().ok_or_else(|| bad("peer listing is not an array"))?;
+    assert_alias_unambiguous(name)?;
+    if crate::relay::configured(name) {
+        return Err(bad(
+            "Convex peers use explicit session IDs; remote ls/card are SSH-only",
+        ));
+    }
+    let mut rows = rpc(
+        name,
+        &Request::Ls {
+            hours,
+            all,
+            harness: harness.into(),
+        },
+    )?;
+    let rows_array = rows
+        .as_array_mut()
+        .ok_or_else(|| bad("peer listing is not an array"))?;
     for row in rows_array {
-        let row = row.as_object_mut().ok_or_else(|| bad("peer listing contains a non-session value"))?;
-        let harness = row.get("harness").and_then(Value::as_str).ok_or_else(|| bad("peer session missing harness"))?;
-        let id = row.get("id").and_then(Value::as_str).ok_or_else(|| bad("peer session missing id"))?;
+        let row = row
+            .as_object_mut()
+            .ok_or_else(|| bad("peer listing contains a non-session value"))?;
+        let harness = row
+            .get("harness")
+            .and_then(Value::as_str)
+            .ok_or_else(|| bad("peer session missing harness"))?;
+        let id = row
+            .get("id")
+            .and_then(Value::as_str)
+            .ok_or_else(|| bad("peer session missing id"))?;
         let prefixed = format!("{name}/{harness}/{id}");
         row.insert("device".into(), json!(name));
         row.insert("id".into(), json!(prefixed));
@@ -642,7 +933,19 @@ pub fn target(value: &str) -> Result<(&str, &str, &str)> {
 
 pub fn card(value: &str) -> Result<Value> {
     let (name, harness, session) = target(value)?;
-    rpc(name, &Request::Card { session: session.into(), harness: harness.into() })
+    assert_alias_unambiguous(name)?;
+    if crate::relay::configured(name) {
+        return Err(bad(
+            "Convex peers use explicit session IDs; remote ls/card are SSH-only",
+        ));
+    }
+    rpc(
+        name,
+        &Request::Card {
+            session: session.into(),
+            harness: harness.into(),
+        },
+    )
 }
 
 fn receipt_path(name: &str, message_id: &str) -> Result<PathBuf> {
@@ -655,11 +958,24 @@ fn receipt_path(name: &str, message_id: &str) -> Result<PathBuf> {
 
 pub fn send(value: &str, text: &str, key: Option<&str>, caller: Option<&str>) -> Result<Value> {
     let (name, harness, session) = target(value)?;
+    assert_alias_unambiguous(name)?;
+    if crate::relay::configured(name) {
+        return crate::relay::send(value, text, key, caller);
+    }
     let who = send::sender_info(caller);
     let sender = who["sender"].as_str().unwrap_or(inbox::HUMAN);
-    let hops = send::current_hops().max(inbox::session_hops(sender));
+    if inbox::relay_context(sender)
+        .as_ref()
+        .is_some_and(inbox::external)
+    {
+        return Err(bad("external/untrusted forwarding requires relay or local inbox; the independent SSH wire cannot preserve this provenance"));
+    }
+    let hops = send::caller_hops_for(Some(sender));
     if hops >= inbox::MAX_HOPS {
-        return Err(EverettError::new(7, "cross-device hop limit reached (maximum 3)"));
+        return Err(EverettError::new(
+            7,
+            "cross-device hop limit reached (maximum 3)",
+        ));
     }
     let hops = hops.max(0) + 1;
     let generated = uuid::Uuid::new_v4().to_string();
@@ -679,9 +995,18 @@ pub fn send(value: &str, text: &str, key: Option<&str>, caller: Option<&str>) ->
             hops,
         },
     )?;
-    let mid = result["message_id"].as_str().ok_or_else(|| bad("peer did not return a message id"))?;
-    let receipt = Receipt { sender: sender.into(), harness: harness.into(), session: session.into() };
-    save(&receipt_path(name, mid)?, &serde_json::to_vec(&receipt).unwrap())?;
+    let mid = result["message_id"]
+        .as_str()
+        .ok_or_else(|| bad("peer did not return a message id"))?;
+    let receipt = Receipt {
+        sender: sender.into(),
+        harness: harness.into(),
+        session: session.into(),
+    };
+    save(
+        &receipt_path(name, mid)?,
+        &serde_json::to_vec(&receipt).unwrap(),
+    )?;
     let mut result = result;
     result["peer"] = json!(name);
     result["idempotency_key"] = json!(key);
@@ -690,20 +1015,38 @@ pub fn send(value: &str, text: &str, key: Option<&str>, caller: Option<&str>) ->
 }
 
 pub fn status(name: &str, message_id: &str) -> Result<Value> {
-    let receipt: Receipt = serde_json::from_slice(&fs::read(receipt_path(name, message_id)?).map_err(io_error)?)
-        .map_err(|e| bad(format!("invalid outgoing receipt: {e}")))?;
-    let mut result = rpc(name, &Request::Status { message_id: message_id.into() })?;
+    assert_alias_unambiguous(name)?;
+    if crate::relay::configured(name) {
+        return crate::relay::status(name, message_id);
+    }
+    let receipt: Receipt =
+        serde_json::from_slice(&fs::read(receipt_path(name, message_id)?).map_err(io_error)?)
+            .map_err(|e| bad(format!("invalid outgoing receipt: {e}")))?;
+    let mut result = rpc(
+        name,
+        &Request::Status {
+            message_id: message_id.into(),
+        },
+    )?;
     if let Some(reply) = result.get("reply").and_then(Value::as_object) {
-        let id = reply.get("id").and_then(Value::as_str).ok_or_else(|| bad("reply missing id"))?;
+        let id = reply
+            .get("id")
+            .and_then(Value::as_str)
+            .ok_or_else(|| bad("reply missing id"))?;
         valid(id)?;
-        let hops = reply.get("hops").and_then(Value::as_i64).ok_or_else(|| bad("reply missing hops"))?;
-        if !(1..=inbox::MAX_HOPS).contains(&hops) || reply.get("reply_to") != Some(&json!(message_id)) {
+        let hops = reply
+            .get("hops")
+            .and_then(Value::as_i64)
+            .ok_or_else(|| bad("reply missing hops"))?;
+        if !(1..=inbox::MAX_HOPS).contains(&hops)
+            || reply.get("reply_to") != Some(&json!(message_id))
+        {
             return Err(bad("invalid peer reply correlation or hop count"));
         }
         let _guard = delivery_lock()?;
-        let imported = inbox::read(&receipt.sender)
-            .into_iter()
-            .find(|m| m.get("peer_reply_id") == Some(&json!(id)) && m.get("peer") == Some(&json!(name)));
+        let imported = inbox::read(&receipt.sender).into_iter().find(|m| {
+            m.get("peer_reply_id") == Some(&json!(id)) && m.get("peer") == Some(&json!(name))
+        });
         let message = if let Some(imported) = imported {
             imported
         } else {
@@ -712,7 +1055,10 @@ pub fn status(name: &str, message_id: &str) -> Result<Value> {
             extra.insert("peer".into(), json!(name));
             inbox::post(
                 &receipt.sender,
-                reply.get("text").and_then(Value::as_str).ok_or_else(|| bad("reply missing text"))?,
+                reply
+                    .get("text")
+                    .and_then(Value::as_str)
+                    .ok_or_else(|| bad("reply missing text"))?,
                 &format!("{name}/{}/{}", receipt.harness, receipt.session),
                 "reply",
                 message_id,
@@ -727,9 +1073,145 @@ pub fn status(name: &str, message_id: &str) -> Result<Value> {
     Ok(result)
 }
 
-pub fn remove(name: &str) -> Result<Value> {
+fn remove_ssh_locked(name: &str) -> Result<Value> {
     rpc(name, &Request::Revoke)?;
     fs::remove_file(config_path(name)?).map_err(io_error)?;
     fs::remove_file(known_hosts(name)?).map_err(io_error)?;
     Ok(json!({"removed": name, "remote_key_revoked": true}))
+}
+
+/// Removing a duplicate alias is fail-closed unless a transport is named.
+/// SSH removal keeps its remote key-revocation step; Convex removal is local
+/// trust only, with permanent backend revocation remaining an explicit action.
+pub fn remove_scoped(name: &str, transport: Option<&str>) -> Result<Value> {
+    valid(name)?;
+    let _alias_guard = alias_lock()?;
+    let ssh = config_path(name)?.exists();
+    let convex = crate::relay::configured(name);
+    remove_alias_binding(
+        ssh,
+        convex,
+        transport,
+        || remove_ssh_locked(name),
+        || crate::relay::remove_locked(name),
+    )
+}
+
+fn remove_alias_binding<T>(
+    ssh: bool,
+    convex: bool,
+    transport: Option<&str>,
+    remove_ssh: impl FnOnce() -> Result<T>,
+    remove_convex: impl FnOnce() -> Result<T>,
+) -> Result<T> {
+    match transport {
+        None if ssh && convex => Err(bad(
+            "alias is configured for both SSH and Convex; remove one binding explicitly before use",
+        )),
+        None if convex => remove_convex(),
+        None if ssh => remove_ssh(),
+        None => Err(bad("unknown peer; use everett peer add")),
+        Some("ssh") if ssh => remove_ssh(),
+        Some("convex") if convex => remove_convex(),
+        Some("ssh") => Err(bad("alias has no SSH binding")),
+        Some("convex") => Err(bad("alias has no Convex binding")),
+        Some(_) => Err(bad("transport must be ssh or convex")),
+    }
+}
+
+pub fn remove(name: &str) -> Result<Value> {
+    remove_scoped(name, None)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn shared_alias_lock_serializes_transport_claims() {
+        let dir = tempfile::tempdir().unwrap();
+        let held = alias_lock_at(dir.path()).unwrap();
+        let path = dir.path().to_path_buf();
+        let (sent, received) = std::sync::mpsc::channel();
+        let contender = std::thread::spawn(move || {
+            let _guard = alias_lock_at(&path).unwrap();
+            sent.send(()).unwrap();
+        });
+        assert!(received
+            .recv_timeout(std::time::Duration::from_millis(25))
+            .is_err());
+        drop(held);
+        received
+            .recv_timeout(std::time::Duration::from_secs(1))
+            .unwrap();
+        contender.join().unwrap();
+    }
+
+    #[test]
+    fn shared_alias_claim_allows_exactly_one_competing_transport() {
+        let dir = tempfile::tempdir().unwrap();
+        let shared = dir.path().to_path_buf();
+        let claims = std::sync::Arc::new(std::sync::Mutex::new(std::collections::BTreeSet::new()));
+        let start = std::sync::Arc::new(std::sync::Barrier::new(2));
+        let mut contenders = Vec::new();
+        for (transport, other) in [("ssh", "convex"), ("convex", "ssh")] {
+            let shared = shared.clone();
+            let claims = claims.clone();
+            let start = start.clone();
+            contenders.push(std::thread::spawn(move || {
+                start.wait();
+                claim_alias_at(
+                    &shared,
+                    "shared-name",
+                    other,
+                    || Ok(claims.lock().unwrap().contains(other)),
+                    || {
+                        claims.lock().unwrap().insert(transport.to_string());
+                        Ok(transport.to_string())
+                    },
+                )
+            }));
+        }
+        let results: Vec<_> = contenders.into_iter().map(|t| t.join().unwrap()).collect();
+        assert_eq!(results.iter().filter(|r| r.is_ok()).count(), 1);
+        assert_eq!(results.iter().filter(|r| r.is_err()).count(), 1);
+        assert_eq!(claims.lock().unwrap().len(), 1);
+        assert!(results
+            .iter()
+            .filter_map(|r| r.as_ref().err())
+            .all(|e| e.message.contains("alias already selects")));
+    }
+
+    #[test]
+    fn duplicate_alias_removal_is_fail_closed_but_scope_repairs_one_binding() {
+        let bindings = std::sync::Arc::new(std::sync::Mutex::new(
+            ["ssh", "convex"]
+                .into_iter()
+                .collect::<std::collections::BTreeSet<_>>(),
+        ));
+        let ssh = || {
+            let bindings = bindings.clone();
+            move || {
+                bindings.lock().unwrap().remove("ssh");
+                Ok("ssh")
+            }
+        };
+        let convex = || {
+            let bindings = bindings.clone();
+            move || {
+                bindings.lock().unwrap().remove("convex");
+                Ok("convex")
+            }
+        };
+        assert!(remove_alias_binding(true, true, None, ssh(), convex()).is_err());
+        assert_eq!(bindings.lock().unwrap().len(), 2);
+        assert_eq!(
+            remove_alias_binding(true, true, Some("ssh"), ssh(), convex()).unwrap(),
+            "ssh"
+        );
+        assert_eq!(
+            bindings.lock().unwrap().iter().copied().collect::<Vec<_>>(),
+            ["convex"]
+        );
+    }
 }

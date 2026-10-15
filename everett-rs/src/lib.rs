@@ -19,6 +19,7 @@ pub mod paths;
 pub mod peer;
 pub mod proc;
 pub mod registry;
+pub mod relay;
 pub mod route;
 pub mod send;
 pub mod session;

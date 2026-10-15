@@ -8,7 +8,17 @@ const EVENT_KINDS: &[&str] = &["done", "blocked", "needs-input", "info"];
 const SCOPES: &[&str] = &["global", "project"];
 const MODES: &[&str] = &["auto", "inbox", "resume"];
 const LLMS: &[&str] = &["claude", "codex", "none"];
-const HARNESSES: &[&str] = &["claude", "codex", "omp", "pi", "hermes", "grok", "devin", "openai-dot", "grok-bot"];
+const HARNESSES: &[&str] = &[
+    "claude",
+    "codex",
+    "omp",
+    "pi",
+    "hermes",
+    "grok",
+    "devin",
+    "openai-dot",
+    "grok-bot",
+];
 
 #[derive(Parser)]
 #[command(name = "everett", version = env!("CARGO_PKG_VERSION"), about = "See and reach parallel coding-agent sessions.")]
@@ -22,6 +32,11 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Cmd {
+    /// live encrypted Convex relay; writes inboxes, never wakes sessions
+    Relay {
+        #[command(subcommand)]
+        action: Option<RelayCmd>,
+    },
     /// pair devices and make restricted SSH inbox requests
     Peer {
         #[command(subcommand)]
@@ -296,6 +311,17 @@ enum Cmd {
 
 #[derive(Subcommand)]
 enum PeerCmd {
+    /// pin a Convex device after out-of-band fingerprint confirmation
+    AddRelay {
+        name: String,
+        #[arg(long)]
+        device: String,
+        #[arg(long)]
+        fingerprint: String,
+        /// active bilateral grant for a named cross-org agent
+        #[arg(long)]
+        grant: Option<String>,
+    },
     /// pair one SSH direction; replies return through status polling
     Add {
         name: String,
@@ -317,8 +343,13 @@ enum PeerCmd {
     List,
     /// print this device's peer id and public key
     Identity,
-    /// revoke our tagged key remotely, then forget this peer (requires online SSH)
-    Remove { name: String },
+    /// remove a peer; duplicate transport aliases require --transport ssh|convex
+    Remove {
+        name: String,
+        /// select one transport when a legacy alias exists in both registries
+        #[arg(long, value_parser = ["ssh", "convex"])]
+        transport: Option<String>,
+    },
     /// remove a client's tagged key from this machine's authorized_keys
     Revoke { client: String },
     /// list sessions on a peer
@@ -346,9 +377,126 @@ enum PeerCmd {
 
 fn peer_output(result: everett::error::Result<serde_json::Value>) -> i32 {
     match result {
-        Ok(value) => { println!("{}", serde_json::to_string_pretty(&value).unwrap()); 0 }
-        Err(e) => { eprintln!("everett: {e}"); e.code }
+        Ok(value) => {
+            println!("{}", serde_json::to_string_pretty(&value).unwrap());
+            0
+        }
+        Err(e) => {
+            eprintln!("everett: {e}");
+            e.code
+        }
     }
+}
+
+#[derive(Subcommand)]
+enum RelayCmd {
+    /// register this device and print its public bundle and fingerprint
+    Register,
+    /// list active registered credentials/devices in the verified namespace
+    #[command(alias = "credentials")]
+    Devices,
+    /// verified namespace, agent credential ID and authoritative role
+    Whoami,
+    /// permanently revoke this or an admin-selected agent/device credential
+    #[command(alias = "revoke-device")]
+    RevokeAgent { device: String },
+    /// permanently revoke an org membership (admin only)
+    RevokeMember { subject: String },
+    /// rotate both independent relay keys; requires the old signing key
+    Rotate,
+    /// bilateral admin-only named-agent cross-org permissions
+    Grant {
+        #[command(subcommand)]
+        action: GrantCmd,
+    },
+}
+
+#[derive(Subcommand)]
+enum GrantCmd {
+    Invite {
+        grant_id: String,
+        #[arg(long)]
+        device: String,
+        #[arg(long)]
+        peer_owner: String,
+        #[arg(long)]
+        peer_device: String,
+        #[arg(long)]
+        local_fingerprint: String,
+        #[arg(long)]
+        peer_fingerprint: String,
+        /// Unix milliseconds; absent means no grant expiry
+        #[arg(long)]
+        expires_at: Option<i64>,
+        #[arg(long, default_value_t = 30)]
+        rate_per_minute: u32,
+        #[arg(long, default_value_t = 65536)]
+        body_cap_bytes: u32,
+    },
+    Accept {
+        grant_id: String,
+        #[arg(long)]
+        local_fingerprint: String,
+        #[arg(long)]
+        peer_fingerprint: String,
+    },
+    Reconfirm {
+        grant_id: String,
+        #[arg(long)]
+        local_fingerprint: String,
+        #[arg(long)]
+        peer_fingerprint: String,
+    },
+    Revoke {
+        grant_id: String,
+    },
+    Get {
+        grant_id: String,
+    },
+    List,
+}
+
+fn grant_command(action: GrantCmd) -> everett::error::Result<serde_json::Value> {
+    use serde_json::json;
+    let (name, args, query) = match action {
+        GrantCmd::Invite {
+            grant_id,
+            device,
+            peer_owner,
+            peer_device,
+            local_fingerprint,
+            peer_fingerprint,
+            expires_at,
+            rate_per_minute,
+            body_cap_bytes,
+        } => (
+            "grants:invite",
+            json!({"grantId":grant_id,"deviceId":device,"peerOwner":peer_owner,"peerDeviceId":peer_device,"localFingerprint":local_fingerprint,"peerFingerprint":peer_fingerprint,"expiresAt":expires_at,"ratePerMinute":rate_per_minute,"bodyCapBytes":body_cap_bytes}),
+            false,
+        ),
+        GrantCmd::Accept {
+            grant_id,
+            local_fingerprint,
+            peer_fingerprint,
+        } => (
+            "grants:accept",
+            json!({"grantId":grant_id,"localFingerprint":local_fingerprint,"peerFingerprint":peer_fingerprint}),
+            false,
+        ),
+        GrantCmd::Reconfirm {
+            grant_id,
+            local_fingerprint,
+            peer_fingerprint,
+        } => (
+            "grants:reconfirm",
+            json!({"grantId":grant_id,"localFingerprint":local_fingerprint,"peerFingerprint":peer_fingerprint}),
+            false,
+        ),
+        GrantCmd::Revoke { grant_id } => ("grants:revoke", json!({"grantId":grant_id}), false),
+        GrantCmd::Get { grant_id } => ("grants:get", json!({"grantId":grant_id}), true),
+        GrantCmd::List => ("grants:list", json!({}), true),
+    };
+    everett::relay::admin_call(name, args, query)
 }
 
 #[derive(Subcommand)]
@@ -383,36 +531,108 @@ fn main() {
         ..Default::default()
     };
     let code = match cli.cmd {
+        Cmd::Relay { action } => match action {
+            None => peer_output(everett::relay::run()),
+            Some(RelayCmd::Register) => peer_output(everett::relay::register()),
+            Some(RelayCmd::Devices) => peer_output(everett::relay::devices()),
+            Some(RelayCmd::Whoami) => peer_output(everett::relay::admin_call(
+                "relay:whoami",
+                serde_json::json!({}),
+                true,
+            )),
+            Some(RelayCmd::Rotate) => peer_output(everett::relay::rotate()),
+            Some(RelayCmd::RevokeAgent { device }) => peer_output(everett::relay::admin_call(
+                "relay:revokeAgent",
+                serde_json::json!({"deviceId":device}),
+                false,
+            )),
+            Some(RelayCmd::RevokeMember { subject }) => peer_output(everett::relay::admin_call(
+                "relay:revokeMember",
+                serde_json::json!({"subject":subject}),
+                false,
+            )),
+            Some(RelayCmd::Grant { action }) => peer_output(grant_command(action)),
+        },
         Cmd::Peer { action } => match action {
-            PeerCmd::Add { name, ssh, port, binary, host_key, device_key } => peer_output(everett::peer::add(&name, &ssh, port, &binary, &host_key, &device_key)),
-            PeerCmd::List => peer_output(everett::peer::peers().map(|p| serde_json::json!(p))),
+            PeerCmd::AddRelay {
+                name,
+                device,
+                fingerprint,
+                grant,
+            } => peer_output(everett::relay::add(
+                &name,
+                &device,
+                &fingerprint,
+                grant.as_deref(),
+            )),
+            PeerCmd::Add {
+                name,
+                ssh,
+                port,
+                binary,
+                host_key,
+                device_key,
+            } => peer_output(everett::peer::add(
+                &name,
+                &ssh,
+                port,
+                &binary,
+                &host_key,
+                &device_key,
+            )),
+            PeerCmd::List => peer_output(everett::peer::listing()),
             PeerCmd::Identity => peer_output(everett::peer::identity()),
-            PeerCmd::Remove { name } => peer_output(everett::peer::remove(&name)),
+            PeerCmd::Remove { name, transport } => {
+                peer_output(everett::peer::remove_scoped(&name, transport.as_deref()))
+            }
             PeerCmd::Revoke { client } => peer_output(everett::peer::revoke(&client)),
             PeerCmd::Card { target } => peer_output(everett::peer::card(&target)),
-            PeerCmd::Status { name, message_id } => peer_output(everett::peer::status(&name, &message_id)),
+            PeerCmd::Status { name, message_id } => {
+                peer_output(everett::peer::status(&name, &message_id))
+            }
             PeerCmd::Serve { client } => everett::peer::serve(client.as_deref(), false),
             PeerCmd::Install => everett::peer::serve(None, true),
-            PeerCmd::Ls { name, all, harness, json } => {
-                a.peer = Some(name); a.all = all; a.harness = harness; a.json = json;
+            PeerCmd::Ls {
+                name,
+                all,
+                harness,
+                json,
+            } => {
+                a.peer = Some(name);
+                a.all = all;
+                a.harness = harness;
+                a.json = json;
                 cli::cmd_ls(&a)
             }
         },
         Cmd::External { action } => match action {
-            ExternalCmd::Add { id, harness, title, cwd, replace } => {
-                cli::cmd_external_add(&id, &harness, &title, &cwd, replace)
-            }
+            ExternalCmd::Add {
+                id,
+                harness,
+                title,
+                cwd,
+                replace,
+            } => cli::cmd_external_add(&id, &harness, &title, &cwd, replace),
             ExternalCmd::List => cli::cmd_external_list(),
             ExternalCmd::Remove { id } => cli::cmd_external_remove(&id),
         },
-        Cmd::Ls { json, all, harness, peer } => {
+        Cmd::Ls {
+            json,
+            all,
+            harness,
+            peer,
+        } => {
             a.peer = peer;
             a.json = json;
             a.all = all;
             a.harness = harness;
             cli::cmd_ls(&a)
         }
-        Cmd::Cards { regenerate_auto, dry_run, hours } => {
+        Cmd::Cards {
+            regenerate_auto,
+            dry_run,
+            hours,
+        } => {
             a.regenerate_auto = regenerate_auto;
             a.dry_run = dry_run;
             a.regen_hours = hours;
@@ -425,7 +645,20 @@ fn main() {
             a.router = router;
             cli::cmd_route(&a)
         }
-        Cmd::Send { text, json, dry_run, timeout, router, to, spawn, dir, harness, mode, wait, idempotency_key } => {
+        Cmd::Send {
+            text,
+            json,
+            dry_run,
+            timeout,
+            router,
+            to,
+            spawn,
+            dir,
+            harness,
+            mode,
+            wait,
+            idempotency_key,
+        } => {
             a.idempotency_key = idempotency_key;
             a.text = Some(text);
             a.json = json;
@@ -440,21 +673,35 @@ fn main() {
             a.wait = wait;
             cli::cmd_send(&a)
         }
-        Cmd::Event { kind, message, project, session } => {
+        Cmd::Event {
+            kind,
+            message,
+            project,
+            session,
+        } => {
             a.kind = Some(kind);
             a.message = Some(message);
             a.project = project;
             a.session = session;
             cli::cmd_event(&a)
         }
-        Cmd::Events { since, session, json, check } => {
+        Cmd::Events {
+            since,
+            session,
+            json,
+            check,
+        } => {
             a.since = since;
             a.session = session;
             a.json = json;
             a.check = check;
             cli::cmd_events(&a)
         }
-        Cmd::Subscribe { target, as_, remove } => {
+        Cmd::Subscribe {
+            target,
+            as_,
+            remove,
+        } => {
             a.target = Some(target);
             a.as_ = as_;
             a.remove = remove;
@@ -465,13 +712,24 @@ fn main() {
             a.text = Some(text);
             cli::cmd_reply(&a)
         }
-        Cmd::Inbox { session, peek, json } => {
+        Cmd::Inbox {
+            session,
+            peek,
+            json,
+        } => {
             a.session = session;
             a.peek = peek;
             a.json = json;
             cli::cmd_inbox(&a)
         }
-        Cmd::Trunk { action, dry_run, llm, at, apply, remove } => {
+        Cmd::Trunk {
+            action,
+            dry_run,
+            llm,
+            at,
+            apply,
+            remove,
+        } => {
             a.action = Some(action);
             a.dry_run = dry_run;
             a.llm = llm;
@@ -480,7 +738,11 @@ fn main() {
             a.remove = remove;
             cli::cmd_trunk(&a)
         }
-        Cmd::Learn { fact, project, scope } => {
+        Cmd::Learn {
+            fact,
+            project,
+            scope,
+        } => {
             a.fact = Some(fact);
             a.project = project;
             a.scope = scope;
@@ -491,7 +753,13 @@ fn main() {
             a.project = project;
             cli::cmd_core(&a)
         }
-        Cmd::InstallHooks { claude, codex, omp, grok, apply } => {
+        Cmd::InstallHooks {
+            claude,
+            codex,
+            omp,
+            grok,
+            apply,
+        } => {
             a.claude = claude;
             a.codex = codex;
             a.omp = omp;
@@ -500,8 +768,20 @@ fn main() {
             cli::cmd_install_hooks(&a)
         }
         Cmd::Mcp => cli::cmd_mcp(&a),
-        Cmd::Gateway { config, transport, port } => everett::gateway::run(&config, &transport, port),
-        Cmd::InstallMcp { claude, codex, omp, grok, devin, apply, repair } => {
+        Cmd::Gateway {
+            config,
+            transport,
+            port,
+        } => everett::gateway::run(&config, &transport, port),
+        Cmd::InstallMcp {
+            claude,
+            codex,
+            omp,
+            grok,
+            devin,
+            apply,
+            repair,
+        } => {
             a.claude = claude;
             a.codex = codex;
             a.omp = omp;
@@ -511,7 +791,12 @@ fn main() {
             a.repair = repair;
             cli::cmd_install_mcp(&a)
         }
-        Cmd::Login { device, open, force, json } => {
+        Cmd::Login {
+            device,
+            open,
+            force,
+            json,
+        } => {
             a.device = device;
             a.open = open;
             a.force = force;
@@ -527,7 +812,14 @@ fn main() {
             cli::cmd_logout(&a)
         }
         Cmd::Doctor => cli::cmd_doctor(&a),
-        Cmd::Onboard { yes, span_days, no_backfill, no_mcp, jev_key_env, schedule_merge } => {
+        Cmd::Onboard {
+            yes,
+            span_days,
+            no_backfill,
+            no_mcp,
+            jev_key_env,
+            schedule_merge,
+        } => {
             a.onboard_yes = yes;
             a.span_days = span_days;
             a.no_backfill = no_backfill;
