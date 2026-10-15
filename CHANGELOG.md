@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Add paged `everett devices [--json]` and registry address resolution for `peer add NAME`.
+  Publish signed display-name/address metadata on `relay register` and signed-in SSH serve
+  startup with a declared `[peer] address` or `--address`. Explicit address conflicts fail
+  closed; first pairing still requires both out-of-band fingerprints and never refreshes pins.
+
 ## 1.6.0 — 2026-10-15
 
 - Require host-bound MCP caller identity for delivery and replies; reject conflicting model
