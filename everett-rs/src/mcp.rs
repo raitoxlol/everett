@@ -8,7 +8,7 @@ use std::sync::OnceLock;
 use serde_json::{json, Map, Value};
 
 use crate::error::EverettError;
-use crate::send::{caller_identity, delivery_mode, refuse_self};
+use crate::send::{caller_identity, refuse_self};
 use crate::session::{now, Session};
 
 pub const PROTOCOL_VERSIONS: &[&str] = &["2025-06-18", "2025-03-26", "2024-11-05"];
@@ -68,7 +68,8 @@ pub fn tools() -> &'static Vec<Value> {
                 "description": "Deliver a request to another session. This is the default way to hand off work: pass just `text` describing the task and Everett routes it for you (jev when configured, else the local matcher) -- do not call everett_ls and pick a target by hand. Only pass `to` (session id prefix, exact title, card name, or project folder) when the user named a specific session, or when replying to one; it skips routing entirely. The response always reports the route decision -- which router decided (jev/local), the chosen session, and its confidence -- so you can tell the user e.g. \"jev picked ...\". A SESSION decision is delivered. On ASK (ambiguous) nothing is sent; the candidate sessions come back for you to disambiguate, then call again with `to`. A session with a live harness process (someone has it open) gets the request in its inbox, injected at its next turn or tool call; pass `wait` to wait for the reply, or it arrives in YOUR inbox later. An idle session is resumed headless and its reply returned. To answer an Everett message you received, pass reply_to=<message id> and text. A NEW decision starts a new headless session only when spawn=true. It refuses to send to your own session and refuses requests forwarded more than 3 times.",
                 "inputSchema": {"type": "object", "properties": {
                     "text": s("The request for the other session. Make it self-contained."),
-                    "to": s("Target session: id prefix, exact title, card name, or project folder name."),
+                    "to": s("Local session id prefix/title/card/project, or explicit remote peer/harness/session. Remote delivery is inbox-only and never wakes a session."),
+                    "idempotency_key": s("Stable key for an explicit remote send; reuse it only for the same request when delivery is uncertain."),
                     "hours": hours_prop(),
                     "spawn": {"type": "boolean", "description": "Allow starting a NEW session when routing says NEW.", "default": false},
                     "dir": s("Working directory for a spawned session."),
@@ -138,12 +139,57 @@ pub fn tools() -> &'static Vec<Value> {
                 "description": "Your own session id and harness as Everett detects them, and how it detected them. If none is detected, pass session_id explicitly to everett_send and everett_card.",
                 "inputSchema": {"type": "object", "properties": {}, "additionalProperties": false},
             }),
+            json!({
+                "name": "everett_agent_relay",
+                "description": "OIDC-authorized agent identity, registration, org directory, pinned relay aliases and revocation. Credentials are per agent, never bearer tokens. Membership management is admin-only; an agent can revoke itself. Run everett relay separately to receive; never wakes sessions.",
+                "inputSchema": {"type":"object","properties":{
+                    "action":{"type":"string","enum":["identity","register","directory","pair","unpair","credentials","memberships","revoke-membership","revoke-agent","revoke-credential"]},
+                    "id":s("Provisioned agent ID; for revoke-membership, exact provider subject; for unpair, alias."),
+                    "name":s("Optional local relay alias for pair; defaults to the agent ID."),
+                    "grant_id":s("Required for cross-org pairing; active bilateral named-agent grant."),
+                    "fingerprint":s("Exact 64-character lowercase fingerprint confirmed out of band.")
+                },"required":["action"],"additionalProperties":false}
+            }),
+            json!({
+                "name": "everett_agent_grants",
+                "description": "List/get named-agent grants, or administer explicit bilateral grants. Both org admins must independently confirm both key fingerprints. Either can revoke; key changes require bilateral reconfirmation. Non-admin agent credentials cannot administer grants.",
+                "inputSchema":{"type":"object","properties":{
+                    "action":{"type":"string","enum":["list","get","invite","accept","reconfirm","revoke","propose","approve"]},
+                    "id":s("Explicit grant ID; propose/approve are aliases for invite/accept."),
+                    "device":s("Invite: exact named local agent ID, not a whole org."),
+                    "peer_owner":s("Invite: exact verified remote owner namespace, obtained out of band."),
+                    "remote_agent":s("Invite: exact named external agent ID."),
+                    "local_fingerprint":s("Invite/accept/reconfirm: independently verified local key fingerprint."),
+                    "peer_fingerprint":s("Invite/accept/reconfirm: independently verified remote key fingerprint."),
+                    "expires_at":{"type":"integer","minimum":0,"maximum":9_007_199_254_740_991i64},
+                    "rate_per_minute":{"type":"integer","minimum":1,"maximum":120,"default":30},
+                    "body_cap_bytes":{"type":"integer","minimum":256,"maximum":65536,"default":65536}
+                },"required":["action"],"additionalProperties":false}
+            }),
+            json!({
+                "name":"everett_agent_send",
+                "description":"Send E2E-encrypted text to a pinned issuer-named agent's bound session. Same-org membership or bilateral cross-org approval required. Queued is not pickup; external inbound content is untrusted. Retry the exact request with the same idempotency key. Does not wake sessions.",
+                "inputSchema":{"type":"object","properties":{
+                    "agent":s("Pinned relay alias, defaulting to its named recipient agent ID."),"session":s("Exact recipient session ID, obtained out of band."),
+                    "harness":s("Recipient harness, e.g. omp or pi."),"text":{"type":"string","maxLength":65536},
+                    "idempotency_key":s("Required stable unique key; changing the request with the same key is rejected."),
+                    "session_id":s("Your local sending session, if not detectable.")
+                },"required":["agent","session","harness","text","idempotency_key"],"additionalProperties":false}
+            }),
+            json!({
+                "name":"everett_agent_status",
+                "description":"Sender-only status: queued after enqueue acknowledgement; delivered after durable recipient acceptance; claimed after inbox pickup; replied after correlated reply enqueue and signed observation. Never inferred from a connection or wake-up.",
+                "inputSchema":{"type":"object","properties":{"message_id":s("Outgoing message ID.")},"required":["message_id"],"additionalProperties":false}
+            }),
         ]
     })
 }
 
 fn tool_names() -> Vec<&'static str> {
-    tools().iter().map(|t| t["name"].as_str().unwrap()).collect()
+    tools()
+        .iter()
+        .map(|t| t["name"].as_str().unwrap())
+        .collect()
 }
 
 enum ToolFailure {
@@ -161,11 +207,16 @@ impl From<EverettError> for ToolFailure {
 
 fn log(event: &str, fields: Map<String, Value>) {
     let mut doc = Map::new();
-    doc.insert("ts".into(), json!(crate::timefmt::strftime_local("%Y-%m-%dT%H:%M:%S", now())));
+    doc.insert(
+        "ts".into(),
+        json!(crate::timefmt::strftime_local("%Y-%m-%dT%H:%M:%S", now())),
+    );
     doc.insert("event".into(), json!(event));
     for (k, v) in fields {
         let v = match v.as_str() {
-            Some(s) if s.chars().count() > 200 => json!(format!("{}…", s.chars().take(200).collect::<String>())),
+            Some(s) if s.chars().count() > 200 => {
+                json!(format!("{}…", s.chars().take(200).collect::<String>()))
+            }
             _ => v,
         };
         doc.insert(k, v);
@@ -192,10 +243,22 @@ fn brief(s: &Session) -> Map<String, Value> {
         json!(((now() - s.last_active).max(0.0) / 60.0) as i64),
     );
     b.insert("card".into(), json!(s.card));
-    b.insert("card_source".into(), s.card_source.clone().map(|v| json!(v)).unwrap_or(Value::Null));
+    b.insert(
+        "card_source".into(),
+        s.card_source
+            .clone()
+            .map(|v| json!(v))
+            .unwrap_or(Value::Null),
+    );
     b.insert("title".into(), json!(s.title));
-    b.insert("first_request".into(), json!(s.first_user.chars().take(160).collect::<String>()));
-    b.insert("last_request".into(), json!(s.last_user.chars().take(160).collect::<String>()));
+    b.insert(
+        "first_request".into(),
+        json!(s.first_user.chars().take(160).collect::<String>()),
+    );
+    b.insert(
+        "last_request".into(),
+        json!(s.last_user.chars().take(160).collect::<String>()),
+    );
     if !s.profile.is_empty() {
         b.insert("profile".into(), json!(s.profile));
     }
@@ -209,7 +272,11 @@ fn brief(s: &Session) -> Map<String, Value> {
     b
 }
 
-fn str_arg(args: &Map<String, Value>, key: &str, required: bool) -> std::result::Result<String, ToolFailure> {
+fn str_arg(
+    args: &Map<String, Value>,
+    key: &str,
+    required: bool,
+) -> std::result::Result<String, ToolFailure> {
     match args.get(key) {
         None | Some(Value::Null) => {
             if required {
@@ -220,7 +287,10 @@ fn str_arg(args: &Map<String, Value>, key: &str, required: bool) -> std::result:
         }
         Some(Value::String(v)) => {
             if required && v.trim().is_empty() {
-                Err(ToolFailure::Params(format!("\"{}\" must not be empty", key)))
+                Err(ToolFailure::Params(format!(
+                    "\"{}\" must not be empty",
+                    key
+                )))
             } else {
                 Ok(v.clone())
             }
@@ -233,12 +303,17 @@ fn hours_arg(args: &Map<String, Value>) -> std::result::Result<f64, ToolFailure>
     match args.get("hours") {
         None | Some(Value::Null) => Ok(72.0),
         Some(v) => {
-            let ok = v.as_f64().map(|h| h.is_finite() && h >= 0.0).unwrap_or(false)
+            let ok = v
+                .as_f64()
+                .map(|h| h.is_finite() && h >= 0.0)
+                .unwrap_or(false)
                 && !v.is_boolean();
             if ok {
                 Ok(v.as_f64().unwrap())
             } else {
-                Err(ToolFailure::Params("\"hours\" must be a finite non-negative number".to_string()))
+                Err(ToolFailure::Params(
+                    "\"hours\" must be a finite non-negative number".to_string(),
+                ))
             }
         }
     }
@@ -246,6 +321,27 @@ fn hours_arg(args: &Map<String, Value>) -> std::result::Result<f64, ToolFailure>
 
 fn err2(code: i32, msg: impl Into<String>) -> ToolFailure {
     ToolFailure::Tool(EverettError::new(code, msg.into()))
+}
+
+/// A stdio MCP request is model-controlled. When the host identifies its
+/// harness session, that binding is authoritative for safety and lineage; an
+/// argument can only fill the gap when no binding exists.
+fn caller_session(args: &Map<String, Value>) -> std::result::Result<(String, bool), ToolFailure> {
+    let requested = str_arg(args, "session_id", false)?;
+    let bound = caller_identity()
+        .get("session_id")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
+    if !bound.is_empty() {
+        if !requested.is_empty() && requested != bound {
+            return Err(ToolFailure::Params(
+                "\"session_id\" conflicts with the host-detected caller session".to_string(),
+            ));
+        }
+        return Ok((bound, true));
+    }
+    Ok((requested, false))
 }
 
 fn tool_ls(args: &Map<String, Value>) -> std::result::Result<Map<String, Value>, ToolFailure> {
@@ -275,23 +371,32 @@ fn tool_ls(args: &Map<String, Value>) -> std::result::Result<Map<String, Value>,
 fn tool_route(args: &Map<String, Value>) -> std::result::Result<Map<String, Value>, ToolFailure> {
     let text = str_arg(args, "text", true)?;
     let router = str_arg(args, "router", false)?;
-    let caller = str_arg(args, "session_id", false)?.pipe(|c| {
-        if c.is_empty() {
-            caller_identity().get("session_id").and_then(|v| v.as_str()).unwrap_or("").to_string()
-        } else {
-            c
-        }
-    });
+    let (caller, _) = caller_session(args)?;
     let sessions = crate::registry::scan(hours_arg(args)?, false, Some(crate::registry::CAP), "");
     let r = crate::route::route(
         &text,
         &sessions,
-        if router.is_empty() { None } else { Some(&router) },
-        if caller.is_empty() { None } else { Some(&caller) },
+        if router.is_empty() {
+            None
+        } else {
+            Some(&router)
+        },
+        if caller.is_empty() {
+            None
+        } else {
+            Some(&caller)
+        },
     )
     .map_err(ToolFailure::Tool)?;
     let mut out = Map::new();
-    for k in ["decision", "confidence", "router", "suggested", "candidates", "command"] {
+    for k in [
+        "decision",
+        "confidence",
+        "router",
+        "suggested",
+        "candidates",
+        "command",
+    ] {
         if let Some(v) = r.get(k) {
             if !v.is_null() {
                 out.insert(k.to_string(), v.clone());
@@ -299,47 +404,96 @@ fn tool_route(args: &Map<String, Value>) -> std::result::Result<Map<String, Valu
         }
     }
     if let Some(sess) = r.get("session").and_then(|v| v.as_object()) {
-        out.insert("session".into(), Value::Object(brief(&Session::from_dict(sess))));
+        out.insert(
+            "session".into(),
+            Value::Object(brief(&Session::from_dict(sess))),
+        );
     }
     Ok(out)
 }
 
 fn tool_send(args: &Map<String, Value>) -> std::result::Result<Map<String, Value>, ToolFailure> {
-    use crate::send::{send, send_inbox, spawn};
+    use crate::send::{send_for, send_inbox, spawn_for};
     let text = str_arg(args, "text", true)?;
     let to = str_arg(args, "to", false)?;
     let hours = hours_arg(args)?;
-    let spawn_ok = args.get("spawn").map(|v| v.as_bool()).unwrap_or(Some(false)).unwrap_or(false);
+    let spawn_ok = args
+        .get("spawn")
+        .map(|v| v.as_bool())
+        .unwrap_or(Some(false))
+        .unwrap_or(false);
     if args.get("spawn").map(|v| !v.is_boolean()).unwrap_or(false) {
-        return Err(ToolFailure::Params("\"spawn\" must be a boolean".to_string()));
+        return Err(ToolFailure::Params(
+            "\"spawn\" must be a boolean".to_string(),
+        ));
     }
-    let timeout = args.get("timeout").and_then(|v| v.as_f64()).unwrap_or(300.0);
-    if args.get("timeout").map(|v| v.is_boolean() || v.as_f64().map(|t| t <= 0.0).unwrap_or(true)).unwrap_or(false) {
-        return Err(ToolFailure::Params("\"timeout\" must be a positive number".to_string()));
+    let timeout = args
+        .get("timeout")
+        .and_then(|v| v.as_f64())
+        .unwrap_or(300.0);
+    if args
+        .get("timeout")
+        .map(|v| v.is_boolean() || v.as_f64().map(|t| t <= 0.0).unwrap_or(true))
+        .unwrap_or(false)
+    {
+        return Err(ToolFailure::Params(
+            "\"timeout\" must be a positive number".to_string(),
+        ));
     }
-    let caller = str_arg(args, "session_id", false)?.pipe(|c| {
-        if c.is_empty() {
-            caller_identity().get("session_id").and_then(|v| v.as_str()).unwrap_or("").to_string()
-        } else {
-            c
-        }
-    });
+    let (caller, caller_bound) = caller_session(args)?;
     let mode = str_arg(args, "mode", false)?;
-    let mode = if mode.is_empty() { "auto".to_string() } else { mode };
+    let mode = if mode.is_empty() {
+        "auto".to_string()
+    } else {
+        mode
+    };
     if !crate::send::MODES.contains(&mode.as_str()) {
-        return Err(ToolFailure::Params(format!("\"mode\" must be one of {}", crate::send::MODES.join(", "))));
+        return Err(ToolFailure::Params(format!(
+            "\"mode\" must be one of {}",
+            crate::send::MODES.join(", ")
+        )));
+    }
+    if !caller_bound && (spawn_ok || mode == "resume") {
+        return Err(err2(
+            2,
+            "Caller identity is not host-detected; spawn and resume are unavailable.",
+        ));
     }
     let wait = args.get("wait").and_then(|v| v.as_f64()).unwrap_or(0.0);
-    if args.get("wait").map(|v| v.is_boolean() || v.as_f64().map(|w| w < 0.0).unwrap_or(true)).unwrap_or(false) {
-        return Err(ToolFailure::Params("\"wait\" must be a non-negative number".to_string()));
+    if args
+        .get("wait")
+        .map(|v| v.is_boolean() || v.as_f64().map(|w| w < 0.0).unwrap_or(true))
+        .unwrap_or(false)
+    {
+        return Err(ToolFailure::Params(
+            "\"wait\" must be a non-negative number".to_string(),
+        ));
     }
     let reply_to = str_arg(args, "reply_to", false)?;
     let exact_ids = std::env::var("EVERETT_GATEWAY_EXACT_IDS").as_deref() == Ok("1");
     if exact_ids && (spawn_ok || mode != "inbox" || (to.is_empty() && reply_to.is_empty())) {
-        return Err(err2(2, "Gateway delivery requires inbox mode and an explicit exact destination or reply."));
+        return Err(err2(
+            2,
+            "Gateway delivery requires inbox mode and an explicit exact destination or reply.",
+        ));
     }
     if !reply_to.is_empty() {
-        let result = crate::send::reply(&reply_to, &text, if caller.is_empty() { None } else { Some(&caller) }).map_err(ToolFailure::Tool)?;
+        if !caller_bound {
+            return Err(err2(
+                2,
+                "Cannot authenticate the calling session for delivery; use a host-bound MCP session.",
+            ));
+        }
+        let result = crate::send::reply(
+            &reply_to,
+            &text,
+            if caller.is_empty() {
+                None
+            } else {
+                Some(&caller)
+            },
+        )
+        .map_err(ToolFailure::Tool)?;
         let mut out = Map::new();
         out.insert("delivered".into(), json!(true));
         for (k, v) in result {
@@ -347,12 +501,63 @@ fn tool_send(args: &Map<String, Value>) -> std::result::Result<Map<String, Value
         }
         return Ok(out);
     }
-    let env = crate::send::hop_env().map_err(ToolFailure::Tool)?;
+    let idempotency_key = str_arg(args, "idempotency_key", false)?;
+    if crate::peer::target(&to).is_ok() {
+        if !caller_bound {
+            return Err(err2(
+                2,
+                "Cannot authenticate the calling session for relay forwarding; use a host-bound MCP session.",
+            ));
+        }
+        if exact_ids {
+            return Err(err2(2, "Gateway remote destinations are not allowed; use an authorized exact local session id."));
+        }
+        if spawn_ok || mode == "resume" || wait != 0.0 {
+            return Err(err2(
+                2,
+                "Remote sends are inbox-only; no spawn, resume, or wait. Poll everett peer status.",
+            ));
+        }
+        let value = crate::peer::send(
+            &to,
+            &text,
+            if idempotency_key.is_empty() {
+                None
+            } else {
+                Some(&idempotency_key)
+            },
+            if caller.is_empty() {
+                None
+            } else {
+                Some(&caller)
+            },
+        )
+        .map_err(ToolFailure::Tool)?;
+        let mut out = value
+            .as_object()
+            .cloned()
+            .ok_or_else(|| err2(6, "invalid remote send result"))?;
+        out.insert("decision".into(), json!("SESSION"));
+        out.insert("router".into(), json!("direct-remote"));
+        out.insert("mode".into(), json!("inbox"));
+        out.insert("queued".into(), json!(true));
+        out.insert("wake".into(), json!(false));
+        return Ok(out);
+    }
+    let caller = if caller.is_empty() {
+        None
+    } else {
+        Some(caller.as_str())
+    };
+    crate::send::guard_delivery(&mode, spawn_ok, caller).map_err(ToolFailure::Tool)?;
+    let env = crate::send::hop_env_for(caller).map_err(ToolFailure::Tool)?;
     let mut decision = Map::new();
     let session;
     if !to.is_empty() {
         if spawn_ok {
-            return Err(ToolFailure::Params("\"to\" and \"spawn\" are exclusive".to_string()));
+            return Err(ToolFailure::Params(
+                "\"to\" and \"spawn\" are exclusive".to_string(),
+            ));
         }
         let sessions = crate::registry::scan(hours, true, None, "");
         let found = if exact_ids {
@@ -375,19 +580,23 @@ fn tool_send(args: &Map<String, Value>) -> std::result::Result<Map<String, Value
         decision.insert("confidence".into(), json!(1.0));
     } else {
         let sessions = crate::registry::scan(hours, false, Some(crate::registry::CAP), "");
-        let r = crate::route::route(
-            &text,
-            &sessions,
-            None,
-            if caller.is_empty() { None } else { Some(&caller) },
-        )
-        .map_err(ToolFailure::Tool)?;
-        decision.insert("decision".into(), r.get("decision").cloned().unwrap_or(Value::Null));
-        decision.insert("confidence".into(), r.get("confidence").cloned().unwrap_or(Value::Null));
-        decision.insert("router".into(), r.get("router").cloned().unwrap_or(Value::Null));
+        let r = crate::route::route(&text, &sessions, None, caller).map_err(ToolFailure::Tool)?;
+        decision.insert(
+            "decision".into(),
+            r.get("decision").cloned().unwrap_or(Value::Null),
+        );
+        decision.insert(
+            "confidence".into(),
+            r.get("confidence").cloned().unwrap_or(Value::Null),
+        );
+        decision.insert(
+            "router".into(),
+            r.get("router").cloned().unwrap_or(Value::Null),
+        );
         if r.get("decision").and_then(|v| v.as_str()) == Some("NEW") {
             if !spawn_ok
-                || r.get("confidence").and_then(|v| v.as_f64()).unwrap_or(0.0) < crate::route::MIN_CONFIDENCE
+                || r.get("confidence").and_then(|v| v.as_f64()).unwrap_or(0.0)
+                    < crate::route::MIN_CONFIDENCE
             {
                 let mut out = decision.clone();
                 out.insert("delivered".into(), json!(false));
@@ -398,20 +607,29 @@ fn tool_send(args: &Map<String, Value>) -> std::result::Result<Map<String, Value
                 return Ok(out);
             }
             let harness = str_arg(args, "harness", false)?.pipe(|h| {
-                if h.is_empty() { crate::route::default_harness() } else { h }
+                if h.is_empty() {
+                    crate::route::default_harness()
+                } else {
+                    h
+                }
             });
             let cwd = match args.get("dir").and_then(|v| v.as_str()) {
-                Some(d) => crate::paths::realpath(&crate::paths::expanduser(d)).to_string_lossy().to_string(),
+                Some(d) => crate::paths::realpath(&crate::paths::expanduser(d))
+                    .to_string_lossy()
+                    .to_string(),
                 None => {
                     let bd = crate::route::best_dir(&text, &sessions);
                     if !bd.is_empty() {
                         bd
                     } else {
-                        std::env::current_dir().map(|p| p.to_string_lossy().to_string()).unwrap_or_default()
+                        std::env::current_dir()
+                            .map(|p| p.to_string_lossy().to_string())
+                            .unwrap_or_default()
                     }
                 }
             };
-            let result = spawn(&harness, &text, &cwd, timeout, Some(&env)).map_err(ToolFailure::Tool)?;
+            let result = spawn_for(&harness, &text, &cwd, timeout, Some(&env), caller)
+                .map_err(ToolFailure::Tool)?;
             let mut out = decision.clone();
             out.insert("delivered".into(), json!(true));
             out.insert("spawned".into(), json!(true));
@@ -424,8 +642,14 @@ fn tool_send(args: &Map<String, Value>) -> std::result::Result<Map<String, Value
         if r.get("decision").and_then(|v| v.as_str()) != Some("SESSION") {
             let mut out = decision.clone();
             out.insert("delivered".into(), json!(false));
-            out.insert("suggested".into(), r.get("suggested").cloned().unwrap_or(Value::Null));
-            out.insert("candidates".into(), r.get("candidates").cloned().unwrap_or(json!([])));
+            out.insert(
+                "suggested".into(),
+                r.get("suggested").cloned().unwrap_or(Value::Null),
+            );
+            out.insert(
+                "candidates".into(),
+                r.get("candidates").cloned().unwrap_or(json!([])),
+            );
             out.insert(
                 "note".into(),
                 json!("Ambiguous. Nothing was sent; pass `to` with the session you mean."),
@@ -437,12 +661,20 @@ fn tool_send(args: &Map<String, Value>) -> std::result::Result<Map<String, Value
         };
         session = Session::from_dict(session_obj);
     }
-    refuse_self(&session, if caller.is_empty() { None } else { Some(&caller) }).map_err(ToolFailure::Tool)?;
-    if delivery_mode(&session, &mode, None)? == "inbox" {
-        let result = send_inbox(&session, &text, wait, if caller.is_empty() { None } else { Some(&caller) }, 1.0).map_err(ToolFailure::Tool)?;
+    refuse_self(&session, caller).map_err(ToolFailure::Tool)?;
+    let delivery_mode = crate::send::delivery_mode_for(&session, &mode, None, caller)?;
+    if !caller_bound {
+        return Err(err2(
+            2,
+            "Cannot authenticate the calling session for delivery; use a host-bound MCP session.",
+        ));
+    }
+    if delivery_mode == "inbox" {
+        let result = send_inbox(&session, &text, wait, caller, 1.0).map_err(ToolFailure::Tool)?;
         let note = if crate::adapters::external::is_external(&session.harness) {
             "Queued for the external agent to poll through MCP. \
-             No provider wake-up or consumption is confirmed. Read replies with everett_inbox.".to_string()
+             No provider wake-up or consumption is confirmed. Read replies with everett_inbox."
+                .to_string()
         } else {
             result.get("pickup_note").and_then(Value::as_str).map(str::to_string).unwrap_or_else(|| format!(
                 "Queued; it is injected into that live session at its next turn or tool call.{}",
@@ -463,7 +695,15 @@ fn tool_send(args: &Map<String, Value>) -> std::result::Result<Map<String, Value
         return Ok(out);
     }
     crate::send::command_for(&session, &text).map_err(ToolFailure::Tool)?;
-    let result = send(&session, &text, timeout, crate::send::IDLE_WAIT, Some(&env)).map_err(ToolFailure::Tool)?;
+    let result = send_for(
+        &session,
+        &text,
+        timeout,
+        crate::send::IDLE_WAIT,
+        Some(&env),
+        caller,
+    )
+    .map_err(ToolFailure::Tool)?;
     let mut out = decision;
     out.insert("delivered".into(), json!(true));
     out.insert("session".into(), Value::Object(brief(&session)));
@@ -477,18 +717,30 @@ fn tool_learn(args: &Map<String, Value>) -> std::result::Result<Map<String, Valu
     let scope = str_arg(args, "scope", false)?;
     let entry = crate::core::learn(
         &fact,
-        if project.is_empty() { None } else { Some(&project) },
+        if project.is_empty() {
+            None
+        } else {
+            Some(&project)
+        },
         if scope.is_empty() { None } else { Some(&scope) },
         None,
     )
     .map_err(ToolFailure::Tool)?;
     let mut out = Map::new();
     out.insert("learned".into(), json!(true));
-    out.insert("scope".into(), entry.get("scope").cloned().unwrap_or(Value::Null));
-    out.insert("project".into(), entry.get("project").cloned().unwrap_or(Value::Null));
+    out.insert(
+        "scope".into(),
+        entry.get("scope").cloned().unwrap_or(Value::Null),
+    );
+    out.insert(
+        "project".into(),
+        entry.get("project").cloned().unwrap_or(Value::Null),
+    );
     out.insert(
         "note".into(),
-        json!("Queued in the inbox; it reaches every session after the next `everett trunk merge`."),
+        json!(
+            "Queued in the inbox; it reaches every session after the next `everett trunk merge`."
+        ),
     );
     Ok(out)
 }
@@ -496,24 +748,36 @@ fn tool_learn(args: &Map<String, Value>) -> std::result::Result<Map<String, Valu
 fn tool_core(args: &Map<String, Value>) -> std::result::Result<Map<String, Value>, ToolFailure> {
     let project = str_arg(args, "project", false)?;
     let text = if !project.is_empty() {
-        [crate::core::global_path(), crate::core::project_path(&project)]
-            .iter()
-            .filter_map(|p| std::fs::read_to_string(p).ok())
-            .map(|t| t.trim().to_string())
-            .filter(|t| !t.is_empty())
-            .collect::<Vec<_>>()
-            .join("\n\n")
+        [
+            crate::core::global_path(),
+            crate::core::project_path(&project),
+        ]
+        .iter()
+        .filter_map(|p| std::fs::read_to_string(p).ok())
+        .map(|t| t.trim().to_string())
+        .filter(|t| !t.is_empty())
+        .collect::<Vec<_>>()
+        .join("\n\n")
     } else {
         crate::core::context(
-            &std::env::current_dir().map(|p| p.to_string_lossy().to_string()).unwrap_or_default(),
+            &std::env::current_dir()
+                .map(|p| p.to_string_lossy().to_string())
+                .unwrap_or_default(),
         )
     };
     let mut out = Map::new();
     out.insert(
         "core".into(),
-        json!(if text.is_empty() { "(the shared core is empty)".to_string() } else { text }),
+        json!(if text.is_empty() {
+            "(the shared core is empty)".to_string()
+        } else {
+            text
+        }),
     );
-    out.insert("pending_learnings".into(), json!(crate::core::read_inbox().len()));
+    out.insert(
+        "pending_learnings".into(),
+        json!(crate::core::read_inbox().len()),
+    );
     Ok(out)
 }
 
@@ -521,15 +785,12 @@ fn tool_card(args: &Map<String, Value>) -> std::result::Result<Map<String, Value
     let mut parts = Map::new();
     for k in ["what", "state", "next"] {
         let v = str_arg(args, k, true)?;
-        parts.insert(k.to_string(), json!(v.split_whitespace().collect::<Vec<_>>().join(" ")));
+        parts.insert(
+            k.to_string(),
+            json!(v.split_whitespace().collect::<Vec<_>>().join(" ")),
+        );
     }
-    let sid = str_arg(args, "session_id", false)?.pipe(|c| {
-        if c.is_empty() {
-            caller_identity().get("session_id").and_then(|v| v.as_str()).unwrap_or("").to_string()
-        } else {
-            c
-        }
-    });
+    let (sid, _) = caller_session(args)?;
     if sid.is_empty() {
         return Err(ToolFailure::Tool(EverettError::new(
             2,
@@ -537,7 +798,9 @@ fn tool_card(args: &Map<String, Value>) -> std::result::Result<Map<String, Value
         )));
     }
     if !crate::inbox::valid_id(&sid) {
-        return Err(ToolFailure::Params("\"session_id\" is not a valid session id".to_string()));
+        return Err(ToolFailure::Params(
+            "\"session_id\" is not a valid session id".to_string(),
+        ));
     }
     let body = format!(
         "What: {}\nState: {}\nNext: {}\n",
@@ -546,12 +809,18 @@ fn tool_card(args: &Map<String, Value>) -> std::result::Result<Map<String, Value
         crate::hooks_common::word_limit(parts["next"].as_str().unwrap_or(""), 14)
     );
     let Some(path) = crate::cards::card_path(&sid) else {
-        return Err(err2(2, format!("not a valid session id for a card: {sid:?}")));
+        return Err(err2(
+            2,
+            format!("not a valid session id for a card: {sid:?}"),
+        ));
     };
     if let Some(parent) = path.parent() {
         let _ = std::fs::create_dir_all(parent);
     }
-    let tmp = path.with_file_name(format!(".{}.tmp", path.file_name().unwrap_or_default().to_string_lossy()));
+    let tmp = path.with_file_name(format!(
+        ".{}.tmp",
+        path.file_name().unwrap_or_default().to_string_lossy()
+    ));
     std::fs::write(&tmp, &body).map_err(|e| err2(2, e.to_string()))?;
     std::fs::rename(&tmp, &path).map_err(|e| err2(2, e.to_string()))?;
     let mut out = Map::new();
@@ -561,13 +830,7 @@ fn tool_card(args: &Map<String, Value>) -> std::result::Result<Map<String, Value
 }
 
 fn tool_inbox(args: &Map<String, Value>) -> std::result::Result<Map<String, Value>, ToolFailure> {
-    let sid = str_arg(args, "session_id", false)?.pipe(|c| {
-        if c.is_empty() {
-            caller_identity().get("session_id").and_then(|v| v.as_str()).unwrap_or("").to_string()
-        } else {
-            c
-        }
-    });
+    let (sid, _) = caller_session(args)?;
     if sid.is_empty() {
         return Err(ToolFailure::Tool(EverettError::new(
             2,
@@ -575,22 +838,75 @@ fn tool_inbox(args: &Map<String, Value>) -> std::result::Result<Map<String, Valu
         )));
     }
     if !crate::inbox::valid_id(&sid) {
-        return Err(ToolFailure::Params("\"session_id\" is not a valid session id".to_string()));
+        return Err(ToolFailure::Params(
+            "\"session_id\" is not a valid session id".to_string(),
+        ));
     }
-    let peek = args.get("peek").map(|v| v.as_bool()).unwrap_or(Some(false)).unwrap_or(false);
+    let peek = args
+        .get("peek")
+        .map(|v| v.as_bool())
+        .unwrap_or(Some(false))
+        .unwrap_or(false);
     if args.get("peek").map(|v| !v.is_boolean()).unwrap_or(false) {
-        return Err(ToolFailure::Params("\"peek\" must be a boolean".to_string()));
+        return Err(ToolFailure::Params(
+            "\"peek\" must be a boolean".to_string(),
+        ));
     }
     let items = crate::inbox::pending(&sid, None);
     let mut messages: Vec<Value> = Vec::new();
     let mut out = Map::new();
     out.insert("session".into(), json!(sid));
     out.insert("messages".into(), json!(messages));
-    let size_of = |out: &Map<String, Value>| serde_json::to_vec(&out).map(|v| v.len()).unwrap_or(usize::MAX);
+    let size_of = |out: &Map<String, Value>| {
+        serde_json::to_vec(&out)
+            .map(|v| v.len())
+            .unwrap_or(usize::MAX)
+    };
     for m in &items {
         let mut msg = Map::new();
-        for k in ["id", "kind", "from", "from_harness", "from_card", "text", "reply_to", "hops", "ts"] {
+        for k in [
+            "id",
+            "kind",
+            "from",
+            "from_harness",
+            "from_card",
+            "text",
+            "reply_to",
+            "hops",
+            "ts",
+        ] {
             msg.insert(k.to_string(), m.get(k).cloned().unwrap_or(Value::Null));
+        }
+        if m.contains_key("relay_device") {
+            for k in [
+                "external",
+                "untrusted",
+                "trust",
+                "instruction_source",
+                "relay_message_id",
+                "relay_sender_owner",
+                "relay_recipient_owner",
+                "relay_grant_id",
+                "relay_device",
+                "relay_recipient_device",
+                "relay_parent",
+            ] {
+                msg.insert(k.into(), m.get(k).cloned().unwrap_or(Value::Null));
+            }
+        }
+        if crate::inbox::external(m) {
+            for k in [
+                "external",
+                "untrusted",
+                "trust",
+                "instruction_source",
+                "relay_lineage",
+            ] {
+                if let Some(value) = m.get(k) {
+                    msg.insert(k.into(), value.clone());
+                }
+            }
+            msg.insert("text".into(), json!(crate::inbox::consumption_text(m)));
         }
         messages.push(Value::Object(msg));
         out.insert("messages".into(), json!(messages));
@@ -601,10 +917,17 @@ fn tool_inbox(args: &Map<String, Value>) -> std::result::Result<Map<String, Valu
                 // The first pending message alone exceeds the limit: deliver it
                 // truncated rather than leaving this inbox stuck forever.
                 let mut msg = last.as_object().cloned().unwrap_or_default();
-                let text = msg.get("text").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                let text = msg
+                    .get("text")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string();
                 let mut keep = text.chars().count();
                 loop {
-                    msg.insert("text".into(), json!(text.chars().take(keep).collect::<String>()));
+                    msg.insert(
+                        "text".into(),
+                        json!(text.chars().take(keep).collect::<String>()),
+                    );
                     msg.insert("truncated".into(), json!(true));
                     messages.push(Value::Object(msg.clone()));
                     out.insert("messages".into(), json!(messages));
@@ -619,12 +942,32 @@ fn tool_inbox(args: &Map<String, Value>) -> std::result::Result<Map<String, Valu
             break;
         }
     }
+    let ids: Vec<&str> = messages
+        .iter()
+        .filter_map(|m| m.get("id").and_then(Value::as_str))
+        .collect();
+    // Peek still exposes remote data: preserve its provenance/lineage before returning,
+    // without recording a claimed observation or marking the inbox consumed.
+    crate::inbox::persist_relay_context(&sid, &ids)?;
     if !peek {
-        let ids: Vec<&str> = messages
-            .iter()
-            .filter_map(|m| m.get("id").and_then(|v| v.as_str()))
-            .collect();
         crate::inbox::mark_done(&sid, &ids);
+        if let Some(hops) = items
+            .iter()
+            .filter(|m| {
+                m.contains_key("peer_client")
+                    || m.contains_key("peer_reply_id")
+                    || m.contains_key("relay_device")
+            })
+            .filter(|m| {
+                m.get("id")
+                    .and_then(Value::as_str)
+                    .is_some_and(|id| ids.contains(&id))
+            })
+            .filter_map(|m| m.get("hops").and_then(Value::as_i64))
+            .max()
+        {
+            crate::inbox::record_hops(&sid, hops);
+        }
     }
     Ok(out)
 }
@@ -633,21 +976,21 @@ fn tool_event(args: &Map<String, Value>) -> std::result::Result<Map<String, Valu
     let kind = str_arg(args, "kind", true)?;
     let message = str_arg(args, "message", true)?;
     let project = str_arg(args, "project", false)?;
-    let sid = str_arg(args, "session_id", false)?.pipe(|c| {
-        if c.is_empty() {
-            caller_identity().get("session_id").and_then(|v| v.as_str()).unwrap_or("").to_string()
-        } else {
-            c
-        }
-    });
+    let (sid, _) = caller_session(args)?;
     if !sid.is_empty() && !crate::inbox::valid_id(&sid) {
-        return Err(ToolFailure::Params("\"session_id\" is not a valid session id".to_string()));
+        return Err(ToolFailure::Params(
+            "\"session_id\" is not a valid session id".to_string(),
+        ));
     }
     let event = crate::events::record(
         &kind,
         &message,
         if sid.is_empty() { None } else { Some(&sid) },
-        if project.is_empty() { None } else { Some(&project) },
+        if project.is_empty() {
+            None
+        } else {
+            Some(&project)
+        },
         "",
         None,
         "manual",
@@ -656,7 +999,10 @@ fn tool_event(args: &Map<String, Value>) -> std::result::Result<Map<String, Valu
     .map_err(ToolFailure::Tool)?;
     let mut out = Map::new();
     out.insert("recorded".into(), json!(true));
-    out.insert("event".into(), event.map(Value::Object).unwrap_or(Value::Null));
+    out.insert(
+        "event".into(),
+        event.map(Value::Object).unwrap_or(Value::Null),
+    );
     if sid.is_empty() {
         out.insert(
             "note".into(),
@@ -666,17 +1012,23 @@ fn tool_event(args: &Map<String, Value>) -> std::result::Result<Map<String, Valu
     Ok(out)
 }
 
-fn tool_subscribe(args: &Map<String, Value>) -> std::result::Result<Map<String, Value>, ToolFailure> {
-    let sid = str_arg(args, "session_id", false)?.pipe(|c| {
-        if c.is_empty() {
-            caller_identity().get("session_id").and_then(|v| v.as_str()).unwrap_or("").to_string()
-        } else {
-            c
-        }
-    });
-    let remove = args.get("unsubscribe").map(|v| v.as_bool()).unwrap_or(Some(false)).unwrap_or(false);
-    if args.get("unsubscribe").map(|v| !v.is_boolean()).unwrap_or(false) {
-        return Err(ToolFailure::Params("\"unsubscribe\" must be a boolean".to_string()));
+fn tool_subscribe(
+    args: &Map<String, Value>,
+) -> std::result::Result<Map<String, Value>, ToolFailure> {
+    let (sid, _) = caller_session(args)?;
+    let remove = args
+        .get("unsubscribe")
+        .map(|v| v.as_bool())
+        .unwrap_or(Some(false))
+        .unwrap_or(false);
+    if args
+        .get("unsubscribe")
+        .map(|v| !v.is_boolean())
+        .unwrap_or(false)
+    {
+        return Err(ToolFailure::Params(
+            "\"unsubscribe\" must be a boolean".to_string(),
+        ));
     }
     let target = crate::events::resolve_target(&str_arg(args, "target", true)?);
     let current = crate::events::subscribe(&sid, &target, remove).map_err(ToolFailure::Tool)?;
@@ -693,9 +1045,15 @@ fn tool_whoami(_args: &Map<String, Value>) -> std::result::Result<Map<String, Va
     out.insert("hops".into(), json!(hops.parse::<i64>().unwrap_or(0)));
     out.insert(
         "cwd".into(),
-        json!(std::env::current_dir().map(|p| p.to_string_lossy().to_string()).unwrap_or_default()),
+        json!(std::env::current_dir()
+            .map(|p| p.to_string_lossy().to_string())
+            .unwrap_or_default()),
     );
-    let has_session = ident.get("session_id").and_then(|v| v.as_str()).map(|s| !s.is_empty()).unwrap_or(false);
+    let has_session = ident
+        .get("session_id")
+        .and_then(|v| v.as_str())
+        .map(|s| !s.is_empty())
+        .unwrap_or(false);
     out.insert(
         "note".into(),
         json!(if has_session {
@@ -714,7 +1072,136 @@ trait Pipe: Sized {
 }
 impl Pipe for String {}
 
-fn call_handler(name: &str, args: &Map<String, Value>) -> std::result::Result<Map<String, Value>, ToolFailure> {
+fn grant_args(
+    args: &Map<String, Value>,
+) -> std::result::Result<(&'static str, Value, bool), ToolFailure> {
+    let action = str_arg(args, "action", true)?;
+    if action == "list" {
+        return Ok(("grants:list", json!({}), true));
+    }
+    let id = str_arg(args, "id", true)?;
+    let fingerprints = || -> std::result::Result<Value, ToolFailure> {
+        Ok(
+            json!({"grantId":id,"localFingerprint":str_arg(args,"local_fingerprint",true)?,
+            "peerFingerprint":str_arg(args,"peer_fingerprint",true)?}),
+        )
+    };
+    let integer = |key: &str, default: Option<i64>, min: i64, max: i64| {
+        let value = args
+            .get(key)
+            .filter(|v| !v.is_null())
+            .map(Value::as_i64)
+            .unwrap_or(default);
+        value.filter(|v| *v >= min && *v <= max).ok_or_else(|| {
+            ToolFailure::Params(format!("\"{key}\" must be an integer from {min} to {max}"))
+        })
+    };
+    match action.as_str() {
+        "get" => Ok(("grants:get", json!({"grantId":id}), true)),
+        "revoke" => Ok(("grants:revoke", json!({"grantId":id}), false)),
+        "accept" | "approve" => Ok(("grants:accept", fingerprints()?, false)),
+        "reconfirm" => Ok(("grants:reconfirm", fingerprints()?, false)),
+        "invite" | "propose" => {
+            let mut value = fingerprints()?;
+            value["deviceId"] = json!(str_arg(args, "device", true)?);
+            value["peerOwner"] = json!(str_arg(args, "peer_owner", true)?);
+            value["peerDeviceId"] = json!(str_arg(args, "remote_agent", true)?);
+            value["expiresAt"] = match args.get("expires_at") {
+                None | Some(Value::Null) => Value::Null,
+                _ => json!(integer("expires_at", None, 0, 9_007_199_254_740_991)?),
+            };
+            value["ratePerMinute"] = json!(integer("rate_per_minute", Some(30), 1, 120)?);
+            value["bodyCapBytes"] = json!(integer("body_cap_bytes", Some(65536), 256, 65536)?);
+            Ok(("grants:invite", value, false))
+        }
+        _ => Err(ToolFailure::Params("unknown grant action".into())),
+    }
+}
+
+fn call_handler(
+    name: &str,
+    args: &Map<String, Value>,
+) -> std::result::Result<Map<String, Value>, ToolFailure> {
+    if name.starts_with("everett_agent_") {
+        let value = match name {
+            "everett_agent_relay" => {
+                let action = str_arg(args, "action", true)?;
+                let requires_id = matches!(
+                    action.as_str(),
+                    "pair" | "unpair" | "revoke-agent" | "revoke-credential" | "revoke-membership"
+                );
+                let id = str_arg(args, "id", requires_id)?;
+                match action.as_str() {
+                    "identity" => crate::relay::admin_call("relay:whoami", json!({}), true)?,
+                    "register" => crate::relay::register()?,
+                    "directory" => crate::relay::devices()?,
+                    "credentials" => {
+                        crate::relay::admin_call("relay:credentials", json!({}), true)?
+                    }
+                    "memberships" => {
+                        crate::relay::admin_call("relay:memberships", json!({}), true)?
+                    }
+                    "pair" => {
+                        let alias = str_arg(args, "name", false)?;
+                        let grant = str_arg(args, "grant_id", false)?;
+                        crate::relay::add(
+                            if alias.is_empty() { &id } else { &alias },
+                            &id,
+                            &str_arg(args, "fingerprint", true)?,
+                            if grant.is_empty() { None } else { Some(&grant) },
+                        )?
+                    }
+                    "unpair" => crate::relay::remove(&id)?,
+                    "revoke-membership" => crate::relay::admin_call(
+                        "relay:revokeMember",
+                        json!({"subject":id}),
+                        false,
+                    )?,
+                    "revoke-agent" | "revoke-credential" => crate::relay::admin_call(
+                        "relay:revokeAgent",
+                        json!({"deviceId":id}),
+                        false,
+                    )?,
+                    _ => return Err(ToolFailure::Params("unknown relay action".into())),
+                }
+            }
+            "everett_agent_grants" => {
+                let (function, value, query) = grant_args(args)?;
+                crate::relay::admin_call(function, value, query)?
+            }
+            "everett_agent_send" => {
+                let target = format!(
+                    "{}/{}/{}",
+                    str_arg(args, "agent", true)?,
+                    str_arg(args, "harness", true)?,
+                    str_arg(args, "session", true)?
+                );
+                let (caller, caller_bound) = caller_session(args)?;
+                if !caller_bound {
+                    return Err(ToolFailure::Tool(EverettError::new(
+                        2,
+                        "Cannot authenticate the calling session for relay forwarding; use a host-bound MCP session.",
+                    )));
+                }
+                crate::relay::send(
+                    &target,
+                    &str_arg(args, "text", true)?,
+                    Some(&str_arg(args, "idempotency_key", true)?),
+                    Some(&caller),
+                )?
+            }
+            "everett_agent_status" => {
+                crate::relay::agent_status(&str_arg(args, "message_id", true)?)?
+            }
+            _ => return Err(ToolFailure::Params("unknown agent tool".into())),
+        };
+        return serde_json::from_value(if value.is_object() {
+            value
+        } else {
+            json!({"result":value})
+        })
+        .map_err(|_| ToolFailure::Params("invalid agent response".into()));
+    }
     match name {
         "everett_ls" => tool_ls(args),
         "everett_route" => tool_route(args),
@@ -736,12 +1223,18 @@ fn call_tool(params: &Map<String, Value>) -> std::result::Result<Map<String, Val
         panic!("injected test panic"); // tests: a panicking tool must not kill the server
     }
     if name.is_empty() || !tool_names().contains(&name) {
-        return Err(json!({"code": INVALID_PARAMS, "message": format!("unknown tool: {}", if name.is_empty() { Value::Null.to_string() } else { name.to_string() })}));
+        return Err(
+            json!({"code": INVALID_PARAMS, "message": format!("unknown tool: {}", if name.is_empty() { Value::Null.to_string() } else { name.to_string() })}),
+        );
     }
     let args = match params.get("arguments") {
         None | Some(Value::Null) => Map::new(),
         Some(Value::Object(a)) => a.clone(),
-        _ => return Err(json!({"code": INVALID_PARAMS, "message": "\"arguments\" must be an object"})),
+        _ => {
+            return Err(
+                json!({"code": INVALID_PARAMS, "message": "\"arguments\" must be an object"}),
+            )
+        }
     };
     let schema = tools()
         .iter()
@@ -749,49 +1242,96 @@ fn call_tool(params: &Map<String, Value>) -> std::result::Result<Map<String, Val
         .and_then(|t| t["inputSchema"].as_object())
         .cloned()
         .unwrap_or_default();
-    for key in schema.get("required").and_then(|r| r.as_array()).cloned().unwrap_or_default() {
+    for key in schema
+        .get("required")
+        .and_then(|r| r.as_array())
+        .cloned()
+        .unwrap_or_default()
+    {
         if let Some(k) = key.as_str() {
             if !args.contains_key(k) {
-                return Err(json!({"code": INVALID_PARAMS, "message": format!("\"{}\" is required", k)}));
+                return Err(
+                    json!({"code": INVALID_PARAMS, "message": format!("\"{}\" is required", k)}),
+                );
             }
         }
     }
-    let properties = schema.get("properties").and_then(|p| p.as_object()).cloned().unwrap_or_default();
+    let properties = schema
+        .get("properties")
+        .and_then(|p| p.as_object())
+        .cloned()
+        .unwrap_or_default();
     for (key, value) in &args {
         let Some(spec) = properties.get(key).and_then(|v| v.as_object()) else {
-            return Err(json!({"code": INVALID_PARAMS, "message": "unexpected argument; use the tool inputSchema"}));
+            return Err(
+                json!({"code": INVALID_PARAMS, "message": "unexpected argument; use the tool inputSchema"}),
+            );
         };
         match spec.get("type").and_then(|v| v.as_str()) {
             Some("string") => {
                 if !value.is_string() {
-                    return Err(json!({"code": INVALID_PARAMS, "message": format!("\"{}\" must be a string", key)}));
+                    return Err(
+                        json!({"code": INVALID_PARAMS, "message": format!("\"{}\" must be a string", key)}),
+                    );
                 }
             }
             Some("boolean") => {
                 if !value.is_boolean() {
-                    return Err(json!({"code": INVALID_PARAMS, "message": format!("\"{}\" must be a boolean", key)}));
+                    return Err(
+                        json!({"code": INVALID_PARAMS, "message": format!("\"{}\" must be a boolean", key)}),
+                    );
                 }
             }
             Some("number")
-                if (value.as_f64().map(|n| !n.is_finite()).unwrap_or(true) || value.is_boolean()) => {
-                    return Err(json!({"code": INVALID_PARAMS, "message": format!("\"{}\" must be a finite number", key)}));
-                }
+                if (value.as_f64().map(|n| !n.is_finite()).unwrap_or(true)
+                    || value.is_boolean()) =>
+            {
+                return Err(
+                    json!({"code": INVALID_PARAMS, "message": format!("\"{}\" must be a finite number", key)}),
+                );
+            }
+            Some("integer") if value.as_i64().is_none() => {
+                return Err(
+                    json!({"code": INVALID_PARAMS, "message": format!("\"{}\" must be an integer", key)}),
+                );
+            }
             _ => {}
         }
         if let Some(values) = spec.get("enum").and_then(|e| e.as_array()) {
             if !values.contains(value) {
-                let opts = values.iter().filter_map(|v| v.as_str()).collect::<Vec<_>>().join(", ");
-                return Err(json!({"code": INVALID_PARAMS, "message": format!("\"{}\" must be one of {}", key, opts)}));
+                let opts = values
+                    .iter()
+                    .filter_map(|v| v.as_str())
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                return Err(
+                    json!({"code": INVALID_PARAMS, "message": format!("\"{}\" must be one of {}", key, opts)}),
+                );
             }
         }
         if let Some(min) = spec.get("minimum").and_then(|m| m.as_f64()) {
             if value.as_f64().map(|v| v < min).unwrap_or(false) {
-                return Err(json!({"code": INVALID_PARAMS, "message": format!("\"{}\" must be at least {}", key, crate::fmt::g(min))}));
+                return Err(
+                    json!({"code": INVALID_PARAMS, "message": format!("\"{}\" must be at least {}", key, crate::fmt::g(min))}),
+                );
+            }
+        }
+        if let Some(max) = spec.get("maximum").and_then(|m| m.as_f64()) {
+            if value.as_f64().is_some_and(|v| v > max) {
+                return Err(
+                    json!({"code": INVALID_PARAMS, "message": format!("\"{}\" must be at most {}", key, crate::fmt::g(max))}),
+                );
             }
         }
         if let Some(max) = spec.get("maxLength").and_then(|m| m.as_i64()) {
-            if value.as_str().map(|s| s.chars().count() > max as usize).unwrap_or(false) {
-                return Err(json!({"code": INVALID_PARAMS, "message": format!("\"{}\" exceeds {} characters", key, max)}));
+            if value
+                .as_str()
+                .map(|s| s.chars().count() > max as usize)
+                .unwrap_or(false)
+            {
+                return Err(
+                    json!({"code": INVALID_PARAMS, "message": format!("\"{}\" exceeds {} characters", key, max)}),
+                );
             }
         }
     }
@@ -803,7 +1343,10 @@ fn call_tool(params: &Map<String, Value>) -> std::result::Result<Map<String, Val
     log_fields.insert("args".into(), json!(format!("{:?}", keys)));
     log_fields.insert(
         "caller".into(),
-        json!(caller_identity().get("session_id").and_then(|v| v.as_str()).unwrap_or("")),
+        json!(caller_identity()
+            .get("session_id")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")),
     );
     log("call", log_fields);
     let (data, is_error) = match call_handler(name, &args) {
@@ -821,15 +1364,15 @@ fn call_tool(params: &Map<String, Value>) -> std::result::Result<Map<String, Val
     done.insert("ms".into(), json!(((now() - started) * 1000.0) as i64));
     log("result", done);
     let text = if is_error {
-        data.get("error").and_then(|v| v.as_str()).unwrap_or("").to_string()
+        data.get("error")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string()
     } else {
         serde_json::to_string_pretty(&Value::Object(data.clone())).unwrap_or_default()
     };
     let mut out = Map::new();
-    out.insert(
-        "content".into(),
-        json!([{"type": "text", "text": text}]),
-    );
+    out.insert("content".into(), json!([{"type": "text", "text": text}]));
     out.insert("isError".into(), json!(is_error));
     if !is_error {
         out.insert("structuredContent".into(), Value::Object(data));
@@ -851,15 +1394,28 @@ pub fn handle(message: &Value) -> Option<Value> {
         let id = message.get("id").cloned().unwrap_or(Value::Null);
         return Some(error(&id, INVALID_REQUEST, "Invalid Request"));
     };
-    if map.get("jsonrpc").and_then(|v| v.as_str()) != Some("2.0") || !map.get("method").map(|m| m.is_string()).unwrap_or(false) {
-        return Some(error(&map.get("id").cloned().unwrap_or(Value::Null), INVALID_REQUEST, "Invalid Request"));
+    if map.get("jsonrpc").and_then(|v| v.as_str()) != Some("2.0")
+        || !map.get("method").map(|m| m.is_string()).unwrap_or(false)
+    {
+        return Some(error(
+            &map.get("id").cloned().unwrap_or(Value::Null),
+            INVALID_REQUEST,
+            "Invalid Request",
+        ));
     }
     let method = map.get("method").and_then(|v| v.as_str()).unwrap_or("");
     let msg_id = map.get("id").cloned().unwrap_or(Value::Null);
     let is_notification = !map.contains_key("id");
-    let params = map.get("params").cloned().unwrap_or(Value::Object(Map::new()));
+    let params = map
+        .get("params")
+        .cloned()
+        .unwrap_or(Value::Object(Map::new()));
     if !params.is_object() {
-        return if is_notification { None } else { Some(error(&msg_id, INVALID_PARAMS, "params must be an object")) };
+        return if is_notification {
+            None
+        } else {
+            Some(error(&msg_id, INVALID_PARAMS, "params must be an object"))
+        };
     }
     if is_notification {
         return None;
@@ -867,31 +1423,51 @@ pub fn handle(message: &Value) -> Option<Value> {
     let params = params.as_object().unwrap();
     match method {
         "initialize" => {
-            let asked = params.get("protocolVersion").and_then(|v| v.as_str()).unwrap_or("");
-            let version = if PROTOCOL_VERSIONS.contains(&asked) { asked } else { PROTOCOL_VERSIONS[0] };
+            let asked = params
+                .get("protocolVersion")
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+            let version = if PROTOCOL_VERSIONS.contains(&asked) {
+                asked
+            } else {
+                PROTOCOL_VERSIONS[0]
+            };
             let mut f = Map::new();
             f.insert("version".into(), json!(version));
             log("initialize", f);
             let mut capabilities = json!({"tools": {"listChanged": false}});
             if std::env::var("EVERETT_GATEWAY_EXACT_IDS").as_deref() == Ok("1") {
-                capabilities["experimental"] = json!({"everettExactDestinationIds": {"enforced": true}});
+                capabilities["experimental"] =
+                    json!({"everettExactDestinationIds": {"enforced": true}});
             }
-            Some(result(&msg_id, json!({
-                "protocolVersion": version,
-                "capabilities": capabilities,
-                "serverInfo": {"name": "everett", "version": env!("CARGO_PKG_VERSION")},
-                "instructions": INSTRUCTIONS,
-            })))
+            Some(result(
+                &msg_id,
+                json!({
+                    "protocolVersion": version,
+                    "capabilities": capabilities,
+                    "serverInfo": {"name": "everett", "version": env!("CARGO_PKG_VERSION")},
+                    "instructions": INSTRUCTIONS,
+                }),
+            ))
         }
         "ping" => Some(result(&msg_id, json!({}))),
         "tools/list" => Some(result(&msg_id, json!({"tools": tools()}))),
         "tools/call" => {
             // A panic in one tool must not kill the stdio server.
-            let tool = params.get("name").and_then(|v| v.as_str()).unwrap_or("").to_string();
-            let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| call_tool(params)));
+            let tool = params
+                .get("name")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+            let outcome =
+                std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| call_tool(params)));
             match outcome {
                 Ok(Ok(out)) => Some(result(&msg_id, Value::Object(out))),
-                Ok(Err(e)) => Some(error(&msg_id, e["code"].as_i64().unwrap_or(INTERNAL_ERROR), e["message"].as_str().unwrap_or("error"))),
+                Ok(Err(e)) => Some(error(
+                    &msg_id,
+                    e["code"].as_i64().unwrap_or(INTERNAL_ERROR),
+                    e["message"].as_str().unwrap_or("error"),
+                )),
                 Err(_) => {
                     let mut f = Map::new();
                     f.insert("tool".into(), json!(tool));
@@ -900,7 +1476,11 @@ pub fn handle(message: &Value) -> Option<Value> {
                 }
             }
         }
-        _ => Some(error(&msg_id, METHOD_NOT_FOUND, &format!("Method not found: {}", method))),
+        _ => Some(error(
+            &msg_id,
+            METHOD_NOT_FOUND,
+            &format!("Method not found: {}", method),
+        )),
     }
 }
 
@@ -909,9 +1489,14 @@ pub fn serve() -> i32 {
     f.insert("pid".into(), json!(std::process::id()));
     f.insert(
         "cwd".into(),
-        json!(std::env::current_dir().map(|p| p.to_string_lossy().to_string()).unwrap_or_default()),
+        json!(std::env::current_dir()
+            .map(|p| p.to_string_lossy().to_string())
+            .unwrap_or_default()),
     );
-    f.insert("hops".into(), json!(std::env::var("EVERETT_HOPS").unwrap_or_else(|_| "0".to_string())));
+    f.insert(
+        "hops".into(),
+        json!(std::env::var("EVERETT_HOPS").unwrap_or_else(|_| "0".to_string())),
+    );
     log("start", f);
     let stdin = std::io::stdin();
     let reader = BufReader::new(stdin.lock());
@@ -926,14 +1511,28 @@ pub fn serve() -> i32 {
         let message: Value = match serde_json::from_str(line) {
             Ok(m) => m,
             Err(_) => {
-                let _ = writeln!(out, "{}", serde_json::to_string(&error(&Value::Null, PARSE_ERROR, "Parse error")).unwrap());
+                let _ = writeln!(
+                    out,
+                    "{}",
+                    serde_json::to_string(&error(&Value::Null, PARSE_ERROR, "Parse error"))
+                        .unwrap()
+                );
                 let _ = out.flush();
                 continue;
             }
         };
         if let Value::Array(batch) = &message {
             if batch.is_empty() {
-                let _ = writeln!(out, "{}", serde_json::to_string(&json!([error(&Value::Null, INVALID_REQUEST, "Invalid Request")])).unwrap());
+                let _ = writeln!(
+                    out,
+                    "{}",
+                    serde_json::to_string(&json!([error(
+                        &Value::Null,
+                        INVALID_REQUEST,
+                        "Invalid Request"
+                    )]))
+                    .unwrap()
+                );
                 let _ = out.flush();
                 continue;
             }

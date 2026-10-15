@@ -1,0 +1,21 @@
+{
+  "name": "everett-convex-relay",
+  "private": true,
+  "scripts": {
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit",
+    "deploy": "convex deploy",
+    "dev": "convex dev"
+  },
+  "dependencies": {
+    "convex": "1.46.0",
+    "tweetnacl": "1.0.3",
+    "@noble/hashes": "1.8.0"
+  },
+  "devDependencies": {
+    "convex-test": "0.0.61",
+    "typescript": "5.9.3",
+    "vitest": "4.1.11",
+    "@types/node": "22.19.1"
+  }
+}

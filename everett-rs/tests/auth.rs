@@ -7,6 +7,95 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;
 
+#[test]
+fn concurrent_saves_are_atomic_and_private_before_writing() {
+    use everett::auth::{self, Stored};
+    use std::os::unix::fs::PermissionsExt;
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+    let home = common::lib_home();
+    let parent = home.path().join(".everett");
+    std::fs::create_dir(&parent).unwrap();
+    std::fs::set_permissions(&parent, std::fs::Permissions::from_mode(0o777)).unwrap();
+    let running = Arc::new(AtomicBool::new(true));
+    let observations = Arc::new(AtomicUsize::new(0));
+    let monitor = {
+        let running = running.clone();
+        let observations = observations.clone();
+        let parent = parent.clone();
+        thread::spawn(move || {
+            while running.load(Ordering::Relaxed) {
+                for entry in std::fs::read_dir(&parent).unwrap().flatten() {
+                    if let Ok(meta) = entry.metadata() {
+                        assert_eq!(
+                            meta.permissions().mode() & 0o777,
+                            0o600,
+                            "credential file permissions"
+                        );
+                        observations.fetch_add(1, Ordering::Relaxed);
+                    }
+                }
+                thread::yield_now();
+            }
+        })
+    };
+    let barrier = Arc::new(std::sync::Barrier::new(12));
+    let workers: Vec<_> = (0..12)
+        .map(|i| {
+            let barrier = barrier.clone();
+            thread::spawn(move || {
+                barrier.wait();
+                let synthetic = format!("synthetic-{i}");
+                let stored = Stored {
+                    issuer: "https://issuer.example/".into(),
+                    client_id: "test".into(),
+                    sub: synthetic.clone(),
+                    email: String::new(),
+                    name: String::new(),
+                    device_name: String::new(),
+                    access_token: synthetic.clone(),
+                    id_token: synthetic.clone(),
+                    refresh_token: synthetic,
+                    expires_at: 1000.0,
+                    scope: String::new(),
+                };
+                for _ in 0..20 {
+                    auth::save(&stored).unwrap();
+                    let loaded = auth::load().expect("every concurrent snapshot is complete JSON");
+                    assert!(
+                        loaded.access_token == loaded.sub
+                            && loaded.id_token == loaded.sub
+                            && loaded.refresh_token == loaded.sub,
+                        "atomic credential set"
+                    );
+                }
+            })
+        })
+        .collect();
+    for worker in workers {
+        worker.join().unwrap();
+    }
+    running.store(false, Ordering::Relaxed);
+    monitor.join().unwrap();
+    assert!(observations.load(Ordering::Relaxed) > 0);
+    assert_eq!(
+        std::fs::metadata(&parent).unwrap().permissions().mode() & 0o777,
+        0o700
+    );
+    assert_eq!(
+        std::fs::metadata(auth::auth_path())
+            .unwrap()
+            .permissions()
+            .mode()
+            & 0o777,
+        0o600
+    );
+    assert_eq!(
+        std::fs::read_dir(parent).unwrap().count(),
+        1,
+        "unique temporary files are all cleaned up"
+    );
+}
+
 use common::fixture;
 
 /// In-process OIDC fake: scripts device-flow poll outcomes, refresh results,
@@ -146,7 +235,7 @@ fn handle(stream: &mut TcpStream, state: &Arc<Mutex<State>>, port: u16) {
                         stream,
                         200,
                         &format!(
-                            r#"{{"access_token":"at-new","refresh_token":"{}","expires_in":3600}}"#,
+                            r#"{{"access_token":"at-new","id_token":"id-new","refresh_token":"{}","expires_in":3600}}"#,
                             st.rotated_refresh
                         ),
                     );
@@ -162,7 +251,7 @@ fn handle(stream: &mut TcpStream, state: &Arc<Mutex<State>>, port: u16) {
                 _ => respond(
                     stream,
                     200,
-                    r#"{"access_token":"at-1","refresh_token":"rt-1","expires_in":3600,"scope":"openid email profile offline_access"}"#,
+                    r#"{"access_token":"at-1","id_token":"id-1","refresh_token":"rt-1","expires_in":3600,"scope":"openid email profile offline_access"}"#,
                 ),
             }
         }
@@ -220,6 +309,7 @@ fn login_happy_path_writes_auth_and_whoami_prints_email() {
     assert_eq!(stored["issuer"], fake.base);
     assert_eq!(stored["client_id"], "client-1");
     assert_eq!(stored["refresh_token"], "rt-1");
+    assert_eq!(stored["id_token"], "id-1");
     assert!(stored["expires_at"].as_f64().unwrap() > 0.0);
 
     let out = f.run(&["whoami"]);
@@ -281,6 +371,7 @@ fn whoami_rotates_refresh_token() {
         serde_json::from_str(&std::fs::read_to_string(auth_path(&f)).unwrap()).unwrap();
     assert_eq!(stored["refresh_token"], "rt-rotated");
     assert_eq!(stored["access_token"], "at-new");
+    assert_eq!(stored["id_token"], "id-new");
 }
 
 #[test]
