@@ -172,7 +172,7 @@ fn resumed_harness_cannot_consume_the_mcp_protocol() {
         json!({"jsonrpc": "2.0", "id": 99, "method": "ping"}),
     ]);
     let path = format!("{}:/usr/bin:/bin", bin.display());
-    let out = fx.run_stdin(&["mcp"], &input, &[("PATH", &path)]);
+    let out = fx.run_stdin(&["mcp"], &input, &[("PATH", &path), ("EVERETT_SESSION_ID", "caller-1")]);
     let replies: Vec<Value> = fx.stdout(&out).lines().map(|l| serde_json::from_str(l).unwrap()).collect();
     let sent = replies.iter().find(|r| r["id"] == 1).unwrap();
     assert!(sent.to_string().contains("stdin=[]"), "{sent}");

@@ -8,7 +8,17 @@ const EVENT_KINDS: &[&str] = &["done", "blocked", "needs-input", "info"];
 const SCOPES: &[&str] = &["global", "project"];
 const MODES: &[&str] = &["auto", "inbox", "resume"];
 const LLMS: &[&str] = &["claude", "codex", "none"];
-const HARNESSES: &[&str] = &["claude", "codex", "omp", "pi", "hermes", "grok", "devin", "openai-dot", "grok-bot"];
+const HARNESSES: &[&str] = &[
+    "claude",
+    "codex",
+    "omp",
+    "pi",
+    "hermes",
+    "grok",
+    "devin",
+    "openai-dot",
+    "grok-bot",
+];
 
 #[derive(Parser)]
 #[command(name = "everett", version = env!("CARGO_PKG_VERSION"), about = "See and reach parallel coding-agent sessions.")]
@@ -333,8 +343,13 @@ enum PeerCmd {
     List,
     /// print this device's peer id and public key
     Identity,
-    /// revoke our tagged key remotely, then forget this peer (requires online SSH)
-    Remove { name: String },
+    /// remove a peer; duplicate transport aliases require --transport ssh|convex
+    Remove {
+        name: String,
+        /// select one transport when a legacy alias exists in both registries
+        #[arg(long, value_parser = ["ssh", "convex"])]
+        transport: Option<String>,
+    },
     /// remove a client's tagged key from this machine's authorized_keys
     Revoke { client: String },
     /// list sessions on a peer
@@ -362,8 +377,14 @@ enum PeerCmd {
 
 fn peer_output(result: everett::error::Result<serde_json::Value>) -> i32 {
     match result {
-        Ok(value) => { println!("{}", serde_json::to_string_pretty(&value).unwrap()); 0 }
-        Err(e) => { eprintln!("everett: {e}"); e.code }
+        Ok(value) => {
+            println!("{}", serde_json::to_string_pretty(&value).unwrap());
+            0
+        }
+        Err(e) => {
+            eprintln!("everett: {e}");
+            e.code
+        }
     }
 }
 
@@ -561,32 +582,57 @@ fn main() {
             )),
             PeerCmd::List => peer_output(everett::peer::listing()),
             PeerCmd::Identity => peer_output(everett::peer::identity()),
-            PeerCmd::Remove { name } => peer_output(everett::peer::remove(&name)),
+            PeerCmd::Remove { name, transport } => {
+                peer_output(everett::peer::remove_scoped(&name, transport.as_deref()))
+            }
             PeerCmd::Revoke { client } => peer_output(everett::peer::revoke(&client)),
             PeerCmd::Card { target } => peer_output(everett::peer::card(&target)),
-            PeerCmd::Status { name, message_id } => peer_output(everett::peer::status(&name, &message_id)),
+            PeerCmd::Status { name, message_id } => {
+                peer_output(everett::peer::status(&name, &message_id))
+            }
             PeerCmd::Serve { client } => everett::peer::serve(client.as_deref(), false),
             PeerCmd::Install => everett::peer::serve(None, true),
-            PeerCmd::Ls { name, all, harness, json } => {
-                a.peer = Some(name); a.all = all; a.harness = harness; a.json = json;
+            PeerCmd::Ls {
+                name,
+                all,
+                harness,
+                json,
+            } => {
+                a.peer = Some(name);
+                a.all = all;
+                a.harness = harness;
+                a.json = json;
                 cli::cmd_ls(&a)
             }
         },
         Cmd::External { action } => match action {
-            ExternalCmd::Add { id, harness, title, cwd, replace } => {
-                cli::cmd_external_add(&id, &harness, &title, &cwd, replace)
-            }
+            ExternalCmd::Add {
+                id,
+                harness,
+                title,
+                cwd,
+                replace,
+            } => cli::cmd_external_add(&id, &harness, &title, &cwd, replace),
             ExternalCmd::List => cli::cmd_external_list(),
             ExternalCmd::Remove { id } => cli::cmd_external_remove(&id),
         },
-        Cmd::Ls { json, all, harness, peer } => {
+        Cmd::Ls {
+            json,
+            all,
+            harness,
+            peer,
+        } => {
             a.peer = peer;
             a.json = json;
             a.all = all;
             a.harness = harness;
             cli::cmd_ls(&a)
         }
-        Cmd::Cards { regenerate_auto, dry_run, hours } => {
+        Cmd::Cards {
+            regenerate_auto,
+            dry_run,
+            hours,
+        } => {
             a.regenerate_auto = regenerate_auto;
             a.dry_run = dry_run;
             a.regen_hours = hours;
@@ -599,7 +645,20 @@ fn main() {
             a.router = router;
             cli::cmd_route(&a)
         }
-        Cmd::Send { text, json, dry_run, timeout, router, to, spawn, dir, harness, mode, wait, idempotency_key } => {
+        Cmd::Send {
+            text,
+            json,
+            dry_run,
+            timeout,
+            router,
+            to,
+            spawn,
+            dir,
+            harness,
+            mode,
+            wait,
+            idempotency_key,
+        } => {
             a.idempotency_key = idempotency_key;
             a.text = Some(text);
             a.json = json;
@@ -614,21 +673,35 @@ fn main() {
             a.wait = wait;
             cli::cmd_send(&a)
         }
-        Cmd::Event { kind, message, project, session } => {
+        Cmd::Event {
+            kind,
+            message,
+            project,
+            session,
+        } => {
             a.kind = Some(kind);
             a.message = Some(message);
             a.project = project;
             a.session = session;
             cli::cmd_event(&a)
         }
-        Cmd::Events { since, session, json, check } => {
+        Cmd::Events {
+            since,
+            session,
+            json,
+            check,
+        } => {
             a.since = since;
             a.session = session;
             a.json = json;
             a.check = check;
             cli::cmd_events(&a)
         }
-        Cmd::Subscribe { target, as_, remove } => {
+        Cmd::Subscribe {
+            target,
+            as_,
+            remove,
+        } => {
             a.target = Some(target);
             a.as_ = as_;
             a.remove = remove;
@@ -639,13 +712,24 @@ fn main() {
             a.text = Some(text);
             cli::cmd_reply(&a)
         }
-        Cmd::Inbox { session, peek, json } => {
+        Cmd::Inbox {
+            session,
+            peek,
+            json,
+        } => {
             a.session = session;
             a.peek = peek;
             a.json = json;
             cli::cmd_inbox(&a)
         }
-        Cmd::Trunk { action, dry_run, llm, at, apply, remove } => {
+        Cmd::Trunk {
+            action,
+            dry_run,
+            llm,
+            at,
+            apply,
+            remove,
+        } => {
             a.action = Some(action);
             a.dry_run = dry_run;
             a.llm = llm;
@@ -654,7 +738,11 @@ fn main() {
             a.remove = remove;
             cli::cmd_trunk(&a)
         }
-        Cmd::Learn { fact, project, scope } => {
+        Cmd::Learn {
+            fact,
+            project,
+            scope,
+        } => {
             a.fact = Some(fact);
             a.project = project;
             a.scope = scope;
@@ -665,7 +753,13 @@ fn main() {
             a.project = project;
             cli::cmd_core(&a)
         }
-        Cmd::InstallHooks { claude, codex, omp, grok, apply } => {
+        Cmd::InstallHooks {
+            claude,
+            codex,
+            omp,
+            grok,
+            apply,
+        } => {
             a.claude = claude;
             a.codex = codex;
             a.omp = omp;
@@ -674,8 +768,20 @@ fn main() {
             cli::cmd_install_hooks(&a)
         }
         Cmd::Mcp => cli::cmd_mcp(&a),
-        Cmd::Gateway { config, transport, port } => everett::gateway::run(&config, &transport, port),
-        Cmd::InstallMcp { claude, codex, omp, grok, devin, apply, repair } => {
+        Cmd::Gateway {
+            config,
+            transport,
+            port,
+        } => everett::gateway::run(&config, &transport, port),
+        Cmd::InstallMcp {
+            claude,
+            codex,
+            omp,
+            grok,
+            devin,
+            apply,
+            repair,
+        } => {
             a.claude = claude;
             a.codex = codex;
             a.omp = omp;
@@ -685,7 +791,12 @@ fn main() {
             a.repair = repair;
             cli::cmd_install_mcp(&a)
         }
-        Cmd::Login { device, open, force, json } => {
+        Cmd::Login {
+            device,
+            open,
+            force,
+            json,
+        } => {
             a.device = device;
             a.open = open;
             a.force = force;
@@ -701,7 +812,14 @@ fn main() {
             cli::cmd_logout(&a)
         }
         Cmd::Doctor => cli::cmd_doctor(&a),
-        Cmd::Onboard { yes, span_days, no_backfill, no_mcp, jev_key_env, schedule_merge } => {
+        Cmd::Onboard {
+            yes,
+            span_days,
+            no_backfill,
+            no_mcp,
+            jev_key_env,
+            schedule_merge,
+        } => {
             a.onboard_yes = yes;
             a.span_days = span_days;
             a.no_backfill = no_backfill;

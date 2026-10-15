@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+- Require host-bound MCP caller identity for delivery and replies; reject conflicting model
+  session IDs instead of allowing them to replace provenance or hop lineage. Harnesses
+  without native detection must bind `EVERETT_SESSION_ID` in their MCP launch environment.
+- Recover staged key rotations and pair same-org agents through authorized exact-device
+  lookup, independent of the bounded directory. Count recipient capacity with ciphertext-free
+  indexed metadata and cap pending pages at 32 to stay within Convex response budgets.
+- Bound rejected-message diagnostic state. Serialize SSH/Convex alias claims before SSH
+  pairing side effects and add `peer remove NAME --transport ssh|convex` for explicit repair
+  of ambiguous legacy aliases. Default ambiguous routing and removal fail closed.
+
 - Reconcile the account/device and agent relay implementations into one v2 encrypted
   transport. Preserve agent MCP identity/pairing, grants, send and status tools with
   authoritative per-agent revocation and explicit bilateral fingerprint confirmation.

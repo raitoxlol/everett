@@ -365,6 +365,149 @@ fn unsafe_convex_numbers_are_rejected() {
     }
 }
 
+#[test]
+fn exact_device_query_recovers_a_committed_rotation_without_directory_scanning() {
+    let (old, _) = devices();
+    let new = Keys::new(
+        old.device.owner.clone(),
+        old.device.device_id.clone(),
+        [9; 32],
+        [10; 32],
+    );
+    let mut client = ConvexClient::fake(vec![("relay:device", Ok(json!(new.device.clone())))]);
+    let rt = tokio::runtime::Runtime::new().unwrap();
+    let recovered = rt
+        .block_on(commit_rotation(
+            &mut client,
+            &old,
+            &new,
+            "synthetic rotation",
+        ))
+        .unwrap();
+    assert_eq!(recovered["fingerprint"], json!(new.device.fingerprint()));
+    assert_eq!(
+        client.calls.len(),
+        1,
+        "committed staged keys must not rotate again"
+    );
+    assert_eq!(client.calls[0].0, "relay:device");
+    assert_eq!(
+        client.calls[0].1,
+        json!({"deviceId":old.device.device_id.clone()})
+    );
+
+    let mut client = ConvexClient::fake(vec![
+        ("relay:device", Ok(json!(old.device.clone()))),
+        ("relay:rotate", Ok(json!({"rotated":true}))),
+    ]);
+    assert_eq!(
+        rt.block_on(commit_rotation(
+            &mut client,
+            &old,
+            &new,
+            "synthetic rotation"
+        ))
+        .unwrap()["rotated"],
+        true
+    );
+    assert_eq!(client.calls[1].0, "relay:rotate");
+    assert!(client.calls.iter().all(|(name, _)| name != "relay:devices"));
+}
+
+#[test]
+fn staged_rotation_keeps_old_primary_on_errors_and_promotes_committed_stage() {
+    let (old, _) = devices();
+    let new = Keys::new(
+        old.device.owner.clone(),
+        old.device.device_id.clone(),
+        [9; 32],
+        [10; 32],
+    );
+    let old_private = PrivateKeys {
+        signing: hex::encode([1; 32]),
+        encryption: hex::encode([2; 32]),
+    };
+    let staged = PrivateKeys {
+        signing: hex::encode([9; 32]),
+        encryption: hex::encode([10; 32]),
+    };
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("keys.json");
+    let stage = path.with_extension("rotation");
+    write(&path, &old_private).unwrap();
+
+    for failure in ["lost response", "unknown registered key bundle"] {
+        let result: Result<()> =
+            staged_rotation(&path, &stage, || staged.clone(), |_| Err(bad(failure)));
+        assert!(result.is_err());
+        assert_eq!(
+            read::<PrivateKeys>(&path).unwrap().signing,
+            old_private.signing
+        );
+        assert_eq!(read::<PrivateKeys>(&stage).unwrap().signing, staged.signing);
+    }
+
+    let mut client = ConvexClient::fake(vec![("relay:device", Ok(json!(new.device.clone())))]);
+    let rt = tokio::runtime::Runtime::new().unwrap();
+    let (device, response) = staged_rotation(
+        &path,
+        &stage,
+        || panic!("a saved stage must be reused"),
+        |private| {
+            let recovered = Keys::new(
+                old.device.owner.clone(),
+                old.device.device_id.clone(),
+                crypto::decode(&private.signing)?,
+                crypto::decode(&private.encryption)?,
+            );
+            let response = rt.block_on(commit_rotation(
+                &mut client,
+                &old,
+                &recovered,
+                "synthetic rotation",
+            ))?;
+            Ok((recovered.device, response))
+        },
+    )
+    .unwrap();
+    assert_eq!(device, new.device);
+    assert_eq!(response["fingerprint"], new.device.fingerprint());
+    assert_eq!(read::<PrivateKeys>(&path).unwrap().signing, staged.signing);
+    assert!(!stage.exists());
+    assert_eq!(
+        client.calls.len(),
+        1,
+        "committed stage must not rotate again"
+    );
+    assert_eq!(client.calls[0].0, "relay:device");
+}
+
+#[test]
+fn rejected_cache_is_bounded_and_expires_duplicate_suppression() {
+    let mut rejected = RejectedCache::new();
+    assert!(rejected.insert("long-lived".into(), i64::MAX, 1));
+    assert!(!rejected.insert("long-lived".into(), i64::MAX, 2));
+    // Reinsert one short-lived row thousands of times behind a live entry. The
+    // old queue implementation accumulated stale versions without bound here.
+    for now in 1..=(REJECTED_CACHE_CAP as i64 * 3) {
+        assert!(rejected.insert("short-lived".into(), now, now));
+        assert!(rejected.entries.len() <= REJECTED_CACHE_CAP);
+    }
+    rejected.prune(REJECTED_CACHE_CAP as i64 * 3);
+    assert_eq!(rejected.entries.len(), 1);
+    assert!(rejected.entries.contains_key("long-lived"));
+    for i in 0..(REJECTED_CACHE_CAP + 8) {
+        assert!(rejected.insert(format!("id-{i}"), i64::MAX, 2));
+    }
+    assert!(rejected.entries.len() <= REJECTED_CACHE_CAP);
+    rejected.prune(i64::MAX);
+    assert!(rejected.entries.is_empty());
+    assert!(
+        rejected.insert("duplicate".into(), 200, 101),
+        "expired IDs must log again"
+    );
+}
+
 // Test-only transport around the official Rust SDK's sans-I/O protocol core.
 // Relay production args/result handling, signing, observation and publication
 // execute unchanged; there are no sockets and no mock of authorization helpers.
