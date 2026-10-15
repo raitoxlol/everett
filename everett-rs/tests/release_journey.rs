@@ -165,9 +165,11 @@ fn release_journey_over_cli_and_all_mcp_tools() {
     assert_eq!((routed["decision"].clone(), routed["session"]["id"].clone()), (json!("SESSION"), json!("verify-worker")));
 
     let mut wire = Wire::start(&home, "verify-sender");
+    let mut worker_wire = Wire::start(&home, "verify-worker");
     assert_eq!(wire.call("everett_whoami", json!({}))["session_id"], "verify-sender");
     for (sid, what) in [("verify-sender", "Email templates"), ("verify-worker", "Upload retries")] {
-        wire.call("everett_card", json!({"session_id": sid, "what": what, "state": "Reviewing", "next": "Run checks"}));
+        let caller = if sid == "verify-worker" { &mut worker_wire } else { &mut wire };
+        caller.call("everett_card", json!({"session_id": sid, "what": what, "state": "Reviewing", "next": "Run checks"}));
         assert!(root.join(".everett/cards").join(format!("{sid}.md")).is_file());
     }
     let listed = wire.call("everett_ls", json!({}));
@@ -176,18 +178,18 @@ fn release_journey_over_cli_and_all_mcp_tools() {
     assert_eq!(routed["session"]["id"], "verify-worker");
 
     let sent = wire.call("everett_send", json!({"text": "Review the upload tests", "to": "verify-worker", "mode": "inbox"}));
-    let received = wire.call("everett_inbox", json!({"session_id": "verify-worker"}))["messages"].clone();
+    let received = worker_wire.call("everett_inbox", json!({}))["messages"].clone();
     assert!(received.as_array().unwrap().len() == 1 && received[0]["id"] == sent["message_id"], "{received}");
-    assert_eq!(wire.call("everett_inbox", json!({"session_id": "verify-worker"}))["messages"], json!([]));
+    assert_eq!(worker_wire.call("everett_inbox", json!({}))["messages"], json!([]));
     home.run(&["reply", sent["message_id"].as_str().unwrap(), "Upload tests pass"], "verify-worker");
     let replies = wire.call("everett_inbox", json!({}))["messages"].clone();
     assert_eq!((replies[0]["text"].clone(), replies[0]["reply_to"].clone()), (json!("Upload tests pass"), sent["message_id"].clone()));
     let cli_sent = home.json(&["send", "Check the retry cap", "--to", "verify-worker", "--mode", "inbox", "--json"], "verify-sender");
-    wire.call("everett_send", json!({"reply_to": cli_sent["message_id"], "text": "Cap is five", "session_id": "verify-worker"}));
+    worker_wire.call("everett_send", json!({"reply_to": cli_sent["message_id"], "text": "Cap is five"}));
     assert_eq!(home.json(&["inbox", "--session", "verify-sender", "--json"], "")["messages"][0]["text"], "Cap is five");
 
     wire.call("everett_subscribe", json!({"target": "verify-worker"}));
-    wire.call("everett_event", json!({"kind": "done", "message": "Upload tests passed", "session_id": "verify-worker"}));
+    worker_wire.call("everett_event", json!({"kind": "done", "message": "Upload tests passed"}));
     let updates = wire.call("everett_inbox", json!({}))["messages"].clone();
     assert!(updates.as_array().unwrap().iter().any(|m| m["kind"] == "event" && m["text"].as_str().unwrap().contains("Upload tests passed")), "{updates}");
     let sessions = wire.call("everett_ls", json!({}))["sessions"].clone();
@@ -236,5 +238,7 @@ fn release_journey_over_cli_and_all_mcp_tools() {
         assert_eq!(result["isError"],true,"{name}: {result}");
         wire.seen.insert(name.into());
     }
-    assert_eq!(wire.close(), TOOLS.iter().map(|t| t.to_string()).collect());
+    let mut seen = wire.close();
+    seen.extend(worker_wire.close());
+    assert_eq!(seen, TOOLS.iter().map(|t| t.to_string()).collect());
 }

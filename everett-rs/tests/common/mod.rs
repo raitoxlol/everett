@@ -42,7 +42,12 @@ impl Fixture {
             cmd.env(k, v);
         }
         let mut child = cmd.spawn().unwrap();
-        child.stdin.take().unwrap().write_all(input.as_bytes()).unwrap();
+        child
+            .stdin
+            .take()
+            .unwrap()
+            .write_all(input.as_bytes())
+            .unwrap();
         child.wait_with_output().unwrap()
     }
 
@@ -60,13 +65,20 @@ impl Fixture {
     /// `everett ls --json` parsed.
     pub fn ls_json(&self) -> Vec<serde_json::Value> {
         let out = self.run(&["ls", "--json"]);
-        assert_eq!(out.status.code(), Some(0), "ls --json failed: {}", self.stdout(&out));
+        assert_eq!(
+            out.status.code(),
+            Some(0),
+            "ls --json failed: {}",
+            self.stdout(&out)
+        );
         serde_json::from_str(&self.stdout(&out)).unwrap()
     }
 }
 
 pub fn fixture() -> Fixture {
-    Fixture { dir: tempfile::tempdir().unwrap() }
+    Fixture {
+        dir: tempfile::tempdir().unwrap(),
+    }
 }
 
 /// One JSON object per line.
@@ -76,7 +88,9 @@ pub fn jsonl(rows: &[serde_json::Value]) -> String {
 
 /// Copy a fixture transcript into a harness store path under the fixture home.
 pub fn plant(fixture: &Fixture, name: &str, rel: &str) -> PathBuf {
-    let src = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures").join(name);
+    let src = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/fixtures")
+        .join(name);
     fixture.write(rel, &std::fs::read_to_string(src).unwrap())
 }
 
@@ -93,10 +107,25 @@ impl LibHome {
 }
 
 const SANDBOX_UNSET: &[&str] = &[
-    "TYPESAFE_API_KEY", "EVERETT_VAULT", "EVERETT_VAULT_DIR", "EVERETT_ROUTER", "EVERETT_HARNESS",
-    "EVERETT_SEND", "EVERETT_HOPS", "EVERETT_SESSION_ID", "EVERETT_MERGE_LLM", "CLAUDE_CODE_ENTRYPOINT",
-    "CLAUDECODE", "CLAUDE_CODE_SESSION_ID", "CLAUDE_SESSION_ID", "CODEX_THREAD_ID", "HERMES_SESSION_ID",
-    "PI_SESSION_FILE", "GROK_SESSION_ID", "EVERETT_NOTIFY_COMMAND", "EVERETT_ESCALATE_MINUTES",
+    "TYPESAFE_API_KEY",
+    "EVERETT_VAULT",
+    "EVERETT_VAULT_DIR",
+    "EVERETT_ROUTER",
+    "EVERETT_HARNESS",
+    "EVERETT_SEND",
+    "EVERETT_HOPS",
+    "EVERETT_SESSION_ID",
+    "EVERETT_MERGE_LLM",
+    "CLAUDE_CODE_ENTRYPOINT",
+    "CLAUDECODE",
+    "CLAUDE_CODE_SESSION_ID",
+    "CLAUDE_SESSION_ID",
+    "CODEX_THREAD_ID",
+    "HERMES_SESSION_ID",
+    "PI_SESSION_FILE",
+    "GROK_SESSION_ID",
+    "EVERETT_NOTIFY_COMMAND",
+    "EVERETT_ESCALATE_MINUTES",
 ];
 
 pub fn lib_home() -> LibHome {

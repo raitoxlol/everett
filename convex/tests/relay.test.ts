@@ -4,6 +4,7 @@ import { afterEach, describe, expect, test, vi } from "vitest";
 import nacl from "tweetnacl";
 import schema from "../schema";
 import { namespace } from "../authorization";
+import { queuedAttemptCount } from "../relay";
 import { aadBytes, deviceBytes, envelopeBytes, fingerprint, observationBytes, rotationBytes, hexString, type Envelope } from "../protocol";
 import { key, seal, open, resign, type Keys } from "./crypto.test-helper";
 import wire from "./relay-wire-v2.json";
@@ -148,6 +149,35 @@ describe("actual Convex functions, offline", () => {
     const wrongAgent = f.backend.withIdentity({ ...f.identities[0], everett_agent: "agent-c" });
     await expect(wrongAgent.query(query("whoami"), {})).rejects.toThrow("credential");
     expect(await f.a.query(query("devices"), {})).toEqual([f.ka.device, f.kc.device]);
+  });
+  test("exact device lookup is active, owner-scoped and survives a revoked historical prefix", async () => {
+    const f = await fixture(), late = key("zz-active", ownerA, 201), memberDevice = key("member-late", ownerA, 202);
+    await f.backend.run(async (ctx) => {
+      for (let i = 0; i < 256; i++) {
+        const historical = key(`000-revoked-${String(i).padStart(3, "0")}`, ownerA, (i % 180) + 20);
+        await ctx.db.insert("devices", { ...historical.device, generation: 0 });
+        await ctx.db.insert("credentials", { issuer, agentId: historical.device.deviceId, owner: ownerA, subject: "alice", status: "revoked" });
+      }
+      await ctx.db.insert("devices", { ...late.device, generation: 0 });
+      await ctx.db.insert("credentials", { issuer, agentId: late.device.deviceId, owner: ownerA, subject: "alice", status: "active" });
+      await ctx.db.insert("devices", { ...memberDevice.device, generation: 0 });
+      await ctx.db.insert("credentials", { issuer, agentId: memberDevice.device.deviceId, owner: ownerA, subject: "alice-member", status: "active" });
+    });
+    expect(await f.a.query(query("devices"), {})).toEqual([]);
+    expect(await f.a.query(query("device"), { deviceId: late.device.deviceId })).toEqual(late.device);
+    await expect(f.a.query(query("device"), { deviceId: "000-revoked-000" })).rejects.toThrow("revoked");
+    await expect(f.a.query(query("device"), { deviceId: f.kb.device.deviceId })).rejects.toThrow("registered");
+    await expect(f.a.query(query("device"), { deviceId: "unknown-device" })).rejects.toThrow("registered");
+
+    const next = key("agent-a", ownerA, 203), oldFingerprint = fingerprint(f.ka.device);
+    const signature = hexString(nacl.sign.detached(rotationBytes(next.device, oldFingerprint), f.ka.pair.secretKey));
+    await f.a.mutation(ref("rotate"), { device: next.device, oldFingerprint, signature });
+    expect(await f.a.query(query("device"), { deviceId: "agent-a" })).toEqual(next.device);
+
+    await f.a.mutation(ref("revokeAgent"), { deviceId: "agent-c" });
+    await expect(f.c.query(query("device"), { deviceId: "agent-a" })).rejects.toThrow("revoked");
+    await f.a.mutation(ref("revokeMember"), { subject: "alice-member" });
+    await expect(f.a.query(query("device"), { deviceId: memberDevice.device.deviceId })).rejects.toThrow("membership");
   });
   test("fallback account tuple is separated from org namespace and distinct agents share one account", async () => {
     const f = await fixture(), owner = namespace(issuer, "personal", null);
@@ -314,7 +344,9 @@ describe("actual Convex functions, offline", () => {
     const first = await f.c.query(query("pending"), { deviceId: "agent-c" });
     expect(first.envelopes).toEqual([]); expect(first.isDone).toBe(false);
     const second = await f.c.query(query("pending"), { deviceId: "agent-c", cursor: first.continueCursor });
-    expect(second.envelopes).toEqual([{ envelope: valid, trust: "same-org" }]);
+    expect(second.envelopes).toEqual([]); expect(second.isDone).toBe(false);
+    const third = await f.c.query(query("pending"), { deviceId: "agent-c", cursor: second.continueCursor });
+    expect(third.envelopes).toEqual([{ envelope: valid, trust: "same-org" }]);
   });
   test("grant fixed-minute rate is shared across directions and retries do not consume quota", async () => {
     const f = await fixture(); await f.activate(1);
@@ -353,16 +385,19 @@ describe("actual Convex functions, offline", () => {
     expect((await f.backend.run(ctx => ctx.db.query("rates").collect())).find(row => row.scope === scope)?.count).toBe(600);
     expect(await f.backend.run(ctx => ctx.db.query("attempts").collect())).toHaveLength(2);
   });
-  test("recipient queue cap spans minute windows, permits retries and frees capacity on delivery or TTL", async () => {
+  test("recipient queue capacity uses ciphertext-free attempt metadata at 256 maximum-size envelopes", async () => {
     vi.useFakeTimers(); const f = await fixture(), now = Date.now();
     const first = seal(f.ka, f.kc, { messageId: "queued-0", idempotencyKey: "queued-0" });
     for (let i = 0; i < 256; i++) {
       vi.setSystemTime(now + Math.floor(i / 120) * 60000);
-      const e = i === 0 ? first : seal(f.ka, f.kc, { messageId: `queued-${i}`, idempotencyKey: `queued-${i}` });
+      const e = i === 0 ? first : seal(f.ka, f.kc, { messageId: `queued-${i}`, idempotencyKey: `queued-${i}` }, "x".repeat(65536));
       await f.a.mutation(ref("enqueue"), { envelope: e });
     }
     const overflow = seal(f.ka, f.kc, { messageId: "overflow", idempotencyKey: "overflow" });
     await expect(f.a.mutation(ref("enqueue"), { envelope: overflow })).rejects.toThrow("queue full");
+    expect(await f.backend.run(ctx => ctx.db.query("attempts").collect())).toHaveLength(256);
+    const agentScope = JSON.stringify(["agent", ownerA, "agent-a"]);
+    expect((await f.backend.run(ctx => ctx.db.query("rates").collect())).find(row => row.scope === agentScope)?.count).toBe(16);
     await f.a.mutation(ref("enqueue"), { envelope: first });
     expect(await f.backend.run(ctx => ctx.db.query("messages").collect())).toHaveLength(256);
     expect(await f.backend.run(ctx => ctx.db.query("attempts").collect())).toHaveLength(256);
@@ -372,8 +407,58 @@ describe("actual Convex functions, offline", () => {
     vi.setSystemTime(overflow.expiresAt + 1);
     const fresh = seal(f.ka, f.kc, { messageId: "after-expiry", idempotencyKey: "after-expiry" });
     await f.a.mutation(ref("enqueue"), { envelope: fresh });
+    // Four bounded 64-row batches clear the 256 expired ciphertext rows; the fifth is idempotent.
+    for (let i = 0; i < 5; i++) await f.backend.mutation(ref("expire"), {});
+    const remaining = await f.backend.run(ctx => ctx.db.query("messages").collect());
+    expect(remaining).toHaveLength(1);
+    expect(remaining[0]).toMatchObject(fresh);
+    expect(await f.backend.run(ctx => ctx.db.query("attempts").collect())).toHaveLength(259);
     expect((await f.c.query(query("pending"), { deviceId: "agent-c" })).envelopes).toEqual([{ envelope: fresh, trust: "same-org" }]);
-  }, 20000);
+  }, 90000);
+  test("queue capacity instrumentation rejects a ciphertext read and filters compact queued attempts", async () => {
+    const calls: Array<[string, ...unknown[]]> = [];
+    const predicates = {
+      eq(field: string, value: unknown) { calls.push(["eq", field, value]); return predicates; },
+      gt(field: string, value: unknown) { calls.push(["gt", field, value]); return predicates; },
+    };
+    const ctx = { db: {
+      query(table: string) {
+        calls.push(["query", table]);
+        if (table === "messages") throw new Error("capacity must not materialize ciphertext messages");
+        return { withIndex(index: string, apply: (q: typeof predicates) => unknown) {
+          calls.push(["withIndex", index]); apply(predicates);
+          return { take: async (limit: number) => Array.from({ length: limit }, () => ({ state: "queued" })) };
+        } };
+      },
+    } };
+    expect(await queuedAttemptCount(ctx as never, ownerA, "agent-c", 1234)).toBe(256);
+    expect(calls).toEqual([
+      ["query", "attempts"], ["withIndex", "by_recipient_state_expiry"],
+      ["eq", "recipientOwner", ownerA], ["eq", "toDevice", "agent-c"], ["eq", "state", "queued"], ["gt", "expiresAt", 1234],
+    ]);
+  });
+  test("maximum-size pending pages stay below the 8 MiB result limit and drain without loss", async () => {
+    const f = await fixture();
+    const expected = new Set<string>();
+    for (let i = 0; i < 70; i++) {
+      const e = seal(f.ka, f.kc, { messageId: `page-${i}`, idempotencyKey: `page-${i}` }, "x".repeat(65536));
+      expected.add(e.messageId);
+      await f.a.mutation(ref("enqueue"), { envelope: e });
+    }
+    const seen = new Set<string>();
+    let cursor: string | null = null;
+    for (let pageNumber = 0; pageNumber < 10; pageNumber++) {
+      const page: { envelopes: Array<{ envelope: Envelope }>; isDone: boolean; continueCursor: string } = await f.c.query(query("pending"), { deviceId: "agent-c", cursor });
+      expect(Buffer.byteLength(JSON.stringify(page), "utf8")).toBeLessThan(8 * 1024 * 1024);
+      for (const row of page.envelopes) {
+        expect(seen.has(row.envelope.messageId)).toBe(false);
+        seen.add(row.envelope.messageId);
+      }
+      if (page.isDone) break;
+      cursor = page.continueCursor;
+    }
+    expect(seen).toEqual(expected);
+  }, 90000);
   test("serialized encrypted body cap is independently enforced per grant", async () => {
     const f = await fixture(); await f.activate(4, 256);
     await expect(f.a.mutation(ref("enqueue"), { envelope: seal(f.ka, f.kb, { grantId: "grant-ab" }, JSON.stringify({ text: "x".repeat(256) })) })).rejects.toThrow("body cap");

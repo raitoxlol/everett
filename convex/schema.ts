@@ -50,6 +50,7 @@ export default defineSchema({
     messageId: v.string(), idempotencyKey: v.string(), digest: v.string(),
     parent: parentValidator, hop: v.number(), expiresAt: v.number(), state: stateValidator,
   }).index("by_key", ["owner", "fromDevice", "idempotencyKey"])
-    .index("by_message", ["owner", "messageId"]),
+    .index("by_message", ["owner", "messageId"])
+    .index("by_recipient_state_expiry", ["recipientOwner", "toDevice", "state", "expiresAt"]),
   rates: defineTable({ scope: v.string(), window: v.number(), count: v.number() }).index("by_scope", ["scope"]),
 });

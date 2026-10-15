@@ -14,7 +14,7 @@ use serde_json::{json, Map, Value};
 use sha2::{Digest, Sha256};
 use std::os::unix::fs::OpenOptionsExt;
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, HashMap},
     fs,
     path::{Path, PathBuf},
     time::Duration,
@@ -132,6 +132,46 @@ enum State {
     Queued,
     Delivered,
     Replied,
+}
+
+const REJECTED_CACHE_CAP: usize = 4096;
+
+/// Diagnostic duplicate suppression only. Replay protection is authoritative
+/// elsewhere, so rejected rows can be forgotten once the server can no longer
+/// return them (or when the bounded cache is full).
+struct RejectedCache {
+    entries: HashMap<String, i64>,
+}
+
+impl RejectedCache {
+    fn new() -> Self {
+        Self {
+            entries: HashMap::new(),
+        }
+    }
+
+    fn prune(&mut self, now: i64) {
+        self.entries.retain(|_, expiry| *expiry > now);
+    }
+
+    /// Returns whether this rejection should be logged.
+    fn insert(&mut self, id: String, expiry: i64, now: i64) -> bool {
+        self.prune(now);
+        if self.entries.get(&id).is_some_and(|known| *known > now) {
+            return false;
+        }
+        while self.entries.len() >= REJECTED_CACHE_CAP {
+            let evicted = self
+                .entries
+                .keys()
+                .next()
+                .cloned()
+                .expect("cache is nonempty");
+            self.entries.remove(&evicted);
+        }
+        self.entries.insert(id.clone(), expiry);
+        true
+    }
 }
 
 fn root() -> PathBuf {
@@ -269,7 +309,7 @@ fn claims(token: &str) -> Result<Value> {
     .map_err(|_| bad("invalid OIDC ID token"))
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 struct PrivateKeys {
     signing: String,
     encryption: String,
@@ -351,6 +391,7 @@ fn keys(owner: &str) -> Result<Keys> {
 }
 
 fn paired(name: &str, owner: &str) -> Result<Paired> {
+    peer::assert_alias_unambiguous(name)?;
     let paired: Paired = read(&peer_path(name)?)?;
     paired.device.verify()?;
     if (paired.device.owner != owner && paired.grant_id.is_none())
@@ -386,19 +427,30 @@ fn trusted(device: &str, sender_owner: &str, grant_id: Option<&str>) -> Result<(
 
 pub fn list() -> Result<Value> {
     initialize()?;
+    let ssh = peer::peers()?;
     let mut result = Map::new();
     for path in crate::paths::glob(&root().join("peers"), "*.json") {
         let pin: Paired = read(&path)?;
-        result.insert(path.file_stem().unwrap().to_string_lossy().into(), json!({"transport":"convex", "device_id":pin.device.device_id, "owner":pin.device.owner, "grant_id":pin.grant_id, "fingerprint":pin.device.fingerprint(), "deployment":pin.deployment}));
+        let name = path.file_stem().unwrap().to_string_lossy().to_string();
+        if ssh.contains_key(&name) {
+            return Err(bad("alias is configured for both SSH and Convex; remove one binding explicitly before use"));
+        }
+        result.insert(name, json!({"transport":"convex", "device_id":pin.device.device_id, "owner":pin.device.owner, "grant_id":pin.grant_id, "fingerprint":pin.device.fingerprint(), "deployment":pin.deployment}));
     }
     Ok(Value::Object(result))
 }
 
-pub fn remove(name: &str) -> Result<Value> {
+pub(crate) fn remove_locked(name: &str) -> Result<Value> {
     fs::remove_file(peer_path(name)?).map_err(bad)?;
     Ok(
         json!({"removed":name,"transport":"convex","note":"Local trust removed; permanent backend revocation is everett relay revoke-agent AGENT_ID."}),
     )
+}
+
+pub fn remove(name: &str) -> Result<Value> {
+    let _alias_guard = peer::alias_lock()?;
+    peer::assert_alias_unambiguous(name)?;
+    remove_locked(name)
 }
 
 fn runtime<T: Send + 'static>(
@@ -492,6 +544,54 @@ async fn query(client: &mut ConvexClient, name: &str, value: Value) -> Result<Va
     )
 }
 
+/// The presentation directory is bounded. Existence, key pinning, and
+/// rotation recovery must use the owner-authorized exact-device query instead.
+async fn exact_device(client: &mut ConvexClient, device_id: &str) -> Result<Device> {
+    valid(device_id)?;
+    serde_json::from_value(query(client, "relay:device", json!({"deviceId":device_id})).await?)
+        .map_err(bad)
+}
+
+async fn commit_rotation(
+    client: &mut ConvexClient,
+    old: &Keys,
+    new: &Keys,
+    bytes: &str,
+) -> Result<Value> {
+    let registered = exact_device(client, &old.device.device_id).await?;
+    if registered == new.device {
+        return Ok(json!({"fingerprint":new.device.fingerprint()}));
+    }
+    if registered != old.device {
+        return Err(bad(
+            "registered device changed; refuse to overwrite an unknown key bundle",
+        ));
+    }
+    mutation(client,"relay:rotate",json!({"device":new.device,"oldFingerprint":old.device.fingerprint(),"signature":old.sign(bytes.as_bytes())})).await
+}
+
+/// Keep the old primary key file authoritative until an exact-device check and
+/// rotation commit have completed. A failed or lost response leaves the staged
+/// bundle in place so the next attempt can discover a committed rotation.
+fn staged_rotation<T>(
+    path: &Path,
+    stage: &Path,
+    generate: impl FnOnce() -> PrivateKeys,
+    commit: impl FnOnce(&PrivateKeys) -> Result<T>,
+) -> Result<T> {
+    let private = if stage.exists() {
+        read::<PrivateKeys>(stage)?
+    } else {
+        let private = generate();
+        write(stage, &private)?;
+        private
+    };
+    let response = commit(&private)?;
+    write(path, &private)?;
+    fs::remove_file(stage).map_err(bad)?;
+    Ok(response)
+}
+
 pub fn admin_call(name: &str, value: Value, is_query: bool) -> Result<Value> {
     let (_, owner) = account()?;
     let name = name.to_string();
@@ -511,50 +611,43 @@ pub fn rotate() -> Result<Value> {
     let old = verified_keys(&owner)?;
     let path = key_path(&owner, &old.device.device_id);
     let _guard = peer::lock(&root().join("keys.lock"))?;
-    // Persist staged keys before contacting the server; retries recover a committed rotation.
     let stage = path.with_extension("rotation");
-    let private = if stage.exists() {
-        read::<PrivateKeys>(&stage)?
-    } else {
-        let mut signing = [0u8; 32];
-        let mut encryption = [0u8; 32];
-        OsRng.fill_bytes(&mut signing);
-        OsRng.fill_bytes(&mut encryption);
-        let private = PrivateKeys {
-            signing: hex::encode(signing),
-            encryption: hex::encode(encryption),
-        };
-        write(&stage, &private)?;
-        private
-    };
-    let new = Keys::new(
-        owner.clone(),
-        old.device.device_id.clone(),
-        crypto::decode(&private.signing)?,
-        crypto::decode(&private.encryption)?,
-    );
-    let bytes = json!([
-        "everett-rotate-v2",
-        owner,
-        old.device.device_id,
-        old.device.fingerprint(),
-        new.device.fingerprint()
-    ])
-    .to_string();
-    let device = new.device.clone();
-    let response = runtime(async move {
-        let mut client = client(&owner).await?;
-        let registry = query(&mut client, "relay:devices", json!({})).await?;
-        if registry
-            .as_array()
-            .is_some_and(|rows| rows.iter().any(|d| *d == json!(new.device)))
-        {
-            return Ok(json!({"fingerprint":new.device.fingerprint()}));
-        }
-        mutation(&mut client,"relay:rotate",json!({"device":new.device,"oldFingerprint":old.device.fingerprint(),"signature":old.sign(bytes.as_bytes())})).await
-    })?;
-    write(&path, &private)?;
-    fs::remove_file(stage).map_err(bad)?;
+    let (device, response) = staged_rotation(
+        &path,
+        &stage,
+        || {
+            let mut signing = [0u8; 32];
+            let mut encryption = [0u8; 32];
+            OsRng.fill_bytes(&mut signing);
+            OsRng.fill_bytes(&mut encryption);
+            PrivateKeys {
+                signing: hex::encode(signing),
+                encryption: hex::encode(encryption),
+            }
+        },
+        |private| {
+            let new = Keys::new(
+                owner.clone(),
+                old.device.device_id.clone(),
+                crypto::decode(&private.signing)?,
+                crypto::decode(&private.encryption)?,
+            );
+            let bytes = json!([
+                "everett-rotate-v2",
+                owner,
+                old.device.device_id,
+                old.device.fingerprint(),
+                new.device.fingerprint()
+            ])
+            .to_string();
+            let device = new.device.clone();
+            let response = runtime(async move {
+                let mut client = client(&owner).await?;
+                commit_rotation(&mut client, &old, &new, &bytes).await
+            })?;
+            Ok((device, response))
+        },
+    )?;
     Ok(
         json!({"device":device,"result":response,"note":"Peers must explicitly repin; both org admins must reconfirm cross-org grants."}),
     )
@@ -611,16 +704,12 @@ pub fn add(
         }
         serde_json::from_value(remote.clone()).map_err(bad)?
     } else {
-        let rows = devices()?;
-        serde_json::from_value(
-            rows.as_array()
-                .ok_or_else(|| bad("invalid device registry"))?
-                .iter()
-                .find(|d| d["deviceId"] == device_id)
-                .ok_or_else(|| bad("device is not registered to this owner"))?
-                .clone(),
-        )
-        .map_err(bad)?
+        let owner_for_query = owner.clone();
+        let device_id = device_id.to_string();
+        runtime(async move {
+            let mut client = client(&owner_for_query).await?;
+            exact_device(&mut client, &device_id).await
+        })?
     };
     device.verify()?;
     if (grant_id.is_none() && device.owner != owner)
@@ -634,29 +723,35 @@ pub fn add(
     if device.device_id == keys(&owner)?.device.device_id {
         return Err(bad("cannot pair this device with itself"));
     }
-    let _guard = peer::lock(&root().join("peers.lock"))?;
-    if peer::peers()?.contains_key(name) {
-        return Err(bad("alias already selects SSH; use a different alias"));
-    }
-    let pin = Paired {
-        device,
-        deployment: deployment()?,
-        grant_id: grant_id.map(String::from),
-    };
-    let path = peer_path(name)?;
-    if path.exists() {
-        let existing: Paired = read(&path)?;
-        if existing.device != pin.device
-            || existing.deployment != pin.deployment
-            || existing.grant_id != pin.grant_id
-        {
-            return Err(bad(
-                "peer pin changed; explicitly remove and confirm the new fingerprint",
-            ));
-        }
-    }
-    write(&path, &pin)?;
-    Ok(json!({"peer":name,"transport":"convex","device_id":device_id,"fingerprint":fingerprint}))
+    peer::claim_alias(
+        name,
+        "SSH",
+        || Ok(peer::peers()?.contains_key(name)),
+        || {
+            let _guard = peer::lock(&root().join("peers.lock"))?;
+            let pin = Paired {
+                device,
+                deployment: deployment()?,
+                grant_id: grant_id.map(String::from),
+            };
+            let path = peer_path(name)?;
+            if path.exists() {
+                let existing: Paired = read(&path)?;
+                if existing.device != pin.device
+                    || existing.deployment != pin.deployment
+                    || existing.grant_id != pin.grant_id
+                {
+                    return Err(bad(
+                        "peer pin changed; explicitly remove and confirm the new fingerprint",
+                    ));
+                }
+            }
+            write(&path, &pin)?;
+            Ok(
+                json!({"peer":name,"transport":"convex","device_id":device_id,"fingerprint":fingerprint}),
+            )
+        },
+    )
 }
 
 fn outgoing_path(owner: &str, key: &str) -> PathBuf {
@@ -1328,7 +1423,7 @@ pub fn run() -> Result<Value> {
         let mut subscription = client.subscribe("relay:pending",args(json!({"deviceId":keys.device.device_id,"cursor":final_cursor}))?).await.map_err(|_| bad("Convex subscription failed"))?;
         eprintln!("everett relay: subscribed; inbox-only, no session wake-up");
         let mut tick = tokio::time::interval(Duration::from_secs(1));
-        let mut rejected = std::collections::HashSet::new();
+        let mut rejected = RejectedCache::new();
         loop {
             tokio::select! {
                 update = subscription.next() => {
@@ -1353,7 +1448,7 @@ pub fn run() -> Result<Value> {
                         for row in page.envelopes {
                             let envelope = row.envelope;
                             if let Err(error) = import_inner(&keys,&envelope,page.server_now,false) {
-                                if rejected.insert(local_message_id(&envelope)) { eprintln!("everett relay: refusing inbox row: {}",error.message); }
+                                if rejected.insert(local_message_id(&envelope), envelope.expires_at, page.server_now) { eprintln!("everett relay: refusing inbox row: {}",error.message); }
                                 continue;
                             }
                             // Persist authenticated encrypted Body in the private ingress inbox first.

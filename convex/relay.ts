@@ -121,6 +121,16 @@ export const devices = query({
     return active;
   },
 });
+// This is an exact, authoritative lookup. `devices` is a bounded presentation list and
+// must not be used for pairing or staged rotation recovery.
+export const device = query({
+  args: { deviceId: v.string() },
+  handler: async (ctx: Context, args) => {
+    const p = await authorize(ctx);
+    await activeDevice(ctx, p.owner, p.agentId);
+    return bundle(await activeDevice(ctx, p.owner, args.deviceId));
+  },
+});
 async function attempt(ctx: Context, owner: string, messageId: string) {
   identifier(messageId);
   return ctx.db.query("attempts").withIndex("by_message", (q) => q.eq("owner", owner).eq("messageId", messageId)).unique();
@@ -146,6 +156,14 @@ async function rate(ctx: WriteContext, scope: string, limit: number, now: number
   else await ctx.db.insert("rates", { scope, window, count: 1 });
 }
 const observedState = (a: { state: string; expiresAt: number }, now: number) => a.state === "queued" && a.expiresAt <= now ? "expired" : a.state;
+// Attempts are permanent replay tombstones but deliberately exclude ciphertext and other
+// large envelope fields. This bounded read keeps the 256-recipient capacity check below
+// Convex's transaction read budget even when queued message bodies are at their maximum.
+export async function queuedAttemptCount(ctx: Context, recipientOwner: string, toDevice: string, now: number) {
+  const queued = await ctx.db.query("attempts").withIndex("by_recipient_state_expiry", (q) =>
+    q.eq("recipientOwner", recipientOwner).eq("toDevice", toDevice).eq("state", "queued").gt("expiresAt", now)).take(256);
+  return queued.length;
+}
 export const enqueue = mutation({
   args: { envelope: envelopeValidator },
   handler: async (ctx: WriteContext, { envelope: e }) => {
@@ -175,9 +193,7 @@ export const enqueue = mutation({
       if (!parent || parent.recipientOwner !== p.owner || parent.toDevice !== p.agentId || !["delivered", "claimed", "replied"].includes(parent.state)) throw new Error("Parent not observed by this agent");
       if (e.hop <= parent.hop) throw new Error("Hop lineage mismatch");
     }
-    const queued = await ctx.db.query("messages").withIndex("by_recipient", (q) =>
-      q.eq("recipientOwner", e.recipientOwner).eq("toDevice", e.toDevice).gt("expiresAt", now)).take(256);
-    if (queued.length >= 256) throw new Error("Recipient queue full");
+    if (await queuedAttemptCount(ctx, e.recipientOwner, e.toDevice, now) >= 256) throw new Error("Recipient queue full");
     await rate(ctx, JSON.stringify(["agent", p.owner, p.agentId]), 120, now);
     await rate(ctx, JSON.stringify(["account", p.owner, p.member.issuer, p.member.subject]), 120, now);
     await rate(ctx, JSON.stringify(["org", p.owner]), 600, now);
@@ -194,9 +210,11 @@ export const pending = query({
     const now = Date.now(), p = await authorize(ctx); ownAgent(p, deviceId);
     await activeDevice(ctx, p.owner, deviceId);
     // Return a cursor even if every inspected row is blocked by a revoked/changed grant.
-    // A fixed take(64) would starve later valid messages until those rows reached TTL.
+    // A fixed take without a cursor would starve later valid messages until TTL.
+    // 32 maximum-body envelopes leave ample metadata headroom under the 8 MiB
+    // function-result limit as well as the 16 MiB transaction-read limit.
     const page = await ctx.db.query("messages").withIndex("by_recipient", (q) => q.eq("recipientOwner", p.owner).eq("toDevice", deviceId).gt("expiresAt", now))
-      .paginate({ numItems: 64, cursor: cursor ?? null });
+      .paginate({ numItems: 32, cursor: cursor ?? null });
     const envelopes = [];
     for (const row of page.page) {
       try {

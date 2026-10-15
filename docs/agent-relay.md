@@ -62,7 +62,7 @@ Call `everett_agent_send` with the pinned alias and exact remote session/harness
 {"agent":"machine-b","session":"REMOTE-EXACT-SESSION-ID","harness":"pi","text":"Please inspect the queued work","idempotency_key":"work-1","session_id":"LOCAL-SESSION-ID"}
 ```
 
-`session_id` is optional when detectable. Retries must reuse the exact request and key.
+The MCP process must have a host-detected caller identity. `session_id` is optional and, when supplied, must match that binding. If native detection is unavailable, the owner must set `EVERETT_SESSION_ID` in the session's MCP launch environment; a model argument cannot establish identity. Retries must reuse the exact request and key.
 The recipient uses `everett_inbox` and `everett_send(reply_to="LOCAL-INBOX-ID", text="…")`.
 External messages retain an explicit external/untrusted label through hooks, MCP and
 forwarding; remote-derived callers are inbox-only, never resumed/spawned as owner prompts.
