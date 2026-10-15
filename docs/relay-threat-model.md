@@ -61,7 +61,7 @@ these fields (source: `convex/schema.ts`, `relay.ts`, `grants.ts`):
 | --- | --- |
 | Authentication/network | JWT and all its claims, including issuer, subject, audience, agent/org/role, expiry and any provider-added profile/email/session claims; Convex identity/token identifier; connection/IP, timing, frequency, TLS endpoints and sizes. Functions do not store tokens in relay tables; provider/platform/proxy logging and retention are separate operator policies. |
 | Memberships/credentials | Namespace/owner, issuer, subject, role and active/revoked status; issuer-global agent ID, immutable owner/subject binding and credential status. Rows, including **revocation tombstones, are permanent**. |
-| Devices | Owner, device ID, current signing/encryption public keys, self-signature and monotonic rotation generation. Registry rows retained on revoke; rotation replaces the current bundle, while grants can retain pinned historical bundles. Active own-namespace listing is capped at 256. |
+| Devices | Owner, device ID, current signing/encryption public keys, self-signature, monotonic rotation generation and nullable revocation timestamp. Registry rows retained on revoke; rotation replaces the current bundle, while grants can retain pinned historical bundles. Active and revoked own-namespace listings are each capped at 256. |
 | Grants | Grant ID, both owners/named device IDs, both complete pinned public bundles/self-signatures/fingerprints and rotation generations, state, which side confirmed (`a`/`b`/`both`), optional expiry and cron sweep time, rate/minute and body-byte cap. Views add computed access status (e.g. key changed/agent revoked); stored grant records, including revoked/expired grants, are **not pruned**. List is capped at 128 per side and reports truncation. |
 | Undelivered envelopes | Sender/recipient owner, sender/recipient device ID, nullable grant ID, message ID, idempotency key, nullable parent owner/message ID, hop, creation/expiry Unix milliseconds, both fingerprints, ephemeral X25519 public key, nonce, ciphertext/tag (and its exact length), Ed25519 signature. These reveal routing, timing and conversation graph, not session IDs/text. |
 | Replay/idempotency attempts | Sender/recipient owners and devices, grant ID, both fingerprints, message ID, idempotency key, digest of signed envelope bytes, parent, hop, expiry and current observed state. **Permanent**, no ciphertext, keys, nonce, signature, explicit `createdAt` field or plaintext in these attempt rows (Convex's implicit `_creationTime` remains). Replays remain blocked after TTL/delivery; no seven-day reset. |
@@ -90,6 +90,14 @@ or duplicate keys. Plan storage/quota monitoring and tombstone-preserving migrat
 
 ## Limits and compromise response
 
+- Registry revocations can only remove tagged SSH authorizations during doctor. They never
+  install keys, modify addresses, or replace pins. A compromised registry can hide a
+  revocation and delay SSH enforcement indefinitely; this is an accepted limitation.
+  Offline peers retain SSH access until a successful doctor fetch. Propagation requires
+  the revoked registry device ID to equal the SSH UUID in the authorization tag. Existing
+  SSH identities are preserved, with no automatic binding or migration. Doctor shows a
+  local mismatch. The 256-row revocation bound can omit further tombstones; doctor warns
+  at the bound. Use receiver-side `peer revoke` when propagation is insufficient.
 - **No forward secrecy for past recipient static-key compromise.** Anyone with captured
   ciphertext and a later stolen recipient X25519 private key can decrypt those past
   envelopes. Fresh ephemeral sender keys/rotation are not a ratchet. Delete old keys

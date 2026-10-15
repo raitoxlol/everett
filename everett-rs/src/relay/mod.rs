@@ -610,6 +610,80 @@ pub fn admin_call(name: &str, value: Value, is_query: bool) -> Result<Value> {
     })
 }
 
+pub fn signed_in_device_id() -> Result<String> {
+    let stored = auth::load().ok_or_else(|| bad("run everett login first"))?;
+    let id = claims(&stored.id_token)?["everett_agent"]
+        .as_str()
+        .ok_or_else(|| bad("missing agent claim"))?
+        .to_string();
+    valid(&id)?;
+    Ok(id)
+}
+
+pub fn revoke_device(device_id: &str) -> Result<Value> {
+    let (_, owner) = account()?;
+    let deployment = deployment()?;
+    revoke_device_with(device_id, &owner, &deployment, admin_call)
+}
+
+pub fn revoke_device_with(
+    device_id: &str,
+    owner: &str,
+    deployment: &str,
+    call: impl FnOnce(&str, Value, bool) -> Result<Value>,
+) -> Result<Value> {
+    valid(device_id)?;
+    call("relay:revokeDevice", json!({"deviceId":device_id}), false)?;
+    let cleanup = || -> Result<Vec<String>> {
+        let _guard = peer::alias_lock()?;
+        let mut removed = peer::forget_device_locked(device_id)?;
+        for path in crate::paths::glob(&root().join("peers"), "*.json") {
+            let pin: Paired = read(&path)?;
+            if pin.device.device_id == device_id
+                && pin.device.owner == owner
+                && pin.deployment == deployment
+            {
+                let name = path.file_stem().unwrap().to_string_lossy().to_string();
+                remove_locked(&name)?;
+                removed.push(name);
+            }
+        }
+        Ok(removed)
+    };
+    let removed =
+        cleanup().map_err(|e| bad(format!("device revoked; local peer cleanup failed: {e}")))?;
+    Ok(json!({"revoked":device_id,"removed_peers":removed}))
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct RevokedDevice {
+    pub device_id: String,
+    pub revoked_at: f64,
+}
+
+pub fn revoked_devices() -> Result<Vec<RevokedDevice>> {
+    parse_revoked_devices(admin_call("relay:revokedDevices", json!({}), true)?)
+}
+
+pub fn parse_revoked_devices(value: Value) -> Result<Vec<RevokedDevice>> {
+    let rows: Vec<RevokedDevice> = serde_json::from_value(value).map_err(bad)?;
+    if rows.len() > 256 {
+        return Err(bad("revocation response exceeds 256 devices"));
+    }
+    for row in &rows {
+        valid(&row.device_id)?;
+        if !row.revoked_at.is_finite()
+            || row.revoked_at.fract() != 0.0
+            || row.revoked_at < 0.0
+            || row.revoked_at > 9_007_199_254_740_991.0
+        {
+            return Err(bad("invalid revocation timestamp"));
+        }
+    }
+    Ok(rows)
+}
+
 pub fn rotate() -> Result<Value> {
     let (_, owner) = account()?;
     let _daemon_guard = daemon_lock()?;

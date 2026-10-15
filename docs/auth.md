@@ -156,6 +156,21 @@ issuer-enrollment wizard is included.
 
 ## Private storage and revocation
 
+For registry-driven SSH revocation, provision the issuer's `everett_agent` to match the
+device's existing SSH UUID from `everett peer identity` (`~/.everett/peer/device_id`). SSH
+and relay keys remain independent. This release preserves existing SSH identities and
+does not enroll, bind, or migrate them. If those IDs differ, doctor cannot associate the
+SSH authorization with the revoked relay credential. Doctor displays both local IDs and
+their match status while signed in. Identity binding is follow-up work.
+
+`everett devices revoke DEVICE_ID` permanently revokes a same-owner credential as self
+or as an active registered admin. It records the registered device's revocation timestamp
+and removes matching local peer configuration and pins. Each remaining signed-in peer's
+next `everett doctor` fetch prunes matching SSH authorizations. Offline peers retain SSH
+access until that fetch; registry revocation is not immediate SSH enforcement.
+`everett logout --revoke-device` attempts self-revocation before provider/local logout and
+still logs out if the registry is unreachable. Ordinary `logout` does not revoke the device.
+
 `~/.everett/auth.json` (or the home rooted by `EVERETT_HOME`) contains access, ID and
 refresh tokens plus issuer/client ID/subject/profile/device-name/expiry/scope. It is
 atomic, mode 0600; rotated refresh tokens are persisted. `invalid_grant` removes it

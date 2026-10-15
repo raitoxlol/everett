@@ -160,7 +160,7 @@ Done. MAX_RETRIES is now 5 and the backoff test covers the cap.
 | `everett install-hooks [--claude] [--codex] [--omp] [--grok] [--apply]` | Prints the hook registrations. `--apply` backs up the file, then merges idempotently. |
 | `everett mcp` | Runs the stdio MCP server (harnesses start it; see below). |
 | `everett install-mcp [--claude] [--codex] [--omp] [--grok] [--devin] [--apply]` | Prints or registers the MCP server for each harness. |
-| `everett doctor` | Installed CLIs, stores, hooks, live stdio/MCP registration checks, cards, router, and exact next commands. |
+| `everett doctor` | Installed CLIs, stores, hooks, live stdio/MCP registration checks, cards, router, and registry revocation cleanup of tagged SSH authorizations. |
 | `everett learn "<fact>" [--project P] [--scope global\|project]` | Pushes a fact to the shared core inbox. Secrets are rejected. |
 | `everett trunk merge [--llm claude\|codex\|none] [--dry-run]` | Distills the inbox into the shared core. |
 | `everett core [show\|edit-path\|history] [--project P]` | Shows the core a new session in this folder receives, the file to edit, or past merges. |
@@ -168,7 +168,8 @@ Done. MAX_RETRIES is now 5 and the backoff test covers the cap.
 | `everett trunk schedule [--at HH:MM] [--remove] [--llm claude\|codex\|none] [--apply]` | Prints (default) or, with `--apply`, installs/removes a macOS LaunchAgent that runs `everett trunk merge` nightly (default 04:00, `--llm claude`). See [Nightly auto-merge](#nightly-auto-merge). |
 | `everett login [--device NAME] [--open] [--force] [--json]` | Native Rust binary only: signs this device in to an Everett account with the OAuth device-code flow (see [Accounts](#accounts)). |
 | `everett whoami [--json]` | Prints the signed-in account (email, issuer, device); refreshes a stale token first. |
-| `everett logout [--json]` | Revokes this device's refresh token and deletes the local credential. |
+| `everett logout [--revoke-device] [--json]` | Revokes the refresh token and deletes the local credential; optionally attempts permanent registry device revocation first. |
+| `everett devices revoke <device-id>` | Permanently revokes self or a same-owner device as admin, and removes matching local peer configuration and pins. Peers prune matching SSH tags on their next doctor fetch. |
 
 Global option: `--hours N` sets the look-back window (default 72).
 
