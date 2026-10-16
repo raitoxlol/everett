@@ -13,6 +13,7 @@ import {
   hex, identifier, verify, validateDevice, digest, type Envelope,
 } from "./protocol";
 import { allowedGrant } from "./grants";
+import { named } from "./registry";
 export { deviceBytes, envelopeBytes } from "./protocol";
 
 // Deployment-privileged control plane, NOT a public JWT-callable function. Provision only after
@@ -47,7 +48,10 @@ export const register = mutation({
     const existing = await ctx.db.query("devices").withIndex("by_owner_device", (q) => q.eq("owner", p.owner).eq("deviceId", d.deviceId)).unique();
     if (existing) {
       if (fingerprint(existing) !== fingerprint(d)) throw new Error("Device keys cannot be replaced; use signed rotation");
-    } else await ctx.db.insert("devices", { ...d, generation: 0 });
+    } else {
+      if (await named(ctx, p.owner, d.deviceId)) throw new Error("Device name is already in use in this account");
+      await ctx.db.insert("devices", { ...d, generation: 0, name: d.deviceId, sshAddress: null, lastSeenAt: Date.now() });
+    }
     return null;
   },
 });
@@ -77,7 +81,8 @@ export const rotate = mutation({
     if (fingerprint(old) !== args.oldFingerprint) throw new Error("Old fingerprint mismatch");
     verify(old.signingKey, args.signature, rotationBytes(args.device, args.oldFingerprint));
     if (!Number.isSafeInteger(old.generation + 1)) throw new Error("Device rotation limit reached");
-    await ctx.db.replace(old._id, { ...args.device, generation: old.generation + 1 });
+    await ctx.db.patch(old._id, { ...args.device, generation: old.generation + 1,
+      sshAddress: null, metadataSignature: undefined });
     return { fingerprint: fingerprint(args.device) };
   },
 });

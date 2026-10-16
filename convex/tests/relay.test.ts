@@ -5,6 +5,7 @@ import nacl from "tweetnacl";
 import schema from "../schema";
 import { namespace } from "../authorization";
 import { queuedAttemptCount } from "../relay";
+import { metadataBytes } from "../registry";
 import { aadBytes, deviceBytes, envelopeBytes, fingerprint, observationBytes, rotationBytes, hexString, type Envelope } from "../protocol";
 import { key, seal, open, resign, type Keys } from "./crypto.test-helper";
 import wire from "./relay-wire-v2.json";
@@ -13,6 +14,7 @@ const modules = {
   "../_generated/server.ts": async () => ({}),
   "../relay.ts": () => import("../relay"),
   "../grants.ts": () => import("../grants"),
+  "../registry.ts": () => import("../registry"),
 };
 const ref = (name: string) => makeFunctionReference<"mutation">(name.includes(":") ? name : `relay:${name}`);
 const query = (name: string) => makeFunctionReference<"query">(name.includes(":") ? name : `relay:${name}`);
@@ -59,12 +61,14 @@ async function expectRoutingDenied(f: Fixture, client: Fixture["a"] | Fixture["b
     at: Date.now(), signature: "00".repeat(64) };
   for (const [name, args] of [
     ["whoami", {}], ["devices", {}], ["credentials", {}], ["memberships", {}],
+    ["registry:devices", { cursor: null }], ["registry:resolve", { name: "agent-c" }],
     ["pending", { deviceId: f.ka.device.deviceId }],
     ["status", { fromDevice: f.ka.device.deviceId, messageId: e.messageId }],
     ["grants:list", {}], ["grants:get", { grantId: "grant-ab" }],
   ] as const) await expect(client.query(query(name), args)).rejects.toThrow(reason);
   for (const [name, args] of [
     ["register", { device: f.ka.device }],
+    ["registry:publish", { deviceId: "agent-a", name: "laptop", sshAddress: null, signature: "00".repeat(64) }],
     ["rotate", { device: f.ka.device, oldFingerprint: fingerprint(f.ka.device), signature: "00".repeat(64) }],
     ["revokeAgent", { deviceId: "agent-c" }], ["revokeMember", { subject: "alice-member" }],
     ["enqueue", { envelope: e }], ["accept", observation],
@@ -79,6 +83,73 @@ async function expectRoutingDenied(f: Fixture, client: Fixture["a"] | Fixture["b
 }
 
 describe("actual Convex functions, offline", () => {
+  test("registry publishes signed own-device metadata, lists new fields and scopes exact names", async () => {
+    const f = await fixture();
+    const publish = (keys: Keys, name: string, sshAddress: string | null) => ({
+      deviceId: keys.device.deviceId, name, sshAddress,
+      signature: hexString(nacl.sign.detached(metadataBytes(keys.device.owner, keys.device.deviceId, name, sshAddress), keys.pair.secretKey)),
+    });
+    const args = publish(f.ka, "laptop", "wright@laptop:2222");
+    await expect(f.a.mutation(ref("registry:publish"), args)).resolves.toBeNull();
+    await expect(f.a.mutation(ref("registry:publish"), publish(f.kc, "other", "other@host"))).rejects.toThrow("match device");
+    await expect(f.a.mutation(ref("registry:publish"), { ...args, sshAddress: "attacker@host" })).rejects.toThrow("signature");
+    for (const sshAddress of ["host", "owner@host:0", "owner@host:65536", "owner@host;id", "-o@host"]) {
+      await expect(f.a.mutation(ref("registry:publish"), { ...args, sshAddress })).rejects.toThrow("Invalid SSH address");
+    }
+    const page = await f.a.query(query("registry:devices"), { cursor: null });
+    expect(page.devices).toHaveLength(2);
+    expect(page.isDone).toBe(true);
+    expect(page.devices[0]).toMatchObject({ ...f.ka.device, name: "laptop", sshAddress: "wright@laptop:2222", lastSeenAt: expect.any(Number), metadataSignature: args.signature });
+    expect(await f.a.query(query("registry:resolve"), { name: "laptop" })).toEqual(page.devices[0]);
+    expect(await f.b.query(query("registry:resolve"), { name: "laptop" })).toBeNull();
+    expect(await f.a.query(query("devices"), {})).toEqual([f.ka.device, f.kc.device]);
+    await f.a.mutation(ref("revokeAgent"), { deviceId: "agent-c" });
+    expect((await f.a.query(query("registry:devices"), { cursor: null })).devices).toHaveLength(2);
+    await expect(f.a.query(query("registry:resolve"), { name: "agent-c" })).rejects.toThrow("revoked");
+    await expect(f.c.query(query("registry:devices"), { cursor: null })).rejects.toThrow("revoked");
+    await expect(f.c.mutation(ref("registry:publish"), publish(f.kc, "other", null))).rejects.toThrow("revoked");
+    await expect(f.backend.query(query("registry:devices"), { cursor: null })).rejects.toThrow("Sign in");
+    await expect(f.backend.mutation(ref("registry:publish"), args)).rejects.toThrow("Sign in");
+  });
+  test("registry names are unique per owner, including legacy and default registration names", async () => {
+    const f = await fixture();
+    const publish = (keys: Keys, name: string) => ({ deviceId: keys.device.deviceId, name, sshAddress: null,
+      signature: hexString(nacl.sign.detached(metadataBytes(keys.device.owner, keys.device.deviceId, name, null), keys.pair.secretKey)) });
+    await f.a.mutation(ref("registry:publish"), publish(f.ka, "workstation"));
+    await expect(f.c.mutation(ref("registry:publish"), publish(f.kc, "workstation"))).rejects.toThrow("already in use");
+    await f.b.mutation(ref("registry:publish"), publish(f.kb, "workstation"));
+    await f.a.mutation(ref("registry:publish"), publish(f.ka, "workstation"));
+    await expect(f.a.mutation(ref("registry:publish"), publish(f.ka, "agent-c"))).rejects.toThrow("already in use");
+    await f.backend.run(async ctx => {
+      const row = await ctx.db.query("devices").withIndex("by_owner_device", q => q.eq("owner", ownerA).eq("deviceId", "agent-c")).unique();
+      await ctx.db.patch(row!._id, { name: undefined });
+    });
+    await expect(f.a.mutation(ref("registry:publish"), publish(f.ka, "agent-c"))).rejects.toThrow("already in use");
+    await f.a.mutation(ref("registry:publish"), publish(f.ka, "new-agent"));
+    await f.backend.mutation(ref("provisionIdentity"), { issuer, subject: "alice", org: "org-a", agentId: "new-agent", role: "admin" });
+    await expect(f.backend.withIdentity({ ...f.identities[0], everett_agent: "new-agent" })
+      .mutation(ref("register"), { device: key("new-agent", ownerA, 33).device })).rejects.toThrow("already in use");
+  });
+  test("registry listing drains historical devices beyond the relay directory cap", async () => {
+    const f = await fixture();
+    await f.backend.run(async ctx => {
+      for (let i = 0; i < 260; i++) {
+        const deviceId = `historical-${String(i).padStart(3, "0")}`;
+        await ctx.db.insert("devices", { ...f.ka.device, deviceId, generation: 0 });
+      }
+    });
+    let cursor: string | null = null;
+    const ids: string[] = [];
+    for (;;) {
+      const page: { devices: { deviceId: string }[]; isDone: boolean; continueCursor: string } = await f.a.query(query("registry:devices"), { cursor });
+      ids.push(...page.devices.map((row: { deviceId: string }) => row.deviceId));
+      if (page.isDone) break;
+      cursor = page.continueCursor;
+    }
+    expect(new Set(ids).size).toBe(262);
+    expect(ids).toContain("historical-259");
+    expect(await f.a.query(query("registry:resolve"), { name: "agent-a" })).toMatchObject({ deviceId: "agent-a" });
+  });
   test("every relay and grant entry point rejects missing auth, wrong issuer and legacy claim-only enrollment", async () => {
     const f = await fixture();
     await expectRoutingDenied(f, f.backend, /Sign in/);
