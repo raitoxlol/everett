@@ -821,13 +821,18 @@ pub fn serve_with_address(client: Option<&str>, setup: bool, address: Option<&st
             authorized(client.ok_or_else(|| {
                 bad("peer serve requires the forced command's --client identity")
             })?)?;
-            if crate::auth::load().is_some()
-                && crate::device_registry::declared_address(address)?.is_some()
-            {
+            if crate::auth::load().is_some() {
                 let address = address.map(str::to_string);
                 let (published, publication) = std::sync::mpsc::channel();
                 std::thread::spawn(move || {
-                    let _ = published.send(crate::relay::register_with_address(address.as_deref()));
+                    let result = crate::device_registry::declared_address(address.as_deref())
+                        .and_then(|address| match address {
+                            Some(address) => {
+                                crate::relay::register_with_address(Some(&address)).map(|_| ())
+                            }
+                            None => Ok(()),
+                        });
+                    let _ = published.send(result);
                 });
                 match publication.recv_timeout(Duration::from_secs(3)) {
                     Ok(Ok(_)) => (),
