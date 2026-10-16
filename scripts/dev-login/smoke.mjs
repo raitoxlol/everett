@@ -5,10 +5,12 @@ import https from 'node:https';
 import { spawn } from 'node:child_process';
 import { ConvexHttpClient } from 'convex/browser';
 import { accounts, backend, clientId, issuer, relay, state } from './settings.mjs';
+import { seedSession } from './local-state.mjs';
 
 process.umask(0o077);
 const binary = '/opt/homebrew/bin/everett';
 const runId = new Date().toISOString().replaceAll(/[:.]/g, '-');
+const sessions = { 'alice-a': `dev-login-a-${runId}`, 'alice-b': `dev-login-b-${runId}` };
 const evidence = path.join(state, 'runs', runId);
 fs.mkdirSync(evidence, { recursive: true });
 const failures = [];
@@ -123,16 +125,6 @@ async function device(name) {
   return ready;
 }
 
-function seed(name, session) {
-  const folder = path.join(state, 'homes', name, '.codex/sessions/dev-login');
-  fs.mkdirSync(folder, { recursive: true });
-  const timestamp = new Date().toISOString();
-  const rows = [
-    { timestamp, type: 'session_meta', payload: { id: session, cwd: state, timestamp } },
-    { timestamp, type: 'response_item', payload: { type: 'message', role: 'user', content: [{ type: 'input_text', text: 'Local relay smoke session fixture' }] } },
-  ];
-  fs.writeFileSync(path.join(folder, `${session}.jsonl`), rows.map(value => JSON.stringify(value)).join('\n') + '\n');
-}
 function listen(name) {
   const fd = fs.openSync(path.join(evidence, `${name}-listener.log`), 'a', 0o600);
   const child = spawn(binary, ['relay'], { env: envFor(name), stdio: ['ignore', fd, fd] });
@@ -155,12 +147,8 @@ async function exchange() {
   const b = await must('alice-b', ['relay', 'register']);
   await must('alice-a', ['peer', 'add-relay', 'alice-b', '--device', 'alice-b', '--fingerprint', b.fingerprint]);
   await must('alice-b', ['peer', 'add-relay', 'alice-a', '--device', 'alice-a', '--fingerprint', a.fingerprint]);
-  const aSession = `dev-login-a-${runId}`, bSession = `dev-login-b-${runId}`;
-  for (const [name, session] of [['alice-a', aSession], ['alice-b', bSession]]) {
-    seed(name, session);
-    await must(name, ['ls', '--json'], {}, value => assert.ok(JSON.parse(value).some(entry => entry.id === session)));
-    listen(name);
-  }
+  const aSession = sessions['alice-a'], bSession = sessions['alice-b'];
+  for (const name of Object.keys(sessions)) listen(name);
   const sender = { EVERETT_SESSION_ID: aSession, EVERETT_HARNESS_NAME: 'codex' };
   const sent = await must('alice-a', ['send', 'Hello from A', '--to', `alice-b/codex/${bSession}`, '--idempotency-key', `local-${runId}`, '--json'], sender, value => assert.ok(JSON.parse(value).message_id));
   await must('alice-a', ['peer', 'status', 'alice-b', sent.message_id]);
@@ -182,6 +170,10 @@ async function exchange() {
 }
 
 try {
+  for (const [name, session] of Object.entries(sessions)) {
+    seedSession(path.join(state, 'homes', name), session, state);
+    await must(name, ['ls', '--json'], {}, value => assert.ok(JSON.parse(value).some(entry => entry.id === session), `Missing seeded session ${session}`));
+  }
   assert.ok(fs.existsSync(path.join(state, 'stack.pid')), 'Run up.sh first');
   assert.equal(await (await fetch(`${issuer}/health`, { signal: AbortSignal.timeout(1000) })).text(), 'everett-dev-login');
   const version = await command('alice-a', ['--version']);

@@ -10,10 +10,6 @@ if (Number(process.versions.node.split('.')[0]) < 24) throw new Error('Use Node 
 const disk = fs.statfsSync(process.argv[2]);
 if (disk.bavail * disk.bsize < 500 * 1024 * 1024) throw new Error('Local stack needs at least 500 MB of free disk space');
 NODE
-if [ ! -d "$DEV_LOGIN_ROOT/node_modules/convex" ]; then
-  npm ci --prefix "$DEV_LOGIN_ROOT" --no-audit --no-fund
-fi
-if [ ! -d "$DEV_LOGIN_DIR/node_modules/oidc-provider" ]; then
-  npm ci --prefix "$DEV_LOGIN_DIR" --ignore-scripts --no-audit --no-fund
-fi
+npm ci --prefix "$DEV_LOGIN_ROOT" --no-audit --no-fund
+npm ci --prefix "$DEV_LOGIN_DIR" --ignore-scripts --no-audit --no-fund
 exec node "$DEV_LOGIN_DIR/stack.mjs"

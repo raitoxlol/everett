@@ -6,6 +6,7 @@ import net from 'node:net';
 import { spawn, spawnSync } from 'node:child_process';
 import { createHash, randomBytes } from 'node:crypto';
 import { accounts, backend, clientId, directory, issuer, relay, root, state } from './settings.mjs';
+import { ensureTlsCertificate, syncConvexFunctions } from './local-state.mjs';
 
 process.umask(0o077);
 fs.mkdirSync(state, { recursive: true });
@@ -110,15 +111,7 @@ async function backendBinary() {
 }
 
 function tlsProxy() {
-  const key = path.join(state, 'tls-key.pem');
-  const cert = path.join(state, 'tls-cert.pem');
-  if (!fs.existsSync(key) || !fs.existsSync(cert)) {
-    const config = path.join(state, 'openssl.cnf');
-    fs.writeFileSync(config, '[req]\ndistinguished_name=dn\nx509_extensions=ext\nprompt=no\n[dn]\nCN=localhost\n[ext]\nsubjectAltName=DNS:localhost,IP:127.0.0.1\nbasicConstraints=critical,CA:TRUE\nkeyUsage=critical,digitalSignature,keyEncipherment,keyCertSign\nextendedKeyUsage=serverAuth\n');
-    const result = spawnSync('openssl', ['req', '-x509', '-newkey', 'rsa:2048', '-nodes', '-days', '30', '-keyout', key, '-out', cert, '-config', config], { stdio: 'ignore' });
-    if (result.status !== 0) throw new Error('openssl failed to create the local TLS certificate');
-  }
-  const server = https.createServer({ key: fs.readFileSync(key), cert: fs.readFileSync(cert) }, (req, res) => {
+  const server = https.createServer(ensureTlsCertificate(state), (req, res) => {
     const upstream = http.request(`${backend}${req.url}`, { method: req.method, headers: req.headers }, incoming => {
       res.writeHead(incoming.statusCode, incoming.headers);
       incoming.pipe(res);
@@ -158,7 +151,7 @@ try {
   fs.writeFileSync(pidFile, `${process.pid}\n`, { flag: 'wx' });
   for (const port of [3210, 3211, 4444, 4445]) await freePort(port);
   for (const folder of [operator, operatorHome, path.join(state, 'data')]) fs.mkdirSync(folder, { recursive: true });
-  fs.cpSync(path.join(root, 'convex'), path.join(operator, 'convex'), { recursive: true, filter: source => !source.split(path.sep).includes('_generated') });
+  syncConvexFunctions(root, operator);
   for (const file of ['package.json', 'tsconfig.json']) fs.copyFileSync(path.join(root, file), path.join(operator, file));
   if (!fs.existsSync(path.join(operator, 'node_modules'))) fs.symlinkSync(path.join(root, 'node_modules'), path.join(operator, 'node_modules'));
   const binary = await backendBinary();
