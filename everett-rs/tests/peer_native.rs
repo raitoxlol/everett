@@ -915,6 +915,170 @@ fn transport_and_server_time_out() {
     drop(input);
 }
 
+fn remote_sign_in(p: &Pair) {
+    use base64::Engine;
+    let expires = everett::session::now() + 3600.0;
+    let issuer = "https://issuer.example/";
+    let payload =
+        json!({"iss":issuer,"sub":"owner","aud":"everett","exp":expires,"everett_agent":"caller"});
+    let token = format!(
+        "e30.{}.signature",
+        base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(payload.to_string())
+    );
+    write(
+        p.remote.path().join(".everett/auth.json"),
+        &json!({
+            "issuer":issuer,"client_id":"everett","sub":"owner","email":"",
+            "device_name":"caller","access_token":"fixture-access","id_token":token,
+            "refresh_token":"","expires_at":expires,"scope":""
+        })
+        .to_string(),
+    );
+}
+
+fn assert_hello(p: &Pair, out: Output, warning: Option<&str>) {
+    let stderr = String::from_utf8_lossy(&out.stderr).into_owned();
+    let device_id = fs::read_to_string(p.remote.path().join(".everett/peer/device_id")).unwrap();
+    assert_eq!(checked(out), json!({"result":{"device_id":device_id}}));
+    if let Some(warning) = warning {
+        assert!(stderr.contains(warning), "{stderr}");
+    } else {
+        assert!(stderr.is_empty(), "{stderr}");
+    }
+}
+
+fn serve_malformed_configured_address_preserves_hello() {
+    let mut p = Pair::new();
+    checked(p.add());
+    remote_sign_in(&p);
+    write(
+        p.remote.path().join(".everett/config.toml"),
+        "[peer]\naddress = 'bad address'\n",
+    );
+    let client = p.client();
+    let before = Instant::now();
+    let out = p.remote_run(
+        &["peer", "serve", "--client", &client],
+        "{\"op\":\"hello\"}\n",
+    );
+    assert!(before.elapsed() < Duration::from_secs(5));
+    assert_hello(&p, out, Some("SSH address publication failed:"));
+}
+
+fn serve_malformed_address_override_preserves_hello() {
+    let mut p = Pair::new();
+    checked(p.add());
+    remote_sign_in(&p);
+    write(
+        p.remote.path().join(".everett/config.toml"),
+        "[peer]\naddress = 'owner@box'\n",
+    );
+    let client = p.client();
+    let out = p.remote_run(
+        &[
+            "peer",
+            "serve",
+            "--client",
+            &client,
+            "--address",
+            "bad address",
+        ],
+        "{\"op\":\"hello\"}\n",
+    );
+    assert_hello(&p, out, Some("SSH address publication failed:"));
+    write(
+        p.remote.path().join(".everett/config.toml"),
+        "[peer]\naddress = 'bad address'\n",
+    );
+    let out = p.remote_run(&["relay", "register"], "");
+    assert_eq!(out.status.code(), Some(2));
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(stderr.contains("SSH registry address"), "{stderr}");
+}
+
+fn serve_publication_failure_and_timeout_preserve_hello() {
+    use fs2::FileExt;
+    let mut p = Pair::new();
+    checked(p.add());
+    remote_sign_in(&p);
+    write(
+        p.remote.path().join(".everett/config.toml"),
+        "[peer]\naddress = 'owner@box'\n[relay]\nurl = 'invalid'\n",
+    );
+    let client = p.client();
+    let out = p.remote_run(
+        &["peer", "serve", "--client", &client],
+        "{\"op\":\"hello\"}\n",
+    );
+    assert_hello(&p, out, Some("SSH address publication failed:"));
+    let lock = OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(p.remote.path().join(".everett/relay/auth.lock"))
+        .unwrap();
+    lock.lock_exclusive().unwrap();
+    let before = Instant::now();
+    let out = p.remote_run(
+        &["peer", "serve", "--client", &client],
+        "{\"op\":\"hello\"}\n",
+    );
+    let elapsed = before.elapsed();
+    assert!(elapsed >= Duration::from_secs(3), "{elapsed:?}");
+    assert!(elapsed < Duration::from_secs(5), "{elapsed:?}");
+    assert_hello(&p, out, Some("SSH address publication timed out;"));
+}
+
+fn serve_without_sign_in_or_address_preserves_hello() {
+    let mut p = Pair::new();
+    checked(p.add());
+    let client = p.client();
+    let out = p.remote_run(
+        &["peer", "serve", "--client", &client],
+        "{\"op\":\"hello\"}\n",
+    );
+    assert_hello(&p, out, None);
+    let out = p.remote_run(
+        &[
+            "peer",
+            "serve",
+            "--client",
+            &client,
+            "--address",
+            "bad address",
+        ],
+        "{\"op\":\"hello\"}\n",
+    );
+    assert_hello(&p, out, None);
+    remote_sign_in(&p);
+    let out = p.remote_run(
+        &["peer", "serve", "--client", &client],
+        "{\"op\":\"hello\"}\n",
+    );
+    assert_hello(&p, out, None);
+}
+
+fn serve_optional_publication_does_not_bypass_authorization() {
+    let mut p = Pair::new();
+    checked(p.add());
+    remote_sign_in(&p);
+    let out = p.remote_run(
+        &[
+            "peer",
+            "serve",
+            "--client",
+            "stranger",
+            "--address",
+            "bad address",
+        ],
+        "{\"op\":\"hello\"}\n",
+    );
+    assert!(out.stderr.is_empty());
+    assert_eq!(
+        checked(out),
+        json!({"error":{"code":2,"message":"peer client is not authorized or has been revoked"}})
+    );
+}
+
 fn mcp_new_remote_send_is_idempotent_and_never_wakes() {
     let p = Pair::new();
     checked(p.add());
@@ -966,6 +1130,26 @@ fn mcp_new_remote_send_is_idempotent_and_never_wakes() {
 
 type Case = (&'static str, fn());
 const CASES: &[Case] = &[
+    (
+        "serve_malformed_configured_address_preserves_hello",
+        serve_malformed_configured_address_preserves_hello,
+    ),
+    (
+        "serve_malformed_address_override_preserves_hello",
+        serve_malformed_address_override_preserves_hello,
+    ),
+    (
+        "serve_publication_failure_and_timeout_preserve_hello",
+        serve_publication_failure_and_timeout_preserve_hello,
+    ),
+    (
+        "serve_without_sign_in_or_address_preserves_hello",
+        serve_without_sign_in_or_address_preserves_hello,
+    ),
+    (
+        "serve_optional_publication_does_not_bypass_authorization",
+        serve_optional_publication_does_not_bypass_authorization,
+    ),
     (
         "registry_discovery_conflicts_and_changed_address_preserve_pins",
         registry_discovery_conflicts_and_changed_address_preserve_pins,
