@@ -96,3 +96,28 @@ SUMMARY FAIL: 7 failed checks; real output in /Users/wrightwilliams/.t3/worktree
 The count is one rejected requested flag spelling plus six native relay commands. A fully passing native relay smoke and the A-to-B encrypted exchange were **not achieved**. The exchange branch is implemented following `docs/cross-device.md` and explicitly skipped when native setup fails; it remains unverified against a live native relay. Real NAT, sshd, active-subscription revocation, and real model sessions were not exercised.
 
 An earlier development run hit a full-disk error, including `can't create temp file for here document: no space left on device` and a backend SQLite `unable to open database file` shutdown. Only this task's duplicate downloaded Convex cache was removed. The final run used the healthy restarted backend, and `up.sh` now checks for at least 500 MB free before startup. This was an environment failure, not a CLI auth bug.
+
+## Review repair verification, 2026-10-16
+
+The original report above is preserved. These checks repair four PR22 findings against head `6f566ef3d29efa70ab9aba2a5a601066d0fa7c09`. The installed binary still reports `everett 1.6.0`. No Rust CLI or Convex function changed.
+
+Before the repair, isolated executions of the original scripts reproduced all four defects. The real installed `ls --json` returned no seeded session. Copying retained a deleted Convex module. A matching local certificate and key with validity from 2000-01-01 through 2001-01-01 were reused unchanged. Existing dependency directories caused startup to perform zero installs after a lockfile change.
+
+The smoke now writes Codex transcripts under `.codex/sessions/YYYY/MM/DD/` and checks both exact session IDs through the installed CLI before requiring stack readiness. Each startup runs both clean locked installs, with issuer `--ignore-scripts` retained. Copying replaces only the disposable `operator/convex/` subtree. TLS reuse checks validity dates, localhost and loopback identity, and the private key. Invalid files regenerate locally.
+
+Verification passed with the following commands.
+
+```sh
+node --test --test-skip-pattern 'renewed certificate serves loopback HTTPS' scripts/dev-login/regression.mjs
+node --test --test-name-pattern 'renewed certificate serves loopback HTTPS' scripts/dev-login/regression.mjs
+npm run typecheck
+node node_modules/vitest/vitest.mjs run --cache=false
+```
+
+The first command passed five regressions. They cover both real session IDs, smoke preflight before a missing-stack failure, real offline npm installs with unchanged and changed lockfiles, stale-file removal, suppression of issuer install scripts, failure of either install, Convex source deletion and rename with preserved sibling state, missing TLS files, valid reuse, an expired matching certificate, malformed certificates, and a mismatched key. The second command passed one HTTPS regression after narrowly scoped sandbox approval for its temporary loopback listener. The regenerated certificate returned HTTP 200 with explicit Node CA trust. System trust stayed unchanged.
+
+Root typechecking passed. Vitest passed one file with 34 tests. All six `.mjs` files passed `node --check`, and all three shell entrypoints passed `bash -n`. Dependency manifests and lockfiles match the original PR22 bytes.
+
+The first regression run passed four checks and failed two. The offline npm test fixture had an invalid lockfile due to a macOS `/var` versus `/private/var` path mismatch, and the sandbox denied the ephemeral HTTPS listener with `EPERM`. The fixture now uses real paths and package names. The approved focused HTTPS run passed. One initial typecheck attempt reported TS2339 in the unchanged relay tests while workspace file reads stalled. Untouched checkout files were restored atomically from the exact clean PR22 checkout, and a fresh typecheck passed. These initial attempts are not counted as successful checks.
+
+The complete stack and native encrypted exchange were not rerun. The original `--open=false`, HTTP-origin, and native self-signed TLS failures remain. No hosted deployment, live device, paid call, system trust change, commit, or push occurred.
