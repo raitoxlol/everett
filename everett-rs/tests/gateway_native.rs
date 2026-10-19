@@ -390,10 +390,18 @@ fn native_stdio_journey_for_both_external_harnesses() {
             assert_eq!(message["untrusted"], true, "{message}");
             assert!(message["text"].as_str().unwrap().starts_with("[EXTERNAL / UNTRUSTED"));
         }
+        let owned = messages[0]["id"].as_str().unwrap().to_string();
         let forward = success(&recipient.call("everett_send", json!({"to":"dot-one","text":"Derived external data","mode":"inbox"})));
         assert_eq!(forward["delivered"], true);
+        let reply = success(&recipient.call("everett_send", json!({"reply_to":owned,"text":"Synthetic answer"})));
+        assert_eq!(reply["to"], "dot-one");
         let derived = success(&peer.call("everett_inbox", json!({})));
-        assert_eq!(derived["messages"][0]["untrusted"], true);
+        let messages = derived["messages"].as_array().unwrap();
+        let direct = messages.iter().find(|message| message["reply_to"] == "").unwrap();
+        assert_eq!(direct["external"], Value::Null);
+        let reply = messages.iter().find(|message| message["reply_to"] == owned).unwrap();
+        assert_eq!(reply["untrusted"], true);
+        assert!(reply["text"].as_str().unwrap().starts_with("[EXTERNAL / UNTRUSTED"));
         drop(recipient);
         success(&peer.call("everett_card", json!({"what": "Synthetic", "state": "working", "next": "reply"})));
         assert!(std::fs::read_to_string(c.home.join(".everett/cards/dot-one.md")).unwrap().contains("Synthetic"));
