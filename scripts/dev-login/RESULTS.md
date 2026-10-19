@@ -23,14 +23,16 @@ npm test -- --exclude 'scripts/dev-login/.state/**'
 
 This VM is Ubuntu 22.04: the pinned backend required newer glibc/libstdc++.
 For this run only, Ubuntu 24.04 runtime libraries were extracted under
-`/home/ubuntu/everett-runtime` and a local wrapper launched the unmodified backend
-with that isolated dynamic loader/library path. No system library or trust store
+`/home/ubuntu/.devin-files/everett-runtime` and a local wrapper launched the
+unmodified backend with that isolated dynamic loader/library path. No system library or trust store
 was changed. The normal Linux prerequisite is Ubuntu 24.04 or equivalent; this
 workaround is not part of the repository or a cloud deployment.
 
 ### Measured smoke
 
-Run `2026-10-19T06-57-36-849Z`, exit **0**, `SUMMARY PASS: 0 failed checks`.
+Independent rerun of commit `7dd462d`: `2026-10-19T07-43-30-403Z`, exit **0**,
+`SUMMARY PASS: 0 failed checks`. This confirms the earlier passing run
+`2026-10-19T06-57-36-849Z` on a fresh local stack.
 Per-command output remains ignored under `.state/runs/<run>/`.
 
 - Both isolated Codex fixture sessions discovered before relay checks.
@@ -41,14 +43,14 @@ Per-command output remains ignored under `.state/runs/<run>/`.
   namespaces/roles, rejected a tampered token, and credentials remained mode 0600.
 - Native HTTPS worked with the extra CA from the environment and independently
   from `[relay] ca_file`. Removing both sources of trust rejected the certificate
-  in **11 ms**, with `relay TLS/certificate verification failed`, the underlying
+  in **12 ms**, with `relay TLS/certificate verification failed`, the underlying
   `invalid peer certificate: UnknownIssuer`, and explicit CA configuration guidance.
   HTTP remained rejected (`Convex deployment must be an HTTPS origin`).
 - Real native encrypted send A → B, B inbox pickup/decryption, B reply by its
   local inbox ID, A reply pickup/decryption, and signed **`replied`** status passed.
   Before starting either listener, the smoke queried B's real backend queue and
   asserted a signed ciphertext envelope with no `Hello from A` plaintext.
-  A message ID: `4e3e74d9-2574-4ef9-9f86-ac56797f4752`.
+  A message ID: `3acce1f8-711c-4728-943c-b8b4e6b7cce2`.
 - Fixing TLS exposed a separate real-backend `InvalidCursor`: `pending` had a
   changing `Date.now()` lower bound. It now paginates a stable recipient range
   and filters expiry after pagination; expired mail is still withheld. The full
@@ -56,8 +58,9 @@ Per-command output remains ignored under `.state/runs/<run>/`.
 
 ### Other checks
 
-- Rust full test suite passed, including CLI/MCP release journey, relay native
-  suite, Jev, OMP and pi coverage; explicit `--open=false` auth regression passed.
+- Rust full test suite passed (**287 tests**), including CLI/MCP release journey,
+  relay native suite, Jev, OMP and pi coverage; explicit `--open=false` auth
+  regression passed.
 - Four TLS transport tests passed: custom CA handshake and reconnect, default
   roots/unrelated CA rejection, hostname mismatch rejection, and missing/empty/
   malformed CA files failing closed. Certificate failures include actionable
@@ -66,6 +69,9 @@ Per-command output remains ignored under `.state/runs/<run>/`.
   including pagination through expired rows while time advances.
 - All six local-stack regression tests passed (including CA/leaf chain, renewal,
   key permissions, and explicit-CA HTTPS); shell/Node syntax and diff checks passed.
+- `cargo fmt --check` reports repository-wide formatting differences, including
+  files unchanged from `main` (for example `src/adapters/claude.rs`). Formatting
+  is not a configured CI gate; no unrelated formatting changes were applied.
 
 ### Security choice and remaining limits
 
