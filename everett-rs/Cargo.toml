@@ -34,7 +34,10 @@ url = "2"
 hyper = { version = "1", features = ["server", "http1"] }
 hyper-util = { version = "0.1", features = ["tokio", "service"] }
 httparse = "1"
-convex = { version = "=0.10.4", default-features = false, features = ["rustls-tls-webpki-roots"] }
+convex = { version = "=0.10.4", path = "vendor/convex", default-features = false, features = ["rustls-tls-webpki-roots"] }
+tokio-tungstenite = { version = "0.28", default-features = false, features = ["rustls-tls-webpki-roots"] }
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
+webpki-roots = "1"
 futures = "0.3"
 ssh-key = { version = "0.6", features = ["ed25519"] }
 ed25519-dalek = "2"
@@ -50,6 +53,7 @@ ratatui = "0.29"
 crossterm = "0.28"
 
 [dev-dependencies]
+tokio-rustls = { version = "0.26", default-features = false, features = ["ring", "tls12"] }
 assert_cmd = "2"
 serde_json = { version = "1", features = ["preserve_order"] }
 rusqlite = { version = "0.32", features = ["bundled"] }
