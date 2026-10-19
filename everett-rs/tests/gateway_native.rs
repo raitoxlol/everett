@@ -352,8 +352,8 @@ fn eventually_dead(pid: u64) -> bool {
 }
 
 fn native_stdio_journey_for_both_external_harnesses() {
-    let c = ctx();
     for harness in ["openai-dot", "grok-bot"] {
+        let c = ctx();
         for id in ["agent-two", "dot-one"] {
             assert!(c.cli(&["external", "add", "--id", id, "--harness", harness]).status.success());
         }
@@ -377,6 +377,32 @@ fn native_stdio_journey_for_both_external_harnesses() {
         let direct = success(&peer.call("everett_send", json!({"text": "Synthetic direct", "to": "agent-two"})));
         assert_eq!((direct["session"]["id"].clone(), direct["mode"].clone()), (json!("agent-two"), json!("inbox")));
         assert_eq!((direct["queued"].clone(), direct["hooked"].clone()), (json!(true), json!(false)));
+        let mut recipient = Wire::new({
+            let mut command = c.command(&["mcp"]);
+            command.env("EVERETT_SESSION_ID", "agent-two").env("EVERETT_HARNESS_NAME", "claude");
+            command
+        });
+        let received = success(&recipient.call("everett_inbox", json!({})));
+        let messages = received["messages"].as_array().unwrap();
+        assert_eq!(messages.len(), 2);
+        for message in messages {
+            assert_eq!(message["external"], true, "{message}");
+            assert_eq!(message["untrusted"], true, "{message}");
+            assert!(message["text"].as_str().unwrap().starts_with("[EXTERNAL / UNTRUSTED"));
+        }
+        let owned = messages[0]["id"].as_str().unwrap().to_string();
+        let forward = success(&recipient.call("everett_send", json!({"to":"dot-one","text":"Derived external data","mode":"inbox"})));
+        assert_eq!(forward["delivered"], true);
+        let reply = success(&recipient.call("everett_send", json!({"reply_to":owned,"text":"Synthetic answer"})));
+        assert_eq!(reply["to"], "dot-one");
+        let derived = success(&peer.call("everett_inbox", json!({})));
+        let messages = derived["messages"].as_array().unwrap();
+        let direct = messages.iter().find(|message| message["reply_to"] == "").unwrap();
+        assert_eq!(direct["external"], Value::Null);
+        let reply = messages.iter().find(|message| message["reply_to"] == owned).unwrap();
+        assert_eq!(reply["untrusted"], true);
+        assert!(reply["text"].as_str().unwrap().starts_with("[EXTERNAL / UNTRUSTED"));
+        drop(recipient);
         success(&peer.call("everett_card", json!({"what": "Synthetic", "state": "working", "next": "reply"})));
         assert!(std::fs::read_to_string(c.home.join(".everett/cards/dot-one.md")).unwrap().contains("Synthetic"));
         assert!(!c.home.join(".everett/cards/agent-two.md").exists());
@@ -710,4 +736,3 @@ fn main() {
         std::process::exit(1);
     }
 }
-

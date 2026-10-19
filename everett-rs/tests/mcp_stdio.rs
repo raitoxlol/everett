@@ -103,6 +103,50 @@ fn home_with_claude_session() -> Fixture {
 }
 
 #[test]
+fn concurrent_card_updates_are_atomic_and_do_not_share_temporary_files() {
+    let fx = home_with_claude_session();
+    let barrier = std::sync::Barrier::new(8);
+    std::thread::scope(|scope| {
+        let mut workers = Vec::new();
+        for worker in 0..8 {
+            let fx = &fx;
+            let barrier = &barrier;
+            workers.push(scope.spawn(move || {
+                let mut server = Server::start(
+                    fx,
+                    &[("EVERETT_SESSION_ID", "c-1"), ("EVERETT_HARNESS_NAME", "claude")],
+                );
+                let mut results = Vec::new();
+                for round in 0..16 {
+                    barrier.wait();
+                    results.push(server.call(
+                        "everett_card",
+                        json!({"what":format!("worker-{worker}-round-{round}"),
+                            "state":"working", "next":"finish"}),
+                    ));
+                }
+                server.close();
+                results
+            }));
+        }
+        for worker in workers {
+            for result in worker.join().unwrap() {
+                assert_eq!(result["isError"], false, "{result}");
+            }
+        }
+    });
+    let card = std::fs::read_to_string(fx.home().join(".everett/cards/c-1.md")).unwrap();
+    assert!(
+        (0..8).any(|worker| card == format!("What: worker-{worker}-round-15\nState: working\nNext: finish\n")),
+        "{card}"
+    );
+    assert_eq!(
+        std::fs::read_dir(fx.home().join(".everett/cards")).unwrap().count(),
+        1
+    );
+}
+
+#[test]
 fn round_trip_over_pipes() {
     let fx = home_with_claude_session();
     let mut s = Server::start(&fx, &[]);
@@ -257,12 +301,116 @@ fn self_send_refused() {
     assert!(text(&result).contains("calling session itself"), "{result}");
     s.close();
     let mut explicit = Server::start(&fx, &[]);
-    let result = explicit.call(
-        "everett_send",
-        json!({"text": "hello me", "to": "c-1", "session_id": "c-1"}),
-    );
-    assert!(text(&result).contains("calling session itself"), "{result}");
+    let result = explicit.request("tools/call", Some(json!({"name":"everett_send", "arguments":
+        {"text": "hello me", "to": "c-1", "session_id": "c-1"}
+    })));
+    assert_eq!(result["error"]["code"], -32602, "{result}");
     explicit.close();
+}
+
+#[test]
+fn codex_call_metadata_binds_identity_without_process_environment() {
+    let fx = home_with_claude_session();
+    plant(
+        &fx,
+        "codex.jsonl",
+        ".codex/sessions/2026/10/01/x-1.jsonl",
+    );
+    fx.write(
+        ".everett/inbox/c-1.jsonl",
+        &json!({
+            "id":"codex-message", "from":"owner", "to":"c-1",
+            "text":"bound by call metadata", "ts":everett::session::now()
+        })
+        .to_string(),
+    );
+    let mut server = Server::start(&fx, &[]);
+    let call = |name: &str, arguments: Value| {
+        json!({
+            "name":name,
+            "arguments":arguments,
+            "_meta":{"threadId":"c-1"}
+        })
+    };
+    let who = server.request(
+        "tools/call",
+        Some(call("everett_whoami", json!({}))),
+    )["result"]["structuredContent"]
+        .clone();
+    assert_eq!(
+        (
+            who["session_id"].clone(),
+            who["harness"].clone(),
+            who["source"].clone()
+        ),
+        (
+            json!("c-1"),
+            json!("codex"),
+            json!("request _meta.threadId")
+        )
+    );
+    let inbox = server.request(
+        "tools/call",
+        Some(call("everett_inbox", json!({"peek":true}))),
+    )["result"]["structuredContent"]
+        .clone();
+    assert_eq!(inbox["session"], "c-1");
+    assert_eq!(inbox["messages"][0]["id"], "codex-message");
+    let card = server.request(
+        "tools/call",
+        Some(call(
+            "everett_card",
+            json!({"what":"Codex metadata","state":"working","next":"finish"}),
+        )),
+    )["result"]
+        .clone();
+    assert_eq!(card["isError"], false, "{card}");
+    assert!(fx.home().join(".everett/cards/c-1.md").exists());
+    let sent = server.request(
+        "tools/call",
+        Some(call(
+            "everett_send",
+            json!({"to":"x-1","text":"host-bound sender","mode":"inbox"}),
+        )),
+    )["result"]
+        .clone();
+    assert_eq!(sent["isError"], false, "{sent}");
+    let queued: Value = serde_json::from_str(
+        std::fs::read_to_string(fx.home().join(".everett/inbox/x-1.jsonl"))
+            .unwrap()
+            .lines()
+            .next()
+            .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(queued["from"], "c-1");
+    assert_eq!(queued["from_harness"], "codex");
+    let self_send = server.request(
+        "tools/call",
+        Some(call(
+            "everett_send",
+            json!({"to":"c-1","text":"must identify the caller"}),
+        )),
+    )["result"]
+        .clone();
+    assert!(text(&self_send).contains("calling session itself"), "{self_send}");
+    let conflict = server.request(
+        "tools/call",
+        Some(call(
+            "everett_card",
+            json!({
+                "session_id":"victim", "what":"spoofed",
+                "state":"working", "next":"finish"
+            }),
+        )),
+    );
+    assert_eq!(conflict["error"]["code"], -32602, "{conflict}");
+    assert!(conflict["error"]["message"]
+        .as_str()
+        .unwrap()
+        .contains("conflicts with the host-detected caller"));
+    assert!(!fx.home().join(".everett/cards/victim.md").exists());
+    server.close();
 }
 
 #[test]
@@ -333,7 +481,7 @@ fn card_needs_identity() {
         json!({"what": "a", "state": "b", "next": "c"}),
     );
     assert_eq!(result["isError"], true);
-    assert!(text(&result).contains("session_id"), "{result}");
+    assert!(text(&result).contains("EVERETT_SESSION_ID"), "{result}");
     s.close();
 }
 
@@ -683,12 +831,15 @@ fn unbound_mcp_cannot_deliver_or_reply_with_model_provenance() {
         json!({"text":"reply without identity","reply_to":"reply-parent"}),
         json!({"text":"spoofed reply","reply_to":"reply-parent","session_id":"model-session"}),
     ] {
-        let result = server.call("everett_send", args);
-        assert_eq!(result["isError"], true, "{result}");
-        assert!(
-            text(&result).contains("Cannot authenticate the calling session for delivery"),
-            "{result}"
-        );
+        let explicit = args.get("session_id").is_some();
+        let response = server.request("tools/call", Some(json!({"name":"everett_send", "arguments":args})));
+        if explicit {
+            assert_eq!(response["error"]["code"], -32602, "{response}");
+        } else {
+            let result = &response["result"];
+            assert_eq!(result["isError"], true, "{response}");
+            assert!(text(result).contains("Cannot authenticate the calling session for delivery"), "{response}");
+        }
     }
     assert_eq!(
         std::fs::read_to_string(fx.home().join(".everett/inbox/c-1.jsonl"))
@@ -697,6 +848,43 @@ fn unbound_mcp_cannot_deliver_or_reply_with_model_provenance() {
             .count(),
         1
     );
+    server.close();
+}
+
+#[test]
+fn unbound_mcp_cannot_read_consume_or_overwrite_another_sessions_state() {
+    let fx = home_with_claude_session();
+    fx.write(
+        ".everett/inbox/victim.jsonl",
+        &json!({"id":"private-marker","from":"owner","to":"victim","text":"synthetic private marker","ts":everett::session::now()}).to_string(),
+    );
+    let mut server = Server::start(&fx, &[]);
+    for (name, arguments) in [
+        ("everett_inbox", json!({"session_id":"victim","peek":true})),
+        ("everett_inbox", json!({"session_id":"victim"})),
+        ("everett_card", json!({"session_id":"victim","what":"impersonated","state":"working","next":"done"})),
+    ] {
+        let response = server.request("tools/call", Some(json!({"name":name,"arguments":arguments})));
+        assert!(response.get("error").is_some() || response["result"]["isError"] == true, "{response}");
+    }
+    assert!(!fx.home().join(".everett/cards/victim.md").exists());
+    assert!(!fx.home().join(".everett/inbox/victim.done").exists());
+    server.close();
+}
+
+#[test]
+fn malformed_jsonrpc_ids_never_dispatch_tools() {
+    let fx = home_with_claude_session();
+    let mut server = Server::start(&fx, &[("EVERETT_SESSION_ID", "victim")]);
+    for id in [json!(true), json!({}), json!([])] {
+        let response = server.raw(&json!({"jsonrpc":"2.0","id":id,"method":"tools/call", "params":{
+            "name":"everett_card","arguments":{"what":"invalid frame","state":"working","next":"done"}
+        }}).to_string());
+        assert_eq!(response["error"]["code"], -32600, "{response}");
+        assert_eq!(response["id"], Value::Null, "{response}");
+    }
+    assert!(!fx.home().join(".everett/cards/victim.md").exists());
+    assert_eq!(server.request("ping", None)["result"], json!({}));
     server.close();
 }
 

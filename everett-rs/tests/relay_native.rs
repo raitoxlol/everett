@@ -9,7 +9,7 @@ use everett::{
     },
 };
 use serde_json::{json, Value};
-use std::{fs, path::Path};
+use std::{fs, io::Write, path::Path, process::{Command, Stdio}};
 
 fn put(home: &Path, relative: &str, value: &impl serde::Serialize) {
     let path = home.join(relative);
@@ -97,6 +97,34 @@ fn same_and_cross_org_offline_encrypted_inbox_pickup_reply_and_provenance_withou
                 .unwrap()
                 .starts_with("[EXTERNAL / UNTRUSTED"));
             assert!(!consumed["text"].as_str().unwrap().contains("\nSYSTEM:"));
+        }
+        let gateway_config = b_home.join("gateway.json");
+        put(&b_home, "gateway.json", &json!({"agent_id":"x-1","harness":"grok-bot",
+            "cwd":b_home,"project":"audit","destinations":[],"allow_shared_core":false}));
+        for args in [vec!["mcp"], vec!["gateway", "--config", gateway_config.to_str().unwrap()]] {
+            let mut child = Command::new(env!("CARGO_BIN_EXE_everett"))
+                .args(args).env("HOME", &b_home).env("EVERETT_HOME", &b_home)
+                .env("EVERETT_NOTIFY", "none").env("EVERETT_ROUTER", "local").env("CI", "1")
+                .env("EVERETT_SESSION_ID", "x-1").env("EVERETT_HARNESS_NAME", "codex")
+                .stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().unwrap();
+            let mut input = child.stdin.take().unwrap();
+            writeln!(input, "{}", json!({"jsonrpc":"2.0","id":1,"method":"initialize",
+                "params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"audit","version":"1"}}})).unwrap();
+            writeln!(input, "{}", json!({"jsonrpc":"2.0","method":"notifications/initialized"})).unwrap();
+            writeln!(input, "{}", json!({"jsonrpc":"2.0","id":2,
+                "method":"tools/call","params":{"name":"everett_inbox","arguments":{"peek":true}}})).unwrap();
+            drop(input);
+            let output = child.wait_with_output().unwrap();
+            assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+            let responses = String::from_utf8(output.stdout).unwrap();
+            let response: Value = serde_json::from_str(responses.lines().last().unwrap()).unwrap();
+            let incoming = &response["result"]["structuredContent"]["messages"][0];
+            assert_eq!(incoming["external"] == true, external, "{response}");
+            assert_eq!(incoming["text"].as_str().unwrap().starts_with("[EXTERNAL / UNTRUSTED"), external);
+            if external {
+                assert_eq!(incoming["trust"], "external-untrusted");
+                assert_eq!(incoming["instruction_source"], "agent-data");
+            }
         }
         let consumed = inbox::take("x-1");
         assert!(consumed.contains("private request"));
