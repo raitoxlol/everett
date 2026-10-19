@@ -177,14 +177,16 @@ try {
   for (const name of Object.keys(accounts)) {
     const home = path.join(state, 'homes', name);
     fs.mkdirSync(path.join(home, '.everett'), { recursive: true });
-    fs.writeFileSync(path.join(home, '.everett/config.toml'), `[auth]\nissuer = "${issuer}"\nclient_id = "${clientId}"\n[relay]\nurl = "${relay}"\n`);
-    const variables = { EVERETT_HOME: home, EVERETT_AUTH_ISSUER: issuer, EVERETT_AUTH_CLIENT_ID: clientId, EVERETT_CONVEX_URL: relay, EVERETT_NOTIFY: 'none' };
+    const caFile = path.join(state, 'ca.pem');
+    const config = `[auth]\nissuer = "${issuer}"\nclient_id = "${clientId}"\n[relay]\nurl = "${relay}"\nca_file = ${JSON.stringify(caFile)}\n`;
+    fs.writeFileSync(path.join(home, '.everett/config.toml'), config);
+    const variables = { EVERETT_HOME: home, EVERETT_AUTH_ISSUER: issuer, EVERETT_AUTH_CLIENT_ID: clientId, EVERETT_CONVEX_URL: relay, EVERETT_RELAY_CA_FILE: caFile, EVERETT_NOTIFY: 'none' };
     fs.writeFileSync(path.join(state, `${name}.env`), `${Object.entries(variables).map(([key, value]) => `export ${key}=${quote(value)}`).join('\n')}\n`);
     console.log(`\n${name}:\n${Object.entries(variables).map(([key, value]) => `export ${key}=${quote(value)}`).join('\n')}`);
-    console.log(`Config: ${path.join(home, '.everett/config.toml')}\n[auth]\nissuer = "${issuer}"\nclient_id = "${clientId}"\n[relay]\nurl = "${relay}"`);
+    console.log(`Config: ${path.join(home, '.everett/config.toml')}\n${config}`);
   }
   console.log(`\nPASS both operator identities provisioned. TLS diagnostic proxy ${relay}`);
-  console.log('NOTE Everett 1.6.0 requires HTTPS and uses public WebPKI roots. The self-signed local proxy may block relay; smoke.sh reports the real result.');
+  console.log('TLS verification is enabled. Only these isolated devices explicitly trust .state/ca.pem; system trust is unchanged.');
   console.log(`Run ${path.join(directory, 'smoke.sh')} in another terminal. Ctrl-C or down.sh stops services and preserves data.`);
   fs.writeFileSync(path.join(state, 'ready.json'), JSON.stringify({ pid: process.pid, issuer, relay, backend }));
   await new Promise(() => {});

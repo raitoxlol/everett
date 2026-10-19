@@ -1,4 +1,94 @@
-# Local login verification, 2026-10-15
+# Local login and encrypted relay verification
+
+## Current branch: PASS, 2026-10-19
+
+Built this branch's Rust binary (`everett 1.6.0`) on Linux x86_64, Rust 1.97.1,
+Node 24.19.0; pinned Convex backend `precompiled-2026-10-06-a3538c6`.
+The old installed Homebrew binary has not acquired the new CA support: rebuild
+this branch and select it explicitly, rather than retesting an old executable.
+
+Commands from the checkout root:
+
+```sh
+cargo build --manifest-path everett-rs/Cargo.toml --locked
+./scripts/dev-login/up.sh
+# In another terminal after startup reports ready:
+EVERETT_VERIFY_BINARY="$PWD/everett-rs/target/debug/everett" ./scripts/dev-login/smoke.sh
+EVERETT_VERIFY_BINARY="$PWD/everett-rs/target/debug/everett" node --test scripts/dev-login/regression.mjs
+cargo test --manifest-path everett-rs/Cargo.toml --locked
+cargo clippy --manifest-path everett-rs/Cargo.toml --locked --all-targets -- -D warnings
+npm run typecheck
+npm test -- --exclude 'scripts/dev-login/.state/**'
+```
+
+This VM is Ubuntu 22.04: the pinned backend required newer glibc/libstdc++.
+For this run only, Ubuntu 24.04 runtime libraries were extracted under
+`/home/ubuntu/everett-runtime` and a local wrapper launched the unmodified backend
+with that isolated dynamic loader/library path. No system library or trust store
+was changed. The normal Linux prerequisite is Ubuntu 24.04 or equivalent; this
+workaround is not part of the repository or a cloud deployment.
+
+### Measured smoke
+
+Run `2026-10-19T06-57-36-849Z`, exit **0**, `SUMMARY PASS: 0 failed checks`.
+Per-command output remains ignored under `.state/runs/<run>/`.
+
+- Both isolated Codex fixture sessions discovered before relay checks.
+- Both fixed identities (`alice-a`, `alice-b`) completed native device login
+  using **`--open=false`**, native refresh, `whoami`, and relay
+  `whoami`/`register`/`devices`.
+- Convex accepted signed issuer claims with authoritative enrollment and correct
+  namespaces/roles, rejected a tampered token, and credentials remained mode 0600.
+- Native HTTPS worked with the extra CA from the environment and independently
+  from `[relay] ca_file`. Removing both sources of trust rejected the certificate
+  in **11 ms**, with `relay TLS/certificate verification failed`, the underlying
+  `invalid peer certificate: UnknownIssuer`, and explicit CA configuration guidance.
+  HTTP remained rejected (`Convex deployment must be an HTTPS origin`).
+- Real native encrypted send A → B, B inbox pickup/decryption, B reply by its
+  local inbox ID, A reply pickup/decryption, and signed **`replied`** status passed.
+  Before starting either listener, the smoke queried B's real backend queue and
+  asserted a signed ciphertext envelope with no `Hello from A` plaintext.
+  A message ID: `4e3e74d9-2574-4ef9-9f86-ac56797f4752`.
+- Fixing TLS exposed a separate real-backend `InvalidCursor`: `pending` had a
+  changing `Date.now()` lower bound. It now paginates a stable recipient range
+  and filters expiry after pagination; expired mail is still withheld. The full
+  native exchange above passed after that change.
+
+### Other checks
+
+- Rust full test suite passed, including CLI/MCP release journey, relay native
+  suite, Jev, OMP and pi coverage; explicit `--open=false` auth regression passed.
+- Four TLS transport tests passed: custom CA handshake and reconnect, default
+  roots/unrelated CA rejection, hostname mismatch rejection, and missing/empty/
+  malformed CA files failing closed. Certificate failures include actionable
+  guidance and are tested to return in under three seconds rather than 20 seconds.
+- Strict all-target clippy passed. Convex typecheck and backend tests passed,
+  including pagination through expired rows while time advances.
+- All six local-stack regression tests passed (including CA/leaf chain, renewal,
+  key permissions, and explicit-CA HTTPS); shell/Node syntax and diff checks passed.
+
+### Security choice and remaining limits
+
+HTTPS-only with an explicitly configured **extra CA** was selected instead of
+an HTTP exception: it exercises the production TLS/hostname-verification path.
+WebPKI roots remain enabled. Only that relay client trusts extra roots; reconnects
+reuse the same connector. OIDC and other HTTP clients, the process environment's
+global TLS settings, and system trust are not modified. Convex 0.10.4 is vendored
+only because its published builder exposes neither a TLS connector nor TLS error
+state; `everett-rs/vendor/convex/PATCHES.md` records the small transport-only delta.
+
+Not verified by this run: end-to-end smoke on macOS/the Homebrew package, real
+remote/NAT/SSH transport, live Jev/model/harness processes, browser approval UI,
+production issuer/enrollment/endpoints, cross-org live grants, revocation during
+subscriptions, or full message recovery across outages. The smoke uses synthetic
+session files, real CLI processes/crypto, a real local backend, and automated
+device approval; it makes no model calls. No cloud deployment or merge occurred.
+
+---
+
+## Historical installed-binary baseline, 2026-10-15
+
+The following results describe the pre-fix binary, not this branch's current smoke.
 
 ## Environment
 

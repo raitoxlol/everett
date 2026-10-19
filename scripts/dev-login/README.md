@@ -1,14 +1,15 @@
-# Test Everett login on one Mac
+# Test Everett login and encrypted relay locally
 
-Run the installed `/opt/homebrew/bin/everett` **1.6.0** against a local OIDC issuer and a local Convex backend. No Docker, Java, paid account, cloud deployment, or rebuild is needed.
+Run an Everett binary built from this branch against a local OIDC issuer and a local Convex backend. No Docker, Java, paid account, cloud deployment, or system CA installation is needed. The old installed 1.6.0 binary lacks the new CA option; its historical failures are retained in [RESULTS.md](RESULTS.md).
 
-**Login works locally. The 1.6.0 relay is blocked by local TLS trust.** The binary rejects HTTP relay URLs and uses bundled public WebPKI roots for HTTPS. It cannot trust this stack's self-signed certificate. The smoke reports those failures and exits **1**. It does not count backend diagnostics as successful native relay operations. See [the measured results](RESULTS.md).
+The stack generates a private development CA and a separate localhost server certificate under `.state/`. Both isolated devices explicitly trust that CA through `EVERETT_RELAY_CA_FILE` / `[relay] ca_file`. Default public WebPKI roots, certificate verification, and HTTP rejection remain unchanged. The measured smoke passes, including encrypted A → B → A delivery and signed `replied` status.
 
 ## Start the stack
 
-Run these commands from the Everett checkout root. Use Node 24 or later, npm, `unzip`, and `openssl`. macOS already provides `unzip` and `openssl`; Homebrew OpenSSL also works. Allow 500 MB of free disk space for dependencies and the backend.
+Run these commands from the Everett checkout root. Use Rust, Node 24 or later, npm, `unzip`, and `openssl`. macOS already provides `unzip` and `openssl`; Homebrew OpenSSL also works. The pinned Linux backend requires glibc 2.39 and recent libstdc++ (Ubuntu 24.04 or equivalent); Ubuntu 22.04 needs an isolated runtime workaround as noted in RESULTS.md. Allow space for Rust build artifacts as well as the backend.
 
 ```sh
+cargo build --manifest-path everett-rs/Cargo.toml --locked
 ./scripts/dev-login/up.sh
 ```
 
@@ -17,7 +18,7 @@ Leave this terminal open. Wait for `PASS both operator identities provisioned`. 
 In another terminal at the checkout root, run the real binary smoke. Allow about 90 seconds once the stack is ready.
 
 ```sh
-./scripts/dev-login/smoke.sh
+EVERETT_VERIFY_BINARY="$PWD/everett-rs/target/debug/everett" ./scripts/dev-login/smoke.sh
 ```
 
 Read the summary even when the command exits 1. Full command output is private under `scripts/dev-login/.state/runs/`. The latest summary is `scripts/dev-login/.state/last-smoke.txt`. No tokens are printed. Run the smoke only while the stack is running.
@@ -28,29 +29,29 @@ For device A, run the following in a terminal at the checkout root.
 
 ```sh
 source ./scripts/dev-login/.state/alice-a.env
-/opt/homebrew/bin/everett login --device alice-a --force --open
-/opt/homebrew/bin/everett whoami --json
-/opt/homebrew/bin/everett relay whoami
-/opt/homebrew/bin/everett relay register
-/opt/homebrew/bin/everett relay devices
+./everett-rs/target/debug/everett login --device alice-a --force --open
+./everett-rs/target/debug/everett whoami --json
+./everett-rs/target/debug/everett relay whoami
+./everett-rs/target/debug/everett relay register
+./everett-rs/target/debug/everett relay devices
 ```
 
-On the browser page, enter the code printed in the terminal, choose **alice-a**, and click **Approve**. `whoami` must show `sub` and `device_name` equal to `alice-a`. The relay commands currently fail at TLS on 1.6.0.
+On the browser page, enter the code printed in the terminal, choose **alice-a**, and click **Approve**. `whoami` must show `sub` and `device_name` equal to `alice-a`.
 
 For device B, open another terminal at the checkout root.
 
 ```sh
 source ./scripts/dev-login/.state/alice-b.env
-/opt/homebrew/bin/everett login --device alice-b --force --open
-/opt/homebrew/bin/everett whoami --json
-/opt/homebrew/bin/everett relay whoami
-/opt/homebrew/bin/everett relay register
-/opt/homebrew/bin/everett relay devices
+./everett-rs/target/debug/everett login --device alice-b --force --open
+./everett-rs/target/debug/everett whoami --json
+./everett-rs/target/debug/everett relay whoami
+./everett-rs/target/debug/everett relay register
+./everett-rs/target/debug/everett relay devices
 ```
 
 Approve as **alice-b**. The two identities share org `local-alice`, with A as `admin` and B as `member`. Their subjects and agent IDs differ. `--device` sets a display name; the issuer's fixed account registry supplies the trusted claims.
 
-To avoid opening a browser automatically, omit `--open` and visit the printed URL yourself. **Do not use `--open=false`**. Version 1.6.0 rejects that spelling because `--open` is a boolean switch.
+To avoid opening a browser automatically, omit `--open` or use `--open=false` and visit the printed URL yourself. This branch accepts both `--open` and `--open=true` to open it; bare `--open` keeps its old behavior. The smoke uses the explicit `--open=false` spelling.
 
 For an automated approval by hand, leave `login` waiting in one terminal. In another terminal, substitute its printed user code and the intended identity.
 
@@ -83,7 +84,7 @@ All services bind **127.0.0.1**. The issuer uses HTTP, which both Everett login 
 | 4444 | OIDC discovery, JWKS, RFC 8628 authorization, token refresh, userinfo, revocation, and device approval |
 | 3210 | Native Convex backend HTTP API and WebSocket sync |
 | 3211 | Convex HTTP actions |
-| 4445 | HTTPS and WebSocket proxy with a generated self-signed certificate; diagnoses the 1.6.0 TLS restriction |
+| 4445 | HTTPS and WebSocket proxy with a localhost certificate signed by the generated local CA |
 
 The supervisor replaces only `.state/operator/convex/` with the current `convex/` functions, sets `OIDC_ISSUER` and `OIDC_CLIENT_ID` with `convex env set`, pushes them with `convex dev --once`, and calls the internal operator-only `relay:provisionIdentity` for both fixed accounts. It uses the pinned repo CLI through its installed Node entrypoint, equivalent to `npx --no-install convex` in that directory. Typechecking is enabled. Operator credentials stay in mode-0600 `.state/operator/.env.local`; they are never included in device environments.
 
@@ -99,24 +100,25 @@ issuer = "http://127.0.0.1:4444"
 client_id = "everett-relay"
 [relay]
 url = "https://127.0.0.1:4445"
+ca_file = "/absolute/checkout/path/scripts/dev-login/.state/ca.pem"
 ```
 
-The account registry in `settings.mjs` controls `everett_agent`, `everett_org`, and `everett_role`. Signed RS256 ID tokens retain `iss`, `sub`, `aud`, and `exp`, including on refresh. Generated signing keys, TLS keys, tokens, and operator keys remain in `.state/`, which is ignored by git. Startup reuses the local TLS certificate only while it is valid for localhost and 127.0.0.1 and matches its key. It regenerates expired or invalid TLS files without changing system trust. The issuer's OAuth state is held in memory.
+The account registry in `settings.mjs` controls `everett_agent`, `everett_org`, and `everett_role`. Signed RS256 ID tokens retain `iss`, `sub`, `aud`, and `exp`, including on refresh. Generated signing keys, CA/TLS private keys, tokens, and operator keys remain in `.state/`, which is ignored by git. Private CA/TLS keys have mode 0600. Startup validates CA/leaf expiry, server names, signatures, and matching keys; it replaces expired, broken, or legacy self-signed TLS files without changing system trust. The issuer's OAuth state is held in memory.
 
 ## Smoke coverage and limits
 
-The smoke always uses `/opt/homebrew/bin/everett`, checks that it reports 1.6.0, and records every command's stdout, stderr, and exit code. Before checking stack or relay readiness, it seeds dated Codex transcripts in both isolated homes and asserts that `ls --json` returns their exact session IDs. It attempts both identities' device login, `whoami --json`, `relay whoami`, `relay register`, and `relay devices`. It approves each printed code over the local HTTP approval endpoint. It also forces the local access-token expiry timestamp to zero, calls the real CLI's `whoami` refresh path, and checks the refreshed signed ID token through Convex. It never replaces or fabricates the binary's tokens.
+The smoke uses `EVERETT_VERIFY_BINARY` (or `everett` on PATH) and records every command's stdout, stderr, and exit code. Before checking stack or relay readiness, it seeds dated Codex transcripts in both isolated homes and asserts that `ls --json` returns their exact session IDs. It attempts both identities' device login, `whoami --json`, `relay whoami`, `relay register`, and `relay devices`. It approves each printed code over the local HTTP approval endpoint. It also forces the local access-token expiry timestamp to zero, calls the real CLI's `whoami` refresh path, and checks the refreshed signed ID token through Convex. It never replaces or fabricates the binary's tokens.
 
-Independent backend diagnostics check signature/claim validation, authoritative provisioning, role/namespace, rejection of a tampered token, and credential-file permissions. A Node HTTPS request with explicit CA trust verifies that the diagnostic TLS proxy reaches the backend. That Node-only trust does not change Everett's trust store.
+Independent backend diagnostics check signature/claim validation, authoritative provisioning, role/namespace, rejection of a tampered token, and credential-file permissions. The native client verifies CA trust through both environment and config-file options, then rejects the untrusted local certificate promptly with its certificate error. HTTP still fails. A Node HTTPS request independently verifies the TLS proxy.
 
-If native relay setup succeeds, the smoke follows the [two-device journey](../../docs/cross-device.md#convex-relay-two-machine-trial): it reads both public registration fingerprints directly, pins both peers, uses the already verified synthetic Codex sessions, starts two `everett relay` listeners, sends A to B, peeks and consumes B's inbox, replies using B's local inbox ID, consumes A's reply, and waits for signed `replied` status. It stops only listeners it started. **That branch cannot execute with the installed 1.6.0 TLS restriction and is not claimed verified.**
+After native relay setup, the smoke follows the [two-device journey](../../docs/cross-device.md#convex-relay-two-machine-trial): it reads both public registration fingerprints directly, pins both peers, sends A to B, verifies the queued signed ciphertext has no plaintext before B runs, starts two `everett relay` listeners, peeks and consumes B's inbox, replies using B's local inbox ID, consumes A's reply, and waits for signed `replied` status. It stops only listeners it started. Pending pagination uses a stable recipient range and filters expired rows after pagination, so advancing time cannot invalidate the next cursor.
 
-This stack does not exercise real NAT, real sshd, real harness/model sessions, browser login security, production enrollment, cross-org grants, revocation of active subscriptions, reconnect recovery, or production TLS. It installs no system CA and disables no client TLS checks. `mkcert`, `SSL_CERT_FILE`, and Keychain trust are not a fix for the binary's explicitly bundled WebPKI roots. A future supported client option for loopback HTTP or custom CA trust is required for a fully local native relay test; the Rust CLI and Convex functions are unchanged here.
+This stack does not exercise real NAT, real sshd, real harness/model sessions, browser login security, production enrollment, cross-org grants, revocation of active subscriptions, full message recovery after disconnects, or production endpoints. Rust transport tests cover reconnects with the configured CA, default/unrelated-CA rejection, hostname enforcement, and missing/malformed CA files. No system CA is installed and no client TLS checks are disabled; the extra roots apply only to Everett relay clients explicitly configured to use them.
 
 ## Run local regressions
 
-With the root npm dependencies installed, run these checks without starting the stack. They use the installed Everett binary, offline npm fixture packages, and disposable local files. The HTTPS check briefly opens an ephemeral loopback port with explicit Node CA trust.
+With the root npm dependencies installed, run these checks without starting the stack. They use the selected Everett binary, offline npm fixture packages, and disposable local files. The HTTPS check briefly opens an ephemeral loopback port with explicit Node CA trust.
 
 ```sh
-node --test scripts/dev-login/regression.mjs
+EVERETT_VERIFY_BINARY="$PWD/everett-rs/target/debug/everett" node --test scripts/dev-login/regression.mjs
 ```

@@ -213,10 +213,12 @@ export const pending = query({
     // A fixed take without a cursor would starve later valid messages until TTL.
     // 32 maximum-body envelopes leave ample metadata headroom under the 8 MiB
     // function-result limit as well as the 16 MiB transaction-read limit.
-    const page = await ctx.db.query("messages").withIndex("by_recipient", (q) => q.eq("recipientOwner", p.owner).eq("toDevice", deviceId).gt("expiresAt", now))
+    // Keep the indexed range stable across pages and reactive reruns; filter TTL below.
+    const page = await ctx.db.query("messages").withIndex("by_recipient", (q) => q.eq("recipientOwner", p.owner).eq("toDevice", deviceId))
       .paginate({ numItems: 32, cursor: cursor ?? null });
     const envelopes = [];
     for (const row of page.page) {
+      if (row.expiresAt <= now) continue;
       try {
         await route(ctx, row, now);
         const { _id, _creationTime, ...envelope } = row;

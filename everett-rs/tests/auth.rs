@@ -328,6 +328,19 @@ fn login_happy_path_writes_auth_and_whoami_prints_email() {
 }
 
 #[test]
+fn explicit_open_false_completes_non_browser_device_login() {
+    let f = fixture();
+    let fake = Fake::start();
+    fake.state.lock().unwrap().token_seq = ["success"].into();
+    configure(&f, &fake.base);
+    let out = f.run(&["login", "--device", "headless", "--open=false", "--json"]);
+    assert_eq!(out.status.code(), Some(0), "{}", String::from_utf8_lossy(&out.stderr));
+    let who: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(who["signed_in"], true);
+    assert_eq!(who["device_name"], "headless");
+}
+
+#[test]
 fn login_access_denied_exits_5_without_auth_file() {
     let f = fixture();
     let fake = Fake::start();
