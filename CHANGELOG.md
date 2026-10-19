@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- Document the OpenAI dot tunnel that was checked on 1.6.0, including the
+  gateway file, exact session ids, `CONTROL_PLANE_API_KEY`, and ChatGPT's
+  no-authentication plugin path. Add `everett tunnel watch` plus systemd and
+  launchd examples so a live `tunnel-client` that stops forwarding after
+  repeated poll timeouts is restarted without putting keys in the unit file.
+
 ## 1.6.0 — 2026-10-15
 
 - Require host-bound MCP caller identity for delivery and replies; reject conflicting model

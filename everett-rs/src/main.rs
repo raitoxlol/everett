@@ -42,6 +42,11 @@ enum Cmd {
         #[command(subcommand)]
         action: PeerCmd,
     },
+    /// keep an OpenAI tunnel-client forwarding
+    Tunnel {
+        #[command(subcommand)]
+        action: TunnelCmd,
+    },
     /// serve restricted owner-bound MCP for external agents
     Gateway {
         #[arg(long)]
@@ -500,6 +505,31 @@ fn grant_command(action: GrantCmd) -> everett::error::Result<serde_json::Value> 
 }
 
 #[derive(Subcommand)]
+enum TunnelCmd {
+    /// run tunnel-client and restart it when polls stop recovering
+    Watch {
+        /// profile created by `tunnel-client init`
+        #[arg(long, default_value = "everett-dot")]
+        profile: String,
+        /// tunnel-client binary
+        #[arg(long, default_value = "tunnel-client")]
+        tunnel_client: std::path::PathBuf,
+        /// owner-only file that sets CONTROL_PLANE_API_KEY
+        #[arg(long)]
+        env_file: std::path::PathBuf,
+        /// consecutive poll-timeout log lines without recovery before a restart
+        #[arg(long, default_value_t = 3)]
+        timeout_streak: u32,
+        /// seconds to wait before starting tunnel-client again
+        #[arg(long, default_value_t = 2)]
+        restart_delay: u64,
+        /// stop after this many restarts (0 keeps going)
+        #[arg(long, default_value_t = 0)]
+        max_restarts: u32,
+    },
+}
+
+#[derive(Subcommand)]
 enum ExternalCmd {
     /// add an inbox registration (does not connect to a provider)
     Add {
@@ -768,6 +798,23 @@ fn main() {
             cli::cmd_install_hooks(&a)
         }
         Cmd::Mcp => cli::cmd_mcp(&a),
+        Cmd::Tunnel { action } => match action {
+            TunnelCmd::Watch {
+                profile,
+                tunnel_client,
+                env_file,
+                timeout_streak,
+                restart_delay,
+                max_restarts,
+            } => everett::tunnel::run(everett::tunnel::WatchConfig {
+                profile,
+                tunnel_client,
+                env_file,
+                timeout_streak,
+                restart_delay: std::time::Duration::from_secs(restart_delay),
+                max_restarts,
+            }),
+        },
         Cmd::Gateway {
             config,
             transport,
