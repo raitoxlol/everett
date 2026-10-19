@@ -101,6 +101,23 @@ describe("owner-only hosted enrollment", () => {
     expect(await f.backend.run(ctx => ctx.db.query("credentials").collect())).toEqual([]);
     vi.restoreAllMocks();
   });
+  test("polling retries preserve approval and denial until expiry without recreating credentials", async () => {
+    const f = await fixture();
+    for (const approve of [true, false]) {
+      const e = await f.begin();
+      await f.owner.client.mutation(mutation("approve"), { code: e.userCode, approve });
+      const result = await f.backend.mutation(mutation("poll"), { deviceCode: e.deviceCode });
+      expect(result).toMatchObject({ state: approve ? "approved" : "denied", agentId: e.agentId });
+      expect(await f.backend.mutation(mutation("poll"), { deviceCode: e.deviceCode })).toEqual(result);
+      await expect(f.owner.client.mutation(mutation("approve"), { code: e.userCode, approve: true })).rejects.toThrow("already used");
+      const now = vi.spyOn(Date, "now").mockReturnValue(e.expiresAt);
+      expect(await f.backend.mutation(mutation("poll"), { deviceCode: e.deviceCode })).toEqual({ state: "expired" });
+      await f.backend.mutation(mutation("expire"), {});
+      expect(await f.backend.run(ctx => ctx.db.query("enrollments").collect())).toEqual([]);
+      now.mockRestore();
+    }
+    expect(await f.backend.run(ctx => ctx.db.query("credentials").collect())).toHaveLength(1);
+  });
   test("token authenticates exactly its agent, never the owner or another agent", async () => {
     const f = await fixture(), a = await f.enroll(), b = await f.enroll(`evt_${"b".repeat(64)}`);
     expect(a.userId).not.toBe(f.owner.userId);

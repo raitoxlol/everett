@@ -24,9 +24,9 @@ OIDC/JWKS/WebSocket revocation test, or security audit is claimed by this docume
   creates the membership and immutable server-chosen agent credential. Auth/poll
   secrets are 256-bit random values stored hashed; the displayed 48-bit code is not
   a bearer credential. Never approve unsolicited codes (device-code phishing).
-  Pending rows expire after ten minutes with minute/bounded cleanup; approved/denied
-  rows are deleted on polling. Flooding can exhaust the global quota: this is a
-  private service, not abuse-resistant public enrollment.
+  All enrollment rows expire after ten minutes with minute/bounded cleanup.
+  Approved/denied results remain retryable until expiry. Flooding can exhaust the
+  global quota: this is a private service, not abuse-resistant public enrollment.
 - Hosted agents have separate Convex Auth user/session IDs and no owner/admin powers.
   Each token exchange, custom JWT claim issuance and relay request checks credential,
   membership and current owner allowlist. Relay requests also check the live Convex
@@ -81,7 +81,7 @@ these fields (source: `convex/schema.ts`, `relay.ts`, `grants.ts`):
 | Surface | Visible data and application retention |
 | --- | --- |
 | Authentication/network | JWT and all its claims, including issuer, subject, audience, agent/org/role, expiry and any provider-added profile/email/session claims; Convex identity/token identifier; connection/IP, timing, frequency, TLS endpoints and sizes. Functions do not store tokens in relay tables; provider/platform/proxy logging and retention are separate operator policies. |
-| Hosted auth/enrollment | Convex Auth users, GitHub account ID/login, OAuth account material, sessions, refresh tokens/verifiers and their framework-managed retention. Opaque per-agent bearer is visible during sign-in but only its SHA-256 hash is stored in credentials. Enrollment display name, server agent ID, user code, hashed polling secret, auth-token hash, state, owner and ten-minute expiry; deleted on completed poll or bounded expiry cleanup. Hosted auth refuses DEBUG logging. Provider/platform capture remains outside this guarantee. Independent client relay seeds never reach auth/enrollment. |
+| Hosted auth/enrollment | Convex Auth users, GitHub account ID/login, OAuth account material, sessions, refresh tokens/verifiers and their framework-managed retention. Opaque per-agent bearer is visible during sign-in but only its SHA-256 hash is stored in credentials. Enrollment display name, server agent ID, user code, hashed polling secret, auth-token hash, state, owner and ten-minute expiry; deleted by bounded expiry cleanup. Hosted auth refuses DEBUG logging. Provider/platform capture remains outside this guarantee. Independent client relay seeds never reach auth/enrollment. |
 | Memberships/credentials | Namespace/owner, issuer, subject, role and active/revoked status; issuer-global agent ID, immutable owner/subject binding and credential status. Rows, including **revocation tombstones, are permanent**. |
 | Devices | Owner, device ID, current signing/encryption public keys, self-signature and monotonic rotation generation. Registry rows retained on revoke; rotation replaces the current bundle, while grants can retain pinned historical bundles. Active own-namespace listing is capped at 256. |
 | Grants | Grant ID, both owners/named device IDs, both complete pinned public bundles/self-signatures/fingerprints and rotation generations, state, which side confirmed (`a`/`b`/`both`), optional expiry and cron sweep time, rate/minute and body-byte cap. Views add computed access status (e.g. key changed/agent revoked); stored grant records, including revoked/expired grants, are **not pruned**. List is capped at 128 per side and reports truncation. |

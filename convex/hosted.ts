@@ -129,9 +129,7 @@ export const poll = mutation({
     if (!/^[a-f0-9]{64}$/.test(deviceCode)) throw new Error("Invalid device code");
     const row = await ctx.db.query("enrollments").withIndex("by_poll", q => q.eq("pollHash", hash(deviceCode))).unique();
     if (!row || row.expiresAt <= Date.now()) return { state: "expired" };
-    const result = { state: row.state, agentId: row.agentId, owner: row.owner ?? null };
-    if (row.state !== "pending") await ctx.db.delete(row._id);
-    return result;
+    return { state: row.state, agentId: row.agentId, owner: row.owner ?? null };
   },
 });
 export const credentials = query({
