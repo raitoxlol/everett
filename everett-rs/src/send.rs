@@ -35,8 +35,8 @@ pub fn command_for(session: &Session, text: &str) -> Result<Vec<String>> {
         return Err(EverettError::new(
             2,
             "T3 Code owns this thread's resume point, so a CLI resume would fork it. \
-             Continue it in T3 Code, or queue inbox delivery and explicitly poll everett_inbox \
-             with the provider session_id.",
+             Bind EVERETT_SESSION_ID to the provider session in T3 Code, then queue inbox \
+             delivery and explicitly poll everett_inbox.",
         ));
     }
     match session.harness.as_str() {
@@ -680,6 +680,10 @@ pub fn delivery_mode_for(
 
 /// Who is sending: the calling session (with its card), else the human at a terminal.
 pub fn sender_info(caller: Option<&str>) -> Map<String, Value> {
+    sender_info_as(caller, None)
+}
+
+pub fn sender_info_as(caller: Option<&str>, caller_harness: Option<&str>) -> Map<String, Value> {
     let ident = caller_identity();
     let sid = caller
         .map(|c| c.to_string())
@@ -696,7 +700,11 @@ pub fn sender_info(caller: Option<&str>) -> Map<String, Value> {
         json!(if sid.is_empty() {
             String::new()
         } else {
-            ident.get("harness").and_then(|v| v.as_str()).unwrap_or("").to_string()
+            caller_harness
+                .filter(|h| !h.is_empty())
+                .or_else(|| ident.get("harness").and_then(|v| v.as_str()))
+                .unwrap_or("")
+                .to_string()
         }),
     );
     out.insert("from_card".into(), json!(card));
@@ -705,10 +713,21 @@ pub fn sender_info(caller: Option<&str>) -> Map<String, Value> {
 
 /// Queue `text` in a running session's inbox; optionally wait for its reply.
 pub fn send_inbox(session: &Session, text: &str, wait: f64, caller: Option<&str>, poll: f64) -> Result<Map<String, Value>> {
+    send_inbox_as(session, text, wait, caller, None, poll)
+}
+
+pub fn send_inbox_as(
+    session: &Session,
+    text: &str,
+    wait: f64,
+    caller: Option<&str>,
+    caller_harness: Option<&str>,
+    poll: f64,
+) -> Result<Map<String, Value>> {
     if !wait.is_finite() || wait < 0.0 {
         return Err(EverettError::new(2, "--wait must be a finite number of seconds, 0 or more."));
     }
-    let who = sender_info(caller);
+    let who = sender_info_as(caller, caller_harness);
     let sender = who.get("sender").and_then(|v| v.as_str()).unwrap_or(inbox::HUMAN);
     let hops = caller_hops_for(Some(sender));
     if hops >= MAX_HOPS {
@@ -744,7 +763,7 @@ pub fn send_inbox(session: &Session, text: &str, wait: f64, caller: Option<&str>
         result.insert("pickup".into(), json!("poll"));
         result.insert("poll_session_id".into(), json!(session.id));
         result.insert("pickup_note".into(), json!(
-            "Queued only. In T3 Code, call everett_inbox with this provider session_id; reply with everett_send(reply_to=<message id>, text=..., session_id=...)."
+            "Queued only. In T3 Code, bind EVERETT_SESSION_ID to this provider session in the MCP launch environment, call everett_inbox, and reply with everett_send(reply_to=<message id>, text=...)."
         ));
     }
     if wait > 0.0 {
@@ -769,6 +788,15 @@ pub fn send_inbox(session: &Session, text: &str, wait: f64, caller: Option<&str>
 /// A session caller resolves the message inside its own inbox only, so a
 /// colliding id in another inbox can never reroute the reply.
 pub fn reply(message_id: &str, text: &str, caller: Option<&str>) -> Result<Map<String, Value>> {
+    reply_as(message_id, text, caller, None)
+}
+
+pub fn reply_as(
+    message_id: &str,
+    text: &str,
+    caller: Option<&str>,
+    caller_harness: Option<&str>,
+) -> Result<Map<String, Value>> {
     let caller_id = caller.map(str::trim).unwrap_or("");
     let message_id = message_id.trim();
     let original = if caller_id.is_empty() {
@@ -789,7 +817,7 @@ pub fn reply(message_id: &str, text: &str, caller: Option<&str>) -> Result<Map<S
             },
         ));
     };
-    let who = sender_info(caller);
+    let who = sender_info_as(caller, caller_harness);
     let hops = inbox::reply_hops(
         &original,
         caller_hops_for(Some(who["sender"].as_str().unwrap_or(inbox::HUMAN))),

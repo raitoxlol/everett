@@ -326,9 +326,38 @@ fn err2(code: i32, msg: impl Into<String>) -> ToolFailure {
 /// A stdio MCP request is model-controlled. When the host identifies its
 /// harness session, that binding is authoritative for safety and lineage.
 /// Model-supplied arguments cannot establish a missing host binding.
-fn caller_session(args: &Map<String, Value>) -> std::result::Result<(String, bool), ToolFailure> {
+fn call_identity(params: &Map<String, Value>) -> Map<String, Value> {
+    let identity = caller_identity();
+    if identity
+        .get("session_id")
+        .and_then(Value::as_str)
+        .is_some_and(|id| !id.is_empty())
+    {
+        return identity;
+    }
+    let Some(thread_id) = params
+        .get("_meta")
+        .and_then(Value::as_object)
+        .and_then(|meta| meta.get("threadId"))
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|id| !id.is_empty())
+    else {
+        return identity;
+    };
+    let mut identity = Map::new();
+    identity.insert("session_id".into(), json!(thread_id));
+    identity.insert("harness".into(), json!("codex"));
+    identity.insert("source".into(), json!("request _meta.threadId"));
+    identity
+}
+
+fn caller_session(
+    args: &Map<String, Value>,
+    identity: &Map<String, Value>,
+) -> std::result::Result<(String, bool), ToolFailure> {
     let requested = str_arg(args, "session_id", false)?;
-    let bound = caller_identity()
+    let bound = identity
         .get("session_id")
         .and_then(|v| v.as_str())
         .unwrap_or("")
@@ -349,11 +378,14 @@ fn caller_session(args: &Map<String, Value>) -> std::result::Result<(String, boo
     Ok((String::new(), false))
 }
 
-fn tool_ls(args: &Map<String, Value>) -> std::result::Result<Map<String, Value>, ToolFailure> {
+fn tool_ls(
+    args: &Map<String, Value>,
+    identity: &Map<String, Value>,
+) -> std::result::Result<Map<String, Value>, ToolFailure> {
     let hours = hours_arg(args)?;
     let harness = str_arg(args, "harness", false)?;
     let sessions = crate::registry::scan(hours, false, Some(crate::registry::CAP), &harness);
-    let me = caller_identity()
+    let me = identity
         .get("session_id")
         .and_then(|v| v.as_str())
         .unwrap_or("")
@@ -373,10 +405,13 @@ fn tool_ls(args: &Map<String, Value>) -> std::result::Result<Map<String, Value>,
     Ok(out)
 }
 
-fn tool_route(args: &Map<String, Value>) -> std::result::Result<Map<String, Value>, ToolFailure> {
+fn tool_route(
+    args: &Map<String, Value>,
+    identity: &Map<String, Value>,
+) -> std::result::Result<Map<String, Value>, ToolFailure> {
     let text = str_arg(args, "text", true)?;
     let router = str_arg(args, "router", false)?;
-    let (caller, _) = caller_session(args)?;
+    let (caller, _) = caller_session(args, identity)?;
     let sessions = crate::registry::scan(hours_arg(args)?, false, Some(crate::registry::CAP), "");
     let r = crate::route::route(
         &text,
@@ -417,8 +452,11 @@ fn tool_route(args: &Map<String, Value>) -> std::result::Result<Map<String, Valu
     Ok(out)
 }
 
-fn tool_send(args: &Map<String, Value>) -> std::result::Result<Map<String, Value>, ToolFailure> {
-    use crate::send::{send_for, send_inbox, spawn_for};
+fn tool_send(
+    args: &Map<String, Value>,
+    identity: &Map<String, Value>,
+) -> std::result::Result<Map<String, Value>, ToolFailure> {
+    use crate::send::{send_for, send_inbox_as, spawn_for};
     let text = str_arg(args, "text", true)?;
     let to = str_arg(args, "to", false)?;
     let hours = hours_arg(args)?;
@@ -445,7 +483,8 @@ fn tool_send(args: &Map<String, Value>) -> std::result::Result<Map<String, Value
             "\"timeout\" must be a positive number".to_string(),
         ));
     }
-    let (caller, caller_bound) = caller_session(args)?;
+    let (caller, caller_bound) = caller_session(args, identity)?;
+    let caller_harness = identity.get("harness").and_then(Value::as_str);
     let mode = str_arg(args, "mode", false)?;
     let mode = if mode.is_empty() {
         "auto".to_string()
@@ -489,7 +528,7 @@ fn tool_send(args: &Map<String, Value>) -> std::result::Result<Map<String, Value
                 "Cannot authenticate the calling session for delivery; use a host-bound MCP session.",
             ));
         }
-        let result = crate::send::reply(
+        let result = crate::send::reply_as(
             &reply_to,
             &text,
             if caller.is_empty() {
@@ -497,6 +536,7 @@ fn tool_send(args: &Map<String, Value>) -> std::result::Result<Map<String, Value
             } else {
                 Some(&caller)
             },
+            caller_harness,
         )
         .map_err(ToolFailure::Tool)?;
         let mut out = Map::new();
@@ -523,7 +563,7 @@ fn tool_send(args: &Map<String, Value>) -> std::result::Result<Map<String, Value
                 "Remote sends are inbox-only; no spawn, resume, or wait. Poll everett peer status.",
             ));
         }
-        let value = crate::peer::send(
+        let value = crate::peer::send_as(
             &to,
             &text,
             if idempotency_key.is_empty() {
@@ -536,6 +576,7 @@ fn tool_send(args: &Map<String, Value>) -> std::result::Result<Map<String, Value
             } else {
                 Some(&caller)
             },
+            caller_harness,
         )
         .map_err(ToolFailure::Tool)?;
         let mut out = value
@@ -675,7 +716,15 @@ fn tool_send(args: &Map<String, Value>) -> std::result::Result<Map<String, Value
         ));
     }
     if delivery_mode == "inbox" {
-        let result = send_inbox(&session, &text, wait, caller, 1.0).map_err(ToolFailure::Tool)?;
+        let result = send_inbox_as(
+            &session,
+            &text,
+            wait,
+            caller,
+            caller_harness,
+            1.0,
+        )
+        .map_err(ToolFailure::Tool)?;
         let note = if crate::adapters::external::is_external(&session.harness) {
             "Queued for the external agent to poll through MCP. \
              No provider wake-up or consumption is confirmed. Read replies with everett_inbox."
@@ -786,7 +835,10 @@ fn tool_core(args: &Map<String, Value>) -> std::result::Result<Map<String, Value
     Ok(out)
 }
 
-fn tool_card(args: &Map<String, Value>) -> std::result::Result<Map<String, Value>, ToolFailure> {
+fn tool_card(
+    args: &Map<String, Value>,
+    identity: &Map<String, Value>,
+) -> std::result::Result<Map<String, Value>, ToolFailure> {
     let mut parts = Map::new();
     for k in ["what", "state", "next"] {
         let v = str_arg(args, k, true)?;
@@ -795,7 +847,7 @@ fn tool_card(args: &Map<String, Value>) -> std::result::Result<Map<String, Value
             json!(v.split_whitespace().collect::<Vec<_>>().join(" ")),
         );
     }
-    let (sid, _) = caller_session(args)?;
+    let (sid, _) = caller_session(args, identity)?;
     if sid.is_empty() {
         return Err(ToolFailure::Tool(EverettError::new(
             2,
@@ -829,8 +881,11 @@ fn tool_card(args: &Map<String, Value>) -> std::result::Result<Map<String, Value
     Ok(out)
 }
 
-fn tool_inbox(args: &Map<String, Value>) -> std::result::Result<Map<String, Value>, ToolFailure> {
-    let (sid, _) = caller_session(args)?;
+fn tool_inbox(
+    args: &Map<String, Value>,
+    identity: &Map<String, Value>,
+) -> std::result::Result<Map<String, Value>, ToolFailure> {
+    let (sid, _) = caller_session(args, identity)?;
     if sid.is_empty() {
         return Err(ToolFailure::Tool(EverettError::new(
             2,
@@ -973,11 +1028,14 @@ fn tool_inbox(args: &Map<String, Value>) -> std::result::Result<Map<String, Valu
     Ok(out)
 }
 
-fn tool_event(args: &Map<String, Value>) -> std::result::Result<Map<String, Value>, ToolFailure> {
+fn tool_event(
+    args: &Map<String, Value>,
+    identity: &Map<String, Value>,
+) -> std::result::Result<Map<String, Value>, ToolFailure> {
     let kind = str_arg(args, "kind", true)?;
     let message = str_arg(args, "message", true)?;
     let project = str_arg(args, "project", false)?;
-    let (sid, _) = caller_session(args)?;
+    let (sid, _) = caller_session(args, identity)?;
     if !sid.is_empty() && !crate::inbox::valid_id(&sid) {
         return Err(ToolFailure::Params(
             "\"session_id\" is not a valid session id".to_string(),
@@ -1015,8 +1073,9 @@ fn tool_event(args: &Map<String, Value>) -> std::result::Result<Map<String, Valu
 
 fn tool_subscribe(
     args: &Map<String, Value>,
+    identity: &Map<String, Value>,
 ) -> std::result::Result<Map<String, Value>, ToolFailure> {
-    let (sid, _) = caller_session(args)?;
+    let (sid, _) = caller_session(args, identity)?;
     let remove = args
         .get("unsubscribe")
         .map(|v| v.as_bool())
@@ -1039,8 +1098,10 @@ fn tool_subscribe(
     Ok(out)
 }
 
-fn tool_whoami(_args: &Map<String, Value>) -> std::result::Result<Map<String, Value>, ToolFailure> {
-    let ident = caller_identity();
+fn tool_whoami(
+    identity: &Map<String, Value>,
+) -> std::result::Result<Map<String, Value>, ToolFailure> {
+    let ident = identity;
     let mut out = ident.clone();
     let hops = std::env::var("EVERETT_HOPS").unwrap_or_else(|_| "0".to_string());
     out.insert("hops".into(), json!(hops.parse::<i64>().unwrap_or(0)));
@@ -1060,7 +1121,7 @@ fn tool_whoami(_args: &Map<String, Value>) -> std::result::Result<Map<String, Va
         json!(if has_session {
             ""
         } else {
-            "Not detected. Claude Code, Codex, Hermes, and Pi expose it; others must set EVERETT_SESSION_ID."
+            "Not detected. Set EVERETT_SESSION_ID in this session's MCP launch environment."
         }),
     );
     Ok(out)
@@ -1122,6 +1183,7 @@ fn grant_args(
 fn call_handler(
     name: &str,
     args: &Map<String, Value>,
+    identity: &Map<String, Value>,
 ) -> std::result::Result<Map<String, Value>, ToolFailure> {
     if name.starts_with("everett_agent_") {
         let value = match name {
@@ -1177,18 +1239,19 @@ fn call_handler(
                     str_arg(args, "harness", true)?,
                     str_arg(args, "session", true)?
                 );
-                let (caller, caller_bound) = caller_session(args)?;
+                let (caller, caller_bound) = caller_session(args, identity)?;
                 if !caller_bound {
                     return Err(ToolFailure::Tool(EverettError::new(
                         2,
                         "Cannot authenticate the calling session for relay forwarding; use a host-bound MCP session.",
                     )));
                 }
-                crate::relay::send(
+                crate::relay::send_as(
                     &target,
                     &str_arg(args, "text", true)?,
                     Some(&str_arg(args, "idempotency_key", true)?),
                     Some(&caller),
+                    identity.get("harness").and_then(Value::as_str),
                 )?
             }
             "everett_agent_status" => {
@@ -1204,16 +1267,16 @@ fn call_handler(
         .map_err(|_| ToolFailure::Params("invalid agent response".into()));
     }
     match name {
-        "everett_ls" => tool_ls(args),
-        "everett_route" => tool_route(args),
-        "everett_send" => tool_send(args),
+        "everett_ls" => tool_ls(args, identity),
+        "everett_route" => tool_route(args, identity),
+        "everett_send" => tool_send(args, identity),
         "everett_learn" => tool_learn(args),
         "everett_core" => tool_core(args),
-        "everett_card" => tool_card(args),
-        "everett_whoami" => tool_whoami(args),
-        "everett_inbox" => tool_inbox(args),
-        "everett_event" => tool_event(args),
-        "everett_subscribe" => tool_subscribe(args),
+        "everett_card" => tool_card(args, identity),
+        "everett_whoami" => tool_whoami(identity),
+        "everett_inbox" => tool_inbox(args, identity),
+        "everett_event" => tool_event(args, identity),
+        "everett_subscribe" => tool_subscribe(args, identity),
         _ => Err(ToolFailure::Params(format!("unknown tool: {}", name))),
     }
 }
@@ -1336,6 +1399,7 @@ fn call_tool(params: &Map<String, Value>) -> std::result::Result<Map<String, Val
             }
         }
     }
+    let identity = call_identity(params);
     let started = now();
     let mut log_fields = Map::new();
     log_fields.insert("tool".into(), json!(name));
@@ -1344,13 +1408,13 @@ fn call_tool(params: &Map<String, Value>) -> std::result::Result<Map<String, Val
     log_fields.insert("args".into(), json!(format!("{:?}", keys)));
     log_fields.insert(
         "caller".into(),
-        json!(caller_identity()
+        json!(identity
             .get("session_id")
             .and_then(|v| v.as_str())
             .unwrap_or("")),
     );
     log("call", log_fields);
-    let (data, is_error) = match call_handler(name, &args) {
+    let (data, is_error) = match call_handler(name, &args, &identity) {
         Ok(d) => (d, false),
         Err(ToolFailure::Tool(e)) => {
             let mut d = Map::new();

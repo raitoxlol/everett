@@ -151,7 +151,7 @@ pub fn resume_command(session: &Session, text: &str) -> String {
     }
     if session.source == "t3code" {
         return format!(
-            "# Continue in T3 Code; poll everett_inbox(session_id={}). Do not resume this thread with the provider CLI.",
+            "# Continue in T3 Code; bind EVERETT_SESSION_ID={} in that thread's MCP launch environment, then poll everett_inbox. Do not resume this thread with the provider CLI.",
             json!(session.id)
         );
     }

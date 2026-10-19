@@ -957,12 +957,22 @@ fn receipt_path(name: &str, message_id: &str) -> Result<PathBuf> {
 }
 
 pub fn send(value: &str, text: &str, key: Option<&str>, caller: Option<&str>) -> Result<Value> {
+    send_as(value, text, key, caller, None)
+}
+
+pub fn send_as(
+    value: &str,
+    text: &str,
+    key: Option<&str>,
+    caller: Option<&str>,
+    caller_harness: Option<&str>,
+) -> Result<Value> {
     let (name, harness, session) = target(value)?;
     assert_alias_unambiguous(name)?;
     if crate::relay::configured(name) {
-        return crate::relay::send(value, text, key, caller);
+        return crate::relay::send_as(value, text, key, caller, caller_harness);
     }
-    let who = send::sender_info(caller);
+    let who = send::sender_info_as(caller, caller_harness);
     let sender = who["sender"].as_str().unwrap_or(inbox::HUMAN);
     if inbox::relay_context(sender)
         .as_ref()
