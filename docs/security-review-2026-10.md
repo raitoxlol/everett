@@ -1,8 +1,8 @@
 # Security review, October 2026
 
-This review covers `main` at `435af2c` (v1.6.0) and open PRs #22–#25 at pinned heads. All runtime work used synthetic identities, keys, and local stacks. No production deployment, real account, or real secret was used. PRs #22–#25 remained read-only. Nothing was merged.
+This review covers `main` at `435af2c3750ae85a7eea5e0d233f830cb755e3b7` (v1.6.0) and open PRs #22–#25 at pinned heads. All runtime work used synthetic identities, keys, and local stacks. No production deployment, real account, or real secret was used. PRs #22–#25 remained read-only. Nothing was merged.
 
-PR #26 is the consolidated findings/fixes PR. It includes PR #27's cloud-provenance forwarding and concurrent-card-write regressions, without merging either PR. This document combines recovered evidence from the [original review](https://app.devin.ai/sessions/994b48918ee54e9181177ceb9a36ef64) and the [independent defensive validation](https://app.devin.ai/sessions/db4f9ff95ab44c339115f2e2c4de8728). The [continuation](https://app.devin.ai/sessions/fb75e8e412bd43bf8f68031c042d74e0) reviewed both branches and re-ran the combined fix branch. It did not repeat the original attack campaign.
+PR #26 is the consolidated findings/fixes PR. It includes PR #27's cloud-provenance forwarding and concurrent-card-write regressions, without merging either PR. This document combines recovered evidence from the [original review](https://app.devin.ai/sessions/994b48918ee54e9181177ceb9a36ef64) and the [independent defensive validation](https://app.devin.ai/sessions/db4f9ff95ab44c339115f2e2c4de8728). The [continuation](https://app.devin.ai/sessions/fb75e8e412bd43bf8f68031c042d74e0) reviewed both branches and re-ran the combined fix branch. It did not repeat the original attack campaign. [Final verification](https://app.devin.ai/sessions/3d3ef9a8fd4740fca852926e463e23de) repeated the pinned branch matrix and the combined fixed-branch checks described below.
 
 This is bounded defensive evidence, not security certification or an exhaustive penetration test. A successful test does not establish that an untested attack is impossible. In-memory Convex tests inject authenticated identities; only the explicitly identified local-backend runs exercised actual JWT signature verification.
 
@@ -67,9 +67,9 @@ The impact is access between logical sessions under the same local OS account, n
 
 ### M4: concurrent MCP card updates shared one temporary filename (Low)
 
-**Repro.** Start eight independent stdio MCP processes bound to the same synthetic session. Synchronize 16 rounds of ordinary `everett_card` updates.
+**Repro.** Run `cargo test --locked --test mcp_stdio concurrent_card_updates` in `everett-rs/`. The regression starts eight independent stdio MCP processes bound to the same synthetic session and synchronizes 16 rounds of ordinary `everett_card` updates.
 
-**Observed.** The old `.SESSION.md.tmp` path let one process rename another process's temporary file. A legitimate update failed with `No such file or directory`. This was reproduced on unchanged main in the independent review. One successful baseline run does not disprove this concurrency-sensitive race.
+**Observed.** The old `.SESSION.md.tmp` path let one process rename another process's temporary file. A legitimate update failed with `No such file or directory`. This was reproduced on unchanged main in the independent review and during final verification. One successful baseline run does not disprove this concurrency-sensitive race.
 
 **Fix.** `tool_card` uses the existing `peer::save` atomic writer: unique temporary file, private permissions, sync, then persist. Last complete write wins. No optimistic concurrency or card history is promised.
 
@@ -142,7 +142,9 @@ The local portions of `docs/grok-bot.md`, `docs/openai-dots.md`, and `docs/gatew
 
 M1 and M2 were discrepancies with the documented identity/data boundaries on main and are fixed here. The docs correctly distinguish a logical owner binding from vendor authentication, automatic cloud wake-up, and provider consumption. No live Grok Bot or existing OpenAI dot was connected. The Secure MCP Tunnel, provider permissions, credential UI, and tool selection remain owner-side verification, not inferred successes from local MCP tests. No claim is made that an LLM obeys the untrusted warning.
 
-## Attacks that held
+## Recovered negative-test observations
+
+The original review reported the following observations from synthetic fixtures and local services. These are bounded checks, not proof of exhaustive attack resistance. Consolidation reran the committed suites, not the separate one-off attack harnesses or live stacks.
 
 - **Auth.** Forged, tampered, expired, wrong-issuer, wrong-audience, and unsigned JWTs were rejected by real local JWKS verification. Client-supplied org, agent, and role fields were rejected or ignored. Non-owners could not approve, list, or revoke in PR #25. Revoked agent tokens, refresh, exchange, and re-registration were denied, including on a live WebSocket subscription. An otherwise valid bearer JWT remains reusable until expiry or revocation; envelope replay protection is separate and does not make JWTs single-use.
 - **Relay.** Cross-tenant row reads, deletes, and foreign acceptance failed. Absent or one-sided grants, inviter self-acceptance, and revoked grants blocked cross-org sends. Spoofed sender, modified signature or ciphertext, reused message IDs, and changed idempotency content were denied. Oversized (>64 KiB), malformed, and path-like envelopes were rejected. Per-grant and per-account rate limits held across two agents. Expired ciphertext and accepted ciphertext were deleted while replay tombstones remained.
@@ -152,9 +154,9 @@ M1 and M2 were discrepancies with the documented identity/data boundaries on mai
 
 ## Test matrix
 
-All native runtime runs used isolated `HOME` and `EVERETT_HOME` with `EVERETT_NOTIFY=none EVERETT_ROUTER=local CI=1`. The npm package is at the repository root, not in `convex/`; `npm ci`, `npm test`, and `npm run typecheck` ran there. Cargo commands ran in `everett-rs/`. There is no remaining Python runtime test suite.
+Native test subprocess fixtures isolate `HOME` and `EVERETT_HOME`; consolidation also sets `EVERETT_NOTIFY=none EVERETT_ROUTER=local CI=1`. The npm package is at the repository root, not in `convex/`; `npm ci`, `npm test`, and `npm run typecheck` ran there. Cargo commands ran in `everett-rs/`. There is no remaining Python runtime test suite.
 
-The five pinned revisions passed in both earlier runs. Original branch evidence: [main](https://app.devin.ai/sessions/f0101c822ec04f9fb8e18c3f9283331a), [#22](https://app.devin.ai/sessions/54b28c7a44344060be6555954292bdb0), [#23](https://app.devin.ai/sessions/3594eb1eda3745468f0d08c8566a8f05), [#24](https://app.devin.ai/sessions/1b27133bdca34fa2bf44b8dbec05065a), [#25](https://app.devin.ai/sessions/055c708d72f54c0cbcefcd89c4189bcf). The [independent five-VM validation](https://app.devin.ai/sessions/db4f9ff95ab44c339115f2e2c4de8728) reconfirmed Cargo, clippy, npm, and TypeScript at the same SHAs. These results do not cover future pushes to those PRs.
+The five pinned revisions passed in both earlier runs. Original branch evidence: [main](https://app.devin.ai/sessions/f0101c822ec04f9fb8e18c3f9283331a), [#22](https://app.devin.ai/sessions/54b28c7a44344060be6555954292bdb0), [#23](https://app.devin.ai/sessions/3594eb1eda3745468f0d08c8566a8f05), [#24](https://app.devin.ai/sessions/1b27133bdca34fa2bf44b8dbec05065a), [#25](https://app.devin.ai/sessions/055c708d72f54c0cbcefcd89c4189bcf). The [independent five-VM validation](https://app.devin.ai/sessions/db4f9ff95ab44c339115f2e2c4de8728) reconfirmed Cargo, clippy, npm, and TypeScript at the same SHAs. These results do not cover future pushes to those PRs. Final verification repeated Cargo tests, Clippy, root `npm ci`, npm tests and typecheck at all five pinned revisions; every command exited zero. Rust runs used a separate target directory per revision. An initial shared-target run produced stale-library missing-symbol errors across worktrees; those harness artifacts are not branch defects and are superseded by the isolated runs.
 
 | Branch | `cargo test --locked` | `cargo clippy --all-targets -- -D warnings` | `npm test` | `npm run typecheck` | `release_journey` |
 | --- | --- | --- | --- | --- | --- |
@@ -164,6 +166,12 @@ The five pinned revisions passed in both earlier runs. Original branch evidence:
 | PR #24 `d962ec0` | pass | pass | pass, 38/38 | pass | pass |
 | PR #25 `d8f6a14` | pass | pass | pass, 46/46 | pass | pass |
 | This branch | pass | pass | pass, 34/34 | pass | pass |
+
+PR #22's separate `node --test scripts/dev-login/regression.mjs` suite also passed all six checks during final verification with `EVERETT_VERIFY_BINARY` pointing to its pinned native binary.
+
+The pinned-branch `release_journey` column is the journey included in each full Cargo test run. On the combined fixes, `cargo build --release --locked` also passed, followed by `EVERETT_VERIFY_BINARY=<absolute-release-binary> cargo test --locked --test release_journey`: all 14 advertised MCP tools and the CLI journey passed against the optimized binary. Full fixed-branch Cargo tests, Clippy, root npm tests (34/34), typecheck and `git diff --check` passed as well.
+
+`cargo fmt --all -- --check` fails on existing repository formatting, beginning with `src/adapters/claude.rs:15`, on both unchanged main and this branch. No repository-wide formatting change was made. Clippy with warnings denied and `git diff --check` are separate checks.
 
 The original MCP harness (74 checks) failed 10 checks on `main` and passed all 74 on the original M1–M3 candidate, with debug and release binaries. That separate harness was not rerun after consolidation. Fixed-main regressions are committed here in `external`, `mcp_stdio`, `gateway_native`, and `relay_native`; they run without credentials or model calls. The packaged release journey verifies all 14 currently advertised MCP tools. Jev's adapter/router behavior, OMP, and Pi retain their existing synthetic coverage; no live Jev API was called.
 
