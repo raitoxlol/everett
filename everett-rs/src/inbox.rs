@@ -126,6 +126,12 @@ pub fn post(
             message.insert(k, v);
         }
     }
+    if crate::adapters::external::is_external(from_harness) {
+        message.insert("external".into(), json!(true));
+        message.insert("untrusted".into(), json!(true));
+        message.insert("trust".into(), json!("external-untrusted"));
+        message.insert("instruction_source".into(), json!("agent-data"));
+    }
     let target = path(to)?;
     append(&target, &(serde_json::to_string(&message).unwrap() + "\n"))?;
     Ok(message)
@@ -280,7 +286,7 @@ fn ago(ts: f64, now: f64) -> String {
     }
 }
 
-/// External provenance is derived from signed routing at relay import, never sender prose.
+/// External provenance comes from signed relay routing or the host-bound harness, never prose.
 pub fn external(message: &Map<String, Value>) -> bool {
     message
         .get("external")
@@ -291,6 +297,8 @@ pub fn external(message: &Map<String, Value>) -> bool {
             .and_then(Value::as_bool)
             .unwrap_or(false)
         || message.get("trust").and_then(Value::as_str) == Some("external-untrusted")
+        || message.get("from_harness").and_then(Value::as_str)
+            .is_some_and(crate::adapters::external::is_external)
 }
 
 pub fn consumption_text(message: &Map<String, Value>) -> String {
@@ -340,6 +348,10 @@ pub fn forward_provenance(message: &Map<String, Value>) -> Option<Map<String, Va
 pub fn consumption_message(mut message: Map<String, Value>) -> Map<String, Value> {
     if external(&message) {
         message.insert("text".into(), json!(consumption_text(&message)));
+        message.insert("external".into(), json!(true));
+        message.insert("untrusted".into(), json!(true));
+        message.insert("trust".into(), json!("external-untrusted"));
+        message.insert("instruction_source".into(), json!("agent-data"));
     }
     message
 }
@@ -377,7 +389,7 @@ pub fn persist_relay_context(session_id: &str, ids: &[&str]) -> Result<()> {
             m.get("id")
                 .and_then(Value::as_str)
                 .is_some_and(|id| ids.contains(&id))
-                && (m.contains_key("relay_message_id") || m.contains_key("relay_lineage"))
+                && (external(m) || m.contains_key("relay_message_id") || m.contains_key("relay_lineage"))
         })
         .collect();
     let Some(message) = received

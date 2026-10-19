@@ -257,11 +257,10 @@ fn self_send_refused() {
     assert!(text(&result).contains("calling session itself"), "{result}");
     s.close();
     let mut explicit = Server::start(&fx, &[]);
-    let result = explicit.call(
-        "everett_send",
-        json!({"text": "hello me", "to": "c-1", "session_id": "c-1"}),
-    );
-    assert!(text(&result).contains("calling session itself"), "{result}");
+    let result = explicit.request("tools/call", Some(json!({"name":"everett_send", "arguments":
+        {"text": "hello me", "to": "c-1", "session_id": "c-1"}
+    })));
+    assert_eq!(result["error"]["code"], -32602, "{result}");
     explicit.close();
 }
 
@@ -683,12 +682,15 @@ fn unbound_mcp_cannot_deliver_or_reply_with_model_provenance() {
         json!({"text":"reply without identity","reply_to":"reply-parent"}),
         json!({"text":"spoofed reply","reply_to":"reply-parent","session_id":"model-session"}),
     ] {
-        let result = server.call("everett_send", args);
-        assert_eq!(result["isError"], true, "{result}");
-        assert!(
-            text(&result).contains("Cannot authenticate the calling session for delivery"),
-            "{result}"
-        );
+        let explicit = args.get("session_id").is_some();
+        let response = server.request("tools/call", Some(json!({"name":"everett_send", "arguments":args})));
+        if explicit {
+            assert_eq!(response["error"]["code"], -32602, "{response}");
+        } else {
+            let result = &response["result"];
+            assert_eq!(result["isError"], true, "{response}");
+            assert!(text(result).contains("Cannot authenticate the calling session for delivery"), "{response}");
+        }
     }
     assert_eq!(
         std::fs::read_to_string(fx.home().join(".everett/inbox/c-1.jsonl"))
@@ -697,6 +699,43 @@ fn unbound_mcp_cannot_deliver_or_reply_with_model_provenance() {
             .count(),
         1
     );
+    server.close();
+}
+
+#[test]
+fn unbound_mcp_cannot_read_consume_or_overwrite_another_sessions_state() {
+    let fx = home_with_claude_session();
+    fx.write(
+        ".everett/inbox/victim.jsonl",
+        &json!({"id":"private-marker","from":"owner","to":"victim","text":"synthetic private marker","ts":everett::session::now()}).to_string(),
+    );
+    let mut server = Server::start(&fx, &[]);
+    for (name, arguments) in [
+        ("everett_inbox", json!({"session_id":"victim","peek":true})),
+        ("everett_inbox", json!({"session_id":"victim"})),
+        ("everett_card", json!({"session_id":"victim","what":"impersonated","state":"working","next":"done"})),
+    ] {
+        let response = server.request("tools/call", Some(json!({"name":name,"arguments":arguments})));
+        assert!(response.get("error").is_some() || response["result"]["isError"] == true, "{response}");
+    }
+    assert!(!fx.home().join(".everett/cards/victim.md").exists());
+    assert!(!fx.home().join(".everett/inbox/victim.done").exists());
+    server.close();
+}
+
+#[test]
+fn malformed_jsonrpc_ids_never_dispatch_tools() {
+    let fx = home_with_claude_session();
+    let mut server = Server::start(&fx, &[("EVERETT_SESSION_ID", "victim")]);
+    for id in [json!(true), json!({}), json!([])] {
+        let response = server.raw(&json!({"jsonrpc":"2.0","id":id,"method":"tools/call", "params":{
+            "name":"everett_card","arguments":{"what":"invalid frame","state":"working","next":"done"}
+        }}).to_string());
+        assert_eq!(response["error"]["code"], -32600, "{response}");
+        assert_eq!(response["id"], Value::Null, "{response}");
+    }
+    assert!(!fx.home().join(".everett/cards/victim.md").exists());
+    assert_eq!(server.request("ping", None)["result"], json!({}));
     server.close();
 }
 
