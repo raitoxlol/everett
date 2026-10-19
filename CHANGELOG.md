@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- Bind Codex MCP calls from its authoritative per-call `_meta.threadId`; an
+  explicit `session_id` still must match. Claude Code, Grok CLI 1.0.4+, Codex,
+  and `everett gateway` bind callers automatically. Pi, Devin, OMP, Hermes, and
+  T3 Code do not currently expose a supported session ID to Everett's MCP
+  server, so bind `EVERETT_SESSION_ID` per session and restart or rebind the
+  server when that session changes. Reading or peeking at a local Grok Bot or
+  OpenAI dot message labels it untrusted without tainting unrelated later
+  resume/spawn work; an explicit reply retains the external provenance.
+
 ## 1.6.0 — 2026-10-15
 
 - Require host-bound MCP caller identity for delivery and replies; reject conflicting model

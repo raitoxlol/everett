@@ -38,7 +38,10 @@ To build from source: `cargo install --git https://github.com/raitoxlol/everett 
   and re-enrollment. Operator provisioning is required; there is no public enrollment API.
 - **Host-bound MCP caller identity for delivery and replies.** Conflicting model session IDs are
   rejected instead of replacing provenance or hop lineage. Harnesses without native detection must
-  bind `EVERETT_SESSION_ID` in their MCP launch environment.
+  bind `EVERETT_SESSION_ID` in their MCP launch environment. Claude Code, Grok CLI 1.0.4+, Codex
+  (through authoritative per-call `_meta.threadId`), and `everett gateway` bind automatically.
+  Pi, Devin, OMP, Hermes, and T3 Code need `EVERETT_SESSION_ID` set per session; restart or rebind
+  their MCP server when the session changes. A model-supplied `session_id` cannot establish identity.
 - **Bounded state and explicit repair.** Rejected-message diagnostics are bounded, `peer remove NAME
   --transport ssh|convex` repairs ambiguous legacy aliases, and ambiguous routing or removal now
   fails closed. Signed delivery deletes the live ciphertext row, and undelivered messages expire
