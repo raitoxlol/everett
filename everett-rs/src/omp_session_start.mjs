@@ -40,7 +40,11 @@ export default function registerEverettCardHook(pi) {
   const markSession = (_event, ctx) => {
     try {
       const sessionId = ctx.sessionManager.getSessionId();
-      if (typeof sessionId === "string" && sessionId) pendingSessions.add(sessionId);
+      if (typeof sessionId === "string" && sessionId) {
+        pendingSessions.add(sessionId);
+        // Records which session this omp process holds, so `everett mcp --harness omp` can bind to it.
+        spawnSync(EVERETT_BIN, ["hook", "omp_bind", sessionId], { timeout: 3000 });
+      }
     } catch {
       // never break the OMP session over Everett
     }

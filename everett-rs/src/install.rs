@@ -40,6 +40,10 @@ pub const HOOKS: &[(&str, &[HookSpec])] = &[
         "grok",
         &[("Stop", "grok_stop", 5), ("PostToolUse", "grok_inbox", 3)],
     ),
+    (
+        "devin",
+        &[("SessionStart", "devin_bind", 3), ("UserPromptSubmit", "devin_bind", 3)],
+    ),
 ];
 
 fn hooks_for(harness: &str) -> &'static [(&'static str, &'static str, i64)] {
@@ -64,8 +68,26 @@ pub fn settings_path(harness: &str) -> PathBuf {
     home().join(match harness {
         "claude" => ".claude/settings.json",
         "codex" => ".codex/hooks.json",
+        "devin" => return mcp_path("devin").with_file_name("config.json"),
         _ => ".grok/hooks/everett.json",
     })
+}
+
+pub fn pi_extension_path() -> PathBuf {
+    home().join(".pi").join("agent").join("extensions").join("everett.ts")
+}
+
+pub fn pi_extension_source() -> String {
+    include_str!("pi_session_start.ts").replace("__EVERETT_BIN__", &exe())
+}
+
+/// Whether a harness looks installed: its home directory exists or its binary is on PATH.
+pub fn harness_present(harness: &str) -> bool {
+    let dir = match harness {
+        "devin" => mcp_path("devin").parent().map(PathBuf::from).unwrap_or_default(),
+        other => home().join(format!(".{}", other)),
+    };
+    dir.is_dir() || crate::proc::which(harness, &std::env::var("PATH").unwrap_or_default()).is_some()
 }
 
 pub fn omp_extension_path() -> PathBuf {
@@ -319,6 +341,13 @@ fn write_json(path: &PathBuf, data: &Map<String, Value>) -> std::io::Result<()> 
 }
 
 pub fn snippet(harness: &str) -> String {
+    if harness == "pi" {
+        return format!(
+            "# Pi auto-loads extensions; write {} with:\n{}",
+            pi_extension_path().display(),
+            pi_extension_source()
+        );
+    }
     if harness == "omp" {
         return format!(
             "# OMP auto-loads extensions from {}/\n# write {} with:\n{}# or pass it per launch:\nomp --hook={}\n",
@@ -350,11 +379,14 @@ pub fn apply(harness: &str, events: Option<&[String]>) -> std::result::Result<St
     if events.map(|e| e.is_empty()).unwrap_or(false) {
         return Ok(format!("{}: skipped (no hooks selected)", harness));
     }
-    if harness == "omp" {
-        let path = omp_extension_path();
-        let source = omp_extension_source();
+    if harness == "omp" || harness == "pi" {
+        let (path, source) = if harness == "pi" {
+            (pi_extension_path(), pi_extension_source())
+        } else {
+            (omp_extension_path(), omp_extension_source())
+        };
         if path.exists() && fs::read_to_string(&path).unwrap_or_default() == source {
-            return Ok(format!("omp: already installed ({})", path.display()));
+            return Ok(format!("{}: already installed ({})", harness, path.display()));
         }
         let saved = backup(&path);
         if let Some(parent) = path.parent() {
@@ -362,7 +394,8 @@ pub fn apply(harness: &str, events: Option<&[String]>) -> std::result::Result<St
         }
         fs::write(&path, &source).map_err(|e| e.to_string())?;
         return Ok(format!(
-            "omp: wrote {}{}",
+            "{}: wrote {}{}",
+            harness,
             path.display(),
             saved.map(|s| format!(" (backup {})", s.display())).unwrap_or_default()
         ));
@@ -398,8 +431,19 @@ pub fn mcp_launch() -> (String, Vec<String>, std::collections::HashMap<String, S
     (exe(), vec!["mcp".to_string()], std::collections::HashMap::new())
 }
 
-fn mcp_json_entry() -> Map<String, Value> {
-    let (command, args, env) = mcp_launch();
+/// The launch args for `harness`: hosts that cannot pass a session id get `--harness`, so the
+/// server binds callers through the host process instead.
+pub fn mcp_args(harness: &str) -> Vec<String> {
+    let mut args = vec!["mcp".to_string()];
+    if crate::host::DETECTABLE.contains(&harness) && harness != "pi" {
+        args.extend(["--harness".to_string(), harness.to_string()]);
+    }
+    args
+}
+
+fn mcp_json_entry(harness: &str) -> Map<String, Value> {
+    let (command, _, env) = mcp_launch();
+    let args = mcp_args(harness);
     let mut entry = Map::new();
     entry.insert("type".into(), json!("stdio"));
     entry.insert("command".into(), json!(command));
@@ -534,7 +578,7 @@ pub fn mcp_status(harness: &str) -> (String, String) {
         .file_name()
         .map(|n| n.to_string_lossy().to_string())
         .unwrap_or_default();
-    if !(name == "everett" && args == ["mcp"].map(String::from)) {
+    if !(name == "everett" && args == mcp_args(harness)) {
         return ("stale".into(), "registration does not launch Everett stdio MCP".to_string());
     }
     if let Some(env) = entry.get("env") {
@@ -555,9 +599,9 @@ fn is_legacy_mcp(entry: &Map<String, Value>) -> bool {
     entry.get("args") == Some(&json!(["-m", "everett", "mcp"]))
 }
 
-fn repaired_entry(old: &Map<String, Value>) -> Result<Map<String, Value>> {
+fn repaired_entry(old: &Map<String, Value>, harness: &str) -> Result<Map<String, Value>> {
     let mut entry = old.clone();
-    for (k, v) in mcp_json_entry() {
+    for (k, v) in mcp_json_entry(harness) {
         entry.insert(k, v);
     }
     let env = old.get("env").cloned().unwrap_or(Value::Object(Map::new()));
@@ -639,8 +683,17 @@ fn replace_toml_entry(text: &str, entry: &Map<String, Value>) -> std::result::Re
 pub fn mcp_snippet(harness: &str) -> String {
     let (command, args, env) = mcp_launch();
     match harness {
+        "pi" => format!(
+            "# Pi: run `everett install-hooks --pi --apply`; the extension in {} registers the\n# everett MCP server per session with its EVERETT_SESSION_ID. Do not also list it in ~/.pi/agent/mcp.json.\n",
+            pi_extension_path().display()
+        ),
+        "hermes" => format!(
+            "# add under mcp_servers in ~/.hermes/config.yaml, then restart hermes:\nmcp_servers:\n  everett:\n    command: {}\n    args: [{}]\n# binds to the single interactive Hermes CLI session in the server's directory; gateway mode cannot be bound\n",
+            serde_json::to_string(&command).unwrap(),
+            mcp_args("hermes").iter().map(|a| serde_json::to_string(a).unwrap()).collect::<Vec<_>>().join(", ")
+        ),
         "devin" => {
-            let mut entry = mcp_json_entry();
+            let mut entry = mcp_json_entry(harness);
             entry.remove("type");
             format!(
                 "# user scope, Devin CLI v3000.3+: merge into {}\n{}\n",
@@ -655,7 +708,7 @@ pub fn mcp_snippet(harness: &str) -> String {
                 .collect::<String>();
             let mut entry = Map::new();
             let mut servers = Map::new();
-            servers.insert("everett".into(), Value::Object(mcp_json_entry()));
+            servers.insert("everett".into(), Value::Object(mcp_json_entry(harness)));
             entry.insert("mcpServers".into(), Value::Object(servers));
             format!(
                 "# user scope, all projects:\nclaude mcp add --scope user{} everett -- {} {}\n# (or add under \"mcpServers\" in ~/.claude.json)\n{}\n",
@@ -682,7 +735,7 @@ pub fn mcp_snippet(harness: &str) -> String {
         _ => {
             let mut entry = Map::new();
             let mut servers = Map::new();
-            servers.insert("everett".into(), Value::Object(mcp_json_entry()));
+            servers.insert("everett".into(), Value::Object(mcp_json_entry(harness)));
             entry.insert("mcpServers".into(), Value::Object(servers));
             format!(
                 "# merge into {} (OMP also imports Claude Code's servers)\n{}\n",
@@ -694,6 +747,12 @@ pub fn mcp_snippet(harness: &str) -> String {
 }
 
 pub fn apply_mcp(harness: &str, repair: bool) -> std::result::Result<String, String> {
+    if harness == "pi" {
+        return apply("pi", None).map(|m| format!("{} (the extension registers the MCP server)", m));
+    }
+    if harness == "hermes" {
+        return Err("Everett does not edit ~/.hermes/config.yaml; add the entry from `everett install-mcp --hermes`".into());
+    }
     let path = mcp_path(harness);
     let data = mcp_config(harness)?;
     let old = mcp_entry(harness, &data)?;
@@ -710,7 +769,7 @@ pub fn apply_mcp(harness: &str, repair: bool) -> std::result::Result<String, Str
             return Err("Everett MCP entry must be an object; correct it before retrying".to_string());
         }
     }
-    let mut entry = repaired_entry(&old.as_ref().and_then(|o| o.as_object()).cloned().unwrap_or_default())
+    let mut entry = repaired_entry(&old.as_ref().and_then(|o| o.as_object()).cloned().unwrap_or_default(), harness)
         .map_err(|e| e.message)?;
     if harness == "devin" {
         entry.remove("type");

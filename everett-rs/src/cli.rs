@@ -81,6 +81,8 @@ pub struct Args {
     pub omp: bool,
     pub grok: bool,
     pub devin: bool,
+    pub pi: bool,
+    pub hermes: bool,
     pub repair: bool,
     pub onboard_yes: bool,
     pub span_days: i64,
@@ -1117,15 +1119,14 @@ pub fn cmd_core(args: &Args) -> i32 {
 }
 
 fn harnesses(args: &Args, mcp: bool) -> Vec<String> {
-    let mut choices = vec!["claude", "codex", "omp"];
-    if home().join(".grok").is_dir() || args.grok {
-        choices.push("grok");
+    let mut choices = vec!["claude", "codex"];
+    for (h, asked) in [("omp", args.omp), ("grok", args.grok), ("pi", args.pi), ("devin", args.devin)] {
+        if asked || crate::install::harness_present(h) {
+            choices.push(h);
+        }
     }
-    if mcp && (args.devin
-        || crate::install::mcp_path("devin").parent().map(|p| p.is_dir()).unwrap_or(false)
-        || crate::proc::which("devin", &std::env::var("PATH").unwrap_or_default()).is_some())
-    {
-        choices.push("devin");
+    if mcp && args.hermes {
+        choices.push("hermes");
     }
     let mut picked: Vec<String> = Vec::new();
     for h in &choices {
@@ -1135,6 +1136,8 @@ fn harnesses(args: &Args, mcp: bool) -> Vec<String> {
             "omp" => args.omp,
             "grok" => args.grok,
             "devin" => args.devin,
+            "pi" => args.pi,
+            "hermes" => args.hermes,
             _ => false,
         } {
             picked.push(h.to_string());
