@@ -258,7 +258,7 @@ enum Cmd {
         #[arg(long)]
         device: Option<String>,
         /// open the verification URL in a browser (never automatic)
-        #[arg(long)]
+        #[arg(long, action = clap::ArgAction::Set, num_args = 0..=1, default_missing_value = "true", default_value = "false", require_equals = true)]
         open: bool,
         /// start a fresh sign-in even when already signed in
         #[arg(long)]

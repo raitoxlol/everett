@@ -512,7 +512,7 @@ fn rejected_cache_is_bounded_and_expires_duplicate_suppression() {
 // Relay production args/result handling, signing, observation and publication
 // execute unchanged; there are no sockets and no mock of authorization helpers.
 pub(super) struct ConvexClient {
-    live: Option<convex::ConvexClient>,
+    live: Option<super::transport::Client>,
     base: convex::base_client::BaseConvexClient,
     version: convex_sync_types::StateVersion,
     responses: std::collections::VecDeque<(&'static str, std::result::Result<Value, &'static str>)>,
@@ -532,8 +532,15 @@ impl ConvexClient {
 
     pub async fn new(url: &str) -> anyhow::Result<Self> {
         let mut value = Self::fake(vec![]);
-        value.live = Some(convex::ConvexClient::new(url).await?);
+        value.live = Some(super::transport::Client::new(url).await?);
         Ok(value)
+    }
+
+    pub async fn tls_error(&mut self) -> anyhow::Error {
+        match self.live.as_mut() {
+            Some(live) => live.tls_error().await,
+            None => std::future::pending().await,
+        }
     }
 
     pub async fn set_auth_callback(
