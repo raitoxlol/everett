@@ -27,3 +27,4 @@ pub mod timefmt;
 pub mod trunk;
 pub mod trunk_schedule;
 pub mod tui;
+pub mod tunnel;

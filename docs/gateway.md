@@ -24,11 +24,11 @@ and destination IDs with absolute paths and complete authorized session IDs:
 
 ```json
 {
-  "agent_id": "wright-dot",
+  "agent_id": "ext-dot-wright",
   "harness": "openai-dot",
   "cwd": "/absolute/path/to/everett",
   "project": "everett",
-  "destinations": ["complete-local-agent-id"],
+  "destinations": ["ext-grok-wright"],
   "allow_shared_core": true,
   "backend_command": ["/absolute/path/to/rust/everett", "mcp"],
   "max_workers": 2,
@@ -39,6 +39,8 @@ and destination IDs with absolute paths and complete authorized session IDs:
 ```
 
 Keep the configuration and executable writable only by the trusted local owner.
+A suggested path is `~/.config/everett/dot.json`. `agent_id` must be the same
+string as `everett external add --id` for that binding.
 `agent_id` must match `[A-Za-z0-9_-]{1,100}` and cannot be `human` or `live`
 (case-insensitive); `harness` is `openai-dot` or
 `grok-bot`. The fixed project slug is lowercase, begins with a letter or digit,
@@ -117,7 +119,9 @@ direct sends but still permits owned replies.
 ```
 
 This has no HTTP listener. The owner-authorized tunnel runs this command inside
-the host that contains Everett's stores. Follow [OpenAI dots setup](openai-dots.md).
+the host that contains Everett's stores. Follow [OpenAI dots setup](openai-dots.md),
+including `everett tunnel watch` so a stuck control-plane poll is restarted.
+`/readyz` on the tunnel client is not proof that calls are still being forwarded.
 The tunnel's permissions and control-plane authentication authorize reachability;
 the gateway then enforces its local binding. Restrict the tunnel to the intended
 owner/workspace. This pass does not add end-user OAuth to stdio.
