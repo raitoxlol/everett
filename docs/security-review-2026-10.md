@@ -123,8 +123,30 @@ encrypted A→B pickup→reply→A inbox with signed `replied` status. It also e
 the supplied TLS and invalid-signature diagnostics. This smoke uses separate homes
 on one host; it is not itself a multi-host network test.
 
-Additional three-container relay/grant validation and final fixed-branch suite
-results will be recorded below before this review is finalized.
+The follow-up used three independent client containers with their own home directories,
+device keys, and network namespaces, plus a fourth container for the local services.
+Pinned SSH tunnels exposed the stack's loopback issuer and TLS relay separately to
+each client; relay TLS/CA verification remained enabled. The issuer's disposable
+fixture configuration added `charlie-c` in a second org alongside `alice-a` and
+`alice-b` in the first org. These are synthetic accounts, not hosted user accounts.
+
+Observed through the native PR #22 CLI:
+
+- Each client completed device-code login, server-derived identity and registration.
+  A/B had the same authoritative owner namespace; C's was different.
+- Pinned A→B delivery, B inbox take/reply, and A reply pickup completed across the
+  isolated client networks, not just separate homes on the stack host.
+- A's cross-org grant was `invited`, became `active` after C accepted, and enabled
+  encrypted A→C→A delivery. Both receiving inboxes carried `external-untrusted` and
+  the visible warning. Fresh session IDs kept this separate from the earlier
+  same-org conversation's hop context.
+- Grant revocation was observable as `revoked`. A revoked B's device credential;
+  B's subsequent native `relay whoami` and `relay register` both failed with exit 2
+  and the generic Convex rejection, while A's positive control succeeded before
+  and after those denials. Revocation tombstones were not removed to rerun tests.
+
+These checks do not establish PR #24's SSH cleanup propagation or PR #25's hosted
+agent-token lifecycle. Post-revocation cross-org delivery was not separately checked.
 
 ### Grok Bot and OpenAI dots
 
@@ -145,8 +167,8 @@ unverified; passing a local MCP client is not evidence of a live cloud connectio
 
 | Area | Executed defensive evidence | Still unverified |
 | --- | --- | --- |
-| Auth | Convex handler tests; PR #25 owner/session/approval/tombstone/token-binding tests; local PR #22 login/refresh and JWT diagnostics | Live hosted owner enrollment; active forged/expired/replayed JWT attack campaign; stolen real agent tokens |
-| Relay authorization | Existing backend org/device/grant/routing/replay/quota/TTL/delete tests; native encryption/provenance tests; local encrypted smoke | Production access; stress/rate-limit bypass campaign; exhaustive malformed-envelope fuzzing |
+| Auth | Convex handler tests; PR #25 owner/session/approval/tombstone/token-binding tests; local PR #22 login/refresh and JWT diagnostics; revoked synthetic device denied identity/registration with a healthy positive control | Live hosted owner enrollment and agent-token lifecycle; active forged/expired/replayed JWT attack campaign |
+| Relay authorization | Existing backend org/device/grant/routing/replay/quota/TTL/delete tests; native encryption/provenance tests; encrypted multi-container A/B and two-org A/C round-trips with a mutually accepted grant | Post-grant-revocation delivery; production access; stress/rate-limit bypass campaign; exhaustive malformed-envelope fuzzing |
 | Prompt/data provenance | Existing cross-org relay/MCP tests plus F1 local external→MCP→forward regression | Actual LLM resistance to prompt injection; arbitrary tool-result transformations outside Everett |
 | SSH | Existing peer fixtures plus real sshd functional pairing/send/reply/revoke | Forced-command escapes, key/pin bypass exploitation, revocation propagation from PR #24 on real SSH hosts |
 | MCP/gateway | Existing malformed JSON-RPC, identity, traversal and gateway restriction tests; real stdio/HTTP subprocess journeys | Full protocol fuzzing, live internet-facing gateway or provider tunnels |
@@ -154,6 +176,20 @@ unverified; passing a local MCP client is not evidence of a live cloud connectio
 In-memory Convex handler tests do **not** prove JWT signature verification by a
 live authentication service. PR #22's smoke adds a real local JWT boundary, but
 does not turn PR #25's handler tests into a deployed owner-auth test.
+
+## Fixed-branch verification
+
+All passed on the fixes based on pinned main:
+
+- `cargo test --locked` — full Rust suite, including the two new regressions and
+  native external/gateway/peer/relay journeys.
+- `cargo clippy --locked --all-targets -- -D warnings`.
+- Root `npm test` — 34 tests; `npm run typecheck`.
+- `cargo build --release --locked`, followed by
+  `EVERETT_VERIFY_BINARY="$PWD/target/release/everett" cargo test --locked --test release_journey`
+  in `everett-rs/` — packaged native CLI and all advertised MCP tools over synthetic
+  session stores, with no model calls.
+- `git diff --check`.
 
 ## PR-specific review observations — not confirmed vulnerabilities
 
