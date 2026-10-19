@@ -193,8 +193,10 @@ transcript is absent. Current v2 and legacy stores are supported; see the
 [T3 discovery and polling guide](docs/t3code.md).
 Automatic sends queue work in the inbox. Hooks can inject it only if T3's provider runtime
 actually loads and runs them; queuing alone does not prove pickup. Otherwise the receiving
-thread calls `everett_inbox(session_id="<underlying-provider-session-id>")` and answers with
-`everett_send(reply_to="<message-id>", text="…", session_id="<underlying-provider-session-id>")`.
+thread must have `EVERETT_SESSION_ID=<underlying-provider-session-id>` in that thread's MCP
+launch environment, then calls `everett_inbox()` and answers with
+`everett_send(reply_to="<message-id>", text="…")`. A model-supplied `session_id` cannot create
+that binding.
 Verify the Everett tools are available inside that T3 thread, and use `everett_core` for shared
 memory. CLI resume is refused because it would fork T3's own resume point.
 
@@ -404,7 +406,7 @@ The registration launches the executable you ran it from with `["mcp"]`. A launc
 retired Python package (`["-m", "everett", "mcp"]`) is reported stale and replaced by `--apply`.
 For another MCP client, copy the launcher printed by a dry run. Restart clients after changing their registration.
 
-**Caller identity.** Everett reads the calling session from the environment the harness gives the server: `CLAUDE_CODE_SESSION_ID` (Claude Code), `CODEX_THREAD_ID` (Codex), `HERMES_SESSION_ID` (Hermes), `PI_SESSION_FILE` (Pi), or `GROK_SESSION_ID` (Grok documents it for hooks; for MCP servers it is unverified). `EVERETT_SESSION_ID` overrides all of them. OMP and the Devin CLI expose none. MCP delivery, forwarding and replies require a host-detected caller. If detection is unavailable, the owner must bind `EVERETT_SESSION_ID` in that session's MCP launch environment. A model-supplied `session_id` cannot establish or replace that binding; a conflicting argument returns JSON-RPC `-32602`. Restart or rebind the MCP process when the harness switches sessions in place (for example `/clear`). Do not share one bound process between unrelated sessions.
+**Caller identity.** Claude Code supplies `CLAUDE_CODE_SESSION_ID` when it starts a stdio MCP server; Grok CLI 1.0.4+ supplies `GROK_SESSION_ID`; Codex supplies the current thread on every call as authoritative `_meta.threadId`; and `everett gateway` supplies an immutable `EVERETT_SESSION_ID`. `EVERETT_SESSION_ID` overrides process-environment detection. Pi, Devin, OMP, Hermes, and T3 Code do not currently expose a supported per-call or MCP-process session ID that Everett can bind automatically. Their owner must set `EVERETT_SESSION_ID` to the exact current session in that session's MCP launch environment. MCP delivery, forwarding and replies require one of these host bindings. A model-supplied `session_id` cannot establish or replace it; a conflicting argument returns JSON-RPC `-32602`. Restart or rebind the MCP process when the harness switches sessions in place (for example `/clear`). Do not share one bound process between unrelated sessions.
 
 **Safety.**
 - The server refuses self-send. If `everett_whoami` cannot identify you, have the owner bind the MCP launch environment before sending. Do not guess another session's identity from its folder or recency.

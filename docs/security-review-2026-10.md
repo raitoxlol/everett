@@ -37,11 +37,13 @@ The impact is access between logical sessions under the same local OS account, n
 
 **Observed.** The caller read the victim's message, marked it delivered in `victim.done`, and wrote `cards/victim.md`. README and `docs/grok-bot.md` say a model-supplied `session_id` cannot establish identity.
 
-**Fix.** `caller_session` in `everett-rs/src/mcp.rs` returns JSON-RPC `-32602` when `session_id` is supplied without a host binding. A matching `session_id` on a bound server still works.
+**Fix.** `caller_session` in `everett-rs/src/mcp.rs` returns JSON-RPC `-32602` when `session_id` is supplied without a host binding. A matching `session_id` on a bound server still works. Codex's host-written per-call `_meta.threadId` is accepted as its binding because Codex overwrites that value at the MCP dispatch boundary.
 
-**Regression tests.** `mcp_stdio::unbound_mcp_cannot_read_consume_or_overwrite_another_sessions_state`, plus updated `self_send_refused`, `unbound_mcp_cannot_deliver_or_reply_with_model_provenance`, and `audit::oversized_first_inbox_message_delivers_truncated` (now binds `EVERETT_SESSION_ID`).
+**Regression tests.** `mcp_stdio::unbound_mcp_cannot_read_consume_or_overwrite_another_sessions_state`, `mcp_stdio::codex_call_metadata_binds_identity_without_process_environment`, plus updated `self_send_refused`, `unbound_mcp_cannot_deliver_or_reply_with_model_provenance`, and `audit::oversized_first_inbox_message_delivers_truncated` (now binds `EVERETT_SESSION_ID`).
 
-**Behavior change.** A client that relied on passing `session_id` to an unbound server must now set `EVERETT_SESSION_ID` in the MCP launch environment, as the docs already require.
+**Behavior change.** Claude Code, Grok CLI 1.0.4+, Codex, and `everett gateway` bind automatically. Pi, Devin, OMP, Hermes, T3 Code, and other clients without supported host metadata must set `EVERETT_SESSION_ID` per session in the MCP launch environment. A client can no longer establish identity by passing a tool argument.
+
+Published host contracts were checked before keeping the manual-binding list. [Pi's session variables](https://pi.dev/docs/latest/environment-variables) are injected into shell tools, not MCP servers. Devin puts `session_id` in [lifecycle-hook payloads](https://docs.devin.ai/cli/extensibility/hooks/lifecycle-hooks), while its [MCP configuration](https://docs.devin.ai/cli/extensibility/mcp/configuration) offers static `env` values and no per-call session field. OMP's [MCP configuration](https://omp.sh/docs/mcp) likewise expands process/static configuration; its session ID is available to Everett's OMP extension through `sessionManager`, not on MCP calls. No automatic Pi, Devin, or OMP binding is inferred from their shell/hook APIs.
 
 ### M2: `grok-bot` and `openai-dot` messages were not labeled untrusted (Medium)
 
@@ -51,9 +53,9 @@ The impact is access between logical sessions under the same local OS account, n
 
 **Observed.** The owner received raw text with no `external`, `untrusted`, `trust`, or `instruction_source` field and no `[EXTERNAL / UNTRUSTED ...]` wrapper. Relay cross-org messages were already labeled. Only the logical external harnesses were missed.
 
-**Fix.** `inbox::post` stamps the labels when `from_harness` is an external harness. `inbox::external` also derives provenance from `from_harness`, so messages queued before this fix are labeled on read. `persist_relay_context` keeps the labels when the recipient forwards derived content.
+**Fix.** `inbox::post` stamps the labels when `from_harness` is an external harness. `inbox::external` also derives provenance from `from_harness`, so messages queued before this fix are labeled on read. A reply derives provenance from the exact original message. Merely peeking at or consuming a logical Grok Bot/OpenAI dot message does not write durable relay context or taint unrelated later resume/spawn work; durable session context remains limited to messages with relay lineage.
 
-**Regression tests.** `external::previously_queued_external_messages_without_trust_flags_are_untrusted_on_read`, updated `external::stdio_mcp_queues_polls_and_replies_for_both_external_harnesses`, `gateway_native` stdio journey (recipient inbox and forward), and `relay_native` same-org and cross-org consumption through real `everett mcp` and `everett gateway` processes.
+**Regression tests.** `external::previously_queued_external_messages_without_trust_flags_are_untrusted_on_read`, `external::cloud_origin_provenance_survives_reply_without_tainting_unrelated_forward`, updated `external::stdio_mcp_queues_polls_and_replies_for_both_external_harnesses`, the `gateway_native` stdio journey, and `relay_native` same-org and cross-org consumption through real `everett mcp` and `everett gateway` processes.
 
 ### M3: JSON-RPC ids `true`, `{}`, and `[]` were dispatched (Low)
 
