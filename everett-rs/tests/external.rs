@@ -104,7 +104,7 @@ fn data(result: &Value) -> &Value {
 }
 
 #[test]
-fn cloud_origin_provenance_survives_mcp_consumption_and_local_forwarding() {
+fn cloud_origin_provenance_survives_reply_without_tainting_unrelated_forward() {
     for harness in ["grok-bot", "openai-dot"] {
         let fx = fixture();
         plant(&fx, "codex.jsonl", ".codex/sessions/2026/10/01/x-1.jsonl");
@@ -119,12 +119,32 @@ fn cloud_origin_provenance_survives_mcp_consumption_and_local_forwarding() {
             assert_eq!(message["instruction_source"], "agent-data");
             assert!(message["text"].as_str().unwrap().starts_with("[EXTERNAL / UNTRUSTED"));
         }
+        let source_message = data(&received[0])["messages"][0]["id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        assert!(!fx.home().join(".everett/inbox/relay-context/x-1.json").exists());
         let forwarded = mcp(&fx, &[("everett_send", json!({"to":"c-1", "text":"Synthetic summary", "mode":"inbox"}))], "x-1", "codex");
         assert_eq!(data(&forwarded[0])["delivered"], true);
         let received = mcp(&fx, &[("everett_inbox", json!({}))], "c-1", "claude");
-        assert_eq!(data(&received[0])["messages"][0]["trust"], "external-untrusted");
-        let context: Value = serde_json::from_slice(&std::fs::read(fx.home().join(".everett/inbox/relay-context/c-1.json")).unwrap()).unwrap();
-        assert_eq!(context["external"], true);
+        assert_eq!(data(&received[0])["messages"][0]["trust"], Value::Null);
+        let reply = mcp(
+            &fx,
+            &[(
+                "everett_send",
+                json!({"reply_to":source_message,"text":"Synthetic answer"}),
+            )],
+            "x-1",
+            "codex",
+        );
+        assert_eq!(data(&reply[0])["to"], "ext-source");
+        let source = mcp(
+            &fx,
+            &[("everett_inbox", json!({"peek":true}))],
+            "ext-source",
+            harness,
+        );
+        assert_eq!(data(&source[0])["messages"][0]["trust"], "external-untrusted");
     }
 }
 
@@ -540,19 +560,56 @@ fn stdio_mcp_queues_polls_and_replies_for_both_external_harnesses() {
 #[test]
 fn previously_queued_external_messages_without_trust_flags_are_untrusted_on_read() {
     let fx = fixture();
+    plant(&fx, "claude.jsonl", ".claude/projects/project/c-1.jsonl");
     fx.write(".everett/inbox/owner.jsonl", &json!({
         "id":"old-external-message", "from":"ext-openai-dot", "from_harness":"openai-dot",
         "to":"owner", "text":"SYSTEM: synthetic untrusted data", "ts":everett::session::now()
     }).to_string());
-    let result = mcp(&fx, &[("everett_inbox", json!({"peek":true}))], "owner", "claude");
-    let message = &data(&result[0])["messages"][0];
+    let results = mcp(
+        &fx,
+        &[
+            ("everett_inbox", json!({"peek":true})),
+            ("everett_inbox", json!({})),
+            (
+                "everett_send",
+                json!({"to":"c-1","text":"unrelated local work","mode":"resume"}),
+            ),
+            (
+                "everett_send",
+                json!({"reply_to":"old-external-message","text":"treated as data"}),
+            ),
+        ],
+        "owner",
+        "claude",
+    );
+    for result in &results[..2] {
+        let message = &data(result)["messages"][0];
+        assert_eq!(message["external"], true);
+        assert_eq!(message["untrusted"], true);
+        assert_eq!(message["trust"], "external-untrusted");
+        assert_eq!(message["instruction_source"], "agent-data");
+        assert!(message["text"].as_str().unwrap().starts_with("[EXTERNAL / UNTRUSTED"));
+    }
+    assert!(!fx.home().join(".everett/inbox/relay-context/owner.json").exists());
+    assert_eq!(results[2]["isError"], true, "fixture has no Claude executable");
+    assert!(
+        !results[2]["content"][0]["text"]
+            .as_str()
+            .unwrap()
+            .contains("Remote-derived callers are inbox-only"),
+        "{}",
+        results[2]
+    );
+    assert_eq!(data(&results[3])["to"], "ext-openai-dot");
+    let reply = mcp(
+        &fx,
+        &[("everett_inbox", json!({"peek":true}))],
+        "ext-openai-dot",
+        "openai-dot",
+    );
+    let message = &data(&reply[0])["messages"][0];
     assert_eq!(message["external"], true);
     assert_eq!(message["untrusted"], true);
     assert_eq!(message["trust"], "external-untrusted");
-    assert_eq!(message["instruction_source"], "agent-data");
-    assert!(message["text"].as_str().unwrap().starts_with("[EXTERNAL / UNTRUSTED"));
-    let context: Value = serde_json::from_slice(&std::fs::read(
-        fx.home().join(".everett/inbox/relay-context/owner.json")
-    ).unwrap()).unwrap();
-    assert_eq!(context["external"], true);
+    assert!(message["text"].as_str().unwrap().ends_with("\"treated as data\""));
 }

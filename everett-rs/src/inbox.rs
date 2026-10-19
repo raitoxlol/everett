@@ -390,7 +390,7 @@ pub fn persist_relay_context(session_id: &str, ids: &[&str]) -> Result<()> {
             m.get("id")
                 .and_then(Value::as_str)
                 .is_some_and(|id| ids.contains(&id))
-                && (external(m) || m.contains_key("relay_message_id") || m.contains_key("relay_lineage"))
+                && (m.contains_key("relay_message_id") || m.contains_key("relay_lineage"))
         })
         .collect();
     let Some(message) = received
