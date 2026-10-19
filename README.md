@@ -27,7 +27,9 @@ cargo install --git https://github.com/raitoxlol/everett everett   # from source
 Onboarding detects installed CLIs even before their first session. It backs up and registers
 hooks and MCP for detected Claude Code, Codex, OMP, and Grok installations. Restart those clients,
 then run `everett ls`. Doctor checks the registered launchers and lists your exact next steps.
-Pi, Hermes, and Devin sessions can be listed/routed; they need manual MCP configuration and inbox polling.
+For Pi and Devin run `everett install-hooks --pi --apply` / `everett install-hooks --devin --apply`
+so their MCP calls bind to the right session; Hermes needs one config entry (`everett install-mcp --hermes`).
+See [MCP caller identity](docs/mcp-identity.md).
 No router key or model call is needed for this setup. Codex may ask you to enable/trust its hooks.
 
 `install.sh` verifies the release checksum; `EVERETT_VERSION=vX.Y.Z` pins a release and
@@ -366,18 +368,18 @@ Everett is mostly used by agents. `everett mcp` is a stdio MCP server (JSON-RPC 
 | Tool | Arguments | Returns |
 |---|---|---|
 | `everett_ls` | `hours?`, `harness?` | Sessions with their cards (and `source`, such as `t3code`); your own session is marked `you`. Overview only -- not for picking a send target. |
-| `everett_route` | `text`, `router?`, `session_id?`, `hours?` | `SESSION` / `NEW` / `ASK`, confidence, router used, candidates. Never sends; excludes the caller when known. |
-| `everett_send` | `text`, `to?`, `hours?`, `spawn?`, `dir?`, `harness?`, `timeout?`, `session_id?`, `mode?`, `wait?`, `reply_to?` | Without `to`, routes then delivers, reporting the route decision (router, session, confidence; `candidates` on `ASK`, nothing sent). The reply of a resumed session, or the queued message id for a live one (plus its reply when `wait` is set). `reply_to` answers a message you received. |
+| `everett_route` | `text`, `router?`, `hours?` | `SESSION` / `NEW` / `ASK`, confidence, router used, candidates. Never sends; excludes the caller when known. |
+| `everett_send` | `text`, `to?`, `hours?`, `spawn?`, `dir?`, `harness?`, `timeout?`, `mode?`, `wait?`, `reply_to?` | Without `to`, routes then delivers, reporting the route decision (router, session, confidence; `candidates` on `ASK`, nothing sent). The reply of a resumed session, or the queued message id for a live one (plus its reply when `wait` is set). `reply_to` answers a message you received. |
 | `everett_learn` | `fact`, `project?`, `scope?` | Queues a fact for the shared core (secret-filtered). |
 | `everett_core` | `project?` | The shared core this session's project sees. |
-| `everett_card` | `what`, `state`, `next`, `session_id?` | Writes the calling session's card. |
+| `everett_card` | `what`, `state`, `next` | Writes the calling session's card. |
 | `everett_whoami` | none | The caller's session id, harness, hop count, and how they were detected. |
-| `everett_inbox` | `session_id?`, `peek?` | The Everett messages (requests, replies, events) waiting for you; marks them delivered. |
-| `everett_event` | `kind`, `message`, `project?`, `session_id?` | Records done / blocked / needs-input / info for your session. |
-| `everett_subscribe` | `target`, `unsubscribe?`, `session_id?` | Follows a session's or project's events in your inbox. |
+| `everett_inbox` | `peek?` | The Everett messages (requests, replies, events) waiting for you; marks them delivered. |
+| `everett_event` | `kind`, `message`, `project?` | Records done / blocked / needs-input / info for your session. |
+| `everett_subscribe` | `target`, `unsubscribe?` | Follows a session's or project's events in your inbox. |
 | `everett_agent_relay` | `action`, `id?`, `name?`, `fingerprint?`, `grant_id?` | Verified identity, registration, directory/pins and scoped revocation controls. |
 | `everett_agent_grants` | `action`, `id?`, named endpoints/fingerprints/limits for invite | Bilateral named-agent grants, key reconfirmation, expiry, rate/body caps and revocation. |
-| `everett_agent_send` | `agent`, `session`, `harness`, `text`, `idempotency_key`, `session_id?` | Device-side encrypted send to a pinned named agent. No wake-up or implicit routing. |
+| `everett_agent_send` | `agent`, `session`, `harness`, `text`, `idempotency_key` | Device-side encrypted send to a pinned named agent. No wake-up or implicit routing. |
 | `everett_agent_status` | `message_id` | Sender-only status from signed delivery/pickup/reply observations. |
 
 For named agents in one or multiple organizations, see the [agent relay setup](docs/agent-relay.md)
@@ -400,13 +402,13 @@ everett install-mcp --apply    # back up, then register (idempotent)
 - **Codex**: an `[mcp_servers.everett]` block in `~/.codex/config.toml`.
 - **OMP**: `mcpServers.everett` in `~/.omp/agent/mcp.json`. OMP also imports Claude Code's servers.
 - **Grok CLI**: `grok mcp add everett <everett> -- mcp`, or `--apply` appends an `[mcp_servers.everett]` block to `~/.grok/config.toml`. Grok also imports Claude Code's servers by default. Included by default when `~/.grok` exists.
-- **Devin CLI (v3000.3+)**: `everett install-mcp --devin --apply` merges `mcpServers.everett` into `~/.config/devin/mcp_config.json` (Windows: `%APPDATA%/devin/mcp_config.json`). This is separate from the session store configured by `DEVIN_HOME`. Existing servers and unrelated environment values are preserved; use `--repair --apply` to back up and refresh a stale registration. Doctor and onboarding recognize Devin MCP, but no native hook or automatic caller-id environment variable is assumed.
+- **Devin CLI (v3000.3+)**: `everett install-mcp --devin --apply` merges `mcpServers.everett` (launched as `everett mcp --harness devin`) into `~/.config/devin/mcp_config.json` (Windows: `%APPDATA%/devin/mcp_config.json`). This is separate from the session store configured by `DEVIN_HOME`. Existing servers and unrelated environment values are preserved; use `--repair --apply` to back up and refresh a stale registration. `everett install-hooks --devin --apply` adds `SessionStart`/`UserPromptSubmit` hooks to `~/.config/devin/config.json` that record which session the Devin process holds, so MCP calls bind to it.
 
 The registration launches the executable you ran it from with `["mcp"]`. A launcher left by the
 retired Python package (`["-m", "everett", "mcp"]`) is reported stale and replaced by `--apply`.
 For another MCP client, copy the launcher printed by a dry run. Restart clients after changing their registration.
 
-**Caller identity.** Claude Code supplies `CLAUDE_CODE_SESSION_ID` when it starts a stdio MCP server; Grok CLI 1.0.4+ supplies `GROK_SESSION_ID`; Codex supplies the current thread on every call as authoritative `_meta.threadId`; and `everett gateway` supplies an immutable `EVERETT_SESSION_ID`. `EVERETT_SESSION_ID` overrides process-environment detection. Pi, Devin, OMP, Hermes, and T3 Code do not currently expose a supported per-call or MCP-process session ID that Everett can bind automatically. Their owner must set `EVERETT_SESSION_ID` to the exact current session in that session's MCP launch environment. MCP delivery, forwarding and replies require one of these host bindings. A model-supplied `session_id` cannot establish or replace it; a conflicting argument returns JSON-RPC `-32602`. Restart or rebind the MCP process when the harness switches sessions in place (for example `/clear`). Do not share one bound process between unrelated sessions.
+**Caller identity.** Claude Code supplies `CLAUDE_CODE_SESSION_ID` when it starts a stdio MCP server; Grok CLI 1.0.4+ supplies `GROK_SESSION_ID`; Codex supplies the current thread on every call as `_meta.threadId` (unreleased; on `main` after 1.6.0); and `everett gateway` supplies an immutable `EVERETT_SESSION_ID`. Pi, OMP, Devin, and Hermes bind through their host process (unreleased): `install-mcp` launches them as `everett mcp --harness <name>`, and Everett's Pi extension, OMP extension, and Devin hooks record which session each harness process holds. Pi's extension registers the server per session with `EVERETT_SESSION_ID` set. Hermes binds only when exactly one interactive Hermes session was created in the server's directory since the process started. When the binding is ambiguous or missing, identity-requiring tools return a readable tool error (`isError: true`) that says how to fix it; Everett never guesses. T3 Code threads still need `EVERETT_SESSION_ID` in their MCP launch environment. A model-supplied `session_id` cannot establish or replace a binding; the argument is deprecated, no longer advertised in tool schemas, and a conflicting value is a tool error. Details per harness: [docs/mcp-identity.md](docs/mcp-identity.md).
 
 **Safety.**
 - The server refuses self-send. If `everett_whoami` cannot identify you, have the owner bind the MCP launch environment before sending. Do not guess another session's identity from its folder or recency.
