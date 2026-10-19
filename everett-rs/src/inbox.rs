@@ -216,6 +216,42 @@ pub fn find_in(session_id: &str, message_id: &str) -> Option<Map<String, Value>>
     })
 }
 
+/// Replies in one local thread: ask, answer, follow-up, answer, thanks.
+pub const MAX_REPLY_DEPTH: i64 = 4;
+
+/// (hops, reply_depth) for a reply between local sessions. A reply answers the hop it
+/// belongs to instead of forwarding work, so it keeps that hop count; reply_depth bounds
+/// back-and-forth within the thread.
+pub fn local_reply_hops(original: &Map<String, Value>, env_hops: i64) -> Result<(i64, i64)> {
+    let hops = original.get("hops").and_then(|v| v.as_i64()).unwrap_or(0).max(env_hops).max(1);
+    if hops > MAX_HOPS {
+        return Err(EverettError::new(
+            7,
+            format!("Hop limit reached ({}/{}): answer here instead of replying again.", hops, MAX_HOPS),
+        ));
+    }
+    let depth = if original.get("kind").and_then(|v| v.as_str()) == Some("reply") {
+        original.get("reply_depth").and_then(|v| v.as_i64()).unwrap_or(1).max(1) + 1
+    } else {
+        1
+    };
+    if depth > MAX_REPLY_DEPTH {
+        return Err(EverettError::new(
+            7,
+            format!(
+                "Reply limit reached ({}/{}): this thread already went back and forth {} times. \
+                 Stop replying; tell the user or start a new task if more is needed.",
+                depth - 1,
+                MAX_REPLY_DEPTH,
+                depth - 1
+            ),
+        ));
+    }
+    Ok((hops, depth))
+}
+
+/// Hops for a reply that leaves this machine (relay or peer); their envelopes carry no
+/// reply depth, so each reply counts as a hop.
 pub fn reply_hops(original: &Map<String, Value>, env_hops: i64) -> Result<i64> {
     let hops = original
         .get("hops")
@@ -482,8 +518,12 @@ pub fn render(messages: &[Map<String, Value>], at: Option<f64>) -> (String, Vec<
         let mut displayed = m.clone();
         displayed.insert("text".into(), json!(text));
         let body = consumption_text(&displayed);
+        let depth = match m.get("reply_depth").and_then(|v| v.as_i64()) {
+            Some(d) if kind == "reply" => format!(", reply {}/{}", d, MAX_REPLY_DEPTH),
+            _ => String::new(),
+        };
         let block = format!(
-            "--- {} {} from {}{} ({}, hop {}/{})\n{}{}",
+            "--- {} {} from {}{} ({}, hop {}/{}{})\n{}{}",
             head,
             id,
             who,
@@ -491,6 +531,7 @@ pub fn render(messages: &[Map<String, Value>], at: Option<f64>) -> (String, Vec<
             ago(ts, now),
             hops,
             MAX_HOPS,
+            depth,
             body,
             how
         );

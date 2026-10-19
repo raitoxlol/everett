@@ -818,16 +818,16 @@ pub fn reply_as(
         ));
     };
     let who = sender_info_as(caller, caller_harness);
-    let hops = inbox::reply_hops(
-        &original,
-        caller_hops_for(Some(who["sender"].as_str().unwrap_or(inbox::HUMAN))),
-    )?;
+    let env_hops = caller_hops_for(Some(who["sender"].as_str().unwrap_or(inbox::HUMAN)));
     if original.contains_key("relay_device") {
+        let hops = inbox::reply_hops(&original, env_hops)?;
         return crate::relay::retain_reply(&original, text, &who, hops);
     }
     if original.contains_key("peer_client") {
+        let hops = inbox::reply_hops(&original, env_hops)?;
         return crate::peer::retain_reply(&original, text, &who, hops);
     }
+    let (hops, depth) = inbox::local_reply_hops(&original, env_hops)?;
     let to = original.get("from").and_then(|v| v.as_str()).filter(|s| !s.is_empty()).unwrap_or(inbox::HUMAN);
     let context = inbox::relay_context(who["sender"].as_str().unwrap_or(inbox::HUMAN));
     let mut provenance = inbox::forward_provenance(&original)
@@ -835,6 +835,7 @@ pub fn reply_as(
     if context.as_ref().is_some_and(inbox::external) {
         provenance.get_or_insert_with(Map::new).extend(serde_json::from_value::<Map<String,Value>>(json!({"external":true,"untrusted":true,"trust":"external-untrusted","instruction_source":"agent-data"})).unwrap());
     }
+    provenance.get_or_insert_with(Map::new).insert("reply_depth".into(), json!(depth));
     let message = inbox::post(
         to,
         text,
