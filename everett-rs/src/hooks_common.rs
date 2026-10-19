@@ -856,6 +856,29 @@ fn hook_main_inner(stem: &str, args: &[String]) -> i32 {
                 emit(&format!("{out}\n"));
             }
         }
+        "omp_bind" | "pi_bind" => {
+            if let Some(sid) = args.first() {
+                crate::inbox::bind_live(sid, if stem == "pi_bind" { "pi" } else { "omp" });
+            }
+        }
+        "devin_bind" => {
+            let sid = serde_json::from_str::<Value>(&stdin_raw())
+                .ok()
+                .and_then(|v| v.get("session_id").and_then(Value::as_str).map(str::to_string))
+                .unwrap_or_default();
+            crate::inbox::bind_live(&sid, "devin");
+        }
+        "pi_inbox" => {
+            if let Some(sid) = args.first() {
+                if crate::inbox::valid_id(sid) {
+                    crate::inbox::touch_live(sid, "pi", "turn");
+                    let text = crate::inbox::take(sid);
+                    if !text.is_empty() {
+                        emit(&text);
+                    }
+                }
+            }
+        }
         "omp_inbox" => {
             if let Some(sid) = args.first() {
                 if crate::inbox::valid_id(sid) {
@@ -867,7 +890,7 @@ fn hook_main_inner(stem: &str, args: &[String]) -> i32 {
                 }
             }
         }
-        "omp_card_context" => {
+        "omp_card_context" | "pi_card_context" => {
             if let Some(sid) = args.first() {
                 let cwd = std::env::current_dir().map(|p| p.to_string_lossy().to_string()).unwrap_or_default();
                 let context = session_start_context(sid, &cwd);

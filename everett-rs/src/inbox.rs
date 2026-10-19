@@ -726,6 +726,18 @@ pub fn harness_pid() -> i32 {
 
 /// Record that this session's harness process is alive (called from hooks; cheap after the first).
 pub fn touch_live(session_id: &str, harness: &str, state: &str) {
+    write_live(session_id, harness, state, false);
+}
+
+/// The calling harness process now holds this session (session start, switch, resume, or a
+/// hook payload naming it). `everett mcp --harness` binds callers through this record.
+pub fn bind_live(session_id: &str, harness: &str) {
+    if valid_id(session_id) {
+        write_live(session_id, harness, "turn", true);
+    }
+}
+
+fn write_live(session_id: &str, harness: &str, state: &str, rebind: bool) {
     let target = live_path(session_id);
     let current: Map<String, Value> = fs::read_to_string(&target)
         .ok()
@@ -736,11 +748,12 @@ pub fn touch_live(session_id: &str, harness: &str, state: &str) {
     let now = now();
     let cur_state = current.get("state").and_then(|v| v.as_str()).unwrap_or("");
     let cur_ts = current.get("ts").and_then(|v| v.as_f64()).unwrap_or(0.0);
-    if pid != 0 && pid_alive(pid) && cur_state == state && now - cur_ts < 30.0 {
+    let caller = if rebind { harness_pid() } else { pid };
+    if pid != 0 && pid == caller && pid_alive(pid) && cur_state == state && now - cur_ts < 30.0 {
         return;
     }
-    if pid == 0 || !pid_alive(pid) {
-        pid = harness_pid();
+    if rebind || pid == 0 || !pid_alive(pid) {
+        pid = if rebind { caller } else { harness_pid() };
         release_pid(pid, session_id);
     }
     if let Some(parent) = target.parent() {
