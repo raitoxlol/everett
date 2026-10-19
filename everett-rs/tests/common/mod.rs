@@ -94,6 +94,93 @@ pub fn plant(fixture: &Fixture, name: &str, rel: &str) -> PathBuf {
     fixture.write(rel, &std::fs::read_to_string(src).unwrap())
 }
 
+/// Stand-in for the Jev endpoint: answers every POST with `status` and `body`.
+/// Returns the URL to pass as EVERETT_JEV_URL.
+pub fn jev_stub(status: u16, body: &'static str) -> String {
+    use std::io::{BufRead, BufReader, Read, Write};
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let url = format!("http://{}/v1/systemone", listener.local_addr().unwrap());
+    std::thread::spawn(move || {
+        for stream in listener.incoming() {
+            let Ok(mut stream) = stream else { continue };
+            let mut reader = BufReader::new(stream.try_clone().unwrap());
+            let mut length = 0usize;
+            loop {
+                let mut line = String::new();
+                if reader.read_line(&mut line).unwrap_or(0) == 0 || line == "\r\n" {
+                    break;
+                }
+                if let Some(v) = line.to_ascii_lowercase().strip_prefix("content-length:") {
+                    length = v.trim().parse().unwrap_or(0);
+                }
+            }
+            let mut sink = vec![0u8; length];
+            let _ = reader.read_exact(&mut sink);
+            let _ = write!(
+                stream,
+                "HTTP/1.1 {} X\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                status,
+                body.len(),
+                body
+            );
+        }
+    });
+    url
+}
+
+/// Run `everett mcp` with an isolated env, send initialize plus each tools/call, return the call results.
+pub fn mcp_calls(
+    fixture: &Fixture,
+    args: &[&str],
+    env: &[(&str, &str)],
+    calls: &[(&str, serde_json::Value)],
+) -> Vec<serde_json::Value> {
+    use std::io::{BufRead, BufReader, Write};
+    let mut cmd = Command::new(env!("CARGO_BIN_EXE_everett"));
+    cmd.arg("mcp")
+        .args(args)
+        .env_clear()
+        .env("HOME", fixture.home())
+        .env("EVERETT_HOME", fixture.home())
+        .env("EVERETT_NOTIFY", "none")
+        .env("PATH", "/usr/bin:/bin")
+        .current_dir(fixture.home())
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null());
+    for (k, v) in env {
+        cmd.env(k, v);
+    }
+    let mut child = cmd.spawn().unwrap();
+    let mut stdin = child.stdin.take().unwrap();
+    let mut stdout = BufReader::new(child.stdout.take().unwrap());
+    let mut send = |msg: serde_json::Value| {
+        stdin.write_all(format!("{}\n", msg).as_bytes()).unwrap();
+        stdin.flush().unwrap();
+    };
+    send(serde_json::json!({"jsonrpc":"2.0","id":0,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"test","version":"0"}}}));
+    let mut line = String::new();
+    stdout.read_line(&mut line).unwrap();
+    send(serde_json::json!({"jsonrpc":"2.0","method":"notifications/initialized"}));
+    let mut results = Vec::new();
+    for (i, (name, arguments)) in calls.iter().enumerate() {
+        send(serde_json::json!({"jsonrpc":"2.0","id":i + 1,"method":"tools/call","params":{"name":name,"arguments":arguments}}));
+        let mut line = String::new();
+        stdout.read_line(&mut line).unwrap();
+        let response: serde_json::Value = serde_json::from_str(&line).unwrap();
+        results.push(if response.get("result").is_some() { response["result"].clone() } else { response });
+    }
+    drop(stdin);
+    let _ = child.wait();
+    results
+}
+
+/// Text of an MCP tool result, parsed as JSON when it is JSON.
+pub fn tool_json(result: &serde_json::Value) -> serde_json::Value {
+    let text = result["content"][0]["text"].as_str().unwrap_or("");
+    serde_json::from_str(text).unwrap_or_else(|_| serde_json::Value::String(text.to_string()))
+}
+
 /// Library-level tests share process env: hold this guard while HOME points at a fresh temp dir.
 pub struct LibHome {
     pub dir: tempfile::TempDir,

@@ -436,6 +436,8 @@ fn tool_route(
         "suggested",
         "candidates",
         "command",
+        "fallback_from",
+        "warning",
     ] {
         if let Some(v) = r.get(k) {
             if !v.is_null() {
@@ -639,6 +641,11 @@ fn tool_send(
             "router".into(),
             r.get("router").cloned().unwrap_or(Value::Null),
         );
+        for key in ["fallback_from", "warning"] {
+            if let Some(v) = r.get(key) {
+                decision.insert(key.into(), v.clone());
+            }
+        }
         if r.get("decision").and_then(|v| v.as_str()) == Some("NEW") {
             if !spawn_ok
                 || r.get("confidence").and_then(|v| v.as_f64()).unwrap_or(0.0)

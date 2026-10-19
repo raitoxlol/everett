@@ -312,10 +312,44 @@ pub fn run(hours: f64) -> i32 {
         ),
     );
 
-    if !crate::route::find_api_key().is_empty() {
-        line(&mut warnings, Some(true), "router: jev (key found; --router local also available)");
-    } else {
+    let key = crate::route::find_api_key();
+    let forced = crate::config::get("router", Some("EVERETT_ROUTER"), "");
+    let source = crate::onboard::key_source_label(&crate::onboard::find_jev_key_with_source().1);
+    if key.is_empty() {
         line(&mut warnings, Some(true), "router: local BM25 (no Jev key; routing stays on this machine)");
+    } else if forced == "local" {
+        line(&mut warnings, Some(true), "router: local BM25 (router = local is set; the Jev key is not used)");
+    } else {
+        match crate::route::check_key(&key) {
+            Ok(()) => line(
+                &mut warnings,
+                Some(true),
+                &format!("router: jev (key from {} accepted by Jev; --router local also available)", source),
+            ),
+            Err(reason) if reason.contains("401") || reason.contains("403") => {
+                problems += 1;
+                line(
+                    &mut warnings,
+                    Some(false),
+                    &format!(
+                        "router: jev key REJECTED ({}; key from {}); route and send fall back to local matching with a warning",
+                        reason, source
+                    ),
+                );
+                next_steps.push(format!(
+                    "Replace the Jev key ({}): `everett onboard --yes --jev-key-env VAR`, or delete it to route locally.",
+                    source
+                ));
+            }
+            Err(reason) => line(
+                &mut warnings,
+                Some(false),
+                &format!(
+                    "router: jev unreachable ({}; key from {}); route and send fall back to local matching with a warning",
+                    reason, source
+                ),
+            ),
+        }
     }
 
     let folder = crate::trunk::vault_folder();
