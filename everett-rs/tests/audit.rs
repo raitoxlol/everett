@@ -141,7 +141,7 @@ fn oversized_first_inbox_message_delivers_truncated() {
         .to_string()
             + "\n"),
     );
-    let out = fx.run_stdin(&["mcp"], &mcp_call_inbox("solo"), &[]);
+    let out = fx.run_stdin(&["mcp"], &mcp_call_inbox("solo"), &[("EVERETT_SESSION_ID", "solo")]);
     assert_eq!(out.status.code(), Some(0), "{}", String::from_utf8_lossy(&out.stderr));
     let replies = mcp_replies(&out.stdout);
     let call = replies.iter().find(|r| r["id"] == json!(2)).expect("tools/call reply");

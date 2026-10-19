@@ -59,7 +59,7 @@ pub fn tools() -> &'static Vec<Value> {
                 "inputSchema": {"type": "object", "properties": {
                     "text": s("The request, as you would send it."),
                     "router": {"type": "string", "enum": ["local", "jev"], "description": "Default: jev if configured, else local."},
-                    "session_id": s("Your own session id, to exclude it from routing."),
+                    "session_id": s("Your host-bound session id, to exclude it from routing; must match everett_whoami."),
                     "hours": hours_prop(),
                 }, "required": ["text"], "additionalProperties": false},
             }),
@@ -75,7 +75,7 @@ pub fn tools() -> &'static Vec<Value> {
                     "dir": s("Working directory for a spawned session."),
                     "harness": {"type": "string", "enum": crate::send::SPAWNABLE, "description": "Harness for a spawned session."},
                     "timeout": {"type": "number", "description": "Seconds to wait for the reply (default 300).", "minimum": 1},
-                    "session_id": s("Your own session id, if Everett cannot detect it (see everett_whoami)."),
+                    "session_id": s("Your host-bound session id; must match everett_whoami."),
                     "mode": {"type": "string", "enum": crate::send::MODES, "description": "auto (default): inbox when the target has a live harness process, else headless resume."},
                     "wait": {"type": "number", "minimum": 0, "description": "Inbox mode: seconds to wait for the reply (default 0: it arrives in your inbox later)."},
                     "reply_to": s("Answer this Everett message id; the reply goes to its sender."),
@@ -85,7 +85,7 @@ pub fn tools() -> &'static Vec<Value> {
                 "name": "everett_inbox",
                 "description": "Read the Everett messages waiting for your session (requests, replies, events) and mark them delivered. Hooks normally inject these automatically; use this where they cannot.",
                 "inputSchema": {"type": "object", "properties": {
-                    "session_id": s("Your session id, if Everett cannot detect it."),
+                    "session_id": s("Your host-bound session id; must match everett_whoami."),
                     "peek": {"type": "boolean", "description": "Do not mark them delivered.", "default": false},
                 }, "additionalProperties": false},
             }),
@@ -96,7 +96,7 @@ pub fn tools() -> &'static Vec<Value> {
                     "kind": {"type": "string", "enum": crate::events::KINDS},
                     "message": {"type": "string", "description": "One line, e.g. \"waiting on staging key\".", "maxLength": crate::events::MAX_TEXT},
                     "project": s("Project name (default: the current folder's project)."),
-                    "session_id": s("Your session id, if Everett cannot detect it."),
+                    "session_id": s("Your host-bound session id; must match everett_whoami."),
                 }, "required": ["kind", "message"], "additionalProperties": false},
             }),
             json!({
@@ -105,7 +105,7 @@ pub fn tools() -> &'static Vec<Value> {
                 "inputSchema": {"type": "object", "properties": {
                     "target": s("Session id prefix or name, project name, \"project:<name>\", or \"*\"."),
                     "unsubscribe": {"type": "boolean", "default": false},
-                    "session_id": s("Your session id, if Everett cannot detect it."),
+                    "session_id": s("Your host-bound session id; must match everett_whoami."),
                 }, "required": ["target"], "additionalProperties": false},
             }),
             json!({
@@ -131,12 +131,12 @@ pub fn tools() -> &'static Vec<Value> {
                     "what": s("What this session is about."),
                     "state": s("Where it stands now."),
                     "next": s("The next step."),
-                    "session_id": s("Your session id, if Everett cannot detect it."),
+                    "session_id": s("Your host-bound session id; must match everett_whoami."),
                 }, "required": ["what", "state", "next"], "additionalProperties": false},
             }),
             json!({
                 "name": "everett_whoami",
-                "description": "Your own session id and harness as Everett detects them, and how it detected them. If none is detected, pass session_id explicitly to everett_send and everett_card.",
+                "description": "Your own session id and harness as Everett detects them, and how it detected them. If none is detected, the host must set EVERETT_SESSION_ID before starting MCP; tool arguments cannot establish identity.",
                 "inputSchema": {"type": "object", "properties": {}, "additionalProperties": false},
             }),
             json!({
@@ -173,7 +173,7 @@ pub fn tools() -> &'static Vec<Value> {
                     "agent":s("Pinned relay alias, defaulting to its named recipient agent ID."),"session":s("Exact recipient session ID, obtained out of band."),
                     "harness":s("Recipient harness, e.g. omp or pi."),"text":{"type":"string","maxLength":65536},
                     "idempotency_key":s("Required stable unique key; changing the request with the same key is rejected."),
-                    "session_id":s("Your local sending session, if not detectable.")
+                    "session_id":s("Your host-bound local sending session; must match everett_whoami.")
                 },"required":["agent","session","harness","text","idempotency_key"],"additionalProperties":false}
             }),
             json!({
@@ -324,8 +324,8 @@ fn err2(code: i32, msg: impl Into<String>) -> ToolFailure {
 }
 
 /// A stdio MCP request is model-controlled. When the host identifies its
-/// harness session, that binding is authoritative for safety and lineage; an
-/// argument can only fill the gap when no binding exists.
+/// harness session, that binding is authoritative for safety and lineage.
+/// Model-supplied arguments cannot establish a missing host binding.
 fn caller_session(args: &Map<String, Value>) -> std::result::Result<(String, bool), ToolFailure> {
     let requested = str_arg(args, "session_id", false)?;
     let bound = caller_identity()
@@ -341,7 +341,12 @@ fn caller_session(args: &Map<String, Value>) -> std::result::Result<(String, boo
         }
         return Ok((bound, true));
     }
-    Ok((requested, false))
+    if !requested.is_empty() {
+        return Err(ToolFailure::Params(
+            "\"session_id\" requires a host-detected caller session".to_string(),
+        ));
+    }
+    Ok((String::new(), false))
 }
 
 fn tool_ls(args: &Map<String, Value>) -> std::result::Result<Map<String, Value>, ToolFailure> {
@@ -895,6 +900,7 @@ fn tool_inbox(args: &Map<String, Value>) -> std::result::Result<Map<String, Valu
             }
         }
         if crate::inbox::external(m) {
+            let safe = crate::inbox::consumption_message(m.clone());
             for k in [
                 "external",
                 "untrusted",
@@ -902,11 +908,11 @@ fn tool_inbox(args: &Map<String, Value>) -> std::result::Result<Map<String, Valu
                 "instruction_source",
                 "relay_lineage",
             ] {
-                if let Some(value) = m.get(k) {
+                if let Some(value) = safe.get(k) {
                     msg.insert(k.into(), value.clone());
                 }
             }
-            msg.insert("text".into(), json!(crate::inbox::consumption_text(m)));
+            msg.insert("text".into(), safe["text"].clone());
         }
         messages.push(Value::Object(msg));
         out.insert("messages".into(), json!(messages));
@@ -1394,6 +1400,9 @@ pub fn handle(message: &Value) -> Option<Value> {
         let id = message.get("id").cloned().unwrap_or(Value::Null);
         return Some(error(&id, INVALID_REQUEST, "Invalid Request"));
     };
+    if map.get("id").is_some_and(|id| !id.is_null() && !id.is_string() && !id.is_number()) {
+        return Some(error(&Value::Null, INVALID_REQUEST, "Invalid Request"));
+    }
     if map.get("jsonrpc").and_then(|v| v.as_str()) != Some("2.0")
         || !map.get("method").map(|m| m.is_string()).unwrap_or(false)
     {
