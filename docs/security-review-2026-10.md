@@ -1,13 +1,17 @@
 # Security review, October 2026
 
-This review covers `main` at `435af2c` (v1.6.0) and open PRs #22–#25 at pinned heads. Every attack ran against synthetic identities, keys, and local stacks. No production deployment, real account, or real secret was used. No existing PR branch was modified.
+This review covers `main` at `435af2c` (v1.6.0) and open PRs #22–#25 at pinned heads. All runtime work used synthetic identities, keys, and local stacks. No production deployment, real account, or real secret was used. PRs #22–#25 remained read-only. Nothing was merged.
+
+PR #26 is the consolidated findings/fixes PR. It includes PR #27's cloud-provenance forwarding and concurrent-card-write regressions, without merging either PR. This document combines recovered evidence from the [original review](https://app.devin.ai/sessions/994b48918ee54e9181177ceb9a36ef64) and the [independent defensive validation](https://app.devin.ai/sessions/db4f9ff95ab44c339115f2e2c4de8728). The [continuation](https://app.devin.ai/sessions/fb75e8e412bd43bf8f68031c042d74e0) reviewed both branches and re-ran the combined fix branch. It did not repeat the original attack campaign.
+
+This is bounded defensive evidence, not security certification or an exhaustive penetration test. A successful test does not establish that an untested attack is impossible. In-memory Convex tests inject authenticated identities; only the explicitly identified local-backend runs exercised actual JWT signature verification.
 
 | PR | Head |
 | --- | --- |
-| #22 local OIDC and Convex stack | `9ee4767` |
-| #23 device discovery | `64328b8` |
-| #24 device revocation | `d962ec0` |
-| #25 owner-only hosted enrollment (read only) | `d8f6a14` |
+| #22 local OIDC and Convex stack | `9ee47679eef0f0401081b3a8470370e2f06f7f6e` |
+| #23 device discovery | `64328b8a84ccf8972119790415633e94e1776cfa` |
+| #24 device revocation | `d962ec09232e9d85b2a01463d88aa0c519cea7c5` |
+| #25 owner-only hosted enrollment (read only) | `d8f6a14e73ac7c3a81b70ed713daa335419d16c3` |
 
 ## Findings
 
@@ -16,6 +20,7 @@ This review covers `main` at `435af2c` (v1.6.0) and open PRs #22–#25 at pinned
 | M1 | High | `main` | Fixed in this branch |
 | M2 | Medium | `main` | Fixed in this branch |
 | M3 | Low | `main` | Fixed in this branch |
+| M4 | Low | `main` | Fixed in this branch, consolidated from #27 |
 | S1 | Low | `main` and PR #24 | Not fixed. Documented behavior |
 | P22-1 | Low | PR #22, Convex runtime | Not fixed |
 | P23-1 | Low | PR #23 | Not fixed |
@@ -25,6 +30,8 @@ This review covers `main` at `435af2c` (v1.6.0) and open PRs #22–#25 at pinned
 ### M1: unbound stdio MCP accepted a model-supplied `session_id` (High)
 
 **Prerequisite.** `everett mcp` starts without a host-detected caller (no `EVERETT_SESSION_ID` and no native harness variable). The gateway is not affected.
+
+The impact is access between logical sessions under the same local OS account, not an OS privilege escalation. The local account and MCP launcher remain trusted.
 
 **Repro.** Seed `~/.everett/inbox/victim.jsonl`. On the unbound server, call `everett_inbox {"session_id":"victim","peek":true}`, then `everett_inbox {"session_id":"victim"}`, then `everett_card {"session_id":"victim", ...}`.
 
@@ -58,6 +65,16 @@ This review covers `main` at `435af2c` (v1.6.0) and open PRs #22–#25 at pinned
 
 **Regression test.** `mcp_stdio::malformed_jsonrpc_ids_never_dispatch_tools`.
 
+### M4: concurrent MCP card updates shared one temporary filename (Low)
+
+**Repro.** Start eight independent stdio MCP processes bound to the same synthetic session. Synchronize 16 rounds of ordinary `everett_card` updates.
+
+**Observed.** The old `.SESSION.md.tmp` path let one process rename another process's temporary file. A legitimate update failed with `No such file or directory`. This was reproduced on unchanged main in the independent review. One successful baseline run does not disprove this concurrency-sensitive race.
+
+**Fix.** `tool_card` uses the existing `peer::save` atomic writer: unique temporary file, private permissions, sync, then persist. Last complete write wins. No optimistic concurrency or card history is promised.
+
+**Regression test.** `mcp_stdio::concurrent_card_updates_are_atomic_and_do_not_share_temporary_files` checks all 128 updates succeed, the final card is a complete last-round body, and no temporary files remain. The test and fix from #27 are retained in #26.
+
 ### S1: a held-open SSH channel can submit one frame after revocation (Low, not fixed)
 
 **Prerequisite.** The attacker holds the paired client key and opens the forced-command channel before the receiver runs `everett peer revoke`.
@@ -80,7 +97,7 @@ This review covers `main` at `435af2c` (v1.6.0) and open PRs #22–#25 at pinned
 
 **Repro.** An ordinary member calls `registry:publish` for its own device with `name` set to a provisioned but unregistered victim agent ID. The victim's valid `relay:register` fails with `Device name is already in use in this account`. Revoking the member does not clear it.
 
-**Cause.** `relay:register` now requires the device ID to be a free display name, and `registry:named` returns revoked rows. `main` has no such coupling. Test: `discovery-attacks.test.ts`, case `name-squatting`.
+**Cause.** `relay:register` now requires the device ID to be a free display name, and `registry:named` returns revoked rows. `main` has no such coupling. The [PR #23 reviewer](https://app.devin.ai/sessions/3594eb1eda3745468f0d08c8566a8f05) reproduced this with a separate fixture test, not a test committed to main. The existing PR branch was not patched.
 
 ### P23-2: registry names that the SSH CLI cannot pair (Informational, PR #23)
 
@@ -92,9 +109,42 @@ This review covers `main` at `435af2c` (v1.6.0) and open PRs #22–#25 at pinned
 
 **Observed.** The legitimate enrollment failed until the next minute. `convex/hosted.ts` uses one global `hosted-enrollment` bucket of 30 per minute. Existing agents keep working. No owner, scope, revocation, issuer, or audience bypass was observed.
 
+The [PR #25 local-backend reviewer](https://app.devin.ai/sessions/055c708d72f54c0cbcefcd89c4189bcf) confirmed the availability failure on a within-minute repeat; an initial run crossed a minute boundary and did not reproduce it. This is separate from the intended per-agent relay budgets. No regression for the PR-only hosted API is added to main, where that API does not exist.
+
+## Isolated cross-device evidence
+
+### SSH hosts
+
+Two Ubuntu 24.04 containers had separate network namespaces, filesystems, users (`alice` and `bob`), sshd processes, host keys, Everett keys, `HOME`, and `EVERETT_HOME`. No owner SSH agent or real key directory was mounted. Pairing used independently read host/device fingerprints and a stable absolute binary path.
+
+The [SSH reviewer](https://app.devin.ai/sessions/1b27133bdca34fa2bf44b8dbec05065a) exercised pairing, A→B inbox delivery, take/reply, sender status polling, receiver revocation, rejection on a fresh SSH connection, and explicit re-pairing on main and #24. Eighteen of nineteen security/journey checks passed on each binary; the nineteenth exposed S1. A separate [integration run](https://app.devin.ai/sessions/db4f9ff95ab44c339115f2e2c4de8728) also completed normal two-host pairing/send/reply/revoke.
+
+These are real OpenSSH connections, not the fake-SSH fixture used by some Rust tests. They do not establish the complete registry→doctor→authorized_keys revocation path.
+
+### PR #22 encrypted relay and cross-org grant
+
+The documented local dev-login stack and smoke ran inside Ubuntu 24.04, with Node 24, the native CLI, local OIDC issuer, Convex backend, and TLS proxy. The host's older GLIBC could not run the backend directly. No cloud deployment was selected. The documented smoke passed with zero failed checks; its separate homes on one host alone are not a multi-host test.
+
+Both the [original relay reviewer](https://app.devin.ai/sessions/54b28c7a44344060be6555954292bdb0) and the [independent integration run](https://app.devin.ai/sessions/db4f9ff95ab44c339115f2e2c4de8728) then used three isolated client containers plus a local service container. Each client had its own network namespace, home, and keys. Synthetic A/B identities shared an org; C belonged to another org. Pinned SSH tunnels made the loopback-only stack reachable without disabling relay TLS/CA verification.
+
+Observed through the native CLI:
+
+- Device-code login, server-derived identity, registration, and public-bundle pinning on each client.
+- Encrypted A→B→A delivery, recipient take/reply, and signed `replied` status. Pending backend rows contained ciphertext without the plaintext marker before recipient startup.
+- A→C grant invitation, bilateral acceptance, encrypted A→C→A delivery, and external/untrusted labels on the cross-org inboxes.
+- Grant revocation. Device B revocation denied subsequent identity queries and re-registration, while A's positive control continued to work. Tombstones were not removed for retries.
+
+The original relay reviewer also checked denied post-grant-revocation sends directly at the local backend. The independent integration run did not separately repeat post-revocation native cross-org delivery. Neither run proves production behavior or PR #24's SSH cleanup propagation.
+
+### Grok Bot and OpenAI dots
+
+The local portions of `docs/grok-bot.md`, `docs/openai-dots.md`, and `docs/gateway.md` were exercised with explicit `grok-bot` and `openai-dot` registrations. Real `everett mcp` and `everett gateway` subprocess clients covered bound identity, queue-only delivery, inbox peek/take/reply, and the gateway's exact-destination and inbox-only restrictions. Native HTTP tests cover the authenticated loopback transport, Host/Origin checks, frame bounds, and tool restrictions. Shared core is optional; with it disabled the gateway exposes four tools.
+
+M1 and M2 were discrepancies with the documented identity/data boundaries on main and are fixed here. The docs correctly distinguish a logical owner binding from vendor authentication, automatic cloud wake-up, and provider consumption. No live Grok Bot or existing OpenAI dot was connected. The Secure MCP Tunnel, provider permissions, credential UI, and tool selection remain owner-side verification, not inferred successes from local MCP tests. No claim is made that an LLM obeys the untrusted warning.
+
 ## Attacks that held
 
-- **Auth.** Forged, tampered, expired, wrong-issuer, wrong-audience, and unsigned JWTs were rejected by real local JWKS verification. Client-supplied org, agent, and role fields were rejected or ignored. Non-owners could not approve, list, or revoke in PR #25. Revoked agent tokens, refresh, exchange, and re-registration were denied, including on a live WebSocket subscription.
+- **Auth.** Forged, tampered, expired, wrong-issuer, wrong-audience, and unsigned JWTs were rejected by real local JWKS verification. Client-supplied org, agent, and role fields were rejected or ignored. Non-owners could not approve, list, or revoke in PR #25. Revoked agent tokens, refresh, exchange, and re-registration were denied, including on a live WebSocket subscription. An otherwise valid bearer JWT remains reusable until expiry or revocation; envelope replay protection is separate and does not make JWTs single-use.
 - **Relay.** Cross-tenant row reads, deletes, and foreign acceptance failed. Absent or one-sided grants, inviter self-acceptance, and revoked grants blocked cross-org sends. Spoofed sender, modified signature or ciphertext, reused message IDs, and changed idempotency content were denied. Oversized (>64 KiB), malformed, and path-like envelopes were rejected. Per-grant and per-account rate limits held across two agents. Expired ciphertext and accepted ciphertext were deleted while replay tombstones remained.
 - **Cross-device.** Three containers completed encrypted A → B → A (same org) and A → C → A (cross org, bilateral grant) through the PR #22 stack. The cross-org inbox was labeled untrusted.
 - **SSH.** Two isolated Docker hosts with separate users, IPs, sshd, host keys, `HOME`, and `EVERETT_HOME` ran 19 checks on `main` and PR #24. Wrong host or device pins, forced-command escapes (`; id`, `$(...)`, newline, `peer serve --client attacker --setup`), unknown ops, `client` override fields, oversized frames, and pinned `known_hosts` replacement were all refused. Pairing, send, reply via `peer status`, and re-pairing worked. Only S1 failed.
@@ -102,7 +152,9 @@ This review covers `main` at `435af2c` (v1.6.0) and open PRs #22–#25 at pinned
 
 ## Test matrix
 
-All runs used isolated `HOME` and `EVERETT_HOME` with `EVERETT_NOTIFY=none EVERETT_ROUTER=local CI=1`.
+All native runtime runs used isolated `HOME` and `EVERETT_HOME` with `EVERETT_NOTIFY=none EVERETT_ROUTER=local CI=1`. The npm package is at the repository root, not in `convex/`; `npm ci`, `npm test`, and `npm run typecheck` ran there. Cargo commands ran in `everett-rs/`. There is no remaining Python runtime test suite.
+
+The five pinned revisions passed in both earlier runs. Original branch evidence: [main](https://app.devin.ai/sessions/f0101c822ec04f9fb8e18c3f9283331a), [#22](https://app.devin.ai/sessions/54b28c7a44344060be6555954292bdb0), [#23](https://app.devin.ai/sessions/3594eb1eda3745468f0d08c8566a8f05), [#24](https://app.devin.ai/sessions/1b27133bdca34fa2bf44b8dbec05065a), [#25](https://app.devin.ai/sessions/055c708d72f54c0cbcefcd89c4189bcf). The [independent five-VM validation](https://app.devin.ai/sessions/db4f9ff95ab44c339115f2e2c4de8728) reconfirmed Cargo, clippy, npm, and TypeScript at the same SHAs. These results do not cover future pushes to those PRs.
 
 | Branch | `cargo test --locked` | `cargo clippy --all-targets -- -D warnings` | `npm test` | `npm run typecheck` | `release_journey` |
 | --- | --- | --- | --- | --- | --- |
@@ -113,11 +165,21 @@ All runs used isolated `HOME` and `EVERETT_HOME` with `EVERETT_NOTIFY=none EVERE
 | PR #25 `d8f6a14` | pass | pass | pass, 46/46 | pass | pass |
 | This branch | pass | pass | pass, 34/34 | pass | pass |
 
-The MCP attack harness (74 checks) failed 10 checks on `main` and passed all 74 on this branch, with debug and release binaries.
+The original MCP harness (74 checks) failed 10 checks on `main` and passed all 74 on the original M1–M3 candidate, with debug and release binaries. That separate harness was not rerun after consolidation. Fixed-main regressions are committed here in `external`, `mcp_stdio`, `gateway_native`, and `relay_native`; they run without credentials or model calls. The packaged release journey verifies all 14 currently advertised MCP tools. Jev's adapter/router behavior, OMP, and Pi retain their existing synthetic coverage; no live Jev API was called.
+
+## PR-specific observations, not confirmed findings
+
+These remain review hypotheses, not additional confirmed vulnerabilities or suite failures. No other PR branch was changed.
+
+- **#22:** the smoke ciphertext diagnostic reads only the first pending page; the startup child timeout sends SIGTERM without an independent forced-kill deadline. Failure with a paginated backlog or an uncooperative child was not reproduced.
+- **#23:** removing a peer contacts its old pinned endpoint before local trust deletion. Offline/changed-key recovery needs the documented manual procedure. No key bypass or disclosure was demonstrated.
+- **#24:** credential-only revocation with no registered device row, membership-vs-device cleanup, and retry after backend revocation succeeds but local cleanup fails need lifecycle tests. The 256-row cleanup bound and `revokedAt` migration on existing rows were not exercised live.
+- **#25:** locally signed synthetic owner/non-owner JWTs and synthetic provider-account/session rows exercised enrollment/token lifecycle, not a real GitHub OAuth browser journey. The independent defensive run did not repeat that deployed-local auth fixture; its mocked-identity tests alone must not be described as JWT verification.
 
 ## Not verified
 
 - Real Grok Bot or ChatGPT dots cloud connections, Secure MCP Tunnel, and provider tool selection.
 - Production Convex, real GitHub OAuth, and external OIDC issuers. JWT tests used a local issuer.
-- The `doctor` → `relay:revokedDevices` → SSH prune path end to end against a live backend, and the 256-row revocation limit at scale.
-- macOS hosts. All runs were Linux x86_64. Local Convex needed an Ubuntu 24.04 container because the host lacked GLIBC 2.38.
+- The `doctor` → `relay:revokedDevices` → SSH prune path end to end against a live backend, the 256-row revocation limit at scale, and the lifecycle/migration hypotheses above.
+- Full protocol fuzzing, stress/rate-limit-bypass coverage, malicious local account owners rewriting their own keys, and actual model resistance to prompt injection. Labels delimit data, not model behavior.
+- Interactive macOS cross-device hosts. Local runtime runs were Linux x86_64. Linux/macOS CI is a separate automated regression check, not macOS sshd or provider integration evidence.
