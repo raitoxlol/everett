@@ -124,10 +124,10 @@ owner/workspace. This pass does not add end-user OAuth to stdio.
 
 ## Loopback Streamable HTTP / Grok Remote HTTPS
 
-HTTP always requires a separately provisioned high-entropy bearer token in
+Without an `oauth` block, HTTP requires a separately provisioned high-entropy bearer token in
 `EVERETT_GATEWAY_TOKEN` (32–512 ASCII characters without whitespace). Generate and
 store it securely outside the repository; never put it in command arguments, URLs,
-configuration examples, or logs. There is no token issuance or OAuth service here.
+configuration examples, or logs. For OpenAI/ChatGPT, use [OAuth mode](#oauth-resource-server-mode-openai-chatgpt) instead.
 
 ```sh
 # Set EVERETT_GATEWAY_TOKEN securely in this process's environment first.
@@ -139,7 +139,7 @@ The listener is always `127.0.0.1`; there is no public-bind override. `/mcp` use
 official Rust SDK's stateless Streamable HTTP transport. The gateway verifies a
 SHA-256 digest of the bearer token with a constant-time comparison before SDK
 dispatch. Missing or invalid authentication fails; there is no HTTP no-auth mode.
-The gateway does not serve OAuth metadata, authorization, or token endpoints.
+In bearer mode the gateway serves no OAuth metadata.
 
 For Grok, the owner must supply a trusted HTTPS reverse proxy/tunnel, a valid TLS
 certificate, and Remote HTTPS connector setup using `Authorization: Bearer …`.
@@ -153,8 +153,57 @@ by [xAI](https://docs.x.ai/grok-bot/team-bots).
 
 Do not expose a local bearer token over plaintext internet HTTP. TLS/reachability,
 connector authorization, network controls, and runtime approval prompts are owner
-hookup, not deployments performed by this implementation. OpenAI direct public
-HTTPS requiring OAuth is **not implemented**; use the Secure MCP Tunnel stdio path.
+hookup, not deployments performed by this implementation.
+
+## OAuth resource-server mode (OpenAI / ChatGPT)
+
+Adding an `oauth` block to the binding switches HTTP mode from the static bearer
+token to OAuth 2.1 access tokens issued by the owner's hosted Everett deployment
+(see [OpenAI dots setup](openai-dots.md#oauth-for-the-chatgpt-plugin)). stdio
+ignores the block and keeps the fixed `agent_id`.
+
+```json
+{
+  "agent_id": "wright-dot",
+  "harness": "openai-dot",
+  "cwd": "/absolute/path/to/everett",
+  "project": "everett",
+  "destinations": ["complete-local-agent-id"],
+  "allow_shared_core": true,
+  "allowed_hosts": ["127.0.0.1:8788"],
+  "oauth": {
+    "issuer": "https://<deployment>.convex.site",
+    "resource": "https://<public gateway URL>/mcp"
+  }
+}
+```
+
+- `issuer` must equal the deployment's `CONVEX_SITE_URL` exactly; `resource` must
+  be listed in the deployment's `EVERETT_OAUTH_RESOURCES`. Both are https (plain
+  http only to a loopback host). Optional: `scope` (default `everett`) and
+  `introspection_endpoint` (default `<issuer>/oauth/introspect`).
+- Set `EVERETT_OAUTH_INTROSPECTION_SECRET` (32–512 printable ASCII, same value as
+  the deployment's) in the gateway's environment, and **unset**
+  `EVERETT_GATEWAY_TOKEN`; startup fails if both or neither are present.
+- `GET /.well-known/oauth-protected-resource` (and the RFC 9728 path-suffixed
+  `/.well-known/oauth-protected-resource/mcp`) returns `resource`,
+  `authorization_servers: [issuer]` and `scopes_supported`, without auth but with
+  the same Host/Origin checks.
+- `/mcp` without a token returns `401` with
+  `WWW-Authenticate: Bearer resource_metadata="<resource origin>/.well-known/oauth-protected-resource/mcp", scope="everett"`;
+  a bad token adds `error="invalid_token"` and a reason (`token audience is not
+  this gateway`, `token inactive, expired or revoked`, …). An unreachable
+  authorization server returns `503`.
+- Every request is introspected (no cache), so owner revocation applies to tokens
+  already issued. The gateway checks `active`, `iss`, `aud` (= `resource`), `exp`,
+  `scope`, and that `sub` equals `everett_agent` and is a valid agent ID that is not
+  one of the binding's destinations. The introspection secret is never passed to
+  workers.
+- The token's agent ID **replaces `agent_id` for that request**: workers run with
+  `EVERETT_SESSION_ID=<token agent>`, tool schemas pin `session_id` to it, and
+  `everett_whoami` adds `gateway_auth: {mode: "oauth", agent_name, client_id}`.
+  Each owner approval mints a new agent, so each authorized dot has its own inbox
+  and card. Project, cwd, destinations and core grant still come from the binding.
 
 ## Bounds and verification
 
@@ -174,8 +223,9 @@ again after SDK encoding.
 
 `everett-rs/tests/gateway_native.rs` drives the native CLI and real loopback HTTP
 sockets with `PATH=/nonexistent` for the gateway process. Adversarial worker tests
-use the test binary itself as a synthetic MCP backend. No test invokes a
-model, live bot, tunnel, or production credentials:
+use the test binary itself as a synthetic MCP backend; OAuth tests use a synthetic
+loopback introspection endpoint. No test invokes a model, live bot, tunnel,
+ChatGPT, or production credentials:
 
 ```sh
 cargo test --locked --manifest-path everett-rs/Cargo.toml --test gateway_native
