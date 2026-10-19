@@ -1,7 +1,7 @@
 # Relay v2: short threat model
 
 Scope: the Rust client and deployable TypeScript Convex backend, not SSH, harness/model
-sandboxing, or an issuer enrollment service. See [auth](auth.md), [operator journeys](cross-device.md)
+sandboxing, with owner-only Convex Auth enrollment or generic OIDC. See [auth](auth.md), [operator journeys](cross-device.md)
 and the exact [wire/function contract](../convex/CONTRACT.md). No live deployment,
 OIDC/JWKS/WebSocket revocation test, or security audit is claimed by this document.
 
@@ -12,12 +12,33 @@ OIDC/JWKS/WebSocket revocation test, or security audit is claimed by this docume
   able to observe metadata, retain traffic and deny service, but not as holders of
   endpoint decryption/signing keys. E2EE does not make a malicious control plane's
   authorization decisions trustworthy; independently authenticate initial/changed pins.
-- Every public backend function requires Convex-verified OIDC JWT **plus** active stored
+- Every relay/grant function requires a Convex-verified JWT **plus** active stored
   membership **plus** an immutable per-agent credential binding. A signed admin claim
-  also needs a stored admin role. There is no public self-enrollment or owner-wide bearer
+  also needs a stored admin role. There is no open sign-up or owner-wide bearer
   credential capable of acting as every agent. Relay admins can manage their own org's
   agents/grants, not send/register/read as them. Issuer/deployment administrators remain
   privileged: their compromise can subvert enrollment/authorization.
+- Hosted enrollment has an unauthenticated, globally rate-limited request endpoint
+  (30/minute, at most 1,000 rows). Only the allowlisted GitHub owner may inspect,
+  approve, list or revoke other agents. A request does not create authority; approval
+  creates the membership and immutable server-chosen agent credential. Auth/poll
+  secrets are 256-bit random values stored hashed; the displayed 48-bit code is not
+  a bearer credential. Never approve unsolicited codes (device-code phishing).
+  Pending rows expire after ten minutes with minute/bounded cleanup; approved/denied
+  rows are deleted on polling. Flooding can exhaust the global quota: this is a
+  private service, not abuse-resistant public enrollment.
+- Hosted agents have separate Convex Auth user/session IDs and no owner/admin powers.
+  Each token exchange, custom JWT claim issuance and relay request checks credential,
+  membership and current owner allowlist. Relay requests also check the live Convex
+  Auth session. Revocation takes effect for existing JWTs; short JWT expiry is not
+  the revocation mechanism. Owner tokens are browser-only and cannot act as agents.
+  The browser uses tab sessionStorage, no third-party JS, no-store HTML and a hashed
+  inline-script CSP; browser/extension compromise can still approve/revoke agents.
+- Exported agent secrets bundle an auth bearer with **independently random client-only
+  Ed25519/X25519 private seeds**. Only the bearer reaches Convex Auth, never those seeds.
+  Replacement VMs restore keys from the secret; simultaneous holders are the same
+  agent, not independent devices. Stolen exports expose old relay decryption keys as
+  well as agent authority. Revoking the bearer does not undo private-key disclosure.
 - Same namespace means issuer+org, or issuer+subject in optional account fallback.
   Cross-namespace chat needs a symmetric grant naming exactly two agents: A admin invites,
   B admin accepts, both pin **both complete bundles/fingerprints**, optional expiry,
@@ -60,6 +81,7 @@ these fields (source: `convex/schema.ts`, `relay.ts`, `grants.ts`):
 | Surface | Visible data and application retention |
 | --- | --- |
 | Authentication/network | JWT and all its claims, including issuer, subject, audience, agent/org/role, expiry and any provider-added profile/email/session claims; Convex identity/token identifier; connection/IP, timing, frequency, TLS endpoints and sizes. Functions do not store tokens in relay tables; provider/platform/proxy logging and retention are separate operator policies. |
+| Hosted auth/enrollment | Convex Auth users, GitHub account ID/login, OAuth account material, sessions, refresh tokens/verifiers and their framework-managed retention. Opaque per-agent bearer is visible during sign-in but only its SHA-256 hash is stored in credentials. Enrollment display name, server agent ID, user code, hashed polling secret, auth-token hash, state, owner and ten-minute expiry; deleted on completed poll or bounded expiry cleanup. Hosted auth refuses DEBUG logging. Provider/platform capture remains outside this guarantee. Independent client relay seeds never reach auth/enrollment. |
 | Memberships/credentials | Namespace/owner, issuer, subject, role and active/revoked status; issuer-global agent ID, immutable owner/subject binding and credential status. Rows, including **revocation tombstones, are permanent**. |
 | Devices | Owner, device ID, current signing/encryption public keys, self-signature and monotonic rotation generation. Registry rows retained on revoke; rotation replaces the current bundle, while grants can retain pinned historical bundles. Active own-namespace listing is capped at 256. |
 | Grants | Grant ID, both owners/named device IDs, both complete pinned public bundles/self-signatures/fingerprints and rotation generations, state, which side confirmed (`a`/`b`/`both`), optional expiry and cron sweep time, rate/minute and body-byte cap. Views add computed access status (e.g. key changed/agent revoked); stored grant records, including revoked/expired grants, are **not pruned**. List is capped at 128 per side and reports truncation. |
@@ -68,6 +90,8 @@ these fields (source: `convex/schema.ts`, `relay.ts`, `grants.ts`):
 | Rates | Scope (agent owner/ID, account owner/issuer/subject, organization owner or grant ID), fixed UTC-minute window and count; the existing scope row is overwritten each window, not pruned. Agent and account quotas are 120/minute, organization quota is 600/minute, and grant quota is shared across directions. Each recipient queue is capped at 256 unexpired ciphertext rows. Exact retries consume neither quotas nor queue capacity. |
 | Observations/query output | Recipient owner/device, sender owner/message ID, observed state, observation timestamp and Ed25519 signature are mutation arguments; only resulting state is retained in attempt rows. Pending outputs include server time, trust label, pagination/cursor and envelopes; status outputs state. Convex documents additionally have `_id` and `_creationTime`, though public views strip them. |
 
+Sessions, cards, transcripts and shared core memory remain local; there is no
+upload/sync of those stores. A hosted remote MCP endpoint for dots/Grok is a follow-up.
 Session/harness IDs, text, sender card snippets, reply correlation and forwarded
 external taint are inside the encrypted serialized body, not backend plaintext. Visible
 parent/hop and shared grant IDs still correlate replies/forwards. Do not use secrets or

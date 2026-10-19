@@ -215,6 +215,7 @@ pub fn configured(name: &str) -> bool {
 }
 
 fn deployment() -> Result<String> {
+    if crate::hosted::configured() { return crate::hosted::deployment(); }
     let value = crate::config::get("relay.url", Some("EVERETT_CONVEX_URL"), "");
     let url = url::Url::parse(&value).map_err(|_| {
         bad("set EVERETT_CONVEX_URL or [relay] url to your HTTPS Convex deployment")
@@ -239,7 +240,7 @@ fn account() -> Result<(auth::Stored, String)> {
 fn account_refresh(force: bool) -> Result<(auth::Stored, String)> {
     initialize()?;
     let _guard = peer::lock(&root().join("auth.lock"))?;
-    let stored = auth::load().ok_or_else(|| bad("run everett login first"))?;
+    let stored = if crate::hosted::configured() { crate::hosted::session(force)? } else { auth::load().ok_or_else(|| bad("run everett login first"))? };
     let mut stored = stored;
     if force && !stored.refresh_token.is_empty() {
         stored.expires_at = 0.0;
@@ -355,6 +356,14 @@ fn key_path(owner: &str, agent: &str) -> PathBuf {
         Sha256::digest(json!([owner, agent]).to_string())
     ))
 }
+pub(crate) fn bootstrap_seeds(stored: &auth::Stored) -> Result<Option<String>> {
+    let claim = claims(&stored.id_token)?;
+    let owner = checked_identity(stored, &claim, session::now())?;
+    let path = key_path(&owner, claim["everett_agent"].as_str().ok_or_else(|| bad("missing agent claim"))?);
+    if !path.exists() { return Ok(None); }
+    let private: PrivateKeys = read(&path)?;
+    Ok(Some(format!("{}{}", private.signing, private.encryption)))
+}
 
 fn keys(owner: &str) -> Result<Keys> {
     initialize()?;
@@ -372,10 +381,13 @@ fn keys(owner: &str) -> Result<Keys> {
     let private = if path.exists() {
         read::<PrivateKeys>(&path)?
     } else {
-        let mut signing = [0u8; 32];
-        let mut encryption = [0u8; 32];
-        OsRng.fill_bytes(&mut signing);
-        OsRng.fill_bytes(&mut encryption);
+        let (signing, encryption) = if let Some(seeds) = crate::hosted::key_material()? { seeds } else {
+            let mut signing = [0u8; 32];
+            let mut encryption = [0u8; 32];
+            OsRng.fill_bytes(&mut signing);
+            OsRng.fill_bytes(&mut encryption);
+            (signing,encryption)
+        };
         let private = PrivateKeys {
             signing: hex::encode(signing),
             encryption: hex::encode(encryption),

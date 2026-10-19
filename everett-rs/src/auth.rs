@@ -326,6 +326,7 @@ pub fn revoke(stored: &Stored) -> bool {
 /// expiry. Persists rotated tokens. Returns the (possibly updated) record, or
 /// an error when the refresh token was revoked (`invalid_grant`).
 pub fn ensure_fresh(stored: &Stored) -> Result<Stored> {
+    if crate::hosted::is_session(stored) { return crate::hosted::session(false); }
     if stored.expires_at - now() > REFRESH_WINDOW_SECONDS || stored.refresh_token.is_empty() {
         return Ok(stored.clone());
     }

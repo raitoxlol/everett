@@ -1,12 +1,113 @@
 # Accounts, agents, and relay authorization
 
 Local indexing, routing, inboxes, hooks, MCP, and SSH peers need no Everett sign-in.
-The optional Convex relay needs an OIDC provider **and deployment-side enrollment**;
-`everett login` alone does not grant relay access. There is no hosted default issuer
-or public enrollment service in this checkout. See [deployment and journeys](cross-device.md)
-and the [relay threat model](relay-threat-model.md).
+The optional Convex relay supports **owner-only hosted Convex Auth** or a generic OIDC
+provider with operator provisioning. No public tenant or open sign-up is provided.
+See [deployment and journeys](cross-device.md) and the [relay threat model](relay-threat-model.md).
 
-## Native sign-in
+## Owner-only hosted preset
+
+```sh
+export EVERETT_HOSTED_URL='https://YOUR-DEPLOYMENT.convex.cloud'
+everett login --device devin-1
+# Open the printed .site/enroll URL, sign in as the owner and inspect the full code.
+# Approve ONLY a request you initiated; compare code, display name and agent ID.
+everett relay whoami
+everett relay register
+```
+
+Alternatively set `[hosted] url = "https://YOUR-DEPLOYMENT.convex.cloud"` in
+`~/.everett/config.toml`. This single preset supplies both authentication and relay
+deployment; it takes precedence over generic `[auth]` and `[relay]` settings.
+Use the cloud API origin, not the `.site` browser origin. Custom domains must be
+HTTPS origins. `--open` explicitly opens the approval URL; never automatic.
+
+The browser uses Convex Auth + GitHub OAuth. `EVERETT_OWNER_GITHUB_ID` on the deployment
+is the owner's **numeric, immutable GitHub ID**, not a username or OAuth client ID.
+`EVERETT_OWNER_GITHUB_LOGIN` defaults to `raitoxlol`; both ID and login must match at
+GitHub sign-in, before account creation. Missing/invalid ID fails closed. Each privileged
+request and agent relay operation rechecks the numeric ID against the stored owner
+GitHub account. Changing the owner ID blocks old owner/agent sessions; this is not an
+account migration. Do not change it casually. There is no public sign-up or agent-admin role.
+
+The agent creates an independent random auth secret and relay key seeds locally. The
+server chooses a fresh `agent-...` ID and stores a hash of the auth secret and device
+polling secret. Requests expire in ten minutes; poll every five seconds. A public
+request alone creates **no** membership or credential. Explicit owner approval creates
+the membership and credential; denial/expiry creates neither. Agent-ID and membership
+tombstones are permanent. The approval browser holds an owner JWT in tab sessionStorage,
+not on the agent; it needs GitHub sign-in again after its 15-minute JWT expires.
+
+### Mint, inject and revoke an agent token
+
+Enrollment mints one long-lived, revocable credential for **one agent**. Export it
+without printing it or putting it in command arguments:
+
+```sh
+umask 077
+everett agent-token --out "$HOME/devin-1.everett-token"
+# Store this private file's content using your platform's secure secret UI.
+# Do not cat it into an agent conversation, shell trace, log, or git.
+```
+
+The exported secret is `evt_<auth-secret>.<client-only-key-seeds>`. Only the first
+component is exchanged with Convex Auth. Independent Ed25519/X25519 seeds never reach
+the server, and are not derived from the auth secret. Restoring the export on a
+replacement VM restores the same relay keys, not new registration authority. After
+`everett relay rotate`, export a **new** file with current keys; old exports have stale
+keys and cannot silently replace the registered bundle. Protect these exports as
+decryption keys, not just passwords. A bare `evt_<auth-secret>` can authenticate but
+does not restore relay keys; use the complete export for ephemeral agents.
+
+Fresh headless VM (install the version containing this feature first):
+
+```sh
+export EVERETT_HOSTED_URL='https://YOUR-DEPLOYMENT.convex.cloud'
+# Secret manager injects EVERETT_AGENT_TOKEN; do not interpolate it into argv.
+# Or mount a mode-0600 regular file and use:
+export EVERETT_AGENT_TOKEN_FILE='/run/secrets/everett-agent'
+everett login --device devin-1
+everett relay register
+everett mcp
+# Run `everett relay` separately when receiving encrypted messages.
+```
+
+`EVERETT_AGENT_TOKEN` takes precedence over `EVERETT_AGENT_TOKEN_FILE`, then the
+locally enrolled `~/.everett/agent-token.json`. A token file must be private and not
+a symlink; export refuses to overwrite an existing file. Locally minted secrets and
+pending requests are stored atomically in mode-0600 files, in a private directory.
+Env-injected long-lived secrets are not copied to that credential file; short-lived
+JWTs are cached privately in `~/.everett/auth.json`. JWTs last 15 minutes; Rust
+re-exchanges the agent token near expiry instead of retaining Convex refresh tokens.
+Neither JWTs, auth secrets nor key seeds are returned through CLI/MCP output.
+
+One concurrently active device/OS agent per token. Enroll separately for distinct
+agents; reusing a token identifies every holder as the **same** agent. This does not
+grant remote session discovery, enrollment approval, other-agent revocation or owner powers.
+`login` with an existing secret is idempotent; `--force` exchanges it for a fresh JWT,
+not a new agent. To enroll an additional agent use a fresh OS profile/VM, or MCP `enroll`.
+
+Revoke from the owner's `/enroll` credential list, or run `everett logout` on that agent
+(self-revokes even before relay key registration). `everett relay revoke-agent AGENT_ID`
+can also revoke the registered caller; hosted agents cannot revoke others. Logout
+removes local auth/pending/token files even if remote revocation fails; it reports
+that failure, so use the owner page to revoke. Remove injected secrets yourself too.
+Revocation blocks new token exchanges, refreshes and **already-issued JWT relay use**;
+it does not erase already downloaded plaintext or local private keys.
+
+The existing `everett_agent_relay` MCP tool exposes `enroll` (`name`),
+`enrollment-status` (poll once), `token-login` (injected credential), and `token-export`
+(`out`, new private file). It never returns token material. Approval, listing all
+hosted credentials and revoking other agents stay in the owner browser/API. Existing
+identity/register/pair/directory/self-revocation actions remain available. Jev, OMP
+and Pi continue using the same local MCP and session stores.
+
+**Local-only:** sessions, cards, transcripts and shared core memory stay on devices.
+Only auth/account/credential/enrollment metadata and existing E2EE relay ciphertext
+are hosted. A hosted remote MCP endpoint for OpenAI dots/Grok Bots is **follow-up
+work**, not implemented here; existing device-side gateway support is unchanged.
+
+## Generic OIDC native sign-in (self-hosters)
 
 ```sh
 export EVERETT_AUTH_ISSUER='https://login.example.com/realms/everett'
@@ -75,11 +176,11 @@ single-user ID token reused on every machine is unsafe and unsupported.
 An independently authorized deployment operator verifies the provider identity and
 provisions its exact issuer, subject, org (or null), agent ID and role using internal
 `relay:provisionIdentity`; exact commands are in [cross-device deployment](cross-device.md#provision-authoritative-identities).
-No JWT-callable public provision/enroll API exists. Deployment keys never belong on
+No JWT-callable generic OIDC provision/enroll API exists. Deployment keys never belong on
 agent machines. Provisioning a role changes that subject's membership role across its
 credentials in that namespace; it does not override the JWT role requirement.
 
-**Every public backend function** checks a verified JWT, active authoritative membership
+**Every relay/grant function** checks a verified JWT, active authoritative membership
 and the caller's active credential. Registered operations also check current bundles;
 routing checks both endpoints and, across namespaces, the bilateral named-agent grant.
 A relay admin JWT can manage its org but cannot register, read pending, send, or observe
@@ -92,7 +193,7 @@ This recipe uses one **dedicated Keycloak user per agent/device** in one trusted
 It is intentionally simple: three distinct subjects can share org A/A/B while retaining
 separate credentials. It is not a same-subject, per-login enrollment service. A production
 issuer can instead bind different agents to one human subject via trusted server-side
-session/enrollment logic; Everett does not implement that integration.
+session/enrollment logic; the hosted preset above implements this only for Convex Auth.
 
 Use a supported Keycloak installation with persistent storage and HTTPS, reachable by
 both machines **and** Convex. Do not expose `start-dev`, use localhost-only discovery

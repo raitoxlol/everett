@@ -26,6 +26,12 @@
   untrusted without tainting unrelated later resume/spawn work; an explicit
   reply retains the external provenance.
 
+- Add owner-only hosted Convex Auth enrollment through allowlisted GitHub approval,
+  immutable per-agent credentials and immediate relay revocation. Preserve generic OIDC.
+- Add single-URL hosted login, private agent-token exports with independent client relay
+  keys for replacement VMs, environment/file bootstrap and MCP enrollment/token actions.
+  Session/card/transcript/core storage stays local; hosted remote MCP remains follow-up work.
+
 ## 1.6.0 — 2026-10-15
 
 - Require host-bound MCP caller identity for delivery and replies; reject conflicting model

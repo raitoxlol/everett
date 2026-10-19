@@ -1206,6 +1206,12 @@ pub fn cmd_doctor(args: &Args) -> i32 {
 
 pub fn cmd_login(args: &Args) -> i32 {
     use crate::auth;
+    if crate::hosted::configured() {
+        return match crate::hosted::login(&args.device.clone().unwrap_or_else(auth::hostname), args.open, args.force) {
+            Ok(value) => { println!("{}", serde_json::to_string_pretty(&value).unwrap()); 0 }
+            Err(e) => { eprintln!("everett login: {e}"); e.code }
+        };
+    }
     if !auth::configured() {
         eprintln!(
             "everett login: no issuer configured.\nset `auth.issuer` and `auth.client_id` in {} (or EVERETT_AUTH_ISSUER / EVERETT_AUTH_CLIENT_ID); see docs/auth.md",
@@ -1305,6 +1311,12 @@ pub fn cmd_login(args: &Args) -> i32 {
 
 pub fn cmd_whoami(args: &Args) -> i32 {
     use crate::auth;
+    if crate::hosted::configured() {
+        return match crate::hosted::session(false) {
+            Ok(stored) => { println!("{}", serde_json::to_string_pretty(&auth::public_json(&stored)).unwrap()); 0 }
+            Err(e) => { eprintln!("everett whoami: {e}"); e.code }
+        };
+    }
     let Some(stored) = auth::load() else {
         if args.json {
             println!("{}", serde_json::to_string(&json!({"signed_in": false})).unwrap());
@@ -1332,6 +1344,14 @@ pub fn cmd_whoami(args: &Args) -> i32 {
 
 pub fn cmd_logout(args: &Args) -> i32 {
     use crate::auth;
+    if crate::hosted::configured() {
+        let result = crate::hosted::logout();
+        crate::hosted::clear();
+        return match result {
+            Ok(value) => { println!("{value}"); 0 }
+            Err(e) => { eprintln!("Local credentials removed; remote revocation unconfirmed: {e}. Revoke the agent at /enroll."); e.code }
+        };
+    }
     let Some(stored) = auth::load() else {
         if args.json {
             println!("{}", serde_json::to_string(&json!({"signed_out": true, "revoked": false})).unwrap());
