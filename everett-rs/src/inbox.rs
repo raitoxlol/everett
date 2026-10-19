@@ -717,11 +717,20 @@ pub fn harness_pid() -> i32 {
     let pid = std::os::unix::process::parent_id() as i32;
     if let Some((ppid, comm)) = parent_of(pid) {
         let base = comm.rsplit('/').next().unwrap_or(&comm);
-        if SHELLS.contains(&base) && ppid > 0 {
+        if SHELLS.contains(&base) && ppid > 0 && !runs_harness_script(pid) {
             return ppid;
         }
     }
     pid
+}
+
+/// A shell that is itself a harness launcher script (`sh .../omp`); macOS reports its comm as `sh`.
+fn runs_harness_script(pid: i32) -> bool {
+    std::process::Command::new("ps")
+        .args(["-o", "args=", "-p", &pid.to_string()])
+        .output()
+        .ok()
+        .is_some_and(|out| crate::host::harness_of(String::from_utf8_lossy(&out.stdout).trim()).is_some())
 }
 
 /// Record that this session's harness process is alive (called from hooks; cheap after the first).
