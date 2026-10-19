@@ -116,6 +116,14 @@ describe("owner-only hosted enrollment", () => {
     await expect(f.backend.query(query("authenticateAgent"), { token: `evt_${"c".repeat(64)}` })).rejects.toThrow("denied");
     await expect(f.backend.query(query("authenticateAgent"), { token: "owner-token" })).rejects.toThrow("Invalid agent");
   });
+  test("one bearer cannot be approved for multiple agents, including after revocation", async () => {
+    const f = await fixture(), a = await f.enroll();
+    const e = await f.begin();
+    await expect(f.owner.client.mutation(mutation("approve"), { code: e.userCode, approve: true })).rejects.toThrow("already bound");
+    await f.owner.client.mutation(mutation("revoke"), { agentId: a.enrollment.agentId });
+    await expect(f.owner.client.mutation(mutation("approve"), { code: e.userCode, approve: true })).rejects.toThrow("already bound");
+    expect(await f.backend.run(ctx => ctx.db.query("credentials").collect())).toHaveLength(1);
+  });
   test("revocation blocks fresh auth, custom claims and existing JWT relay operations; never recycles IDs", async () => {
     const f = await fixture(), a = await f.enroll(), b = await f.enroll(`evt_${"b".repeat(64)}`);
     await f.owner.client.mutation(mutation("revoke"), { agentId: a.enrollment.agentId });

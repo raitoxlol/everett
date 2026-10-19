@@ -116,6 +116,7 @@ export const approve = mutation({
     if (member?.status === "revoked") throw new Error("Membership tombstone cannot be reused");
     if (!member) await ctx.db.insert("memberships", { owner: owner.owner, issuer: owner.issuer, subject: owner.userId, role: "admin", status: "active" });
     if (await ctx.db.query("credentials").withIndex("by_agent", q => q.eq("issuer", owner.issuer).eq("agentId", row.agentId)).unique()) throw new Error("Agent ID already used");
+    if (await ctx.db.query("credentials").withIndex("by_token", q => q.eq("tokenHash", row.tokenHash)).unique()) throw new Error("Agent token already bound");
     const authUserId = await ctx.db.insert("users", {});
     await ctx.db.insert("credentials", { owner: owner.owner, issuer: owner.issuer, subject: owner.userId,
       agentId: row.agentId, status: "active", authUserId, tokenHash: row.tokenHash, name: row.name });

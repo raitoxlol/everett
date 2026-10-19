@@ -77,7 +77,7 @@ fn save_private<T: Serialize>(name: &str, value: &T) -> Result<()> {
 fn read_private(path: &Path) -> Result<String> {
     let mut file = OpenOptions::new()
         .read(true)
-        .custom_flags(libc::O_NOFOLLOW)
+        .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
         .open(path)
         .map_err(|_| bad("Cannot read private hosted credential file"))?;
     let meta = file
@@ -112,6 +112,7 @@ fn call(kind: &str, function: &str, args: Value, bearer: Option<&str>) -> Result
     let endpoint = format!("{}/api/{kind}", deployment()?);
     let config = ureq::Agent::config_builder()
         .timeout_global(Some(Duration::from_secs(15)))
+        .max_redirects(0)
         .http_status_as_error(false)
         .build();
     let agent: ureq::Agent = config.into();
@@ -380,4 +381,35 @@ pub fn clear() {
     auth::clear();
     let _ = fs::remove_file(path("agent-token.json"));
     let _ = fs::remove_file(path("enrollment.json"));
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn auth_component_never_includes_independent_relay_keys() {
+        let bearer = format!("evt_{}", "a".repeat(64));
+        let seeds = format!("{}{}", "b".repeat(64), "c".repeat(64));
+        let bundle = format!("{bearer}.{seeds}");
+        let (auth, client) = secret_parts(&bundle).unwrap();
+        assert_eq!(auth, bearer);
+        assert_eq!(client, Some(seeds.as_str()));
+        assert!(!auth.contains(&seeds));
+        let restored = secret_parts(&bundle).unwrap().1.unwrap();
+        let signing = crate::relay::crypto::decode(&restored[..64]).unwrap();
+        let encryption = crate::relay::crypto::decode(&restored[64..]).unwrap();
+        let a =
+            crate::relay::crypto::Keys::new("owner".into(), "agent".into(), signing, encryption);
+        let b =
+            crate::relay::crypto::Keys::new("owner".into(), "agent".into(), signing, encryption);
+        assert_eq!(a.device, b.device);
+        assert_ne!(signing, encryption);
+        for invalid in [
+            format!("{bearer}."),
+            format!("{bearer}.{seeds}.extra"),
+            "evt_é".into(),
+        ] {
+            assert!(secret_parts(&invalid).is_err());
+        }
+    }
 }
