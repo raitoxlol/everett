@@ -314,6 +314,7 @@ pub fn cmd_route(args: &Args) -> i32 {
             return e.code;
         }
     };
+    warn_fallback(&r);
     if args.json {
         println!("{}", serde_json::to_string_pretty(&r).unwrap_or_default());
         return 0;
@@ -354,6 +355,12 @@ pub fn cmd_route(args: &Args) -> i32 {
         }
     }
     0
+}
+
+fn warn_fallback(r: &Map<String, Value>) {
+    if let Some(warning) = r.get("warning").and_then(|v| v.as_str()) {
+        eprintln!("everett: warning: {}", warning);
+    }
 }
 
 fn emit(json_mode: bool, payload: &Map<String, Value>, lines: Vec<Option<String>>) {
@@ -522,6 +529,7 @@ pub fn cmd_send(args: &Args) -> i32 {
                 return e.code;
             }
         };
+        warn_fallback(&result);
         if result.get("decision").and_then(|v| v.as_str()) == Some("NEW")
             && args.spawn
             && result.get("confidence").and_then(|v| v.as_f64()).unwrap_or(0.0) >= crate::route::MIN_CONFIDENCE
