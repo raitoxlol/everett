@@ -817,12 +817,7 @@ fn tool_card(args: &Map<String, Value>) -> std::result::Result<Map<String, Value
     if let Some(parent) = path.parent() {
         let _ = std::fs::create_dir_all(parent);
     }
-    let tmp = path.with_file_name(format!(
-        ".{}.tmp",
-        path.file_name().unwrap_or_default().to_string_lossy()
-    ));
-    std::fs::write(&tmp, &body).map_err(|e| err2(2, e.to_string()))?;
-    std::fs::rename(&tmp, &path).map_err(|e| err2(2, e.to_string()))?;
+    crate::peer::save(&path, body.as_bytes()).map_err(ToolFailure::Tool)?;
     let mut out = Map::new();
     out.insert("written".into(), json!(path.to_string_lossy()));
     out.insert("card".into(), json!(body.trim()));
