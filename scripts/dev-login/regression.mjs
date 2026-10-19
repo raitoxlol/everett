@@ -10,7 +10,7 @@ import { test } from 'node:test';
 import { ensureTlsCertificate, seedSession, syncConvexFunctions } from './local-state.mjs';
 
 const directory = path.dirname(fileURLToPath(import.meta.url));
-const binary = '/opt/homebrew/bin/everett';
+const binary = process.env.EVERETT_VERIFY_BINARY || 'everett';
 const cleanEnv = Object.fromEntries(Object.entries(process.env).filter(([key]) => !/^(EVERETT_|CONVEX_|CLAUDE|CODEX|HERMES|PI_SESSION|GROK_SESSION|TYPESAFE_API_KEY|NODE_OPTIONS)/.test(key)));
 const quote = value => `'${value.replaceAll("'", "'\\''")}'`;
 function temporary(t) {
@@ -44,7 +44,7 @@ test('smoke checks both real session IDs before requiring stack readiness', t =>
   for (const file of ['smoke.mjs', 'settings.mjs', 'local-state.mjs']) fs.copyFileSync(path.join(directory, file), path.join(folder, file));
   const dependencies = path.resolve(directory, '../../node_modules');
   fs.symlinkSync(dependencies, path.join(folder, 'node_modules'));
-  const result = spawnSync(process.execPath, [path.join(folder, 'smoke.mjs')], { encoding: 'utf8', timeout: 30000, env: cleanEnv });
+  const result = spawnSync(process.execPath, [path.join(folder, 'smoke.mjs')], { encoding: 'utf8', timeout: 30000, env: { ...cleanEnv, EVERETT_VERIFY_BINARY: binary } });
   assert.equal(result.status, 1, result.error?.message || result.stderr);
   assert.match(result.stdout, /PASS alice-a ls --json/);
   assert.match(result.stdout, /PASS alice-b ls --json/);
@@ -152,6 +152,11 @@ test('missing, expired, malformed, and mismatched TLS files renew; valid files a
   assert.equal(valid.checkHost('localhost'), 'localhost');
   assert.equal(valid.checkIP('127.0.0.1'), '127.0.0.1');
   assert.equal(valid.checkPrivateKey(createPrivateKey(tls.key)), true);
+  const ca = new X509Certificate(tls.ca);
+  assert.equal(ca.ca, true);
+  assert.equal(valid.ca, false);
+  assert.equal(valid.verify(ca.publicKey), true);
+  for (const name of ['tls-key.pem', 'ca-key.pem']) assert.equal(fs.statSync(path.join(folder, name)).mode & 0o777, 0o600);
   assert.ok(Date.parse(valid.validTo) > Date.now());
   assert.deepEqual(ensureTlsCertificate(folder), tls);
   expiredCertificate(folder);
@@ -171,6 +176,10 @@ test('missing, expired, malformed, and mismatched TLS files renew; valid files a
   tls = ensureTlsCertificate(folder);
   assert.equal(new X509Certificate(tls.cert).checkPrivateKey(createPrivateKey(tls.key)), true);
   assert.notDeepEqual(tls.key, otherTls.key);
+  fs.rmSync(path.join(folder, 'ca.pem'));
+  const renewed = ensureTlsCertificate(folder);
+  assert.notDeepEqual(renewed.ca, tls.ca);
+  assert.equal(new X509Certificate(renewed.cert).verify(new X509Certificate(renewed.ca).publicKey), true);
 });
 
 test('renewed certificate serves loopback HTTPS with explicit Node CA trust', async t => {
@@ -181,7 +190,7 @@ test('renewed certificate serves loopback HTTPS with explicit Node CA trust', as
   await new Promise((resolve, reject) => { server.once('error', reject); server.listen(0, '127.0.0.1', resolve); });
   t.after(() => new Promise(resolve => server.close(resolve)));
   const result = await new Promise((resolve, reject) => {
-    https.get(`https://127.0.0.1:${server.address().port}`, { ca: tls.cert, timeout: 2000 }, response => {
+    https.get(`https://127.0.0.1:${server.address().port}`, { ca: tls.ca, timeout: 2000 }, response => {
       let body = '';
       response.setEncoding('utf8');
       response.on('data', chunk => { body += chunk; });

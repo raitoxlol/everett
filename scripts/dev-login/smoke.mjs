@@ -8,7 +8,7 @@ import { accounts, backend, clientId, issuer, relay, state } from './settings.mj
 import { seedSession } from './local-state.mjs';
 
 process.umask(0o077);
-const binary = '/opt/homebrew/bin/everett';
+const binary = process.env.EVERETT_VERIFY_BINARY || 'everett';
 const runId = new Date().toISOString().replaceAll(/[:.]/g, '-');
 const sessions = { 'alice-a': `dev-login-a-${runId}`, 'alice-b': `dev-login-b-${runId}` };
 const evidence = path.join(state, 'runs', runId);
@@ -21,7 +21,7 @@ function note(line) { output.push(line); console.log(line); }
 function envFor(name, extra = {}) {
   const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith('EVERETT_') && !key.startsWith('CONVEX_') && !/^(CLAUDE|CODEX|HERMES|PI_SESSION|GROK_SESSION|TYPESAFE_API_KEY|NODE_OPTIONS)/.test(key)));
   const home = path.join(state, 'homes', name);
-  return { ...env, HOME: home, EVERETT_HOME: home, EVERETT_NOTIFY: 'none', EVERETT_ROUTER: 'local', EVERETT_AUTH_ISSUER: issuer, EVERETT_AUTH_CLIENT_ID: clientId, EVERETT_CONVEX_URL: relay, ...extra };
+  return { ...env, HOME: home, EVERETT_HOME: home, EVERETT_NOTIFY: 'none', EVERETT_ROUTER: 'local', EVERETT_AUTH_ISSUER: issuer, EVERETT_AUTH_CLIENT_ID: clientId, EVERETT_CONVEX_URL: relay, EVERETT_RELAY_CA_FILE: path.join(state, 'ca.pem'), ...extra };
 }
 function command(name, args, extra = {}, approve = false) {
   return new Promise((resolve, reject) => {
@@ -106,7 +106,7 @@ async function backendCheck(name) {
 }
 
 async function device(name) {
-  const login = await command(name, ['login', '--device', name, '--force', '--json'], {}, true);
+  const login = await command(name, ['login', '--device', name, '--open=false', '--force', '--json'], {}, true);
   if (!check(login, value => { const who = JSON.parse(value); assert.equal(who.signed_in, true); assert.equal(who.sub, name); assert.equal(who.device_name, name); })) return false;
   const whoami = await command(name, ['whoami', '--json']);
   if (!check(whoami, value => { const who = JSON.parse(value); assert.equal(who.signed_in, true); assert.equal(who.sub, name); })) return false;
@@ -148,10 +148,19 @@ async function exchange() {
   await must('alice-a', ['peer', 'add-relay', 'alice-b', '--device', 'alice-b', '--fingerprint', b.fingerprint]);
   await must('alice-b', ['peer', 'add-relay', 'alice-a', '--device', 'alice-a', '--fingerprint', a.fingerprint]);
   const aSession = sessions['alice-a'], bSession = sessions['alice-b'];
-  for (const name of Object.keys(sessions)) listen(name);
   const sender = { EVERETT_SESSION_ID: aSession, EVERETT_HARNESS_NAME: 'codex' };
   const sent = await must('alice-a', ['send', 'Hello from A', '--to', `alice-b/codex/${bSession}`, '--idempotency-key', `local-${runId}`, '--json'], sender, value => assert.ok(JSON.parse(value).message_id));
   await must('alice-a', ['peer', 'status', 'alice-b', sent.message_id]);
+  const client = new ConvexHttpClient(backend);
+  client.setAuth(JSON.parse(fs.readFileSync(path.join(state, 'homes/alice-b/.everett/auth.json'))).id_token);
+  const pending = await client.query('relay:pending', { deviceId: 'alice-b' });
+  const envelope = pending.envelopes.find(row => row.envelope.messageId === sent.message_id)?.envelope;
+  assert.ok(envelope, 'Backend must queue the real encrypted envelope');
+  assert.match(envelope.ciphertext, /^[0-9a-f]+$/);
+  assert.equal(envelope.signature.length, 128);
+  assert.ok(!JSON.stringify(envelope).includes('Hello from A'), 'Backend must not receive plaintext');
+  note('PASS backend queued signed ciphertext only; recipient has not run yet');
+  for (const name of Object.keys(sessions)) listen(name);
   const received = await waitMessage('alice-b', bSession, 'Hello from A');
   assert.equal(received.relay_message_id, sent.message_id);
   assert.notEqual(received.id, sent.message_id);
@@ -177,25 +186,36 @@ try {
   assert.ok(fs.existsSync(path.join(state, 'stack.pid')), 'Run up.sh first');
   assert.equal(await (await fetch(`${issuer}/health`, { signal: AbortSignal.timeout(1000) })).text(), 'everett-dev-login');
   const version = await command('alice-a', ['--version']);
-  assert.equal(version.stdout.trim(), 'everett 1.6.0', 'Smoke requires installed /opt/homebrew/bin/everett 1.6.0');
-  note(`PASS installed binary ${binary}: ${version.stdout.trim()}`);
-  const literal = await command('alice-a', ['login', '--device', 'alice-a', '--open=false']);
-  if (literal.code === 0 || !literal.stderr.includes("unexpected value 'false'")) throw new Error('Unexpected --open=false behavior; inspect evidence');
-  note(`FAIL requested login --device alice-a --open=false (exit ${literal.code}): ${literal.stderr.trim().split('\n')[0]}`);
-  failures.push('--open=false unsupported');
-  note('Continue with documented non-browser login: omit --open. No CLI patch or token injection.');
+  assert.match(version.stdout.trim(), /^everett \d+\.\d+\.\d+/);
+  note(`PASS binary ${binary}: ${version.stdout.trim()}`);
   const ready = await Promise.all(Object.keys(accounts).map(device));
   const http = await command('alice-a', ['relay', 'whoami'], { EVERETT_CONVEX_URL: backend });
   assert.notEqual(http.code, 0);
   assert.match(http.stderr, /HTTPS origin/);
   note(`PASS HTTP rejection reproduced: ${http.stderr.trim()}`);
+  await must('alice-a', ['relay', 'whoami'], { EVERETT_RELAY_CA_FILE: '' }, value => identity(JSON.parse(value), 'alice-a'));
+  note('PASS native relay trusts the explicit config-file CA without an environment override');
+  const started = Date.now();
+  const configFile = path.join(state, 'homes/alice-a/.everett/config.toml');
+  const config = fs.readFileSync(configFile, 'utf8');
+  let untrusted;
+  try {
+    fs.writeFileSync(configFile, config.replace(/^ca_file = .*$/m, ''));
+    untrusted = await command('alice-a', ['relay', 'whoami'], { EVERETT_RELAY_CA_FILE: '' });
+  } finally {
+    fs.writeFileSync(configFile, config);
+  }
+  assert.notEqual(untrusted.code, 0);
+  assert.match(untrusted.stderr, /TLS\/certificate verification failed.*UnknownIssuer/s);
+  assert.ok(Date.now() - started < 10000, 'TLS failure must not wait for the 20-second request deadline');
+  note(`PASS native untrusted CA rejected clearly in ${Date.now() - started}ms`);
   const tls = await new Promise((resolve, reject) => {
-    https.get(`${relay}/version`, { ca: fs.readFileSync(path.join(state, 'tls-cert.pem')), timeout: 2000 }, response => {
+    https.get(`${relay}/version`, { ca: fs.readFileSync(path.join(state, 'ca.pem')), timeout: 2000 }, response => {
       response.resume(); response.once('end', () => resolve(response.statusCode));
     }).once('error', reject).once('timeout', function () { this.destroy(new Error('TLS diagnostic timeout')); });
   });
   assert.equal(tls, 200);
-  note('PASS TLS proxy /version with explicit Node CA trust (diagnostic only; Everett trust is unchanged)');
+  note('PASS TLS proxy /version with explicit local CA trust');
   if (ready.every(Boolean)) await exchange();
   else note('SKIP message exchange: installed binary could not complete relay identity/registration/devices');
 } catch (error) {
