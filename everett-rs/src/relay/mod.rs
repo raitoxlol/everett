@@ -869,10 +869,20 @@ async fn observe_reply(client: &mut ConvexClient, keys: &Keys, path: &Path) -> R
 }
 
 pub fn send(target: &str, text: &str, key: Option<&str>, caller: Option<&str>) -> Result<Value> {
+    send_as(target, text, key, caller, None)
+}
+
+pub fn send_as(
+    target: &str,
+    text: &str,
+    key: Option<&str>,
+    caller: Option<&str>,
+    caller_harness: Option<&str>,
+) -> Result<Value> {
     let (name, harness, destination) = peer::target(target)?;
     let (_, owner) = account()?;
     let keys = verified_keys(&owner)?;
-    let who = send::sender_info(caller);
+    let who = send::sender_info_as(caller, caller_harness);
     let from = who["sender"].as_str().unwrap_or(inbox::HUMAN);
     let context = inbox::relay_context(from);
     if context.as_ref().is_some_and(|m| {

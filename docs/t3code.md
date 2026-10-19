@@ -39,11 +39,13 @@ home. Each sending or replying provider session needs its own host-bound MCP cal
 inside a T3-created provider session.
 
 1. List the thread with `everett_ls`. Use the returned provider session `id`.
-2. From another agent, call `everett_send(to=<provider id>, text=..., session_id=<sender id>)`.
-3. In the receiving T3 session, call `everett_inbox(session_id=<provider id>)`.
+2. Bind each participant's exact provider ID as `EVERETT_SESSION_ID` in that
+   T3 thread's MCP launch environment.
+3. From another agent, call `everett_send(to=<provider id>, text=...)`.
+4. In the receiving T3 session, call `everett_inbox()`.
    This marks returned messages consumed; use `peek=true` to inspect without consuming.
-4. Reply with `everett_send(reply_to=<message id>, text=..., session_id=<provider id>)`.
-5. The sender polls `everett_inbox(session_id=<sender id>)` for the reply.
+5. Reply with `everett_send(reply_to=<message id>, text=...)`.
+6. The sender polls `everett_inbox()` for the reply.
 
 The receiver is not automatically woken by enqueue. Poll again at task/turn boundaries
 when native hook pickup has not been independently verified. A wait timeout does not
