@@ -61,8 +61,8 @@ Per-command output remains ignored under `.state/runs/<run>/`.
 - Four TLS transport tests passed: custom CA handshake and reconnect, default
   roots/unrelated CA rejection, hostname mismatch rejection, and missing/empty/
   malformed CA files failing closed. Certificate failures include actionable
-  guidance and are tested to return in under three seconds rather than 20 seconds.
-- Strict all-target clippy passed. Convex typecheck and backend tests passed,
+  guidance and are tested to return in under five seconds rather than 20 seconds.
+- Strict all-target clippy passed. Convex typecheck and all 35 backend tests passed,
   including pagination through expired rows while time advances.
 - All six local-stack regression tests passed (including CA/leaf chain, renewal,
   key permissions, and explicit-CA HTTPS); shell/Node syntax and diff checks passed.
