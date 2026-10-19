@@ -214,9 +214,12 @@ Exit codes: 2 bad input, 3 no Jev key with `--router jev`, 4 session stayed busy
 ## Cross-device peers (SSH or encrypted Convex)
 
 For devices behind NAT, deploy the TypeScript backend in `convex/` (Convex cloud or
-self-hosted), configure a device-code OIDC provider with **issuer-controlled per-agent
-claims**, and provision authoritative memberships/credentials as deployment operator.
-`login` alone is not enrollment. Each machine uses its own agent-bound JWT/refresh
+self-hosted). The [owner-only hosted preset](docs/auth.md#owner-only-hosted-preset) uses
+Convex Auth + allowlisted GitHub sign-in: set `EVERETT_HOSTED_URL`, run `everett login`,
+and approve the agent's code once in the owner browser. Export a private per-agent
+bootstrap secret with `everett agent-token --out FILE` for headless/replacement VMs.
+Self-hosters can still configure a device-code OIDC provider with **issuer-controlled
+per-agent claims** and operator-provisioned memberships/credentials. Each machine uses its own agent-bound JWT/refresh
 credential and independent Ed25519/X25519 keys; an owner/admin JWT cannot act as every
 agent. Local/SSH commands need no sign-in. The client stays Rust-only.
 
@@ -228,7 +231,7 @@ requires an A-admin invite and B-admin acceptance naming exactly two agents, pin
 both bundles, with optional expiry, either-side revocation, rate and serialized-body
 caps. Changed keys block traffic until both admins explicitly reconfirm and peers re-pin.
 
-Every public backend operation checks verified JWT, authoritative membership and its
+Every relay/grant operation checks verified JWT, authoritative membership and its
 own revocable agent credential. Revocation also invalidates subscribed queries and
 blocks re-registration with a still-valid JWT; it cannot recall already local plaintext.
 External chat remains **external/untrusted agent data**, not owner instructions, across
@@ -458,7 +461,8 @@ Sign-in is optional for local/SSH use. `everett login` runs the OAuth 2.0 device
 flow (RFC 8628): approve in a browser on any device, without opening an incoming CLI
 port or browser callback. Tokens live in `~/.everett/auth.json` (0600); `whoami` refreshes
 stale tokens and `logout` attempts provider refresh-token revocation before local deletion.
-There is no hosted default tenant. Configure your own public/native OIDC client.
+There is no hosted default tenant. Use the owner-only hosted preset above, or configure
+your own public/native OIDC client. Sessions, cards, transcripts and core stay local.
 
 Relay use additionally needs signed issuer-controlled `everett_agent`, optional
 `everett_org`, and administrative `everett_role`, **plus matching operator-provisioned

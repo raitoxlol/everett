@@ -29,7 +29,7 @@ $('signin').onclick=run(async()=>{
 $('signout').onclick=run(async()=>{try{await api('action','auth:signOut',{});}finally{sessionStorage.clear();reset();$('agents').replaceChildren();$('status').textContent='Signed out';}});
 $('inspect').onclick=run(async()=>{
   reset();const code=$('code').value.trim().toUpperCase();const row=await api('query','hosted:inspect',{code});
-  $('details').textContent='Name: '+row.name+'\nAgent: '+row.agentId+'\nCode: '+row.code+'\nState: '+row.state;
+  $('details').textContent=['Name: '+row.name,'Agent: '+row.agentId,'Code: '+row.code,'State: '+row.state].join(String.fromCharCode(10));
   selected=row.code;$('approve').disabled=row.state!=='pending';$('deny').disabled=row.state!=='pending';
 });
 async function decide(approve){if(!selected)throw Error('Inspect the code first');await api('mutation','hosted:approve',{code:selected,approve});reset();$('status').textContent=approve?'Agent approved. Return to its terminal.':'Enrollment denied';}

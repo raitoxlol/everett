@@ -2,7 +2,9 @@ import GitHub from "@auth/core/providers/github";
 import { convexAuth } from "@convex-dev/auth/server";
 import { ConvexCredentials } from "@convex-dev/auth/providers/ConvexCredentials";
 import { makeFunctionReference } from "convex/server";
-import { agentCredential, checkGithub } from "./hosted";
+import { checkGithub } from "./hosted";
+
+if (process.env.AUTH_LOG_LEVEL === "DEBUG") throw new Error("Hosted auth must not log credential parameters; use AUTH_LOG_LEVEL=INFO");
 
 export const { auth, signIn, signOut, store, isAuthenticated } = convexAuth({
   providers: [
@@ -16,10 +18,7 @@ export const { auth, signIn, signOut, store, isAuthenticated } = convexAuth({
     } }),
   ],
   jwt: { durationMs: 15 * 60_000, customClaims: async (ctx, { userId }) => {
-    const credential = await ctx.db.query("credentials").withIndex("by_auth_user", q => q.eq("authUserId", userId)).unique();
-    if (!credential) return {};
-    const p = await agentCredential(ctx, userId);
-    return { everett_agent: p.credential.agentId, everett_org: p.credential.subject };
+    return await ctx.runQuery(makeFunctionReference<"query", { userId: string }, Record<string, string>>("hosted:claims"), { userId });
   } },
   callbacks: { redirect: async ({ redirectTo }) => {
     const url = new URL(redirectTo, process.env.CONVEX_SITE_URL);

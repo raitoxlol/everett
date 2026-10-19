@@ -14,13 +14,64 @@ there is no relay-to-SSH fallback or backend SSH configuration.
 
 ## Convex relay: owner deployment
 
+Choose **hosted Convex Auth** below for Wright's private main Everett. The existing
+generic OIDC recipe follows for self-hosters; it remains independent of hosted mode.
+This PR/runbook does not deploy anything, and none of the live OAuth/WebSocket gates
+below are implied by passing the offline fixture suite.
+
+### Owner-only Convex Auth setup
+
+Use a clean development deployment for the first trial. Existing deployments need
+a reviewed schema/identity migration preserving membership/credential/replay tombstones.
+An operator (not an agent VM) must configure Convex Auth as described in its
+[setup guide](https://labs.convex.dev/auth/setup) and
+[GitHub guide](https://labs.convex.dev/auth/config/oauth/github):
+
+1. Install backend dependencies and select a **development** Convex cloud project.
+   Do not target production for a trial. Use Node 20+; agents need only the Rust binary.
+2. Generate the standard Convex Auth `JWT_PRIVATE_KEY` and `JWKS` signing configuration
+   using the official setup instructions. Keep the private key in deployment secrets.
+3. Create a GitHub OAuth app with callback
+   `https://YOUR-DEPLOYMENT.convex.site/api/auth/callback/github`. Set deployment
+   `AUTH_GITHUB_ID` and `AUTH_GITHUB_SECRET` through secure operator tooling.
+4. Set deployment `SITE_URL=https://YOUR-DEPLOYMENT.convex.site`,
+   `EVERETT_OWNER_GITHUB_ID=<Wright's verified numeric GitHub ID>` and
+   `EVERETT_OWNER_GITHUB_LOGIN=raitoxlol`. `CONVEX_SITE_URL` and `CONVEX_CLOUD_URL`
+   are Convex-provided system variables; the former is the JWT issuer and serves
+   approval at `/enroll`, the latter is the page's API origin. Custom-hosted deployments
+   must provide their matching origins. Keep `AUTH_LOG_LEVEL=INFO` (or WARN/ERROR);
+   DEBUG is rejected because Convex Auth debug logs can contain credentials.
+5. Deploy to the selected development environment, then visit `/enroll`. GitHub
+   sign-in as a different user must fail before account creation. No password, email
+   sign-up, client-selected agent IDs or external OIDC owner bypass is configured.
+
+When the hosted owner allowlist is configured, external OIDC relay identities are
+denied even if generic providers are still in the configuration. Self-hosters leave
+`EVERETT_OWNER_GITHUB_ID` unset and configure their external OIDC provider below.
+
+On each owner-authorized agent set only `EVERETT_HOSTED_URL` to the cloud origin,
+then `everett login --device NAME`; the owner signs into the printed `.site/enroll`
+page, inspects the full code and approves once. Next use the same `relay register`,
+listener and out-of-band fingerprint pairing procedures below. No deployment/admin
+key goes on an agent. See [token mint/export, VM bootstrap and revocation](auth.md#mint-inject-and-revoke-an-agent-token).
+
+Before rollout, verify on the actual development deployment: owner OAuth callback and
+code exchange, non-owner denial, two independently enrolled agents, complete exported
+secret on a fresh VM with the same key fingerprint, per-agent revocation with an
+already-issued JWT/live subscription, and unchanged generic OIDC on a separate tenant.
+Sessions/cards/transcripts/core are not uploaded. Cross-org admin grants remain the
+generic OIDC workflow; hosted agent credentials intentionally have no admin claim.
+Hosted remote MCP for dots/Grok Bots is a follow-up, not part of this deployment.
+
+### Generic OIDC deployment (self-hosters)
+
 The client stays Rust-only. Node 24 is needed on the **operator/development machine**
 for the TypeScript backend in `convex/`, not on machines running the installed binary.
 Agents need outbound HTTPS/WebSocket access only. First configure an OIDC public/native
 application with device-code login, refresh and signed per-agent ID tokens. Follow the
 [Keycloak/native-provider recipe](auth.md#practical-keycloak-device-code-setup); a normal
 shared user token is insufficient. `everett_agent`, `everett_org`, and `everett_role`
-must be issuer-controlled, not client-editable. There is no public enrollment API.
+must be issuer-controlled, not client-editable. Generic OIDC has no public enrollment API.
 
 Commands below run from the checkout root unless stated otherwise. Replace example
 URLs, subject UUIDs and fingerprint placeholders. Never put actual tokens/admin keys

@@ -63,6 +63,15 @@ export const authenticateAgent = internalQuery({
     return { userId: row.authUserId };
   },
 });
+export const claims = internalQuery({
+  args: { userId: v.string() }, handler: async (ctx: Context, { userId }) => {
+    const id = ctx.db.normalizeId("users", userId);
+    const credential = id && await ctx.db.query("credentials").withIndex("by_auth_user", q => q.eq("authUserId", id)).unique();
+    if (!credential) return {};
+    const p = await agentCredential(ctx, userId);
+    return { everett_agent: p.credential.agentId, everett_org: p.credential.subject };
+  },
+});
 export const begin = action({
   args: { tokenHash: v.string(), name: v.string() }, handler: async (ctx, args): Promise<unknown> => {
     if (!/^[a-f0-9]{64}$/.test(args.tokenHash) || !args.name.trim() || args.name.length > 100 || /[\x00-\x1f\x7f]/.test(args.name)) throw new Error("Invalid enrollment");
@@ -137,6 +146,14 @@ export const revoke = mutation({
     const row = await ctx.db.query("credentials").withIndex("by_agent", q => q.eq("issuer", p.issuer).eq("agentId", agentId)).unique();
     if (!row || row.owner !== p.owner) throw new Error("Unknown agent");
     await ctx.db.patch(row._id, { status: "revoked" });
+    return null;
+  },
+});
+export const revokeSelf = mutation({
+  args: {}, handler: async (ctx: WriteContext) => {
+    const { userId } = await hostedSession(ctx);
+    const { credential } = await agentCredential(ctx, userId);
+    await ctx.db.patch(credential._id, { status: "revoked" });
     return null;
   },
 });

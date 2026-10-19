@@ -288,6 +288,11 @@ enum Cmd {
         #[arg(long)]
         json: bool,
     },
+    /// export this approved hosted agent's token to a new mode-0600 file (never stdout)
+    AgentToken {
+        #[arg(long)]
+        out: std::path::PathBuf,
+    },
     /// revoke this device's sign-in and delete the local token
     Logout {
         #[arg(long)]
@@ -836,6 +841,7 @@ fn main() {
             a.json = json;
             cli::cmd_whoami(&a)
         }
+        Cmd::AgentToken { out } => peer_output(everett::hosted::export(&out)),
         Cmd::Logout { json } => {
             a.json = json;
             cli::cmd_logout(&a)
