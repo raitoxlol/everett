@@ -127,10 +127,7 @@ pub fn post(
         }
     }
     if crate::adapters::external::is_external(from_harness) {
-        message.insert("external".into(), json!(true));
-        message.insert("untrusted".into(), json!(true));
-        message.insert("trust".into(), json!("external-untrusted"));
-        message.insert("instruction_source".into(), json!("agent-data"));
+        label_external(&mut message);
     }
     let target = path(to)?;
     append(&target, &(serde_json::to_string(&message).unwrap() + "\n"))?;
@@ -345,13 +342,17 @@ pub fn forward_provenance(message: &Map<String, Value>) -> Option<Map<String, Va
     Some(extra)
 }
 
+fn label_external(message: &mut Map<String, Value>) {
+    message.insert("external".into(), json!(true));
+    message.insert("untrusted".into(), json!(true));
+    message.insert("trust".into(), json!("external-untrusted"));
+    message.insert("instruction_source".into(), json!("agent-data"));
+}
+
 pub fn consumption_message(mut message: Map<String, Value>) -> Map<String, Value> {
     if external(&message) {
         message.insert("text".into(), json!(consumption_text(&message)));
-        message.insert("external".into(), json!(true));
-        message.insert("untrusted".into(), json!(true));
-        message.insert("trust".into(), json!("external-untrusted"));
-        message.insert("instruction_source".into(), json!("agent-data"));
+        label_external(&mut message);
     }
     message
 }
