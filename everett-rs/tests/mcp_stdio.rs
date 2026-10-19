@@ -376,7 +376,7 @@ fn card_needs_identity() {
         json!({"what": "a", "state": "b", "next": "c"}),
     );
     assert_eq!(result["isError"], true);
-    assert!(text(&result).contains("session_id"), "{result}");
+    assert!(text(&result).contains("EVERETT_SESSION_ID"), "{result}");
     s.close();
 }
 
