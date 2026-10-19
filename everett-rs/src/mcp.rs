@@ -939,6 +939,9 @@ fn tool_inbox(
         ] {
             msg.insert(k.to_string(), m.get(k).cloned().unwrap_or(Value::Null));
         }
+        if let Some(depth) = m.get("reply_depth") {
+            msg.insert("reply_depth".into(), depth.clone());
+        }
         if m.contains_key("relay_device") {
             for k in [
                 "external",
@@ -1016,11 +1019,6 @@ fn tool_inbox(
         crate::inbox::mark_done(&sid, &ids);
         if let Some(hops) = items
             .iter()
-            .filter(|m| {
-                m.contains_key("peer_client")
-                    || m.contains_key("peer_reply_id")
-                    || m.contains_key("relay_device")
-            })
             .filter(|m| {
                 m.get("id")
                     .and_then(Value::as_str)
