@@ -3,7 +3,7 @@ mod common;
 use std::io::Write;
 use std::process::{Command, Output, Stdio};
 
-use common::{fixture, Fixture};
+use common::{fixture, plant, Fixture};
 use everett::adapters::external;
 use everett::send;
 use everett::session::Session;
@@ -101,6 +101,31 @@ fn mcp_gateway(
 fn data(result: &Value) -> &Value {
     assert_eq!(result["isError"], false, "{result}");
     &result["structuredContent"]
+}
+
+#[test]
+fn cloud_origin_provenance_survives_mcp_consumption_and_local_forwarding() {
+    for harness in ["grok-bot", "openai-dot"] {
+        let fx = fixture();
+        plant(&fx, "codex.jsonl", ".codex/sessions/2026/10/01/x-1.jsonl");
+        plant(&fx, "claude.jsonl", ".claude/projects/project/c-1.jsonl");
+        registration(&fx, "ext-source", harness, everett::session::now());
+        let sent = mcp(&fx, &[("everett_send", json!({"to":"x-1", "text":"Synthetic report", "mode":"inbox"}))], "ext-source", harness);
+        assert_eq!(data(&sent[0])["delivered"], true);
+        let received = mcp(&fx, &[("everett_inbox", json!({"peek":true})), ("everett_inbox", json!({}))], "x-1", "codex");
+        for result in &received {
+            let message = &data(result)["messages"][0];
+            assert_eq!(message["trust"], "external-untrusted");
+            assert_eq!(message["instruction_source"], "agent-data");
+            assert!(message["text"].as_str().unwrap().starts_with("[EXTERNAL / UNTRUSTED"));
+        }
+        let forwarded = mcp(&fx, &[("everett_send", json!({"to":"c-1", "text":"Synthetic summary", "mode":"inbox"}))], "x-1", "codex");
+        assert_eq!(data(&forwarded[0])["delivered"], true);
+        let received = mcp(&fx, &[("everett_inbox", json!({}))], "c-1", "claude");
+        assert_eq!(data(&received[0])["messages"][0]["trust"], "external-untrusted");
+        let context: Value = serde_json::from_slice(&std::fs::read(fx.home().join(".everett/inbox/relay-context/c-1.json")).unwrap()).unwrap();
+        assert_eq!(context["external"], true);
+    }
 }
 
 #[test]

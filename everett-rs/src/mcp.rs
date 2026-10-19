@@ -799,7 +799,7 @@ fn tool_card(args: &Map<String, Value>) -> std::result::Result<Map<String, Value
     if sid.is_empty() {
         return Err(ToolFailure::Tool(EverettError::new(
             2,
-            "Cannot tell which session you are. Pass session_id (your harness session id).",
+            "Cannot tell which session you are. Set EVERETT_SESSION_ID in the MCP launch environment.",
         )));
     }
     if !crate::inbox::valid_id(&sid) {
@@ -822,12 +822,7 @@ fn tool_card(args: &Map<String, Value>) -> std::result::Result<Map<String, Value
     if let Some(parent) = path.parent() {
         let _ = std::fs::create_dir_all(parent);
     }
-    let tmp = path.with_file_name(format!(
-        ".{}.tmp",
-        path.file_name().unwrap_or_default().to_string_lossy()
-    ));
-    std::fs::write(&tmp, &body).map_err(|e| err2(2, e.to_string()))?;
-    std::fs::rename(&tmp, &path).map_err(|e| err2(2, e.to_string()))?;
+    crate::peer::save(&path, body.as_bytes()).map_err(ToolFailure::Tool)?;
     let mut out = Map::new();
     out.insert("written".into(), json!(path.to_string_lossy()));
     out.insert("card".into(), json!(body.trim()));
@@ -839,7 +834,7 @@ fn tool_inbox(args: &Map<String, Value>) -> std::result::Result<Map<String, Valu
     if sid.is_empty() {
         return Err(ToolFailure::Tool(EverettError::new(
             2,
-            "Cannot tell which session you are. Pass session_id (your harness session id).",
+            "Cannot tell which session you are. Set EVERETT_SESSION_ID in the MCP launch environment.",
         )));
     }
     if !crate::inbox::valid_id(&sid) {
@@ -1012,7 +1007,7 @@ fn tool_event(args: &Map<String, Value>) -> std::result::Result<Map<String, Valu
     if sid.is_empty() {
         out.insert(
             "note".into(),
-            json!("No session detected: the event is logged but not attached to a card. Pass session_id."),
+            json!("No session detected: the event is logged but not attached to a card. Set EVERETT_SESSION_ID."),
         );
     }
     Ok(out)
@@ -1065,7 +1060,7 @@ fn tool_whoami(_args: &Map<String, Value>) -> std::result::Result<Map<String, Va
         json!(if has_session {
             ""
         } else {
-            "Not detected. Claude Code, Codex, Hermes, and Pi expose it; others must pass session_id explicitly."
+            "Not detected. Claude Code, Codex, Hermes, and Pi expose it; others must set EVERETT_SESSION_ID."
         }),
     );
     Ok(out)
