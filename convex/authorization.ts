@@ -1,6 +1,7 @@
 import type { DataModelFromSchemaDefinition, GenericQueryCtx, GenericMutationCtx } from "convex/server";
 import schema from "./schema";
 import { identifier, type Device } from "./protocol";
+import { hostedSession, agentCredential } from "./hosted";
 
 export type Model = DataModelFromSchemaDefinition<typeof schema>;
 export type Context = GenericQueryCtx<Model>;
@@ -14,6 +15,13 @@ export async function authorize(ctx: Context) {
   // Convex validates OIDC issuer, signature, audience and expiry before exposing this identity.
   const identity = await ctx.auth.getUserIdentity();
   if (!identity) throw new Error("Sign in required");
+  if (identity.issuer === process.env.CONVEX_SITE_URL) {
+    const { userId } = await hostedSession(ctx);
+    const { credential, member } = await agentCredential(ctx, userId);
+    if (identity.everett_agent !== credential.agentId || identity.everett_org !== credential.subject) throw new Error("Agent identity mismatch");
+    return { owner: credential.owner, agentId: credential.agentId, member, credential, admin: false };
+  }
+  if (process.env.EVERETT_OWNER_GITHUB_ID) throw new Error("Owner deployment denies external identities");
   const agentId = identity.everett_agent;
   const org = identity.everett_org;
   if (typeof agentId !== "string") throw new Error("Issuer-controlled everett_agent required");

@@ -1,5 +1,6 @@
 import { defineSchema, defineTable } from "convex/server";
 import { v } from "convex/values";
+import { authTables } from "@convex-dev/auth/server";
 
 export const deviceFields = {
   owner: v.string(), deviceId: v.string(), signingKey: v.string(),
@@ -21,13 +22,22 @@ export const roleValidator = v.union(v.literal("admin"), v.literal("member"));
 const status = v.union(v.literal("active"), v.literal("revoked"));
 
 export default defineSchema({
+  ...authTables,
+  enrollments: defineTable({
+    code: v.string(), pollHash: v.string(), tokenHash: v.string(), agentId: v.string(),
+    name: v.string(), expiresAt: v.number(),
+    state: v.union(v.literal("pending"), v.literal("approved"), v.literal("denied")),
+    owner: v.optional(v.string()),
+  }).index("by_code", ["code"]).index("by_poll", ["pollHash"]).index("by_expiry", ["expiresAt"]),
   memberships: defineTable({
     owner: v.string(), issuer: v.string(), subject: v.string(), role: roleValidator, status,
   }).index("by_identity", ["owner", "issuer", "subject"]),
   // Agent IDs are issuer-global, immutable identity bindings, never recycled after revocation.
   credentials: defineTable({
     issuer: v.string(), agentId: v.string(), owner: v.string(), subject: v.string(), status,
-  }).index("by_agent", ["issuer", "agentId"]).index("by_owner", ["owner"]),
+    authUserId: v.optional(v.id("users")), tokenHash: v.optional(v.string()), name: v.optional(v.string()),
+  }).index("by_agent", ["issuer", "agentId"]).index("by_owner", ["owner"])
+    .index("by_auth_user", ["authUserId"]).index("by_token", ["tokenHash"]),
   devices: defineTable({ ...deviceFields, generation: v.number() }).index("by_owner_device", ["owner", "deviceId"]),
   grants: defineTable({
     grantId: v.string(), aOwner: v.string(), aDevice: v.string(), bOwner: v.string(), bDevice: v.string(),

@@ -8,14 +8,16 @@
     "dev": "convex dev"
   },
   "dependencies": {
+    "@auth/core": "0.41.3",
+    "@convex-dev/auth": "0.0.94",
+    "@noble/hashes": "1.8.0",
     "convex": "1.46.0",
-    "tweetnacl": "1.0.3",
-    "@noble/hashes": "1.8.0"
+    "tweetnacl": "1.0.3"
   },
   "devDependencies": {
+    "@types/node": "22.19.1",
     "convex-test": "0.0.61",
     "typescript": "5.9.3",
-    "vitest": "4.1.11",
-    "@types/node": "22.19.1"
+    "vitest": "4.1.11"
   }
 }
