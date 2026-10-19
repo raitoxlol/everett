@@ -4,7 +4,7 @@ import { ConvexCredentials } from "@convex-dev/auth/providers/ConvexCredentials"
 import { makeFunctionReference } from "convex/server";
 import { checkGithub } from "./hosted";
 
-if (process.env.AUTH_LOG_LEVEL === "DEBUG") throw new Error("Hosted auth must not log credential parameters; use AUTH_LOG_LEVEL=INFO");
+if (process.env.EVERETT_OWNER_GITHUB_ID && process.env.AUTH_LOG_LEVEL === "DEBUG") throw new Error("Hosted auth must not log credential parameters; use AUTH_LOG_LEVEL=INFO");
 
 export const { auth, signIn, signOut, store, isAuthenticated } = convexAuth({
   providers: [
