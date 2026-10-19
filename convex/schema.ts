@@ -39,6 +39,7 @@ export default defineSchema({
   credentials: defineTable({
     issuer: v.string(), agentId: v.string(), owner: v.string(), subject: v.string(), status,
     authUserId: v.optional(v.id("users")), tokenHash: v.optional(v.string()), name: v.optional(v.string()),
+    kind: v.optional(v.literal("oauth")), clientId: v.optional(v.string()),
   }).index("by_agent", ["issuer", "agentId"]).index("by_owner", ["owner"])
     .index("by_auth_user", ["authUserId"]).index("by_token", ["tokenHash"]),
   devices: defineTable({ ...deviceFields, generation: v.number() }).index("by_owner_device", ["owner", "deviceId"]),
@@ -65,5 +66,20 @@ export default defineSchema({
   }).index("by_key", ["owner", "fromDevice", "idempotencyKey"])
     .index("by_message", ["owner", "messageId"])
     .index("by_recipient_state_expiry", ["recipientOwner", "toDevice", "state", "expiresAt"]),
+  oauthClients: defineTable({ clientId: v.string(), name: v.string(), redirectUris: v.array(v.string()), createdAt: v.number() })
+    .index("by_client", ["clientId"]),
+  oauthRequests: defineTable({
+    requestId: v.string(), clientId: v.string(), clientName: v.string(), redirectUri: v.string(), codeChallenge: v.string(),
+    state: v.union(v.null(), v.string()), scope: v.string(), resource: v.string(), expiresAt: v.number(),
+  }).index("by_request", ["requestId"]).index("by_expiry", ["expiresAt"]),
+  oauthCodes: defineTable({
+    codeHash: v.string(), credential: v.id("credentials"), clientId: v.string(), redirectUri: v.string(), codeChallenge: v.string(),
+    resource: v.string(), scope: v.string(), expiresAt: v.number(), used: v.boolean(),
+  }).index("by_hash", ["codeHash"]).index("by_expiry", ["expiresAt"]),
+  // One family per authorization; replaying a used code or rotated refresh token revokes the whole family.
+  oauthTokens: defineTable({
+    tokenHash: v.string(), kind: v.union(v.literal("access"), v.literal("refresh")), family: v.string(), credential: v.id("credentials"),
+    clientId: v.string(), resource: v.string(), scope: v.string(), issuedAt: v.number(), expiresAt: v.number(), used: v.boolean(), revoked: v.boolean(),
+  }).index("by_hash", ["tokenHash"]).index("by_family", ["family"]).index("by_expiry", ["expiresAt"]),
   rates: defineTable({ scope: v.string(), window: v.number(), count: v.number() }).index("by_scope", ["scope"]),
 });
