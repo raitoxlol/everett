@@ -377,6 +377,13 @@ fn native_stdio_journey_for_both_external_harnesses() {
         let direct = success(&peer.call("everett_send", json!({"text": "Synthetic direct", "to": "agent-two"})));
         assert_eq!((direct["session"]["id"].clone(), direct["mode"].clone()), (json!("agent-two"), json!("inbox")));
         assert_eq!((direct["queued"].clone(), direct["hooked"].clone()), (json!(true), json!(false)));
+        let messages = std::fs::read_to_string(c.home.join(".everett/inbox/agent-two.jsonl")).unwrap();
+        let messages: Vec<Value> = messages.lines().map(|line| serde_json::from_str(line).unwrap()).collect();
+        for message in messages.iter().rev().take(2) {
+            assert_eq!(message["from_harness"], harness);
+            assert_eq!(message["trust"], "external-untrusted");
+            assert_eq!(message["instruction_source"], "agent-data");
+        }
         success(&peer.call("everett_card", json!({"what": "Synthetic", "state": "working", "next": "reply"})));
         assert!(std::fs::read_to_string(c.home.join(".everett/cards/dot-one.md")).unwrap().contains("Synthetic"));
         assert!(!c.home.join(".everett/cards/agent-two.md").exists());
@@ -710,4 +717,3 @@ fn main() {
         std::process::exit(1);
     }
 }
-

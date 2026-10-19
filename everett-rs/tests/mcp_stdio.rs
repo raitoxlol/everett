@@ -103,6 +103,50 @@ fn home_with_claude_session() -> Fixture {
 }
 
 #[test]
+fn concurrent_card_updates_are_atomic_and_do_not_share_temporary_files() {
+    let fx = home_with_claude_session();
+    let barrier = std::sync::Barrier::new(8);
+    std::thread::scope(|scope| {
+        let mut workers = Vec::new();
+        for worker in 0..8 {
+            let fx = &fx;
+            let barrier = &barrier;
+            workers.push(scope.spawn(move || {
+                let mut server = Server::start(
+                    fx,
+                    &[("EVERETT_SESSION_ID", "c-1"), ("EVERETT_HARNESS_NAME", "claude")],
+                );
+                let mut results = Vec::new();
+                for round in 0..16 {
+                    barrier.wait();
+                    results.push(server.call(
+                        "everett_card",
+                        json!({"what":format!("worker-{worker}-round-{round}"),
+                            "state":"working", "next":"finish"}),
+                    ));
+                }
+                server.close();
+                results
+            }));
+        }
+        for worker in workers {
+            for result in worker.join().unwrap() {
+                assert_eq!(result["isError"], false, "{result}");
+            }
+        }
+    });
+    let card = std::fs::read_to_string(fx.home().join(".everett/cards/c-1.md")).unwrap();
+    assert!(
+        (0..8).any(|worker| card == format!("What: worker-{worker}-round-15\nState: working\nNext: finish\n")),
+        "{card}"
+    );
+    assert_eq!(
+        std::fs::read_dir(fx.home().join(".everett/cards")).unwrap().count(),
+        1
+    );
+}
+
+#[test]
 fn round_trip_over_pipes() {
     let fx = home_with_claude_session();
     let mut s = Server::start(&fx, &[]);

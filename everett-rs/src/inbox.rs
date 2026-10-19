@@ -126,6 +126,9 @@ pub fn post(
             message.insert(k, v);
         }
     }
+    if matches!(from_harness, "grok-bot" | "openai-dot") {
+        message.extend(serde_json::from_value::<Map<String, Value>>(json!({"external":true,"untrusted":true,"trust":"external-untrusted","instruction_source":"agent-data"})).unwrap());
+    }
     let target = path(to)?;
     append(&target, &(serde_json::to_string(&message).unwrap() + "\n"))?;
     Ok(message)
@@ -280,7 +283,7 @@ fn ago(ts: f64, now: f64) -> String {
     }
 }
 
-/// External provenance is derived from signed routing at relay import, never sender prose.
+/// External provenance comes from routing or host-bound identity, never sender prose.
 pub fn external(message: &Map<String, Value>) -> bool {
     message
         .get("external")
@@ -377,7 +380,7 @@ pub fn persist_relay_context(session_id: &str, ids: &[&str]) -> Result<()> {
             m.get("id")
                 .and_then(Value::as_str)
                 .is_some_and(|id| ids.contains(&id))
-                && (m.contains_key("relay_message_id") || m.contains_key("relay_lineage"))
+                && (external(m) || m.contains_key("relay_message_id") || m.contains_key("relay_lineage"))
         })
         .collect();
     let Some(message) = received
