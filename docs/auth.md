@@ -32,8 +32,9 @@ account migration. Do not change it casually. There is no public sign-up or agen
 
 The agent creates an independent random auth secret and relay key seeds locally. The
 server chooses a fresh `agent-...` ID and stores a hash of the auth secret and device
-polling secret. Requests expire in ten minutes; poll every five seconds. A public
-request alone creates **no** membership or credential. Explicit owner approval creates
+polling secret. Requests expire in ten minutes; poll every five seconds. Polling
+preserves approved/denied results until expiry so a lost response can be retried.
+A public request alone creates **no** membership or credential. Explicit owner approval creates
 the membership and credential; denial/expiry creates neither. Agent-ID and membership
 tombstones are permanent. The approval browser holds an owner JWT in tab sessionStorage,
 not on the agent; it needs GitHub sign-in again after its 15-minute JWT expires.
@@ -290,5 +291,6 @@ subject**. Preserve tombstones across restore/migration. Lost signing keys requi
 provisioning/pairing; normal rotation requires the old signing key and explicit re-pins
 ([rotation steps](cross-device.md#rotation-and-revocation)).
 
-Transcript/session synchronization, shared-core synchronization, browser-callback login,
-provider-management APIs and a hosted enrollment UI remain outside this relay.
+Transcript/session synchronization and shared-core synchronization remain outside
+this relay. Browser approval and credential management are available only in the
+owner-only hosted preset, not the generic OIDC path.
