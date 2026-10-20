@@ -199,3 +199,25 @@ fn export_uses_current_relay_keys_after_rotation_not_initial_bootstrap_seeds() {
         format!("evt_{}.{signing}{encryption}", "a".repeat(64))
     );
 }
+
+#[test]
+fn configured_relay_ca_must_be_readable_pem_before_any_hosted_request() {
+    let home = common::fixture();
+    let empty = home.write("empty-ca.pem", "");
+    let empty = empty.to_str().unwrap();
+    for ca in ["/nonexistent/everett-ca.pem", empty] {
+        let output = run(
+            &home,
+            &["login", "--device", "vm"],
+            &[
+                ("EVERETT_HOSTED_URL", "https://127.0.0.1:9"),
+                ("EVERETT_RELAY_CA_FILE", ca),
+            ],
+        );
+        safe(&output);
+        assert!(!output.status.success());
+        let stderr = String::from_utf8_lossy(&output.stderr).to_lowercase();
+        assert!(stderr.contains("ca_file"), "{stderr}");
+        assert!(!home.home().join(".everett/enrollment.json").exists());
+    }
+}
