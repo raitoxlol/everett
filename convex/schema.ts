@@ -25,10 +25,13 @@ export default defineSchema({
   ...authTables,
   enrollments: defineTable({
     code: v.string(), pollHash: v.string(), tokenHash: v.string(), agentId: v.string(),
-    name: v.string(), expiresAt: v.number(),
+    name: v.string(), expiresAt: v.number(), clientKey: v.optional(v.string()),
     state: v.union(v.literal("pending"), v.literal("approved"), v.literal("denied")),
     owner: v.optional(v.string()),
-  }).index("by_code", ["code"]).index("by_poll", ["pollHash"]).index("by_expiry", ["expiresAt"]),
+  }).index("by_code", ["code"]).index("by_poll", ["pollHash"]).index("by_expiry", ["expiresAt"])
+    .index("by_client", ["clientKey", "expiresAt"]),
+  enrollmentRates: defineTable({ clientKey: v.string(), window: v.number(), count: v.number() })
+    .index("by_client", ["clientKey"]).index("by_window", ["window"]),
   memberships: defineTable({
     owner: v.string(), issuer: v.string(), subject: v.string(), role: roleValidator, status,
   }).index("by_identity", ["owner", "issuer", "subject"]),

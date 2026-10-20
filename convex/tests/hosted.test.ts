@@ -2,7 +2,7 @@ import { convexTest } from "convex-test";
 import { makeFunctionReference } from "convex/server";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import schema from "../schema";
-import { checkGithub, hash } from "../hosted";
+import { checkGithub, ENROLLMENT_LIMITS, hash } from "../hosted";
 import { generateKeyPairSync } from "node:crypto";
 import { enrollmentPage } from "../enrollmentPage";
 import { key } from "./crypto.test-helper";
@@ -38,7 +38,7 @@ async function fixture() {
     return { ...ids, client: backend.withIdentity({ issuer, subject: `${ids.userId}|${ids.sessionId}` }) };
   };
   const owner = await identity("12345"), other = await identity("99999");
-  const begin = async (secret = token, name = "Devin") => await backend.action(action, { tokenHash: hash(secret), name }) as {
+  const begin = async (secret = token, name = "Devin", clientKey = hash(String(Math.random()))) => await backend.action(action, { tokenHash: hash(secret), name, clientKey }) as {
     agentId: string; deviceCode: string; userCode: string; expiresAt: number; verificationUri: string;
   };
   const enroll = async (secret = token) => {
@@ -57,6 +57,11 @@ describe("owner-only hosted enrollment", () => {
     expect(() => checkGithub({ id: 12345, login: "RAITOXLOL" })).not.toThrow();
     expect(() => checkGithub({ id: 99999, login: "raitoxlol" })).toThrow("Owner only");
     expect(() => checkGithub({ id: 12345, login: "somebody" })).toThrow("Owner only");
+    vi.stubEnv("EVERETT_OWNER_GITHUB_LOGIN", "");
+    expect(() => checkGithub({ id: 12345, login: "raitoxlol" })).toThrow("allowlist");
+    delete process.env.EVERETT_OWNER_GITHUB_LOGIN;
+    expect(() => checkGithub({ id: 12345, login: "raitoxlol" })).toThrow("allowlist");
+    vi.stubEnv("EVERETT_OWNER_GITHUB_LOGIN", "raitoxlol");
     vi.stubEnv("EVERETT_OWNER_GITHUB_ID", "");
     expect(() => checkGithub({ id: 12345, login: "raitoxlol" })).toThrow("allowlist");
   });
@@ -176,12 +181,48 @@ describe("owner-only hosted enrollment", () => {
     const e = await f.begin();
     await expect(f.owner.client.mutation(mutation("approve"), { code: e.userCode, approve: true })).rejects.toThrow("tombstone");
   });
-  test("limits public enrollment and validates names and token hashes", async () => {
+  test("validates names, token hashes and client keys", async () => {
     const f = await fixture();
-    await expect(f.backend.action(action, { tokenHash: token, name: "test" })).rejects.toThrow("Invalid enrollment");
+    await expect(f.backend.action(action, { tokenHash: token, name: "test", clientKey: hash("c") })).rejects.toThrow("Invalid enrollment");
+    await expect(f.backend.action(action, { tokenHash: hash(token), name: "test", clientKey: "short" })).rejects.toThrow("Invalid enrollment");
     await expect(f.begin(token, "bad\nname")).rejects.toThrow("Invalid enrollment");
-    for (let i = 0; i < 30; i++) await f.begin();
-    await expect(f.begin()).rejects.toThrow("rate limit");
+  });
+  test("one flooding client cannot lock the owner's client out of enrollment", async () => {
+    const f = await fixture(), attacker = hash("attacker"), honest = hash("honest");
+    for (let i = 0; i < ENROLLMENT_LIMITS.pendingPerClient; i++) await f.begin(token, "x", attacker);
+    await expect(f.begin(token, "x", attacker)).rejects.toThrow("for this client");
+    const e = await f.begin(token, "Devin", honest);
+    await f.owner.client.mutation(mutation("approve"), { code: e.userCode, approve: true });
+    expect(await f.backend.mutation(mutation("poll"), { deviceCode: e.deviceCode })).toMatchObject({ state: "approved" });
+  });
+  test("per-client rate limit resets each minute and stale rate rows are cleaned up", async () => {
+    vi.useFakeTimers();
+    const f = await fixture(), key = hash("busy");
+    for (let i = 0; i < ENROLLMENT_LIMITS.perClientPerMinute; i++) {
+      const e = await f.begin(token, "x", key);
+      await f.owner.client.mutation(mutation("approve"), { code: e.userCode, approve: false });
+    }
+    await expect(f.begin(token, "x", key)).rejects.toThrow("rate limit");
+    await f.begin(token, "x", hash("other"));
+    vi.advanceTimersByTime(60_000);
+    await f.begin(token, "x", key);
+    vi.advanceTimersByTime(60_000);
+    await f.backend.mutation(mutation("expire"), {});
+    expect(await f.backend.run(ctx => ctx.db.query("enrollmentRates").collect())).toEqual([]);
+  });
+  test("expired pending rows stop counting toward the global backstop before cleanup runs", async () => {
+    vi.useFakeTimers();
+    const limits = { ...ENROLLMENT_LIMITS };
+    ENROLLMENT_LIMITS.pendingTotal = 3;
+    try {
+      const f = await fixture();
+      for (let i = 0; i < 3; i++) await f.begin();
+      await expect(f.begin()).rejects.toThrow("Too many pending enrollments");
+      vi.advanceTimersByTime(600_001);
+      await f.begin();
+      await f.backend.mutation(mutation("expire"), {});
+      expect(await f.backend.run(ctx => ctx.db.query("enrollments").collect())).toHaveLength(1);
+    } finally { Object.assign(ENROLLMENT_LIMITS, limits); }
   });
   test("real Convex Auth agent provider mints scoped JWTs; revocation denies refresh and fresh sign-in", async () => {
     const { privateKey } = generateKeyPairSync("rsa", { modulusLength: 2048 });

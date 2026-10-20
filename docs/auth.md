@@ -24,15 +24,21 @@ HTTPS origins. `--open` explicitly opens the approval URL; never automatic.
 
 The browser uses Convex Auth + GitHub OAuth. `EVERETT_OWNER_GITHUB_ID` on the deployment
 is the owner's **numeric, immutable GitHub ID**, not a username or OAuth client ID.
-`EVERETT_OWNER_GITHUB_LOGIN` defaults to `raitoxlol`; both ID and login must match at
-GitHub sign-in, before account creation. Missing/invalid ID fails closed. Each privileged
+`EVERETT_OWNER_GITHUB_LOGIN` is the owner's GitHub login; it has no default. Both ID and
+login must match at GitHub sign-in, before account creation. A missing or invalid ID or
+login fails closed. Each privileged
 request and agent relay operation rechecks the numeric ID against the stored owner
 GitHub account. Changing the owner ID blocks old owner/agent sessions; this is not an
 account migration. Do not change it casually. There is no public sign-up or agent-admin role.
 
 The agent creates an independent random auth secret and relay key seeds locally. The
 server chooses a fresh `agent-...` ID and stores a hash of the auth secret and device
-polling secret. Requests expire in ten minutes; poll every five seconds. Polling
+polling secret. Requests expire in ten minutes; poll every five seconds. `everett login`
+retries failed polls until expiry, and re-running it resumes a still-valid pending
+enrollment rather than starting a new one. Enrollment is limited per install key
+(`~/.everett/hosted-client.json`, only its hash is sent): 5 starts a minute and 3 pending
+requests per key, plus a 5,000 unexpired-request backstop. Convex functions do not see the
+caller IP, so a client rotating keys is only stopped by that backstop. Polling
 preserves approved/denied results until expiry so a lost response can be retried.
 A public request alone creates **no** membership or credential. Explicit owner approval creates
 the membership and credential; denial/expiry creates neither. Agent-ID and membership
@@ -97,8 +103,8 @@ Revocation blocks new token exchanges, refreshes and **already-issued JWT relay 
 it does not erase already downloaded plaintext or local private keys.
 
 The existing `everett_agent_relay` MCP tool exposes `enroll` (`name`),
-`enrollment-status` (poll once), `token-login` (injected credential), and `token-export`
-(`out`, new private file). It never returns token material. Approval, listing all
+`enrollment-status` (poll once) and `token-login` (injected credential). It never returns
+or writes token material: exporting the secret is CLI-only (`everett agent-token --out`). Approval, listing all
 hosted credentials and revoking other agents stay in the owner browser/API. Existing
 identity/register/pair/directory/self-revocation actions remain available. Jev, OMP
 and Pi continue using the same local MCP and session stores.

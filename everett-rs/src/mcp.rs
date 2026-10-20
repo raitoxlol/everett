@@ -135,10 +135,9 @@ pub fn tools() -> &'static Vec<Value> {
             }),
             json!({
                 "name": "everett_agent_relay",
-                "description": "Agent identity, registration, directory and revocation. Hosted mode: enroll starts device approval; enrollment-status polls once (wait five seconds); token-login uses an injected agent secret; token-export writes this agent's token to a new private file, never returns its contents. Only the owner browser can approve or manage other hosted agents. Generic OIDC membership management remains admin-only. Run everett relay separately to receive; never wakes sessions.",
+                "description": "Agent identity, registration, directory and revocation. Hosted mode: enroll starts device approval; enrollment-status polls once (wait five seconds); token-login uses an injected agent secret; Exporting the agent secret is CLI-only (everett agent-token), never available over MCP. Only the owner browser can approve or manage other hosted agents. Generic OIDC membership management remains admin-only. Run everett relay separately to receive; never wakes sessions.",
                 "inputSchema": {"type":"object","properties":{
-                    "action":{"type":"string","enum":["identity","register","directory","pair","unpair","credentials","memberships","revoke-membership","revoke-agent","revoke-credential","enroll","enrollment-status","token-login","token-export"]},
-                    "out":s("token-export: new output file path, written mode 0600 without overwriting."),
+                    "action":{"type":"string","enum":["identity","register","directory","pair","unpair","credentials","memberships","revoke-membership","revoke-agent","revoke-credential","enroll","enrollment-status","token-login"]},
                     "id":s("Provisioned agent ID; for revoke-membership, exact provider subject; for unpair, alias."),
                     "name":s("Optional local relay alias for pair; defaults to the agent ID."),
                     "grant_id":s("Required for cross-org pairing; active bilateral named-agent grant."),
@@ -1219,7 +1218,6 @@ fn call_handler(
                     "enroll" => crate::hosted::begin(&str_arg(args,"name",true)?)?,
                     "enrollment-status" => crate::hosted::finish()?,
                     "token-login" => Value::Object(crate::auth::public_json(&crate::hosted::session(true)?)),
-                    "token-export" => crate::hosted::export(std::path::Path::new(&str_arg(args,"out",true)?))?,
                     "identity" => crate::relay::admin_call("relay:whoami", json!({}), true)?,
                     "register" => crate::relay::register()?,
                     "directory" => crate::relay::devices()?,

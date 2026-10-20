@@ -221,3 +221,84 @@ fn configured_relay_ca_must_be_readable_pem_before_any_hosted_request() {
         assert!(!home.home().join(".everett/enrollment.json").exists());
     }
 }
+
+#[test]
+fn mcp_callers_cannot_export_the_agent_secret_to_any_path() {
+    let home = common::fixture();
+    seed(&home);
+    let out = home.home().join("stolen");
+    let results = common::mcp_calls(
+        &home,
+        &[],
+        &[("EVERETT_HOSTED_URL", URL)],
+        &[(
+            "everett_agent_relay",
+            json!({"action":"token-export","out":out.to_str().unwrap()}),
+        )],
+    );
+    safe_text(&results[0].to_string());
+    assert!(
+        results[0]["isError"] == true || results[0].get("error").is_some(),
+        "{}",
+        results[0]
+    );
+    assert!(!out.exists(), "MCP must never write the agent secret");
+    let tools = everett::mcp::tools();
+    let relay = tools
+        .iter()
+        .find(|t| t["name"] == "everett_agent_relay")
+        .unwrap();
+    let actions = relay["inputSchema"]["properties"]["action"]["enum"].to_string();
+    assert!(!actions.contains("export"), "{actions}");
+    assert!(relay["inputSchema"]["properties"].get("out").is_none());
+}
+fn safe_text(text: &str) {
+    for secret in ["a".repeat(64), "b".repeat(64), "c".repeat(64)] {
+        assert!(!text.contains(&secret));
+    }
+}
+fn seed_pending(home: &common::Fixture, deployment: &str, ttl: f64) -> std::path::PathBuf {
+    let path = home.write(
+        ".everett/enrollment.json",
+        &json!({"deployment":deployment,"token":secret(),"device_code":"d".repeat(64),"agent_id":"agent-approved","name":"vm","expires_at":everett::session::now()+ttl,"user_code":"C0DE42","verification_uri":format!("{deployment}/enroll")}).to_string(),
+    );
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
+    path
+}
+#[test]
+fn rerunning_enroll_resumes_the_pending_enrollment_instead_of_overwriting_it() {
+    let home = common::fixture();
+    let unreachable = "https://127.0.0.1:9";
+    let path = seed_pending(&home, unreachable, 300.0);
+    let before = std::fs::read_to_string(&path).unwrap();
+    let results = common::mcp_calls(
+        &home,
+        &[],
+        &[("EVERETT_HOSTED_URL", unreachable)],
+        &[("everett_agent_relay", json!({"action":"enroll","name":"vm"}))],
+    );
+    safe_text(&results[0].to_string());
+    let value = common::tool_json(&results[0]);
+    assert_eq!(value["user_code"], "C0DE42", "{}", results[0]);
+    assert_eq!(value["agent_id"], "agent-approved");
+    assert_eq!(value["resumed"], true);
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), before);
+}
+#[test]
+fn login_resumes_pending_enrollment_and_keeps_polling_through_failed_polls() {
+    let home = common::fixture();
+    let unreachable = "https://127.0.0.1:9";
+    seed_pending(&home, unreachable, 3.0);
+    let output = run(
+        &home,
+        &["login", "--device", "vm"],
+        &[("EVERETT_HOSTED_URL", unreachable)],
+    );
+    safe(&output);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("approve code C0DE42"), "{stderr}");
+    assert!(stderr.contains("resumed"), "{stderr}");
+    assert!(stderr.contains("retrying"), "{stderr}");
+    assert!(stderr.contains("expired"), "{stderr}");
+    assert!(!output.status.success());
+}
