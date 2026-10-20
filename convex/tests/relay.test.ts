@@ -206,7 +206,8 @@ describe("actual Convex functions, offline", () => {
     expect(pending.envelopes[0].trust).toBe("same-org");
     expect(JSON.parse(open(pending.envelopes[0].envelope, f.kc)).text).toBe("hello");
     expect(JSON.stringify(await f.backend.run((ctx) => ctx.db.query("messages").collect()))).not.toContain("hello");
-    const tampered = { ...e, ciphertext: "00" + e.ciphertext.slice(2) };
+    const flipped = (parseInt(e.ciphertext.slice(0, 2), 16) ^ 0xff).toString(16).padStart(2, "0");
+    const tampered = { ...e, ciphertext: flipped + e.ciphertext.slice(2) };
     expect(() => open(tampered, f.kc)).toThrow();
     await expect(f.a.mutation(ref("enqueue"), { envelope: tampered })).rejects.toThrow("signature");
     expect(() => open({ ...e, recipientOwner: ownerB }, f.kc)).toThrow();
