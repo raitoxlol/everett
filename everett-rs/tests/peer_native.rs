@@ -1221,3 +1221,30 @@ fn main() {
         std::process::exit(1);
     }
 }
+
+#[test]
+fn ssh_rpc_republishes_an_address_only_when_changed_or_stale() {
+    use everett::device_registry::{publication_due, record_publication, REPUBLISH_MS};
+    let dir = tempfile::tempdir().unwrap();
+    let stamp = dir.path().join("address-published.json");
+    assert!(publication_due(&stamp, "me@host", 1_000));
+    record_publication(&stamp, "me@host", 1_000).unwrap();
+    assert!(!publication_due(&stamp, "me@host", 1_000 + REPUBLISH_MS - 1));
+    assert!(publication_due(&stamp, "me@host", 1_000 + REPUBLISH_MS));
+    assert!(publication_due(&stamp, "me@other:2222", 2_000));
+    assert!(publication_due(&stamp, "me@host", 500), "a clock step backwards republishes");
+    std::fs::write(&stamp, "not json").unwrap();
+    assert!(publication_due(&stamp, "me@host", 2_000));
+}
+
+#[test]
+fn relay_errors_surface_by_structured_code_not_function_name() {
+    use everett::relay::user_error;
+    assert_eq!(
+        user_error(&serde_json::json!({"code":"name_taken","message":"Device name 'a' is already in use"})).as_deref(),
+        Some("Device name 'a' is already in use")
+    );
+    assert_eq!(user_error(&serde_json::json!({"message":"internal detail"})), None);
+    assert_eq!(user_error(&serde_json::json!({"code":"","message":"x"})), None);
+    assert_eq!(user_error(&serde_json::json!("plain string")), None);
+}

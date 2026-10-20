@@ -149,9 +149,8 @@ impl Client {
                 .get("value")
                 .cloned()
                 .ok_or_else(|| bad("missing Convex result")),
-            Some("error") => Err(bad(response["errorMessage"]
-                .as_str()
-                .unwrap_or("Convex denied the query"))),
+            Some("error") => Err(bad(crate::relay::user_error(&response["errorData"])
+                .unwrap_or_else(|| "Convex denied the query".into()))),
             _ => Err(bad("invalid Convex response status")),
         }
     }
@@ -217,4 +216,24 @@ pub fn resolve(name: &str) -> Result<Option<String>> {
         crate::peer::parse_registry_address(address)?;
     }
     Ok(row.ssh_address)
+}
+
+/// SSH RPCs are latency-sensitive, so serve republishes an unchanged address at most this often.
+pub const REPUBLISH_MS: i64 = 6 * 60 * 60 * 1000;
+
+/// Whether `address` needs publishing: never recorded, changed, or last published REPUBLISH_MS ago.
+pub fn publication_due(stamp: &std::path::Path, address: &str, now_ms: i64) -> bool {
+    let recorded: Value = std::fs::read(stamp)
+        .ok()
+        .and_then(|raw| serde_json::from_slice(&raw).ok())
+        .unwrap_or(Value::Null);
+    recorded["address"] != address
+        || recorded["at"]
+            .as_i64()
+            .is_none_or(|at| at > now_ms || now_ms - at >= REPUBLISH_MS)
+}
+
+pub fn record_publication(stamp: &std::path::Path, address: &str, now_ms: i64) -> Result<()> {
+    std::fs::write(stamp, json!({"address": address, "at": now_ms}).to_string())
+        .map_err(|e| bad(format!("cannot record SSH address publication: {e}")))
 }

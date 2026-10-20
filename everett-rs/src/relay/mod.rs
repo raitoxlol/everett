@@ -473,6 +473,12 @@ fn args(value: Value) -> Result<BTreeMap<String, convex::Value>> {
         .collect()
 }
 
+/// The message of a backend `userError({code, message})`; any other failure stays generic.
+pub fn user_error(data: &Value) -> Option<String> {
+    data["code"].as_str().filter(|code| !code.is_empty())?;
+    data["message"].as_str().map(str::to_string)
+}
+
 fn result(value: FunctionResult) -> Result<Value> {
     match value {
         FunctionResult::Value(v) => Ok(v.into()),
@@ -536,11 +542,9 @@ async fn mutation(client: &mut ConvexClient, name: &str, value: Value) -> Result
                 "Convex mutation failed; delivery unconfirmed: {e:#}"
             ))
         })?;
-    if name == "registry:publish" || name == "relay:register" {
-        match response {
-            FunctionResult::ErrorMessage(message) => return Err(bad(message)),
-            FunctionResult::ConvexError(error) => return Err(bad(error.message)),
-            _ => (),
+    if let FunctionResult::ConvexError(error) = &response {
+        if let Some(message) = user_error(&error.data.clone().into()) {
+            return Err(bad(message));
         }
     }
     result(response)

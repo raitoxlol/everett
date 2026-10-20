@@ -1,7 +1,7 @@
 import { queryGeneric as query, mutationGeneric as mutation } from "convex/server";
 import { v } from "convex/values";
 import { authorize, ownAgent, activeDevice, bundle, type Context, type WriteContext } from "./authorization";
-import { encode, identifier, verify } from "./protocol";
+import { encode, identifier, userError, verify } from "./protocol";
 
 export function metadataBytes(owner: string, deviceId: string, name: string, sshAddress: string | null) {
   return encode(["everett-registry-v2", owner, deviceId, name, sshAddress]);
@@ -10,7 +10,7 @@ export function metadataBytes(owner: string, deviceId: string, name: string, ssh
 export async function named(ctx: Context, owner: string, name: string) {
   const row = await ctx.db.query("devices").withIndex("by_owner_name", q => q.eq("owner", owner).eq("name", name)).unique();
   const legacy = await ctx.db.query("devices").withIndex("by_owner_device", q => q.eq("owner", owner).eq("deviceId", name)).unique();
-  if (row && legacy && legacy.name === undefined && row._id !== legacy._id) throw new Error("Device name collision");
+  if (row && legacy && legacy.name === undefined && row._id !== legacy._id) throw userError("name_collision", "Device name collision");
   return row ?? (legacy?.name === undefined ? legacy : null);
 }
 
@@ -31,11 +31,11 @@ export const publish = mutation({
     if (args.sshAddress !== null && (args.sshAddress.length > 512 || args.sshAddress.startsWith("-") ||
         !/^[A-Za-z0-9_.-]+@(?:[A-Za-z0-9_.-]+|\[[0-9a-fA-F:]+\])(?::[0-9]{1,5})?$/.test(args.sshAddress) ||
         /:0+$/.test(args.sshAddress) || Number(args.sshAddress.match(/:(\d+)$/)?.[1] ?? 22) > 65535)) {
-      throw new Error("Invalid SSH address; use user@host[:port]");
+      throw userError("invalid_ssh_address", "Invalid SSH address; use user@host[:port]");
     }
     verify(row.signingKey, args.signature, metadataBytes(p.owner, p.agentId, args.name, args.sshAddress));
     const existing = await named(ctx, p.owner, args.name);
-    if (existing && existing._id !== row._id) throw new Error(`Device name '${args.name}' is already in use in this account`);
+    if (existing && existing._id !== row._id) throw userError("name_taken", `Device name '${args.name}' is already in use in this account`);
     await ctx.db.patch(row._id, { name: args.name, sshAddress: args.sshAddress,
       metadataSignature: args.signature, lastSeenAt: Date.now() });
     return null;
@@ -59,7 +59,7 @@ export const resolve = query({
     const row = await named(ctx, p.owner, args.name);
     if (!row) return null;
     await activeDevice(ctx, p.owner, row.deviceId);
-    if ("revokedAt" in row && row.revokedAt !== null) throw new Error("Device is revoked");
+    if ("revokedAt" in row && row.revokedAt !== null) throw userError("device_revoked", "Device is revoked");
     return view(row);
   },
 });
