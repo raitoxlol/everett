@@ -106,6 +106,57 @@ struct Pending {
     agent_id: String,
     name: String,
     expires_at: f64,
+    #[serde(default)]
+    user_code: String,
+    #[serde(default)]
+    verification_uri: String,
+}
+impl Pending {
+    fn public(&self, resumed: bool) -> Value {
+        json!({"state":"pending","agent_id":self.agent_id,"user_code":self.user_code,"verification_uri":self.verification_uri,"expires_at":self.expires_at,"interval":5,"resumed":resumed})
+    }
+}
+#[derive(Serialize, Deserialize)]
+struct ClientKey {
+    key: String,
+}
+/// Stable per-install key the server rate-limits enrollment by; only its hash leaves the machine.
+fn client_key() -> Result<String> {
+    let file = path("hosted-client.json");
+    let existing = file
+        .exists()
+        .then(|| read_private(&file))
+        .transpose()?
+        .and_then(|text| serde_json::from_str::<ClientKey>(&text).ok())
+        .filter(|k| k.key.len() == 64);
+    let key = match existing {
+        Some(k) => k.key,
+        None => {
+            let mut bytes = [0u8; 32];
+            rand::rngs::OsRng.fill_bytes(&mut bytes);
+            let key = ClientKey { key: hex::encode(bytes) };
+            save_private("hosted-client.json", &key)?;
+            key.key
+        }
+    };
+    Ok(hex::encode(Sha256::digest(key.as_bytes())))
+}
+/// A still-valid enrollment for this deployment; re-running login resumes it instead of orphaning an approval.
+fn pending() -> Result<Option<Pending>> {
+    let file = path("enrollment.json");
+    if !file.exists() {
+        return Ok(None);
+    }
+    let pending: Pending = serde_json::from_str(&read_private(&file)?)
+        .map_err(|_| bad("No valid pending enrollment"))?;
+    if pending.deployment != deployment()? {
+        return Err(bad("Enrollment belongs to another deployment"));
+    }
+    if pending.expires_at <= crate::session::now() {
+        let _ = fs::remove_file(&file);
+        return Ok(None);
+    }
+    Ok(Some(pending))
 }
 
 /// A private-CA hosted origin (the local dev stack) trusts only the explicit relay CA file.
@@ -274,6 +325,9 @@ pub fn session(force: bool) -> Result<Stored> {
     exchange(&secret, &auth::hostname())
 }
 pub fn begin(name: &str) -> Result<Value> {
+    if let Some(pending) = pending()? {
+        return Ok(pending.public(true));
+    }
     let mut bytes = [0u8; 96];
     rand::rngs::OsRng.fill_bytes(&mut bytes);
     let bearer = format!("evt_{}", hex::encode(&bytes[..32]));
@@ -281,7 +335,7 @@ pub fn begin(name: &str) -> Result<Value> {
     let result = call(
         "action",
         "hosted:begin",
-        json!({"tokenHash":hex::encode(Sha256::digest(bearer.as_bytes())),"name":name}),
+        json!({"tokenHash":hex::encode(Sha256::digest(bearer.as_bytes())),"name":name,"clientKey":client_key()?}),
         None,
     )?;
     let pending = Pending {
@@ -294,30 +348,32 @@ pub fn begin(name: &str) -> Result<Value> {
             .as_f64()
             .ok_or_else(|| bad("Invalid enrollment expiration"))?
             / 1000.0,
+        user_code: field(&result, "userCode")?,
+        verification_uri: field(&result, "verificationUri")?,
     };
     save_private("enrollment.json", &pending)?;
-    Ok(
-        json!({"state":"pending","agent_id":pending.agent_id,"user_code":result["userCode"],"verification_uri":result["verificationUri"],"expires_at":pending.expires_at,"interval":5}),
-    )
+    Ok(pending.public(false))
 }
-pub fn finish() -> Result<Value> {
-    let pending: Pending = serde_json::from_str(&read_private(&path("enrollment.json"))?)
-        .map_err(|_| bad("No valid pending enrollment"))?;
-    if pending.deployment != deployment()? {
-        return Err(bad("Enrollment belongs to another deployment"));
-    }
-    if pending.expires_at <= crate::session::now() {
-        let _ = fs::remove_file(path("enrollment.json"));
-        return Err(bad("Enrollment expired; run everett login again"));
-    }
-    let result = call(
+enum Poll {
+    Pending,
+    Done(Value),
+    /// The request itself failed (network, timeout, 5xx); the enrollment is untouched.
+    Transient(EverettError),
+}
+fn poll_once() -> Result<Poll> {
+    let pending =
+        pending()?.ok_or_else(|| bad("Enrollment expired; run everett login again"))?;
+    let result = match call(
         "mutation",
         "hosted:poll",
         json!({"deviceCode":pending.device_code}),
         None,
-    )?;
+    ) {
+        Ok(result) => result,
+        Err(e) => return Ok(Poll::Transient(e)),
+    };
     match result["state"].as_str() {
-        Some("pending") => Ok(json!({"state":"pending"})),
+        Some("pending") => Ok(Poll::Pending),
         Some("approved") => {
             save_private(
                 "agent-token.json",
@@ -331,12 +387,19 @@ pub fn finish() -> Result<Value> {
                 return Err(bad("Approved agent identity mismatch"));
             }
             let _ = fs::remove_file(path("enrollment.json"));
-            Ok(Value::Object(auth::public_json(&stored)))
+            Ok(Poll::Done(Value::Object(auth::public_json(&stored))))
         }
         _ => {
             let _ = fs::remove_file(path("enrollment.json"));
             Err(bad("Enrollment denied or expired"))
         }
+    }
+}
+pub fn finish() -> Result<Value> {
+    match poll_once()? {
+        Poll::Pending => Ok(json!({"state":"pending"})),
+        Poll::Done(value) => Ok(value),
+        Poll::Transient(e) => Err(e),
     }
 }
 pub fn login(name: &str, open: bool, force: bool) -> Result<Value> {
@@ -345,8 +408,9 @@ pub fn login(name: &str, open: bool, force: bool) -> Result<Value> {
     }
     let enrollment = begin(name)?;
     let uri = field(&enrollment, "verification_uri")?;
+    let resumed = if enrollment["resumed"] == true { " (resumed pending enrollment)" } else { "" };
     eprintln!(
-        "Open {uri} and approve code {} for {name}",
+        "Open {uri} and approve code {} for {name}{resumed}",
         field(&enrollment, "user_code")?
     );
     if open {
@@ -358,12 +422,15 @@ pub fn login(name: &str, open: bool, force: bool) -> Result<Value> {
         .arg(uri)
         .status();
     }
+    let expires_at = enrollment["expires_at"].as_f64().unwrap_or(0.0);
     loop {
-        std::thread::sleep(Duration::from_secs(5));
-        let value = finish()?;
-        if value["state"] != "pending" {
-            return Ok(value);
+        match poll_once()? {
+            Poll::Pending => {}
+            Poll::Done(value) => return Ok(value),
+            Poll::Transient(e) => eprintln!("everett login: poll failed ({e}); retrying"),
         }
+        let left = expires_at - crate::session::now();
+        std::thread::sleep(Duration::from_secs_f64(left.clamp(0.0, 5.0)));
     }
 }
 pub fn export(out: &Path) -> Result<Value> {

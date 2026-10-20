@@ -16,9 +16,13 @@ export function ownerGithubId() {
   if (!id || !/^\d+$/.test(id)) throw new Error("Owner allowlist is not configured");
   return id;
 }
+export function ownerGithubLogin() {
+  const login = process.env.EVERETT_OWNER_GITHUB_LOGIN;
+  if (!login || !/^[A-Za-z0-9-]{1,39}$/.test(login)) throw new Error("Owner allowlist is not configured");
+  return login;
+}
 export function checkGithub(profile: { id: number | string; login: string }) {
-  if (String(profile.id) !== ownerGithubId() ||
-      profile.login.toLowerCase() !== (process.env.EVERETT_OWNER_GITHUB_LOGIN ?? "raitoxlol").toLowerCase()) {
+  if (String(profile.id) !== ownerGithubId() || profile.login.toLowerCase() !== ownerGithubLogin().toLowerCase()) {
     throw new Error("Owner only");
   }
 }
@@ -72,10 +76,13 @@ export const claims = internalQuery({
     return { everett_agent: p.credential.agentId, everett_org: p.credential.subject };
   },
 });
+// Convex functions never see the caller's IP, so limits key on a client-chosen install key.
+// A client rotating keys only reaches the global backstop, which counts unexpired rows only.
+export const ENROLLMENT_LIMITS = { perClientPerMinute: 5, pendingPerClient: 3, pendingTotal: 5000 };
 export const begin = action({
-  args: { tokenHash: v.string(), name: v.string() }, handler: async (ctx, args): Promise<unknown> => {
-    if (!/^[a-f0-9]{64}$/.test(args.tokenHash) || !args.name.trim() || args.name.length > 100 || /[\x00-\x1f\x7f]/.test(args.name)) throw new Error("Invalid enrollment");
-    ownerGithubId();
+  args: { tokenHash: v.string(), name: v.string(), clientKey: v.string() }, handler: async (ctx, args): Promise<unknown> => {
+    if (!/^[a-f0-9]{64}$/.test(args.tokenHash) || !/^[a-f0-9]{64}$/.test(args.clientKey) || !args.name.trim() || args.name.length > 100 || /[\x00-\x1f\x7f]/.test(args.name)) throw new Error("Invalid enrollment");
+    ownerGithubId(); ownerGithubLogin();
     const deviceCode = random(), code = random().slice(0, 12).toUpperCase();
     const agentId = `agent-${random().slice(0, 32)}`;
     const expiresAt = Date.now() + 600_000;
@@ -85,14 +92,18 @@ export const begin = action({
   },
 });
 export const createEnrollment = internalMutation({
-  args: { tokenHash: v.string(), name: v.string(), pollHash: v.string(), code: v.string(), agentId: v.string(), expiresAt: v.number() },
+  args: { tokenHash: v.string(), name: v.string(), clientKey: v.string(), pollHash: v.string(), code: v.string(), agentId: v.string(), expiresAt: v.number() },
   handler: async (ctx: WriteContext, args) => {
-    const window = Math.floor(Date.now() / 60_000);
-    const rate = await ctx.db.query("rates").withIndex("by_scope", q => q.eq("scope", "hosted-enrollment")).unique();
-    if (rate?.window === window && rate.count >= 30) throw new Error("Enrollment rate limit");
+    const now = Date.now(), window = Math.floor(now / 60_000);
+    const rate = await ctx.db.query("enrollmentRates").withIndex("by_client", q => q.eq("clientKey", args.clientKey)).unique();
+    if (rate?.window === window && rate.count >= ENROLLMENT_LIMITS.perClientPerMinute) throw new Error("Enrollment rate limit");
     if (rate) await ctx.db.patch(rate._id, { window, count: rate.window === window ? rate.count + 1 : 1 });
-    else await ctx.db.insert("rates", { scope: "hosted-enrollment", window, count: 1 });
-    if ((await ctx.db.query("enrollments").take(1000)).length >= 1000) throw new Error("Too many pending enrollments");
+    else await ctx.db.insert("enrollmentRates", { clientKey: args.clientKey, window, count: 1 });
+    const mine = await ctx.db.query("enrollments").withIndex("by_client", q => q.eq("clientKey", args.clientKey).gt("expiresAt", now))
+      .take(ENROLLMENT_LIMITS.pendingPerClient + 1);
+    if (mine.filter(r => r.state === "pending").length >= ENROLLMENT_LIMITS.pendingPerClient) throw new Error("Too many pending enrollments for this client");
+    const live = await ctx.db.query("enrollments").withIndex("by_expiry", q => q.gt("expiresAt", now)).take(ENROLLMENT_LIMITS.pendingTotal);
+    if (live.length >= ENROLLMENT_LIMITS.pendingTotal) throw new Error("Too many pending enrollments");
     if (await ctx.db.query("enrollments").withIndex("by_code", q => q.eq("code", args.code)).unique()) throw new Error("Retry enrollment");
     await ctx.db.insert("enrollments", { ...args, state: "pending" });
   },
@@ -158,7 +169,10 @@ export const revokeSelf = mutation({
 });
 export const expire = internalMutation({
   args: {}, handler: async (ctx: WriteContext) => {
-    const rows = await ctx.db.query("enrollments").withIndex("by_expiry", q => q.lte("expiresAt", Date.now())).take(500);
+    const now = Date.now();
+    const rows = await ctx.db.query("enrollments").withIndex("by_expiry", q => q.lte("expiresAt", now)).take(500);
     for (const row of rows) await ctx.db.delete(row._id);
+    const rates = await ctx.db.query("enrollmentRates").withIndex("by_window", q => q.lt("window", Math.floor(now / 60_000))).take(500);
+    for (const row of rates) await ctx.db.delete(row._id);
   },
 });

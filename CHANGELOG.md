@@ -26,6 +26,11 @@
   untrusted without tainting unrelated later resume/spawn work; an explicit
   reply retains the external provenance.
 
+- Hosted auth hardening: MCP can no longer export the agent secret (CLI `everett agent-token`
+  only); `EVERETT_OWNER_GITHUB_LOGIN` has no default and fails closed when unset;
+  `everett login` keeps polling through failed polls and re-running it resumes the pending
+  enrollment instead of orphaning an approval; enrollment limits are per client install key
+  with expiring rate rows, so one flooding client no longer locks the owner out.
 - Hosted deployments no longer need `OIDC_ISSUER`/`OIDC_CLIENT_ID` set: `auth.config.ts`
   reads them as optional (Convex refuses a push that reads an unset variable).
 - The local dev stack starts again: `convex/auth.config.ts` no longer reads
