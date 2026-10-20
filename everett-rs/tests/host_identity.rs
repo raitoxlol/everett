@@ -186,6 +186,13 @@ fn install_writes_host_binding_launchers_and_hooks() {
     assert!(!fx.home().join(".omp").exists(), "OMP files written without OMP installed");
     assert!(!fx.home().join(".pi").exists());
 
+    // An OMP home without `omp` on PATH (HERMETIC_PATH has none) still counts as installed.
+    std::fs::create_dir_all(fx.home().join(".omp")).unwrap();
+    run(&["install-hooks", "--apply"]);
+    let omp = std::fs::read_to_string(fx.home().join(".omp/agent/extensions/everett.ts")).unwrap();
+    assert!(omp.contains("omp_bind"), "{omp}");
+    assert!(!fx.home().join(".pi").exists(), "a ~/.omp home must not install Pi files");
+
     run(&["install-hooks", "--pi", "--apply"]);
     let ext = std::fs::read_to_string(fx.home().join(".pi/agent/extensions/everett.ts")).unwrap();
     assert!(ext.contains("registerMcpServer") && ext.contains("EVERETT_SESSION_ID") && ext.contains("pi_bind"));
