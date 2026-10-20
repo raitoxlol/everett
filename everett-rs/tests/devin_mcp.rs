@@ -62,7 +62,7 @@ fn success(out: &Output) {
 }
 
 #[test]
-fn devin_dry_run_uses_dedicated_config_and_has_no_hook_flag() {
+fn devin_dry_run_uses_dedicated_config_and_writes_nothing() {
     let fx = fixture();
     let out = run(&fx, &["install-mcp", "--devin"]);
     success(&out);
@@ -75,14 +75,16 @@ fn devin_dry_run_uses_dedicated_config_and_has_no_hook_flag() {
     assert!(!config_path(&fx).exists());
     assert!(!fx.home().join("session-data").exists());
     let hooks = run(&fx, &["install-hooks", "--devin"]);
-    assert_eq!(hooks.status.code(), Some(2));
+    success(&hooks);
+    assert!(fx.stdout(&hooks).contains("devin_bind"));
+    assert!(!config_path(&fx).with_file_name("config.json").exists());
     let repair = run(&fx, &["install-mcp", "--devin", "--repair"]);
     assert_eq!(repair.status.code(), Some(2));
     assert!(!config_path(&fx).exists());
 }
 
 #[test]
-fn devin_default_mcp_selection_detects_config_directory_not_hooks() {
+fn devin_default_selection_detects_config_directory() {
     let fx = fixture();
     std::fs::create_dir_all(config_path(&fx).parent().unwrap()).unwrap();
     let out = run(&fx, &["install-mcp"]);
@@ -90,7 +92,7 @@ fn devin_default_mcp_selection_detects_config_directory_not_hooks() {
     assert!(fx.stdout(&out).contains("## devin"));
     let hooks = run(&fx, &["install-hooks"]);
     success(&hooks);
-    assert!(!fx.stdout(&hooks).contains("## devin"));
+    assert!(fx.stdout(&hooks).contains("## devin"));
     assert!(!config_path(&fx).exists());
 }
 
@@ -110,7 +112,7 @@ fn devin_apply_preserves_siblings_backups_and_idempotency() {
         data["mcpServers"]["everett"]["command"],
         env!("CARGO_BIN_EXE_everett")
     );
-    assert_eq!(data["mcpServers"]["everett"]["args"], json!(["mcp"]));
+    assert_eq!(data["mcpServers"]["everett"]["args"], json!(["mcp", "--harness", "devin"]));
     assert!(data["mcpServers"]["everett"].get("type").is_none());
     let saved = backups(&fx);
     assert_eq!(saved.len(), 1);

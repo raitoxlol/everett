@@ -2,14 +2,29 @@
 
 ## Unreleased
 
-- Bind Codex MCP calls from its authoritative per-call `_meta.threadId`; an
-  explicit `session_id` still must match. Claude Code, Grok CLI 1.0.4+, Codex,
-  and `everett gateway` bind callers automatically. Pi, Devin, OMP, Hermes, and
-  T3 Code do not currently expose a supported session ID to Everett's MCP
-  server, so bind `EVERETT_SESSION_ID` per session and restart or rebind the
-  server when that session changes. Reading or peeking at a local Grok Bot or
-  OpenAI dot message labels it untrusted without tainting unrelated later
-  resume/spawn work; an explicit reply retains the external provenance.
+- Codex MCP calls bind from the per-call `_meta.threadId` (this landed after the
+  1.6.0 tag; it is not in any release yet).
+- Pi, OMP, Devin, and Hermes MCP callers bind to their session without a
+  hand-set `EVERETT_SESSION_ID`: `everett mcp --harness <name>` finds the host
+  process and the session its Everett hook recorded (Pi extension, OMP
+  extension, new Devin hooks via `install-hooks --devin`), or the single new
+  session of that harness in its directory. Ambiguity fails closed.
+- Identity failures are tool results with `isError: true` and a fix, not
+  JSON-RPC `-32602`. `session_id` is removed from tool schemas (still accepted
+  when it matches the binding; never establishes one).
+- A Jev failure (rejected key, timeout, bad response) falls back to local
+  routing with a warning in CLI stderr and MCP `warning`/`fallback_from`.
+  `onboard --yes` no longer saves a rejected key and names any stale saved key;
+  `doctor` now makes one Jev call to check the key.
+- Local replies keep the hop count of the message they answer and track
+  `reply_depth` (limit 4), so ask -> answer -> acknowledgement fits; forwards
+  and remote-derived replies still spend hops.
+- `install-hooks` writes OMP/Pi/Devin files only when that harness is installed
+  or asked for. `onboard --yes` warns when no harness was configured.
+- Version is `1.6.1-dev`; `rust-version = "1.89"`.
+- Reading or peeking at a local Grok Bot or OpenAI dot message labels it
+  untrusted without tainting unrelated later resume/spawn work; an explicit
+  reply retains the external provenance.
 
 ## 1.6.0 — 2026-10-15
 

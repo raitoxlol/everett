@@ -304,7 +304,8 @@ fn self_send_refused() {
     let result = explicit.request("tools/call", Some(json!({"name":"everett_send", "arguments":
         {"text": "hello me", "to": "c-1", "session_id": "c-1"}
     })));
-    assert_eq!(result["error"]["code"], -32602, "{result}");
+    assert_eq!(result["result"]["isError"], true, "{result}");
+    assert!(text(&result["result"]).contains("cannot establish identity"), "{result}");
     explicit.close();
 }
 
@@ -404,11 +405,8 @@ fn codex_call_metadata_binds_identity_without_process_environment() {
             }),
         )),
     );
-    assert_eq!(conflict["error"]["code"], -32602, "{conflict}");
-    assert!(conflict["error"]["message"]
-        .as_str()
-        .unwrap()
-        .contains("conflicts with the host-detected caller"));
+    assert_eq!(conflict["result"]["isError"], true, "{conflict}");
+    assert!(text(&conflict["result"]).contains("conflicts with the host-detected caller"));
     assert!(!fx.home().join(".everett/cards/victim.md").exists());
     server.close();
 }
@@ -747,14 +745,8 @@ fn remote_lineage_guard_binds_host_caller_and_preserves_durable_hops_over_stdio(
             "arguments":{"text":"spoof","to":"c-1","mode":"inbox","session_id":"clean"}
         })),
     );
-    assert_eq!(mismatch["error"]["code"], -32602, "{mismatch}");
-    assert!(
-        mismatch["error"]["message"]
-            .as_str()
-            .unwrap()
-            .contains("conflicts with the host-detected caller"),
-        "{mismatch}"
-    );
+    assert_eq!(mismatch["result"]["isError"], true, "{mismatch}");
+    assert!(text(&mismatch["result"]).contains("conflicts with the host-detected caller"), "{mismatch}");
     for (tool, arguments) in [
         (
             "everett_send",
@@ -781,24 +773,15 @@ fn remote_lineage_guard_binds_host_caller_and_preserves_durable_hops_over_stdio(
             "tools/call",
             Some(json!({"name":tool,"arguments":arguments})),
         );
-        assert_eq!(response["error"]["code"], -32602, "{response}");
-        assert!(response["error"]["message"]
-            .as_str()
-            .unwrap()
-            .contains("conflicts with the host-detected caller"));
+        assert_eq!(response["result"]["isError"], true, "{response}");
+        assert!(text(&response["result"]).contains("conflicts with the host-detected caller"));
     }
     let inbox = server.request(
         "tools/call",
         Some(json!({"name":"everett_inbox","arguments":{"session_id":"clean"}})),
     );
-    assert_eq!(inbox["error"]["code"], -32602, "{inbox}");
-    assert!(
-        inbox["error"]["message"]
-            .as_str()
-            .unwrap()
-            .contains("conflicts with the host-detected caller"),
-        "{inbox}"
-    );
+    assert_eq!(inbox["result"]["isError"], true, "{inbox}");
+    assert!(text(&inbox["result"]).contains("conflicts with the host-detected caller"), "{inbox}");
     let messages = std::fs::read_to_string(fx.home().join(".everett/inbox/c-1.jsonl")).unwrap();
     assert_eq!(
         messages.lines().count(),
@@ -833,8 +816,10 @@ fn unbound_mcp_cannot_deliver_or_reply_with_model_provenance() {
     ] {
         let explicit = args.get("session_id").is_some();
         let response = server.request("tools/call", Some(json!({"name":"everett_send", "arguments":args})));
+        assert!(response.get("error").is_none(), "{response}");
         if explicit {
-            assert_eq!(response["error"]["code"], -32602, "{response}");
+            assert_eq!(response["result"]["isError"], true, "{response}");
+            assert!(text(&response["result"]).contains("cannot establish identity"), "{response}");
         } else {
             let result = &response["result"];
             assert_eq!(result["isError"], true, "{response}");

@@ -11,6 +11,7 @@ pub mod events;
 pub mod fmt;
 pub mod gateway;
 pub mod hooks_common;
+pub mod host;
 pub mod inbox;
 pub mod install;
 pub mod mcp;

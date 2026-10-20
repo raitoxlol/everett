@@ -195,7 +195,8 @@ fn inbox_round_trip_with_reply() {
     assert_eq!(out["to"], "sender-1");
     let got = inbox::pending("sender-1", None).remove(0);
     assert_eq!((got["kind"].clone(), got["reply_to"].clone(), got["text"].clone(), got["hops"].clone()),
-        (json!("reply"), json!(id), json!("looks good"), json!(2)));
+        (json!("reply"), json!(id), json!("looks good"), json!(1)));
+    assert_eq!(got["reply_depth"], 1);
     assert!(inbox::take("sender-1").contains(&format!("REPLY to your message {}", id)));
 }
 
@@ -203,7 +204,13 @@ fn inbox_round_trip_with_reply() {
 fn hop_limit_on_reply_chain() {
     let h = lib_home();
     let m = inbox::post("a", "x", "b", "message", "", 3, "", "", None).unwrap();
-    assert_eq!(reply(m["id"].as_str().unwrap(), "again", None).unwrap_err().code, 7);
+    reply(m["id"].as_str().unwrap(), "answer", None).unwrap();
+    assert_eq!(inbox::pending("b", None).remove(0)["hops"], 3);
+    let deep = json!({"reply_depth": 4}).as_object().cloned();
+    let r = inbox::post("a", "x", "b", "reply", "m0", 2, "", "", deep).unwrap();
+    assert_eq!(reply(r["id"].as_str().unwrap(), "again", None).unwrap_err().code, 7);
+    let over = inbox::post("a", "x", "b", "message", "", 4, "", "", None).unwrap();
+    assert_eq!(reply(over["id"].as_str().unwrap(), "again", None).unwrap_err().code, 7);
     std::env::set_var("EVERETT_HOPS", "3");
     let looped = send_inbox(&session(&h.path(), "target-1"), "loop", 0.0, None, 1.0);
     std::env::remove_var("EVERETT_HOPS");

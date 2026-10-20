@@ -44,6 +44,14 @@ pub fn find_api_key() -> String {
 }
 
 pub fn verify_key(key: &str) -> bool {
+    check_key(key).is_ok()
+}
+
+/// One cheap Jev call; Err carries the reason (for example "http status: 401").
+pub fn check_key(key: &str) -> std::result::Result<(), String> {
+    if key.trim().is_empty() {
+        return Err("empty key".into());
+    }
     let crit = json!({
         "new": "start a new session",
         "none": "ambiguous or too vague to place",
@@ -51,7 +59,15 @@ pub fn verify_key(key: &str) -> bool {
     .as_object()
     .cloned()
     .unwrap_or_default();
-    call_jev("ping", &crit, key).is_ok()
+    call_jev("ping", &crit, key)
+        .map(|_| ())
+        .map_err(|e| jev_reason(&e.message).to_string())
+}
+
+const JEV_ERROR_PREFIX: &str = "Jev unavailable or returned an invalid response: ";
+
+fn jev_reason(message: &str) -> &str {
+    message.strip_prefix(JEV_ERROR_PREFIX).unwrap_or(message)
 }
 
 /// cwd (or git repo) basename, casefolded — how a request names a project.
@@ -204,6 +220,14 @@ pub fn new_command(text: &str) -> String {
     format!("{} {}", shlex_quote(&default_harness()), shlex_quote(text))
 }
 
+/// EVERETT_JEV_URL overrides the endpoint (tests, proxies).
+fn jev_url() -> String {
+    std::env::var("EVERETT_JEV_URL")
+        .ok()
+        .filter(|u| !u.trim().is_empty())
+        .unwrap_or_else(|| JEV_URL.to_string())
+}
+
 pub fn call_jev(text: &str, crit: &Map<String, Value>, key: &str) -> Result<Map<String, Value>> {
     let payload = json!({
         "model": JEV_MODEL,
@@ -221,22 +245,22 @@ pub fn call_jev(text: &str, crit: &Map<String, Value>, key: &str) -> Result<Map<
         .build();
     let agent: ureq::Agent = config.into();
     let mut resp = agent
-        .post(JEV_URL)
+        .post(jev_url().as_str())
         .header("Authorization", &format!("Bearer {}", key))
         .header("Content-Type", "application/json")
         .send_json(&payload)
         .map_err(|e| {
-            EverettError::new(2, format!("Jev unavailable or returned an invalid response: {}", e))
+            EverettError::new(2, format!("{}{}", JEV_ERROR_PREFIX, e))
         })?;
     let result: Value = resp.body_mut().read_json().map_err(|e| {
-        EverettError::new(2, format!("Jev unavailable or returned an invalid response: {}", e))
+        EverettError::new(2, format!("{}{}", JEV_ERROR_PREFIX, e))
     })?;
     result
         .get("answers")
         .and_then(|a| a.get("route"))
         .and_then(|r| r.as_object().cloned())
         .ok_or_else(|| {
-            EverettError::new(2, "Jev unavailable or returned an invalid response: missing answers.route".to_string())
+            EverettError::new(2, format!("{}missing answers.route", JEV_ERROR_PREFIX))
         })
 }
 
@@ -498,8 +522,27 @@ pub fn route_with(
         ));
     }
     let (crit, options) = criteria(&relevant_sessions(text, sessions, caller_id));
-    let answer = jev(text, &crit, &key)?;
-    let mut r = normalize(text, &answer, &options)?;
-    r.insert("router".into(), json!("jev"));
-    Ok(r)
+    match jev(text, &crit, &key).and_then(|answer| normalize(text, &answer, &options)) {
+        Ok(mut r) => {
+            r.insert("router".into(), json!("jev"));
+            Ok(r)
+        }
+        Err(e) => {
+            let mut r = local_route(text, sessions, None, caller_id);
+            r.insert("router".into(), json!("local"));
+            r.insert("fallback_from".into(), json!("jev"));
+            r.insert("warning".into(), json!(jev_fallback_warning(&e.message)));
+            Ok(r)
+        }
+    }
+}
+
+pub fn jev_fallback_warning(message: &str) -> String {
+    let reason = jev_reason(message);
+    let hint = if reason.contains("401") || reason.contains("403") {
+        "the Jev key was rejected; replace it with `everett onboard --yes --jev-key-env VAR` or remove typesafe_api_key from ~/.everett/config.toml"
+    } else {
+        "run `everett doctor` to check the Jev key and network"
+    };
+    format!("Jev routing failed ({}); used local matching instead. Fix: {}.", reason, hint)
 }
