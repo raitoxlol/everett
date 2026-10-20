@@ -108,13 +108,18 @@ fn spawn_retrying(fx: &Fixture, program: &std::path::Path, args: &[&str]) -> std
     panic!("{} stayed busy", program.display());
 }
 
-/// A shebang script named `omp`: `ps` shows `/bin/sh .../omp`, like a node-launched omp.
-fn fake_omp(fx: &Fixture, bind_id: Option<&str>) -> std::path::PathBuf {
-    let bind = bind_id.map(|id| format!("\"$EVERETT_BIN\" hook omp_bind {}\n", id)).unwrap_or_default();
-    let path = fx.write("bin/omp", &format!("#!/bin/sh\n{}\"$EVERETT_BIN\" mcp --harness omp\n", bind));
+/// A shebang script named after a harness: `ps` shows `/bin/sh .../<name>`, like a node-launched
+/// CLI, so it is the nearest host above the server whatever runs the test suite.
+fn fake_host(fx: &Fixture, name: &str, body: &str) -> std::path::PathBuf {
+    let path = fx.write(&format!("bin/{name}"), &format!("#!/bin/sh\n{body}"));
     use std::os::unix::fs::PermissionsExt;
     std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
     path
+}
+
+fn fake_omp(fx: &Fixture, bind_id: Option<&str>) -> std::path::PathBuf {
+    let bind = bind_id.map(|id| format!("\"$EVERETT_BIN\" hook omp_bind {}\n", id)).unwrap_or_default();
+    fake_host(fx, "omp", &format!("{}\"$EVERETT_BIN\" mcp --harness omp\n", bind))
 }
 
 #[test]
@@ -154,9 +159,12 @@ fn unbound_callers_get_readable_tool_errors_not_protocol_errors() {
         let text = resp["result"]["content"][0]["text"].as_str().unwrap();
         assert!(text.contains("Cannot tell which session you are"), "{text}");
     }
-    let direct = common::mcp_calls(&fx, &["--harness", "devin"], &[], &[("everett_card", json!({"what": "w", "state": "s", "next": "n"}))]);
-    assert_eq!(direct[0]["isError"], true, "{}", direct[0]);
-    assert!(direct[0]["content"][0]["text"].as_str().unwrap().contains("no devin process"));
+    let pi = fake_host(&fx, "pi", "\"$EVERETT_BIN\" mcp --harness devin\n");
+    let wrong = mcp_via(&fx, &pi, &[], &[("everett_card", json!({"what": "w", "state": "s", "next": "n"}))]);
+    assert!(wrong[0].get("error").is_none(), "{}", wrong[0]);
+    assert_eq!(wrong[0]["result"]["isError"], true, "{}", wrong[0]);
+    let text = wrong[0]["result"]["content"][0]["text"].as_str().unwrap();
+    assert!(text.contains("--harness devin") && text.contains("pi"), "{text}");
 }
 
 #[test]
@@ -177,8 +185,9 @@ fn schemas_no_longer_advertise_session_id() {
 #[test]
 fn install_writes_host_binding_launchers_and_hooks() {
     let fx = fixture();
+    let path = format!("{}:/usr/bin:/bin", fx.home().join("bin").display());
     let run = |args: &[&str]| {
-        let out = fx.run(args);
+        let out = fx.run_stdin(args, "", &[("PATH", &path)]);
         assert!(out.status.success(), "{:?}: {}", args, String::from_utf8_lossy(&out.stderr));
         fx.stdout(&out)
     };
@@ -205,4 +214,21 @@ fn install_writes_host_binding_launchers_and_hooks() {
     let bound = fx.run_stdin(&["hook", "devin_bind"], &json!({"session_id": "devin-sess"}).to_string(), &[]);
     assert!(bound.status.success());
     assert!(fx.home().join(".everett/inbox/live/devin-sess.json").exists());
+}
+
+#[test]
+fn install_hooks_writes_omp_files_only_when_omp_is_on_path_or_set_up() {
+    let fx = fixture();
+    let path = format!("{}:/usr/bin:/bin", fx.home().join("bin").display());
+    let install = || {
+        let out = fx.run_stdin(&["install-hooks", "--apply"], "", &[("PATH", &path)]);
+        assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+        fx.stdout(&out)
+    };
+    assert!(!install().contains("omp:"));
+    assert!(!fx.home().join(".omp").exists());
+    fake_host(&fx, "omp", "exit 0\n");
+    assert!(install().contains("omp: wrote"));
+    assert!(fx.home().join(".omp/agent/extensions/everett.ts").exists());
+    assert!(!fx.home().join(".pi").exists());
 }
