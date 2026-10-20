@@ -73,7 +73,7 @@ export default defineSchema({
     requestId: v.string(), clientId: v.string(), clientName: v.string(), redirectUri: v.string(), codeChallenge: v.string(),
     state: v.union(v.null(), v.string()), scope: v.string(), resource: v.string(), expiresAt: v.number(),
     bindingHash: v.optional(v.string()),
-  }).index("by_request", ["requestId"]).index("by_expiry", ["expiresAt"]),
+  }).index("by_request", ["requestId"]).index("by_expiry", ["expiresAt"]).index("by_client", ["clientId", "expiresAt"]),
   oauthCodes: defineTable({
     codeHash: v.string(), credential: v.id("credentials"), clientId: v.string(), redirectUri: v.string(), codeChallenge: v.string(),
     resource: v.string(), scope: v.string(), expiresAt: v.number(), used: v.boolean(),

@@ -99,10 +99,14 @@ browser cannot be approved. The approval page shows the redirect host and the
 client name.
 
 DCR clients that never complete an approval expire after an hour (the `expire`
-cron deletes them). When 100 unused clients exist, the oldest unused one is
-evicted rather than refusing new registrations. Registration is limited to 10
-per minute per source (first `X-Forwarded-For` hop). Convex does not document
-that header for HTTP actions; without it every caller shares one bucket.
+cron deletes them); starting an authorization extends that to the request's
+10-minute expiry. When 100 unused clients exist, the oldest unused one **with no
+in-flight authorization** is evicted; if every unused client has one,
+registration is refused until a slot frees up. Registration is limited to 20 per
+minute in total. HTTP actions get no trustworthy caller address (a client can
+send any `X-Forwarded-For`), so there is no per-source bucket: a flood can delay
+new DCR registrations, but cannot evict a client that is mid-approval. CIMD
+clients and already-registered clients do not use `/oauth/register`.
 
 Approval is owner-only: `/enroll` requires the PR #25 GitHub sign-in (numeric ID +
 login). Approving mints a **new** `agent-…` identity and credential (`kind: oauth`)
