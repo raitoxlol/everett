@@ -4,6 +4,9 @@
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
+/// Host-installed harness CLIs (omp, devin, pi, ...) must not leak into tests.
+pub const HERMETIC_PATH: &str = "/usr/bin:/bin";
+
 pub struct Fixture {
     pub dir: tempfile::TempDir,
 }
@@ -20,6 +23,7 @@ impl Fixture {
             .env("EVERETT_HOME", self.home())
             .env("HOME", self.home())
             .env("EVERETT_NOTIFY", "none")
+            .env("PATH", HERMETIC_PATH)
             .env_remove("TYPESAFE_API_KEY")
             .env_remove("EVERETT_SEND");
         cmd.output().unwrap()
@@ -33,6 +37,7 @@ impl Fixture {
             .env("EVERETT_HOME", self.home())
             .env("HOME", self.home())
             .env("EVERETT_NOTIFY", "none")
+            .env("PATH", HERMETIC_PATH)
             .env_remove("TYPESAFE_API_KEY")
             .env_remove("EVERETT_SEND")
             .stdin(std::process::Stdio::piped())
@@ -129,6 +134,7 @@ pub fn jev_stub(status: u16, body: &'static str) -> String {
 }
 
 /// Run `everett mcp` with an isolated env, send initialize plus each tools/call, return the call results.
+/// The server is orphaned so harnesses running the test suite (devin, omp, ...) are not its ancestors.
 pub fn mcp_calls(
     fixture: &Fixture,
     args: &[&str],
@@ -136,14 +142,16 @@ pub fn mcp_calls(
     calls: &[(&str, serde_json::Value)],
 ) -> Vec<serde_json::Value> {
     use std::io::{BufRead, BufReader, Write};
-    let mut cmd = Command::new(env!("CARGO_BIN_EXE_everett"));
-    cmd.arg("mcp")
+    let mut cmd = Command::new("/bin/sh");
+    let pidfile = fixture.home().join(".mcp-server.pid");
+    let _ = std::fs::remove_file(&pidfile);
+    cmd.args(["-c", r#"exec 3<&0; ( "$0" "$@" <&3 3<&- & echo $! > "$EVERETT_HOME/.mcp-server.pid" )"#, env!("CARGO_BIN_EXE_everett"), "mcp"])
         .args(args)
         .env_clear()
         .env("HOME", fixture.home())
         .env("EVERETT_HOME", fixture.home())
         .env("EVERETT_NOTIFY", "none")
-        .env("PATH", "/usr/bin:/bin")
+        .env("PATH", HERMETIC_PATH)
         .current_dir(fixture.home())
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
@@ -172,6 +180,7 @@ pub fn mcp_calls(
     }
     drop(stdin);
     let _ = child.wait();
+    wait_for_exit(&pidfile);
     results
 }
 
@@ -226,4 +235,14 @@ pub fn lib_home() -> LibHome {
         std::env::remove_var(name);
     }
     LibHome { dir, _guard: guard }
+}
+
+/// The orphaned server is not our child, so poll its pid (recorded by the launching shell) until it exits.
+pub fn wait_for_exit(pidfile: &std::path::Path) {
+    let pid: i32 = std::fs::read_to_string(pidfile).expect("mcp server pid").trim().parse().unwrap();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    while unsafe { libc::kill(pid, 0) } == 0 {
+        assert!(std::time::Instant::now() < deadline, "everett mcp (pid {pid}) still running after stdin closed");
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
 }
