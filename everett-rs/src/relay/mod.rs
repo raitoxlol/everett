@@ -660,10 +660,33 @@ pub fn revoke_device_with(
 pub struct RevokedDevice {
     pub device_id: String,
     pub revoked_at: f64,
+    /// The revoked device's SSH peer id when it registered one; its SSH authorization carries this tag.
+    #[serde(default)]
+    pub ssh_device_id: Option<String>,
 }
 
+const MAX_REVOKED_PAGES: usize = 64;
+
 pub fn revoked_devices() -> Result<Vec<RevokedDevice>> {
-    parse_revoked_devices(admin_call("relay:revokedDevices", json!({}), true)?)
+    revoked_devices_with(|cursor| admin_call("relay:revokedDevices", json!({"cursor": cursor}), true))
+}
+
+/// Follow the query's cursor until the backend reports the last page.
+pub fn revoked_devices_with(
+    mut fetch: impl FnMut(Option<String>) -> Result<Value>,
+) -> Result<Vec<RevokedDevice>> {
+    let mut all = Vec::new();
+    let mut cursor = None;
+    for _ in 0..MAX_REVOKED_PAGES {
+        let mut page = fetch(cursor)?;
+        all.extend(parse_revoked_devices(page["devices"].take())?);
+        cursor = match page["cursor"].take() {
+            Value::Null => return Ok(all),
+            Value::String(next) => Some(next),
+            _ => return Err(bad("invalid revocation cursor")),
+        };
+    }
+    Err(bad(format!("revocation list exceeds {MAX_REVOKED_PAGES} pages")))
 }
 
 pub fn parse_revoked_devices(value: Value) -> Result<Vec<RevokedDevice>> {
@@ -673,6 +696,9 @@ pub fn parse_revoked_devices(value: Value) -> Result<Vec<RevokedDevice>> {
     }
     for row in &rows {
         valid(&row.device_id)?;
+        if let Some(ssh) = &row.ssh_device_id {
+            valid(ssh)?;
+        }
         if !row.revoked_at.is_finite()
             || row.revoked_at.fract() != 0.0
             || row.revoked_at < 0.0
@@ -732,13 +758,23 @@ pub fn rotate() -> Result<Value> {
     )
 }
 
+/// Register args carry this machine's SSH peer id so a later revocation can prune its SSH key.
+fn register_args(device: &Device) -> Result<Value> {
+    let mut args = json!({"device": device});
+    if let Some(ssh) = peer::local_device_id()? {
+        args["sshDeviceId"] = json!(ssh);
+    }
+    Ok(args)
+}
+
 pub fn register() -> Result<Value> {
     let (_, owner) = account()?;
     let key = verified_keys(&owner)?;
     let device = key.device.clone();
+    let args = register_args(&device)?;
     runtime(async move {
         let mut client = client(&owner).await?;
-        mutation(&mut client, "relay:register", json!({"device":device})).await?;
+        mutation(&mut client, "relay:register", args).await?;
         Ok(json!({"device":device, "fingerprint":device.fingerprint()}))
     })
 }
@@ -1502,12 +1538,13 @@ fn finish_staged(
 pub fn run() -> Result<Value> {
     let (_, owner) = account()?;
     let keys = verified_keys(&owner)?;
+    let register = register_args(&keys.device)?;
     let _guard = daemon_lock()?;
     let ingress = root().join("ingress");
     peer::private_dir(&ingress)?;
     let outcome = tokio::runtime::Runtime::new().map_err(bad)?.block_on(async {
         let mut client = client(&owner).await?;
-        mutation(&mut client,"relay:register",json!({"device":keys.device})).await?;
+        mutation(&mut client,"relay:register",register.clone()).await?;
         let mut final_cursor: Option<String> = None;
         let mut subscription = client.subscribe("relay:pending",args(json!({"deviceId":keys.device.device_id,"cursor":final_cursor}))?).await.map_err(|_| bad("Convex subscription failed"))?;
         eprintln!("everett relay: subscribed; inbox-only, no session wake-up");
@@ -1525,7 +1562,7 @@ pub fn run() -> Result<Value> {
                     let (stored,current) = account()?;
                     if current != owner || claims(&stored.id_token)?["everett_agent"] != keys.device.device_id { return Err(bad("signed-in identity changed; restart the relay")); }
                     // Mutation barrier rejects a revoked credential even if a query snapshot is stale.
-                    mutation(&mut client,"relay:register",json!({"device":keys.device})).await?;
+                    mutation(&mut client,"relay:register",register.clone()).await?;
                     for path in crate::paths::glob(&ingress,"*.json") {
                         let envelope: Envelope = read(&path)?;
                         if envelope.recipient_owner == owner && envelope.to_device == keys.device.device_id {

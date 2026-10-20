@@ -87,7 +87,7 @@ fn doctor_offline_missing_config_mismatched_ids_and_rewrite_failure() {
     let checks =
         doctor::device_revocation_checks(|| Err(everett::error::EverettError::new(5, "offline")));
     assert!(checks.iter().any(|(ok, text)| ok.is_none()
-        && text.contains("IDs DO NOT MATCH")
+        && text.contains("IDs differ")
         && text.contains("local-ssh-id")
         && text.contains("different-relay-id")));
     assert!(checks
@@ -244,4 +244,37 @@ fn cli_exposes_device_revoke_and_best_effort_logout() {
     );
     assert!(!fixture.home().join(".everett/auth.json").exists());
     assert!(String::from_utf8_lossy(&out.stderr).contains("registry device revocation"));
+}
+
+#[test]
+fn doctor_prunes_the_ssh_id_recorded_for_a_revoked_relay_agent() {
+    let home = common::lib_home();
+    sign_in(&home.path(), "relay-agent-local");
+    fs::create_dir_all(home.path().join(".ssh")).unwrap();
+    let file = home.path().join(".ssh/authorized_keys");
+    fs::write(&file, "ssh-ed25519 a # everett-peer:ssh-of-laptop\nssh-ed25519 b # everett-peer:keep\n").unwrap();
+    let checks = doctor::device_revocation_checks(|| {
+        rows(json!([{"deviceId":"relay-agent-laptop","sshDeviceId":"ssh-of-laptop","revokedAt":1000}]))
+    });
+    assert!(checks.iter().any(|(ok, t)| *ok == Some(true) && t.contains("relay-agent-laptop")), "{checks:?}");
+    assert_eq!(fs::read_to_string(&file).unwrap(), "ssh-ed25519 b # everett-peer:keep\n");
+    assert!(rows(json!([{"deviceId":"x","sshDeviceId":"bad id!","revokedAt":1}])).is_err());
+}
+
+#[test]
+fn revoked_devices_follow_the_cursor_to_the_last_page() {
+    let mut seen = Vec::new();
+    let all = relay::revoked_devices_with(|cursor| {
+        seen.push(cursor.clone());
+        Ok(match cursor.as_deref() {
+            None => json!({"devices":[{"deviceId":"a","revokedAt":1}],"cursor":"p2"}),
+            Some("p2") => json!({"devices":[{"deviceId":"b","revokedAt":2}],"cursor":null}),
+            other => panic!("unexpected cursor {other:?}"),
+        })
+    })
+    .unwrap();
+    assert_eq!(all.iter().map(|d| d.device_id.as_str()).collect::<Vec<_>>(), ["a", "b"]);
+    assert_eq!(seen, [None, Some("p2".to_string())]);
+    let endless = relay::revoked_devices_with(|_| Ok(json!({"devices":[],"cursor":"again"})));
+    assert!(endless.is_err());
 }

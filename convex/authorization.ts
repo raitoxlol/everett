@@ -44,7 +44,7 @@ export async function activeDevice(ctx: Context, owner: string, deviceId: string
   const row = await ctx.db.query("devices").withIndex("by_owner_device", (q) =>
     q.eq("owner", owner).eq("deviceId", deviceId)).unique();
   if (!row) throw new Error("Device is not registered");
-  if (row.revokedAt !== null) throw new Error("Device revoked");
+  if (row.revokedAt != null) throw new Error("Device revoked");
   // Read both authoritative rows on EVERY access, including subscriptions to other agents.
   const parts: unknown = JSON.parse(owner);
   if (!Array.isArray(parts) || typeof parts[0] !== "string") throw new Error("Invalid owner namespace");

@@ -69,7 +69,7 @@ Errors reject the operation (there is no success-shaped denial). All functions b
 | Reference | Kind | Args | Result |
 | --- | --- | --- | --- |
 | `relay:whoami` | query | `{}` | `{owner, deviceId, role: "admin"|"member"}` (allows provisioned agent before registration) |
-| `relay:register` | mutation | `{device: Device}` | `null`; idempotent same bundle only; JWT agent must equal deviceId |
+| `relay:register` | mutation | `{device: Device, sshDeviceId?}` | `null`; idempotent same bundle only; JWT agent must equal deviceId; `sshDeviceId` (the device's SSH peer id) is recorded once and never replaced |
 | `relay:devices` | query | `{}` | bounded presentation list of current registered active own-org devices, at most 256; never authoritative for pairing or recovery |
 | `relay:device` | query | `{deviceId}` | exact current active `Device` in the caller's own organization; caller and target must both be active |
 | `relay:credentials` | query | `{}` | `{credentials: [{agentId, subject, status}], truncated}`; admin's own org or member's own credential; at most 256, no tokens |
@@ -77,7 +77,7 @@ Errors reject the operation (there is no success-shaped denial). All functions b
 | `relay:rotate` | mutation | `{device: newDevice, oldFingerprint, signature: oldKeyRotationSignature}` | `{fingerprint: newFingerprint}` |
 | `relay:revokeAgent` | mutation | `{deviceId}` | `null`; self or current org admin; permanent credential tombstone |
 | `relay:revokeDevice` | mutation | `{deviceId}` | `null`; same authorization and permanent credential denial as `revokeAgent`; stamps registered device `revokedAt` once, never clears it |
-| `relay:revokedDevices` | query | `{}` | `[{deviceId, revokedAt: ms}]`; registered active caller, own namespace only, at most 256 revoked registered rows; no public keys or metadata updates |
+| `relay:revokedDevices` | query | `{cursor?: string\|null}` | `{devices: [{deviceId, sshDeviceId?, revokedAt: ms}], cursor: string\|null}`; registered active caller, own namespace only, 256 revoked rows per page, `cursor:null` on the last page; no public keys or metadata updates |
 | `relay:revokeMember` | mutation | `{subject}` | `null`; current org admin; permanent membership tombstone |
 | `relay:enqueue` | mutation | `{envelope: Envelope}` | `{messageId, state: "queued"|"delivered"|"claimed"|"replied"|"expired"}` |
 | `relay:pending` | query/subscription | `{deviceId: own JWT agent, cursor?: string|null}` | `{serverNow: ms, envelopes: [{envelope: Envelope, trust: "same-org"|"external-untrusted"}], isDone: boolean, continueCursor: string}`; up to 32 inspected rows/page to keep maximum-body results below 8 MiB |
@@ -93,8 +93,8 @@ Errors reject the operation (there is no success-shaped denial). All functions b
 | `relay:provisionIdentity` | INTERNAL mutation | `{issuer, subject, org: string|null, agentId, role: "admin"|"member"}` | `{owner, deviceId}`; deployment operator only |
 | `relay:expire` | INTERNAL mutation | `{}` | `null`; cron every minute, bounded 64-row batches for messages and grants, follow-up scheduled if full |
 
-Device rows also store `generation` and `revokedAt: number|null`; these fields are not
-part of the signed `Device` bundle. Registration inserts `revokedAt:null`; rotation
+Device rows also store `generation`, optional `revokedAt: number|null` (absent means active)
+and optional `sshDeviceId`; these fields are not part of the signed `Device` bundle. Registration inserts `revokedAt:null`; rotation
 preserves it. Both `revokeAgent` and `revokeDevice` permanently revoke the credential
 and stamp any registered row once. An unregistered provisioned credential can also be
 revoked, but has no device row to return from `revokedDevices`. Caller authentication
@@ -102,12 +102,12 @@ requires verified OIDC plus active membership and credential checks; revocation 
 revocation listing also require an active registered caller. Repeated admin revocation
 does not change the original timestamp. Revoked IDs cannot register or be reprovisioned.
 
-The revocation query filters out active rows before applying its 256-row bound. It is
-not paginated; a full response may omit additional tombstones. Doctor warns at the bound.
-Its only SSH effect is removal of matching authorization tags, never adding or re-pinning.
-Operators upgrading existing v2 rows must backfill `revokedAt:null` for active devices
-and a revocation timestamp for retained revoked credentials before enforcing the required
-schema field. Preserve all credential and device tombstones; no automatic migration runs.
+The revocation query reads the `by_owner_revoked` index, so active rows never fill a page,
+and pages 256 tombstones at a time; doctor follows the cursor. Its only SSH effect is removal
+of matching authorization tags (by `sshDeviceId` when recorded, else `deviceId`), never adding
+or re-pinning. Existing v2 rows need no backfill: a missing `revokedAt` reads as active.
+Retained revoked credentials without a device timestamp still deny access through the
+credential tombstone. Preserve all credential and device tombstones.
 
 `GrantView = {grantId, aOwner, aDevice, bOwner, bDevice, aBundle: Device, bBundle: Device, aFingerprint, bFingerprint, state: "invited"|"active"|"reconfirming"|"revoked"|"expired", confirmation: "a"|"b"|"both", expiresAt: ms|null, ratePerMinute, bodyCapBytes, access: "invited"|"active"|"reconfirming"|"revoked"|"expired"|"key_changed"|"agent_revoked"}`. Views return the **pinned** bundles, not automatically refreshed bundles. Obtain rotated bundles/fingerprints from the other admin over an independently authenticated channel; never silently trust fresh keys just because the server lists them. Key mismatch denies queued/new traffic even before state is changed to `reconfirming`. One side repeating confirmation cannot stand in for the other. Another rotation during reconfirmation restarts confirmation for the newly pinned pair. Revoked grant IDs cannot be reused.
 
