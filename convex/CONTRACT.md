@@ -71,6 +71,9 @@ Errors reject the operation (there is no success-shaped denial). All functions b
 | `relay:whoami` | query | `{}` | `{owner, deviceId, role: "admin"|"member"}` (allows provisioned agent before registration) |
 | `relay:register` | mutation | `{device: Device, sshDeviceId?}` | `null`; idempotent same bundle only; JWT agent must equal deviceId; `sshDeviceId` (the device's SSH peer id) is recorded once and never replaced |
 | `relay:devices` | query | `{}` | bounded presentation list of current registered active own-org devices, at most 256; never authoritative for pairing or recovery |
+| `registry:publish` | mutation | `{deviceId, name, sshAddress: string|null, signature: hex64}` | `null`; caller's own registered active device only; unique name in owner namespace; verifies metadata signature and sets server `lastSeenAt` |
+| `registry:devices` | query | `{cursor: string|null}` | `{devices: RegistryDevice[], isDone, continueCursor}`; 128 rows per page in caller's namespace, including historical/revoked devices; caller needs active membership/credential but need not have registered keys |
+| `registry:resolve` | query | `{name}` | exact active own-namespace `RegistryDevice` or `null` if absent; rejects revoked target credentials/membership |
 | `relay:device` | query | `{deviceId}` | exact current active `Device` in the caller's own organization; caller and target must both be active |
 | `relay:credentials` | query | `{}` | `{credentials: [{agentId, subject, status}], truncated}`; admin's own org or member's own credential; at most 256, no tokens |
 | `relay:memberships` | query | `{}` | `{memberships: [{subject, role, status}], truncated}`; admin's own org only; at most 256 |
@@ -113,6 +116,42 @@ credential tombstone. Preserve all credential and device tombstones.
 
 Grants are symmetric, one named agent in A and one in B, not wildcard org permission. Same-org messages require grantId null; cross-org messages require exactly the named active grant and explicit recipientOwner. Invitation and acceptance each pin BOTH actual bundle fingerprints. Limits: per grant shared fixed UTC-minute window, 1..120 new messages/minute total across both directions; bodyCapBytes 256..65536 serialized plaintext bytes. Each sending credential and each issuer/subject account within its organization has a 120-new-message/minute cap; the account budget is shared by all its credentials. Each organization has a 600-new-message/minute aggregate cap. Each recipient agent can hold at most 256 unexpired ciphertext rows, including currently blocked routes; delivery or TTL frees capacity. Fixed-window boundary bursts may be up to twice the quota. Mutations serialize/conflict on counters and recipient queues. Exact idempotent retries do not consume rate quota or queue capacity.
 
+## SSH registry metadata
+
+`RegistryDevice = {...Device, name, sshAddress: string|null, lastSeenAt: ms|null,
+metadataSignature: hex64|null}`. If the devices table exposes `revokedAt: number|null`,
+the view preserves it. This change introduces no revocation fields. Legacy rows without
+metadata use their device ID as name, null address, null last-seen and null metadata signature.
+The optional schema fields allow existing v2 rows to remain readable without a data reset.
+New registrations reserve the device ID as a default name and initialize `lastSeenAt`.
+Names use `[A-Za-z0-9_.-]{1,160}`, are case-sensitive and unique per owner, including
+revoked/historical rows. Indexed mutation reads make concurrent name claims conflict.
+
+The metadata signature uses the registered relay Ed25519 key over UTF-8 compact JSON:
+
+```
+["everett-registry-v2", owner, deviceId, name, sshAddress]
+```
+
+The existing `Device.signature`, fingerprints and relay/envelope bytes do not change.
+`lastSeenAt` is set by the server at registration/publication and is not signed or a heartbeat.
+Rotation preserves metadata names but clears the address and metadata signature until
+publication with the new key. `registry:publish` only patches metadata on its own device;
+it does not change credentials or bundles. `sshAddress` is a declared `user@host[:port]`,
+at most 512 ASCII characters, with bracketed IPv6 and a port from 1 through 65535.
+
+Rust directory/name queries use Convex's authenticated HTTP API at `/api/query` with
+`{path, args, format:"json"}` and a bearer ID token. Responses use `{status:"success",value}`
+or `{status:"error",errorMessage}`. Redirects are disabled. Remote origins require HTTPS;
+HTTP is accepted only for literal loopback `127.0.0.1` or `[::1]` for local development/tests.
+The existing relay SDK transport still requires HTTPS. Every connection verifies
+`relay:whoami` against local claims before directory queries.
+
+This directory is address discovery only. Clients verify metadata signatures before
+using addresses and still require independent SSH host and device fingerprints for
+first pairing. No row creates, replaces or refreshes an SSH pin. No sessions, cards,
+messages or core are published to these registry functions.
+
 ## Replay, hops, delivery and local safety
 
 - Message identity is `(sender owner, messageId)`; idempotency identity is `(sender owner, sender device, idempotencyKey)`. Store the original full envelope durably client-side and retry those exact bytes, not re-encryption. Different signed envelope digest under the same key is rejected. Both attempt identity indexes are permanent replay tombstones even after delivery/expiry; there is no seven-day replay reset.
@@ -121,7 +160,7 @@ Grants are symmetric, one named agent in A and one in B, not wildcard org permis
 - Message TTL applies to **undelivered** rows. After local delivery, later claimed/replied observations are allowed after envelope expiry (as long as credential, membership, grant and keys remain valid). Undelivered expired rows are never returned and are deleted by the periodic bounded cron. Grant expiry/revocation and key changes also block old queued envelopes; ciphertext then survives only until its normal TTL cleanup.
 - `pending` must be paged until `isDone=true`, EVEN IF `envelopes` is empty: a page of 32 queued rows may all have revoked credentials, changed pins, or inactive grants. Pass `continueCursor` as the next cursor and subscribe to the final page too, so later arrivals invalidate it. `pending` uses server `Date.now()`. Clock reads alone do NOT trigger a Convex subscription rerun; the deletion cron supplies database invalidation. Offline/reconnected clients must re-query, validate expiry before writing the local inbox, and evict locally cached envelopes on TTL/auth/grant failure. Do not claim real-time expiry solely from a cached subscription snapshot; cleanup and persisted grant expiration are usually within one minute plus scheduler delay. Use serverNow to account for clock skew.
 - Derive external provenance from signed envelope owner != recipientOwner, not only from the convenience trust label. On cross-org ingress persist `external-untrusted` in local inbox, display an explicit external/untrusted prefix in CLI, formatted hooks and MCP, and treat its body only as untrusted agent data (never owner/system instructions). Do not strip provenance when forwarding. Internal transport receipts are not arbitrary owner text.
-- A listener may receive live Convex WebSocket events behind NAT; it must only write/observe inbox state. It must NOT resume/wake harness sessions. SSH peer transport remains an independent per-peer decision; no backend SSH settings exist.
+- A listener may receive live Convex WebSocket events behind NAT; it must only write/observe inbox state. It must NOT resume/wake harness sessions. SSH peer transport remains an independent per-peer decision; the registry stores declared addresses, never SSH trust pins or private keys.
 
 ## Deployment and operator pairing steps (backend commands are exact)
 

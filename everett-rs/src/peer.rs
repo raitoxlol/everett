@@ -385,6 +385,57 @@ fn address_valid(address: &str) -> Result<()> {
     Ok(())
 }
 
+pub(crate) fn parse_registry_address(value: &str) -> Result<(String, u16)> {
+    let pattern = regex::Regex::new(
+        r"^([A-Za-z0-9_.-]+@(?:[A-Za-z0-9_.-]+|\[[0-9a-fA-F:]+\]))(?::([0-9]{1,5}))?$",
+    )
+    .unwrap();
+    let parts = pattern
+        .captures(value)
+        .filter(|_| value.len() <= 512)
+        .ok_or_else(|| bad("SSH registry address must be user@host[:port]; bracket IPv6 hosts"))?;
+    let address = parts[1].to_string();
+    address_valid(&address)?;
+    let port = parts
+        .get(2)
+        .map_or(Ok(22), |p| p.as_str().parse::<u16>())
+        .map_err(|_| bad("SSH registry port must be between 1 and 65535"))?;
+    if port == 0 {
+        return Err(bad("SSH registry port must be between 1 and 65535"));
+    }
+    Ok((address, port))
+}
+
+pub fn discover_address(name: &str, ssh: Option<&str>, port: Option<u16>) -> Result<(String, u16)> {
+    valid(name)?;
+    let configured = crate::auth::load().is_some()
+        && !crate::config::get("relay.url", Some("EVERETT_CONVEX_URL"), "").is_empty();
+    let discovered = if ssh.is_none() || configured {
+        crate::device_registry::resolve(name)?
+            .map(|address| parse_registry_address(&address))
+            .transpose()?
+    } else {
+        None
+    };
+    if let Some(address) = ssh {
+        address_valid(address)?;
+        let port = port.unwrap_or(22);
+        if discovered
+            .as_ref()
+            .is_some_and(|(found, found_port)| found != address || *found_port != port)
+        {
+            return Err(bad("explicit --ssh/--port conflicts with the registry address; verify the device address before pairing"));
+        }
+        return Ok((address.into(), port));
+    }
+    let (address, found_port) = discovered
+        .ok_or_else(|| bad("device has no published SSH address; use --ssh user@host"))?;
+    if port.is_some_and(|port| port != found_port) {
+        return Err(bad("--port conflicts with the registry address"));
+    }
+    Ok((address, found_port))
+}
+
 fn ssh(peer: &Peer, pin: &Path, restricted: bool, first: bool) -> Command {
     let mut cmd = Command::new("ssh");
     cmd.args([
@@ -746,7 +797,40 @@ fn read_frame(reader: impl Read) -> Result<Vec<u8>> {
     Ok(bytes)
 }
 
+/// Publishing waits on Convex (up to 3 s), so only the first RPC after a change or REPUBLISH_MS pays it.
+fn publish_address_if_due(address: Option<&str>) {
+    use crate::device_registry::{declared_address, publication_due, record_publication};
+    let address = match declared_address(address) {
+        Ok(Some(address)) => address,
+        Ok(None) => return,
+        Err(error) => return eprintln!("everett: SSH address publication failed: {}", error.message),
+    };
+    let stamp = root().join("address-published.json");
+    let now = chrono::Utc::now().timestamp_millis();
+    if !publication_due(&stamp, &address, now) {
+        return;
+    }
+    let (published, publication) = std::sync::mpsc::channel();
+    let sent = address.clone();
+    std::thread::spawn(move || {
+        let _ = published.send(crate::relay::register_with_address(Some(&sent)).map(|_| ()));
+    });
+    match publication.recv_timeout(Duration::from_secs(3)) {
+        Ok(Ok(())) => {
+            if let Err(error) = record_publication(&stamp, &address, now) {
+                eprintln!("everett: {}", error.message);
+            }
+        }
+        Ok(Err(error)) => eprintln!("everett: SSH address publication failed: {}", error.message),
+        Err(_) => eprintln!("everett: SSH address publication timed out; retry everett relay register"),
+    }
+}
+
 pub fn serve(client: Option<&str>, setup: bool) -> i32 {
+    serve_with_address(client, setup, None)
+}
+
+pub fn serve_with_address(client: Option<&str>, setup: bool, address: Option<&str>) -> i32 {
     let (finished, timeout) = std::sync::mpsc::channel();
     std::thread::spawn(move || {
         if timeout.recv_timeout(TIMEOUT) == Err(std::sync::mpsc::RecvTimeoutError::Timeout) {
@@ -759,6 +843,9 @@ pub fn serve(client: Option<&str>, setup: bool) -> i32 {
             authorized(client.ok_or_else(|| {
                 bad("peer serve requires the forced command's --client identity")
             })?)?;
+            if crate::auth::load().is_some() {
+                publish_address_if_due(address);
+            }
         }
         let bytes = read_frame(std::io::stdin().lock())?;
         if setup {

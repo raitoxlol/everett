@@ -1,8 +1,13 @@
 use std::fs::{self, OpenOptions};
-use std::io::Write;
+use std::io::{BufRead, Read, Write};
+use std::net::TcpListener;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
+use std::sync::{
+    atomic::{AtomicBool, Ordering},
+    Arc, Mutex,
+};
 use std::time::{Duration, Instant};
 
 use serde_json::{json, Value};
@@ -124,6 +129,7 @@ impl Pair {
             .env_remove("EVERETT_HOPS")
             .env_remove("EVERETT_SEND")
             .env_remove("TYPESAFE_API_KEY")
+            .env_remove("EVERETT_CONVEX_URL")
             .env(
                 "PATH",
                 format!(
@@ -296,6 +302,247 @@ fn fake_ssh(args: &[String]) -> i32 {
     cmd.status().unwrap().code().unwrap_or(1)
 }
 
+struct RegistryStub {
+    row: Arc<Mutex<Value>>,
+    stop: Arc<AtomicBool>,
+    worker: Option<std::thread::JoinHandle<()>>,
+}
+
+impl RegistryStub {
+    fn new(pair: &Pair) -> Self {
+        use base64::Engine;
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let issuer = "https://issuer.example/";
+        let owner = json!([issuer, "account", "owner"]).to_string();
+        let expires = everett::session::now() + 3600.0;
+        let payload = json!({"iss":issuer,"sub":"owner","aud":"everett","exp":expires,"everett_agent":"caller"});
+        let token = format!(
+            "e30.{}.signature",
+            base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(payload.to_string())
+        );
+        let stored = everett::auth::Stored {
+            issuer: issuer.into(),
+            client_id: "everett".into(),
+            sub: "owner".into(),
+            email: String::new(),
+            name: String::new(),
+            device_name: "caller".into(),
+            access_token: "fixture-access".into(),
+            id_token: token.clone(),
+            refresh_token: String::new(),
+            expires_at: expires,
+            scope: String::new(),
+        };
+        write(
+            pair.local.path().join(".everett/auth.json"),
+            &serde_json::to_string(&stored).unwrap(),
+        );
+        write(
+            pair.local.path().join(".everett/config.toml"),
+            &format!(
+                "[relay]\nurl = \"http://{}\"\n",
+                listener.local_addr().unwrap()
+            ),
+        );
+        let row = Arc::new(Mutex::new(Self::signed_row(&owner, "owner@box:2222")));
+        let state = row.clone();
+        let stop = Arc::new(AtomicBool::new(false));
+        let stopped = stop.clone();
+        let worker = std::thread::spawn(move || {
+            while !stopped.load(Ordering::Relaxed) {
+                let (mut stream, _) = match listener.accept() {
+                    Ok(connection) => connection,
+                    Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                        std::thread::sleep(Duration::from_millis(5));
+                        continue;
+                    }
+                    Err(error) => panic!("{error}"),
+                };
+                stream.set_nonblocking(false).unwrap();
+                stream
+                    .set_read_timeout(Some(Duration::from_secs(5)))
+                    .unwrap();
+                let mut reader = std::io::BufReader::new(&mut stream);
+                let mut line = String::new();
+                reader.read_line(&mut line).unwrap();
+                assert!(line.starts_with("POST /api/query "));
+                let mut length = 0;
+                let mut authorized = false;
+                loop {
+                    line.clear();
+                    reader.read_line(&mut line).unwrap();
+                    if line == "\r\n" {
+                        break;
+                    }
+                    if let Some((key, value)) = line.split_once(':') {
+                        if key.eq_ignore_ascii_case("content-length") {
+                            length = value.trim().parse().unwrap();
+                        }
+                        if key.eq_ignore_ascii_case("authorization") {
+                            authorized = value.trim() == format!("Bearer {token}");
+                        }
+                    }
+                }
+                assert!(authorized);
+                let mut body = vec![0; length];
+                reader.read_exact(&mut body).unwrap();
+                let body: Value = serde_json::from_slice(&body).unwrap();
+                assert_eq!(body["format"], "json");
+                let row = state.lock().unwrap().clone();
+                let value = match body["path"].as_str().unwrap() {
+                    "relay:whoami" => json!({"owner":owner,"deviceId":"caller","role":"member"}),
+                    "registry:resolve" => {
+                        if body["args"]["name"] == "linux" {
+                            row
+                        } else {
+                            Value::Null
+                        }
+                    }
+                    "registry:devices" => {
+                        if body["args"]["cursor"].is_null() {
+                            json!({"devices":[row],"isDone":false,"continueCursor":"second"})
+                        } else {
+                            assert_eq!(body["args"]["cursor"], "second");
+                            json!({"devices":[{"name":"old","deviceId":"old-id","lastSeenAt":null,"sshAddress":null,"revokedAt":123}],"isDone":true,"continueCursor":"done"})
+                        }
+                    }
+                    other => panic!("unexpected registry function {other}"),
+                };
+                let body = json!({"status":"success","value":value}).to_string();
+                write!(stream, "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}", body.len(), body).unwrap();
+            }
+        });
+        Self {
+            row,
+            stop,
+            worker: Some(worker),
+        }
+    }
+
+    fn signed_row(owner: &str, address: &str) -> Value {
+        let keys = everett::relay::crypto::Keys::new(
+            owner.into(),
+            "registry-device".into(),
+            [11; 32],
+            [12; 32],
+        );
+        let signature = keys.sign(
+            json!([
+                "everett-registry-v2",
+                owner,
+                "registry-device",
+                "linux",
+                address
+            ])
+            .to_string()
+            .as_bytes(),
+        );
+        let mut row = serde_json::to_value(&keys.device).unwrap();
+        row["name"] = json!("linux");
+        row["sshAddress"] = json!(address);
+        row["lastSeenAt"] = json!(1000.0);
+        row["metadataSignature"] = json!(signature);
+        row
+    }
+
+    fn address(&self, address: &str) {
+        let owner = self.row.lock().unwrap()["owner"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        *self.row.lock().unwrap() = Self::signed_row(&owner, address);
+    }
+}
+
+impl Drop for RegistryStub {
+    fn drop(&mut self) {
+        self.stop.store(true, Ordering::Relaxed);
+        let result = self.worker.take().unwrap().join();
+        if !std::thread::panicking() {
+            result.unwrap();
+        }
+    }
+}
+
+fn registry_discovery_conflicts_and_changed_address_preserve_pins() {
+    let p = Pair::new();
+    let registry = RegistryStub::new(&p);
+    let base = [
+        "peer",
+        "add",
+        "linux",
+        "--binary",
+        BIN,
+        "--host-key",
+        &p.fingerprint,
+        "--device-key",
+        &p.device_fingerprint,
+    ];
+    let mut explicit = base.to_vec();
+    explicit.extend(["--ssh", "other@host"]);
+    let conflict = p.run(&explicit);
+    assert!(!conflict.status.success());
+    assert!(String::from_utf8_lossy(&conflict.stderr).contains("conflicts with the registry"));
+    assert!(!p.local.path().join(".everett/peer").exists());
+    checked(p.run(&base));
+    let config = p.local.path().join(".everett/peer/linux.json");
+    let before = fs::read(&config).unwrap();
+    let peer: Value = serde_json::from_slice(&before).unwrap();
+    assert_eq!(peer["address"], "owner@box");
+    assert_eq!(peer["port"], 2222);
+    let pin = p.local.path().join(".everett/peer/linux.known_hosts");
+    let pin_before = fs::read(&pin).unwrap();
+    let mut explicit = base.to_vec();
+    explicit.extend(["--ssh", "owner@box", "--port", "2222"]);
+    checked(p.run(&explicit));
+    registry.address("owner@changed:2222");
+    let changed = p.run(&base);
+    assert!(!changed.status.success());
+    assert!(String::from_utf8_lossy(&changed.stderr).contains("peer already pinned"));
+    assert_eq!(fs::read(&config).unwrap(), before);
+    assert_eq!(fs::read(&pin).unwrap(), pin_before);
+}
+
+fn registry_devices_json_pagination_and_untrusted_addresses() {
+    let p = Pair::new();
+    let registry = RegistryStub::new(&p);
+    let devices = checked(p.run(&["devices", "--json"]));
+    assert_eq!(
+        devices,
+        json!([
+            {"name":"linux","deviceId":"registry-device","sshAddress":"owner@box:2222","lastSeenAt":1000},
+            {"name":"old","deviceId":"old-id","sshAddress":null,"lastSeenAt":null,"revokedAt":123}
+        ])
+    );
+    let table = p.run(&["devices"]);
+    assert!(table.status.success());
+    let table = String::from_utf8(table.stdout).unwrap();
+    assert!(table.contains("linux\tregistry-device\t1970-01-01T00:00:01+00:00\towner@box:2222\t-"));
+    assert!(table.contains("old\told-id\t-\t-\tyes"));
+    registry.row.lock().unwrap()["revokedAt"] = Value::Null;
+    assert!(String::from_utf8(p.run(&["devices"]).stdout)
+        .unwrap()
+        .contains("owner@box:2222\tno"));
+    registry.row.lock().unwrap()["sshAddress"] = json!("attacker@host");
+    let args = [
+        "peer",
+        "add",
+        "linux",
+        "--binary",
+        BIN,
+        "--host-key",
+        &p.fingerprint,
+        "--device-key",
+        &p.device_fingerprint,
+    ];
+    assert!(!p.run(&args).status.success());
+    assert!(!p.local.path().join(".everett/peer").exists());
+    registry.address("owner@box:2222");
+    registry.row.lock().unwrap()["revokedAt"] = json!(123.0);
+    assert!(String::from_utf8_lossy(&p.run(&args).stderr).contains("revoked"));
+}
+
 fn pairing_pins_and_restricts_real_authorized_file() {
     let p = Pair::new();
     checked(p.add());
@@ -429,7 +676,10 @@ fn convex_alias_rejects_ssh_before_identity_pin_or_remote_key_side_effects() {
     assert_eq!(rejected.status.code(), Some(2));
     assert!(String::from_utf8_lossy(&rejected.stderr).contains("alias already selects Convex"));
     for name in ["linux.json", "linux.known_hosts", "id_ed25519"] {
-        assert!(!p.local.path().join(".everett/peer").join(name).exists(), "unexpected SSH side effect: {name}");
+        assert!(
+            !p.local.path().join(".everett/peer").join(name).exists(),
+            "unexpected SSH side effect: {name}"
+        );
     }
     assert_eq!(fs::read(authorized).unwrap(), before);
 }
@@ -665,6 +915,170 @@ fn transport_and_server_time_out() {
     drop(input);
 }
 
+fn remote_sign_in(p: &Pair) {
+    use base64::Engine;
+    let expires = everett::session::now() + 3600.0;
+    let issuer = "https://issuer.example/";
+    let payload =
+        json!({"iss":issuer,"sub":"owner","aud":"everett","exp":expires,"everett_agent":"caller"});
+    let token = format!(
+        "e30.{}.signature",
+        base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(payload.to_string())
+    );
+    write(
+        p.remote.path().join(".everett/auth.json"),
+        &json!({
+            "issuer":issuer,"client_id":"everett","sub":"owner","email":"",
+            "device_name":"caller","access_token":"fixture-access","id_token":token,
+            "refresh_token":"","expires_at":expires,"scope":""
+        })
+        .to_string(),
+    );
+}
+
+fn assert_hello(p: &Pair, out: Output, warning: Option<&str>) {
+    let stderr = String::from_utf8_lossy(&out.stderr).into_owned();
+    let device_id = fs::read_to_string(p.remote.path().join(".everett/peer/device_id")).unwrap();
+    assert_eq!(checked(out), json!({"result":{"device_id":device_id}}));
+    if let Some(warning) = warning {
+        assert!(stderr.contains(warning), "{stderr}");
+    } else {
+        assert!(stderr.is_empty(), "{stderr}");
+    }
+}
+
+fn serve_malformed_configured_address_preserves_hello() {
+    let mut p = Pair::new();
+    checked(p.add());
+    remote_sign_in(&p);
+    write(
+        p.remote.path().join(".everett/config.toml"),
+        "[peer]\naddress = 'bad address'\n",
+    );
+    let client = p.client();
+    let before = Instant::now();
+    let out = p.remote_run(
+        &["peer", "serve", "--client", &client],
+        "{\"op\":\"hello\"}\n",
+    );
+    assert!(before.elapsed() < Duration::from_secs(5));
+    assert_hello(&p, out, Some("SSH address publication failed:"));
+}
+
+fn serve_malformed_address_override_preserves_hello() {
+    let mut p = Pair::new();
+    checked(p.add());
+    remote_sign_in(&p);
+    write(
+        p.remote.path().join(".everett/config.toml"),
+        "[peer]\naddress = 'owner@box'\n",
+    );
+    let client = p.client();
+    let out = p.remote_run(
+        &[
+            "peer",
+            "serve",
+            "--client",
+            &client,
+            "--address",
+            "bad address",
+        ],
+        "{\"op\":\"hello\"}\n",
+    );
+    assert_hello(&p, out, Some("SSH address publication failed:"));
+    write(
+        p.remote.path().join(".everett/config.toml"),
+        "[peer]\naddress = 'bad address'\n",
+    );
+    let out = p.remote_run(&["relay", "register"], "");
+    assert_eq!(out.status.code(), Some(2));
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(stderr.contains("SSH registry address"), "{stderr}");
+}
+
+fn serve_publication_failure_and_timeout_preserve_hello() {
+    use fs2::FileExt;
+    let mut p = Pair::new();
+    checked(p.add());
+    remote_sign_in(&p);
+    write(
+        p.remote.path().join(".everett/config.toml"),
+        "[peer]\naddress = 'owner@box'\n[relay]\nurl = 'invalid'\n",
+    );
+    let client = p.client();
+    let out = p.remote_run(
+        &["peer", "serve", "--client", &client],
+        "{\"op\":\"hello\"}\n",
+    );
+    assert_hello(&p, out, Some("SSH address publication failed:"));
+    let lock = OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(p.remote.path().join(".everett/relay/auth.lock"))
+        .unwrap();
+    lock.lock_exclusive().unwrap();
+    let before = Instant::now();
+    let out = p.remote_run(
+        &["peer", "serve", "--client", &client],
+        "{\"op\":\"hello\"}\n",
+    );
+    let elapsed = before.elapsed();
+    assert!(elapsed >= Duration::from_secs(3), "{elapsed:?}");
+    assert!(elapsed < Duration::from_secs(5), "{elapsed:?}");
+    assert_hello(&p, out, Some("SSH address publication timed out;"));
+}
+
+fn serve_without_sign_in_or_address_preserves_hello() {
+    let mut p = Pair::new();
+    checked(p.add());
+    let client = p.client();
+    let out = p.remote_run(
+        &["peer", "serve", "--client", &client],
+        "{\"op\":\"hello\"}\n",
+    );
+    assert_hello(&p, out, None);
+    let out = p.remote_run(
+        &[
+            "peer",
+            "serve",
+            "--client",
+            &client,
+            "--address",
+            "bad address",
+        ],
+        "{\"op\":\"hello\"}\n",
+    );
+    assert_hello(&p, out, None);
+    remote_sign_in(&p);
+    let out = p.remote_run(
+        &["peer", "serve", "--client", &client],
+        "{\"op\":\"hello\"}\n",
+    );
+    assert_hello(&p, out, None);
+}
+
+fn serve_optional_publication_does_not_bypass_authorization() {
+    let mut p = Pair::new();
+    checked(p.add());
+    remote_sign_in(&p);
+    let out = p.remote_run(
+        &[
+            "peer",
+            "serve",
+            "--client",
+            "stranger",
+            "--address",
+            "bad address",
+        ],
+        "{\"op\":\"hello\"}\n",
+    );
+    assert!(out.stderr.is_empty());
+    assert_eq!(
+        checked(out),
+        json!({"error":{"code":2,"message":"peer client is not authorized or has been revoked"}})
+    );
+}
+
 fn mcp_new_remote_send_is_idempotent_and_never_wakes() {
     let p = Pair::new();
     checked(p.add());
@@ -716,6 +1130,34 @@ fn mcp_new_remote_send_is_idempotent_and_never_wakes() {
 
 type Case = (&'static str, fn());
 const CASES: &[Case] = &[
+    (
+        "serve_malformed_configured_address_preserves_hello",
+        serve_malformed_configured_address_preserves_hello,
+    ),
+    (
+        "serve_malformed_address_override_preserves_hello",
+        serve_malformed_address_override_preserves_hello,
+    ),
+    (
+        "serve_publication_failure_and_timeout_preserve_hello",
+        serve_publication_failure_and_timeout_preserve_hello,
+    ),
+    (
+        "serve_without_sign_in_or_address_preserves_hello",
+        serve_without_sign_in_or_address_preserves_hello,
+    ),
+    (
+        "serve_optional_publication_does_not_bypass_authorization",
+        serve_optional_publication_does_not_bypass_authorization,
+    ),
+    (
+        "registry_discovery_conflicts_and_changed_address_preserve_pins",
+        registry_discovery_conflicts_and_changed_address_preserve_pins,
+    ),
+    (
+        "registry_devices_json_pagination_and_untrusted_addresses",
+        registry_devices_json_pagination_and_untrusted_addresses,
+    ),
     (
         "convex_alias_rejects_ssh_before_identity_pin_or_remote_key_side_effects",
         convex_alias_rejects_ssh_before_identity_pin_or_remote_key_side_effects,
@@ -778,4 +1220,31 @@ fn main() {
     if failures != 0 {
         std::process::exit(1);
     }
+}
+
+#[test]
+fn ssh_rpc_republishes_an_address_only_when_changed_or_stale() {
+    use everett::device_registry::{publication_due, record_publication, REPUBLISH_MS};
+    let dir = tempfile::tempdir().unwrap();
+    let stamp = dir.path().join("address-published.json");
+    assert!(publication_due(&stamp, "me@host", 1_000));
+    record_publication(&stamp, "me@host", 1_000).unwrap();
+    assert!(!publication_due(&stamp, "me@host", 1_000 + REPUBLISH_MS - 1));
+    assert!(publication_due(&stamp, "me@host", 1_000 + REPUBLISH_MS));
+    assert!(publication_due(&stamp, "me@other:2222", 2_000));
+    assert!(publication_due(&stamp, "me@host", 500), "a clock step backwards republishes");
+    std::fs::write(&stamp, "not json").unwrap();
+    assert!(publication_due(&stamp, "me@host", 2_000));
+}
+
+#[test]
+fn relay_errors_surface_by_structured_code_not_function_name() {
+    use everett::relay::user_error;
+    assert_eq!(
+        user_error(&serde_json::json!({"code":"name_taken","message":"Device name 'a' is already in use"})).as_deref(),
+        Some("Device name 'a' is already in use")
+    );
+    assert_eq!(user_error(&serde_json::json!({"message":"internal detail"})), None);
+    assert_eq!(user_error(&serde_json::json!({"code":"","message":"x"})), None);
+    assert_eq!(user_error(&serde_json::json!("plain string")), None);
 }
