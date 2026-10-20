@@ -26,6 +26,8 @@
   untrusted without tainting unrelated later resume/spawn work; an explicit
   reply retains the external provenance.
 
+- Hosted deployments no longer need `OIDC_ISSUER`/`OIDC_CLIENT_ID` set: `auth.config.ts`
+  reads them as optional (Convex refuses a push that reads an unset variable).
 - The local dev stack starts again: `convex/auth.config.ts` no longer reads
   `EVERETT_OWNER_GITHUB_ID` (hosted requests still fail closed while it is unset).
   Hosted login trusts `EVERETT_RELAY_CA_FILE` for private-CA origins. New
