@@ -2,7 +2,7 @@ import { convexTest } from "convex-test";
 import { makeFunctionReference } from "convex/server";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import schema from "../schema";
-import { s256 } from "../oauth";
+import { DCR_LIMITS, s256 } from "../oauth";
 
 const modules = {
   "../_generated/server.ts": async () => ({}),
@@ -176,30 +176,85 @@ describe("owner-only OAuth authorization server", () => {
     expect(await f.owner.query(inspectRequest, { requestId })).toMatchObject({ clientName: "ChatGPT", redirectHost: "chatgpt.com" });
     await f.owner.action(decide, { requestId, approve: true, name: "x", binding: f.binding(requestId) });
   });
-  test("unused DCR clients expire, the oldest unused is evicted when full, and limits are per source", async () => {
+  const dcr = (f: Awaited<ReturnType<typeof fixture>>, forwardedFor = "198.51.100.7") => f.backend.fetch("/oauth/register", { method: "POST",
+    headers: { "Content-Type": "application/json", "X-Forwarded-For": `${forwardedFor}, 10.0.0.1` },
+    body: JSON.stringify({ client_name: "ChatGPT", redirect_uris: [redirectUri], token_endpoint_auth_method: "none" }) });
+  const t0 = Date.parse("2026-10-20T00:00:00Z");
+  test("rotating X-Forwarded-For does not dodge the global DCR rate limit", async () => {
     const f = await fixture();
-    const dcr = async (source: string) => await f.backend.fetch("/oauth/register", { method: "POST",
-      headers: { "Content-Type": "application/json", "X-Forwarded-For": `${source}, 10.0.0.1` },
-      body: JSON.stringify({ client_name: "ChatGPT", redirect_uris: [redirectUri], token_endpoint_auth_method: "none" }) });
     vi.useFakeTimers({ toFake: ["Date"] });
     try {
-      vi.setSystemTime(new Date("2026-10-20T00:00:00Z"));
+      vi.setSystemTime(new Date(t0));
+      for (let i = 0; i < DCR_LIMITS.perMinute; i++) expect((await dcr(f, `203.0.113.${i}`)).status).toBe(201);
+      const spoofed = await dcr(f, "192.0.2.250");
+      expect(spoofed.status).toBe(400);
+      expect((await spoofed.json()).error_description).toBe("rate limited");
+      const noHeader = await f.backend.fetch("/oauth/register", { method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ client_name: "ChatGPT", redirect_uris: [redirectUri] }) });
+      expect(noHeader.status).toBe(400);
+      vi.setSystemTime(new Date(t0 + 61_000));
+      expect((await dcr(f, "192.0.2.250")).status).toBe(201);
+    } finally { vi.useRealTimers(); }
+  });
+  test("eviction when full never removes a client with an in-flight authorization", async () => {
+    const f = await fixture();
+    vi.useFakeTimers({ toFake: ["Date"] });
+    try {
+      vi.setSystemTime(new Date(t0));
       const used = await f.register();
       await f.approve(used);
-      for (let i = 0; i < 10; i++) expect((await dcr("198.51.100.7")).status).toBe(201);
-      expect((await dcr("198.51.100.7")).status).toBe(400);
-      expect((await dcr("203.0.113.9")).status).toBe(201);
-      for (let minute = 1; minute <= 10; minute++) {
-        vi.setSystemTime(new Date(Date.parse("2026-10-20T00:00:00Z") + minute * 61_000));
-        for (let i = 0; i < 10; i++) expect((await dcr("198.51.100.7")).status).toBe(201);
+      const real = await f.register();
+      const requestId = await f.pending(real);
+      const spam: string[] = [];
+      for (let minute = 0; spam.length < DCR_LIMITS.unusedClients; minute++) {
+        vi.setSystemTime(new Date(t0 + minute * 61_000));
+        for (let i = 0; i < DCR_LIMITS.perMinute - (minute === 0 ? 3 : 0) && spam.length < DCR_LIMITS.unusedClients; i++) {
+          const response = await dcr(f, `203.0.113.${i}`);
+          expect(response.status).toBe(201);
+          spam.push((await response.json()).client_id);
+        }
       }
-      const clients = await f.backend.run(ctx => ctx.db.query("oauthClients").collect());
-      expect(clients.filter(c => c.expiresAt !== undefined)).toHaveLength(100);
-      expect(clients.find(c => c.clientId === used)).not.toHaveProperty("expiresAt");
-      vi.setSystemTime(new Date(Date.parse("2026-10-20T00:00:00Z") + 3 * 3600_000));
+      const ids = (await f.backend.run(ctx => ctx.db.query("oauthClients").collect())).map(c => c.clientId);
+      expect(ids).toContain(real);
+      expect(ids).toContain(used);
+      expect(ids).not.toContain(spam[0]);
+      expect(ids.filter(id => id !== used)).toHaveLength(DCR_LIMITS.unusedClients);
+      await f.owner.action(decide, { requestId, approve: true, name: "real", binding: f.binding(requestId) });
+
+      vi.setSystemTime(new Date(t0 + 20 * 61_000));
+      expect((await dcr(f)).status).toBe(201);
+      await f.backend.run(async ctx => {
+        for (const c of await ctx.db.query("oauthClients").collect()) {
+          if (c.expiresAt === undefined) continue;
+          await ctx.db.insert("oauthRequests", { requestId: `busy-${c.clientId}`, clientId: c.clientId, clientName: "spam", redirectUri,
+            codeChallenge: s256(verifier), state: null, scope: "everett", resource, expiresAt: Date.now() + 600_000 });
+        }
+      });
+      const full = await dcr(f);
+      expect(full.status).toBe(400);
+      expect((await full.json()).error_description).toBe("too many clients awaiting approval");
+    } finally { vi.useRealTimers(); }
+  });
+  test("unused DCR clients expire, but not while an authorization for them is in flight", async () => {
+    const f = await fixture();
+    vi.useFakeTimers({ toFake: ["Date"] });
+    try {
+      vi.setSystemTime(new Date(t0));
+      const used = await f.register();
+      await f.approve(used);
+      const idle = await f.register();
+      const late = await f.register();
+      vi.setSystemTime(new Date(t0 + 55 * 60_000));
+      const requestId = await f.pending(late);
+      vi.setSystemTime(new Date(t0 + 61 * 60_000));
       await f.backend.mutation(makeFunctionReference<"mutation">("oauth:expire"), {});
-      const left = await f.backend.run(ctx => ctx.db.query("oauthClients").collect());
-      expect(left.map(c => c.clientId)).toEqual([used]);
+      const left = (await f.backend.run(ctx => ctx.db.query("oauthClients").collect())).map(c => c.clientId);
+      expect(left).not.toContain(idle);
+      expect(left).toEqual(expect.arrayContaining([used, late]));
+      await f.owner.action(decide, { requestId, approve: true, name: "late", binding: f.binding(requestId) });
+      vi.setSystemTime(new Date(t0 + 3 * 3600_000));
+      await f.backend.mutation(makeFunctionReference<"mutation">("oauth:expire"), {});
+      expect((await f.backend.run(ctx => ctx.db.query("oauthClients").collect())).map(c => c.clientId).sort()).toEqual([used, late].sort());
     } finally { vi.useRealTimers(); }
   });
   test("resource indicator mismatches are rejected at authorize, token and refresh", async () => {

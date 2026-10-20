@@ -9,8 +9,9 @@ import type { Context, WriteContext } from "./authorization";
 
 export const SCOPE = "everett";
 const ACCESS_MS = 15 * 60_000, REFRESH_MS = 30 * 86400_000, CODE_MS = 5 * 60_000, REQUEST_MS = 10 * 60_000;
-// Registered clients that never complete an approval expire; the oldest unused one is evicted when full.
-export const DCR_LIMITS = { unusedClientMs: 60 * 60_000, unusedClients: 100, perSourcePerMinute: 10 };
+// Registered clients that never complete an approval expire; when full, the oldest unused one with no
+// in-flight authorization is evicted. HTTP actions see no trustworthy caller address, so the rate is global.
+export const DCR_LIMITS = { unusedClientMs: 60 * 60_000, unusedClients: 100, perMinute: 20 };
 export const BINDING_COOKIE = "everett_oauth";
 const internalRef = <T extends "query" | "mutation">(kind: T, name: string) => makeFunctionReference<T>(`oauth:${name}`);
 const list = (name: string) => (process.env[name] ?? "").split(",").map(s => s.trim()).filter(Boolean);
@@ -105,11 +106,18 @@ async function limit(ctx: WriteContext, scope: string, max: number) {
   else await ctx.db.insert("rates", { scope, window, count: 1 });
 }
 export const register = internalMutation({
-  args: { clientId: v.string(), name: v.string(), redirectUris: v.array(v.string()), source: v.string() }, handler: async (ctx: WriteContext, { source, ...args }) => {
-    await limit(ctx, `oauth-register:${source}`, DCR_LIMITS.perSourcePerMinute);
+  args: { clientId: v.string(), name: v.string(), redirectUris: v.array(v.string()) }, handler: async (ctx: WriteContext, args) => {
+    await limit(ctx, "oauth-register", DCR_LIMITS.perMinute);
     const now = Date.now();
     const unused = await ctx.db.query("oauthClients").withIndex("by_expiry", q => q.gt("expiresAt", now)).take(DCR_LIMITS.unusedClients);
-    if (unused.length >= DCR_LIMITS.unusedClients) await ctx.db.delete(unused[0]._id);
+    if (unused.length >= DCR_LIMITS.unusedClients) {
+      let evicted = false;
+      for (const row of unused) {
+        const inFlight = await ctx.db.query("oauthRequests").withIndex("by_client", q => q.eq("clientId", row.clientId).gt("expiresAt", now)).first();
+        if (!inFlight) { await ctx.db.delete(row._id); evicted = true; break; }
+      }
+      if (!evicted) throw new OAuthError("temporarily_unavailable", "too many clients awaiting approval");
+    }
     await ctx.db.insert("oauthClients", { ...args, createdAt: now, expiresAt: now + DCR_LIMITS.unusedClientMs });
   },
 });
@@ -119,6 +127,8 @@ export const createRequest = internalMutation({
   handler: async (ctx: WriteContext, args) => {
     await limit(ctx, "oauth-authorize", 30);
     if ((await ctx.db.query("oauthRequests").take(200)).length >= 200) throw new OAuthError("temporarily_unavailable", "too many pending authorizations");
+    const registered = await ctx.db.query("oauthClients").withIndex("by_client", q => q.eq("clientId", args.clientId)).unique();
+    if (registered?.expiresAt !== undefined && registered.expiresAt < args.expiresAt) await ctx.db.patch(registered._id, { expiresAt: args.expiresAt });
     await ctx.db.insert("oauthRequests", args);
   },
 });
@@ -335,9 +345,7 @@ export const registerClient = httpAction(async (ctx, request) => {
   const grants = strings(doc.grant_types ?? ["authorization_code", "refresh_token"]);
   if (!grants || grants.some(g => g !== "authorization_code" && g !== "refresh_token")) return oauthError("invalid_client_metadata", "unsupported grant_types");
   const clientId = `evc_${random().slice(0, 32)}`, name = cleanName(doc.client_name, "OAuth client");
-  // Convex does not document a caller-IP header; X-Forwarded-For is used when present, else one shared bucket.
-  const source = (request.headers.get("x-forwarded-for") ?? "").split(",")[0].trim().slice(0, 64) || "unknown";
-  try { await ctx.runMutation(internalRef("mutation", "register"), { clientId, name, redirectUris, source }); }
+  try { await ctx.runMutation(internalRef("mutation", "register"), { clientId, name, redirectUris }); }
   catch (error) { return oauthError("invalid_client_metadata", (error as Error).message); }
   return json({ client_id: clientId, client_id_issued_at: Math.floor(Date.now() / 1000), client_name: name, redirect_uris: redirectUris,
     token_endpoint_auth_method: "none", grant_types: grants, response_types: ["code"] }, 201);
