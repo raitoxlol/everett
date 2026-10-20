@@ -10,7 +10,7 @@ use serde_json::{json, Map, Value};
 
 use crate::error::{EverettError, Result};
 use crate::paths;
-use crate::proc::{parent_of, pid_alive};
+use crate::proc::{parent_args, pid_alive};
 use crate::session::{home, now};
 
 pub const MAX_BATCH: usize = 5;
@@ -715,22 +715,17 @@ const SHELLS: &[&str] = &["sh", "bash", "zsh", "dash", "fish", "-sh", "-bash", "
 /// The harness process that ran this hook: our parent, or its parent when a shell sits between.
 pub fn harness_pid() -> i32 {
     let pid = std::os::unix::process::parent_id() as i32;
-    if let Some((ppid, comm)) = parent_of(pid) {
-        let base = comm.rsplit('/').next().unwrap_or(&comm);
-        if SHELLS.contains(&base) && ppid > 0 && !runs_harness_script(pid) {
-            return ppid;
-        }
+    match parent_args(pid) {
+        Some((ppid, args)) if ppid > 0 && shell_hop(&args) => ppid,
+        _ => pid,
     }
-    pid
 }
 
-/// A shell that is itself a harness launcher script (`sh .../omp`); macOS reports its comm as `sh`.
-fn runs_harness_script(pid: i32) -> bool {
-    std::process::Command::new("ps")
-        .args(["-o", "args=", "-p", &pid.to_string()])
-        .output()
-        .ok()
-        .is_some_and(|out| crate::host::harness_of(String::from_utf8_lossy(&out.stdout).trim()).is_some())
+/// A plain shell between the harness and this hook. A shell running a harness launcher script
+/// (`sh .../omp`, which macOS reports as `sh`) is the harness itself.
+pub fn shell_hop(args: &str) -> bool {
+    let first = args.split_whitespace().next().unwrap_or("");
+    SHELLS.contains(&first.rsplit('/').next().unwrap_or(first)) && crate::host::harness_of(args).is_none()
 }
 
 /// Record that this session's harness process is alive (called from hooks; cheap after the first).
