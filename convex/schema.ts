@@ -66,11 +66,13 @@ export default defineSchema({
   }).index("by_key", ["owner", "fromDevice", "idempotencyKey"])
     .index("by_message", ["owner", "messageId"])
     .index("by_recipient_state_expiry", ["recipientOwner", "toDevice", "state", "expiresAt"]),
-  oauthClients: defineTable({ clientId: v.string(), name: v.string(), redirectUris: v.array(v.string()), createdAt: v.number() })
-    .index("by_client", ["clientId"]),
+  oauthClients: defineTable({ clientId: v.string(), name: v.string(), redirectUris: v.array(v.string()), createdAt: v.number(),
+    expiresAt: v.optional(v.number()), usedAt: v.optional(v.number()) })
+    .index("by_client", ["clientId"]).index("by_expiry", ["expiresAt"]),
   oauthRequests: defineTable({
     requestId: v.string(), clientId: v.string(), clientName: v.string(), redirectUri: v.string(), codeChallenge: v.string(),
     state: v.union(v.null(), v.string()), scope: v.string(), resource: v.string(), expiresAt: v.number(),
+    bindingHash: v.optional(v.string()),
   }).index("by_request", ["requestId"]).index("by_expiry", ["expiresAt"]),
   oauthCodes: defineTable({
     codeHash: v.string(), credential: v.id("credentials"), clientId: v.string(), redirectUri: v.string(), codeChallenge: v.string(),

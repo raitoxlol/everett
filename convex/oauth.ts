@@ -9,6 +9,9 @@ import type { Context, WriteContext } from "./authorization";
 
 export const SCOPE = "everett";
 const ACCESS_MS = 15 * 60_000, REFRESH_MS = 30 * 86400_000, CODE_MS = 5 * 60_000, REQUEST_MS = 10 * 60_000;
+// Registered clients that never complete an approval expire; the oldest unused one is evicted when full.
+export const DCR_LIMITS = { unusedClientMs: 60 * 60_000, unusedClients: 100, perSourcePerMinute: 10 };
+export const BINDING_COOKIE = "everett_oauth";
 const internalRef = <T extends "query" | "mutation">(kind: T, name: string) => makeFunctionReference<T>(`oauth:${name}`);
 const list = (name: string) => (process.env[name] ?? "").split(",").map(s => s.trim()).filter(Boolean);
 const b64url = (bytes: Uint8Array) => btoa(String.fromCharCode(...bytes)).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
@@ -102,15 +105,17 @@ async function limit(ctx: WriteContext, scope: string, max: number) {
   else await ctx.db.insert("rates", { scope, window, count: 1 });
 }
 export const register = internalMutation({
-  args: { clientId: v.string(), name: v.string(), redirectUris: v.array(v.string()) }, handler: async (ctx: WriteContext, args) => {
-    await limit(ctx, "oauth-register", 10);
-    if ((await ctx.db.query("oauthClients").take(100)).length >= 100) throw new OAuthError("invalid_client_metadata", "client registration limit reached");
-    await ctx.db.insert("oauthClients", { ...args, createdAt: Date.now() });
+  args: { clientId: v.string(), name: v.string(), redirectUris: v.array(v.string()), source: v.string() }, handler: async (ctx: WriteContext, { source, ...args }) => {
+    await limit(ctx, `oauth-register:${source}`, DCR_LIMITS.perSourcePerMinute);
+    const now = Date.now();
+    const unused = await ctx.db.query("oauthClients").withIndex("by_expiry", q => q.gt("expiresAt", now)).take(DCR_LIMITS.unusedClients);
+    if (unused.length >= DCR_LIMITS.unusedClients) await ctx.db.delete(unused[0]._id);
+    await ctx.db.insert("oauthClients", { ...args, createdAt: now, expiresAt: now + DCR_LIMITS.unusedClientMs });
   },
 });
 export const createRequest = internalMutation({
   args: { requestId: v.string(), clientId: v.string(), clientName: v.string(), redirectUri: v.string(), codeChallenge: v.string(),
-    state: v.union(v.null(), v.string()), scope: v.string(), resource: v.string(), expiresAt: v.number() },
+    state: v.union(v.null(), v.string()), scope: v.string(), resource: v.string(), expiresAt: v.number(), bindingHash: v.string() },
   handler: async (ctx: WriteContext, args) => {
     await limit(ctx, "oauth-authorize", 30);
     if ((await ctx.db.query("oauthRequests").take(200)).length >= 200) throw new OAuthError("temporarily_unavailable", "too many pending authorizations");
@@ -128,22 +133,24 @@ export const inspectRequest = query({
     await ownerIdentity(ctx);
     const row = await ctx.db.query("oauthRequests").withIndex("by_request", q => q.eq("requestId", requestId)).unique();
     if (!row || row.expiresAt <= Date.now()) throw new Error("Authorization request expired or unknown");
-    return { clientName: row.clientName, clientId: row.clientId, redirectUri: row.redirectUri, resource: row.resource, scope: row.scope };
+    return { clientName: row.clientName, clientId: row.clientId, redirectUri: row.redirectUri, redirectHost: new URL(row.redirectUri).host, resource: row.resource, scope: row.scope };
   },
 });
 export const decide = action({
-  args: { requestId: v.string(), approve: v.boolean(), name: v.string() }, handler: async (ctx, args): Promise<{ redirect: string }> => {
+  args: { requestId: v.string(), approve: v.boolean(), name: v.string(), binding: v.string() }, handler: async (ctx, args): Promise<{ redirect: string }> => {
     const code = random(), agentId = `agent-${random().slice(0, 32)}`;
     return await ctx.runMutation(internalRef("mutation", "recordDecision"), { ...args, code, agentId });
   },
 });
 export const recordDecision = internalMutation({
-  args: { requestId: v.string(), approve: v.boolean(), name: v.string(), code: v.string(), agentId: v.string() },
+  args: { requestId: v.string(), approve: v.boolean(), name: v.string(), binding: v.string(), code: v.string(), agentId: v.string() },
   handler: async (ctx: WriteContext, args) => {
     const owner = await ownerIdentity(ctx);
     const { issuer } = oauthConfig();
     const row = await ctx.db.query("oauthRequests").withIndex("by_request", q => q.eq("requestId", args.requestId)).unique();
     if (!row || row.expiresAt <= Date.now()) throw new Error("Authorization request expired or unknown");
+    // The request is bound to the browser that hit /oauth/authorize; a forwarded enroll link carries no cookie.
+    if (!row.bindingHash || hash(args.binding) !== row.bindingHash) throw new Error("Authorization request was started in a different browser");
     await ctx.db.delete(row._id);
     if (!args.approve) return { redirect: redirectWith(row.redirectUri, { error: "access_denied", error_description: "owner denied the request", state: row.state, iss: issuer }) };
     const name = args.name.trim();
@@ -152,6 +159,8 @@ export const recordDecision = internalMutation({
     if (await ctx.db.query("credentials").withIndex("by_agent", q => q.eq("issuer", owner.issuer).eq("agentId", args.agentId)).unique()) throw new Error("Agent ID already used");
     const credential = await ctx.db.insert("credentials", { owner: owner.owner, issuer: owner.issuer, subject: owner.userId,
       agentId: args.agentId, status: "active", name, kind: "oauth", clientId: row.clientId });
+    const registered = await ctx.db.query("oauthClients").withIndex("by_client", q => q.eq("clientId", row.clientId)).unique();
+    if (registered?.expiresAt !== undefined) await ctx.db.patch(registered._id, { expiresAt: undefined, usedAt: Date.now() });
     await ctx.db.insert("oauthCodes", { codeHash: hash(args.code), credential, clientId: row.clientId, redirectUri: row.redirectUri,
       codeChallenge: row.codeChallenge, resource: row.resource, scope: row.scope, expiresAt: Date.now() + CODE_MS, used: false });
     return { redirect: redirectWith(row.redirectUri, { code: args.code, state: row.state, iss: issuer }) };
@@ -242,6 +251,8 @@ export const expire = internalMutation({
     for (const table of ["oauthRequests", "oauthCodes", "oauthTokens"] as const) {
       for (const row of await ctx.db.query(table).withIndex("by_expiry", q => q.lte("expiresAt", now)).take(500)) await ctx.db.delete(row._id);
     }
+    // Approved clients have no expiresAt; undefined sorts first, so bound the range below.
+    for (const row of await ctx.db.query("oauthClients").withIndex("by_expiry", q => q.gte("expiresAt", 0).lte("expiresAt", now)).take(500)) await ctx.db.delete(row._id);
   },
 });
 
@@ -287,12 +298,14 @@ export const authorize = httpAction(async (ctx, request) => {
   if (!resource || !cfg.resources.includes(resource)) return fail("invalid_target", "resource must be one of the configured Everett gateway URLs");
   const scope = one("scope");
   if (scope === undefined || (scope && scope.split(" ").some(s => s !== SCOPE))) return fail("invalid_scope", `only scope ${SCOPE} is supported`);
-  const requestId = random();
+  const requestId = random(), binding = random();
   try {
     await ctx.runMutation(internalRef("mutation", "createRequest"), { requestId, clientId, clientName: client.name, redirectUri,
-      codeChallenge: challenge, state, scope: SCOPE, resource, expiresAt: Date.now() + REQUEST_MS });
+      codeChallenge: challenge, state, scope: SCOPE, resource, expiresAt: Date.now() + REQUEST_MS, bindingHash: hash(binding) });
   } catch (error) { return fail("temporarily_unavailable", (error as Error).message); }
-  return found(`${cfg.issuer}/enroll?oauth=${requestId}`);
+  const response = found(`${cfg.issuer}/enroll?oauth=${requestId}`);
+  response.headers.set("Set-Cookie", `${BINDING_COOKIE}=${requestId}.${binding}; Path=/enroll; Max-Age=${REQUEST_MS / 1000}; Secure; SameSite=Lax`);
+  return response;
 });
 export const token = httpAction(async (ctx, request) => {
   if (!configured()) return oauthError("temporarily_unavailable", "OAuth is not configured", 503);
@@ -322,7 +335,9 @@ export const registerClient = httpAction(async (ctx, request) => {
   const grants = strings(doc.grant_types ?? ["authorization_code", "refresh_token"]);
   if (!grants || grants.some(g => g !== "authorization_code" && g !== "refresh_token")) return oauthError("invalid_client_metadata", "unsupported grant_types");
   const clientId = `evc_${random().slice(0, 32)}`, name = cleanName(doc.client_name, "OAuth client");
-  try { await ctx.runMutation(internalRef("mutation", "register"), { clientId, name, redirectUris }); }
+  // Convex does not document a caller-IP header; X-Forwarded-For is used when present, else one shared bucket.
+  const source = (request.headers.get("x-forwarded-for") ?? "").split(",")[0].trim().slice(0, 64) || "unknown";
+  try { await ctx.runMutation(internalRef("mutation", "register"), { clientId, name, redirectUris, source }); }
   catch (error) { return oauthError("invalid_client_metadata", (error as Error).message); }
   return json({ client_id: clientId, client_id_issued_at: Math.floor(Date.now() / 1000), client_name: name, redirect_uris: redirectUris,
     token_endpoint_auth_method: "none", grant_types: grants, response_types: ["code"] }, 201);
