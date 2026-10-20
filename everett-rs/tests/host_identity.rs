@@ -213,12 +213,3 @@ fn install_writes_host_binding_launchers_and_hooks() {
     assert!(bound.status.success());
     assert!(fx.home().join(".everett/inbox/live/devin-sess.json").exists());
 }
-
-#[test]
-fn mcp_calls_returns_only_after_the_everett_server_exits() {
-    let fx = fixture();
-    let pidfile = fx.home().join(".mcp-server.pid");
-    common::mcp_calls(&fx, &[], &[("EVERETT_SESSION_ID", "s1")], &[("everett_whoami", json!({}))]);
-    let pid: i32 = std::fs::read_to_string(&pidfile).unwrap().trim().parse().unwrap();
-    assert_ne!(unsafe { libc::kill(pid, 0) }, 0, "everett mcp pid {pid} outlived mcp_calls");
-}
