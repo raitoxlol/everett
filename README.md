@@ -440,9 +440,17 @@ client_id = "…"                         # public client id (EVERETT_AUTH_CLIEN
 
 [relay]
 url = "https://YOUR-DEPLOYMENT.convex.cloud" # EVERETT_CONVEX_URL; optional encrypted inbox relay
+# ca_file = "/absolute/path/to/private-ca.pem" # EVERETT_RELAY_CA_FILE; optional extra PEM roots
 ```
 
-Environment overrides: `EVERETT_VAULT`, `EVERETT_VAULT_DIR`, `EVERETT_HARNESS`, `EVERETT_ROUTER`, `TYPESAFE_API_KEY`, `EVERETT_NOTIFY`, `EVERETT_NOTIFY_COMMAND`, `EVERETT_ESCALATE_MINUTES`, `EVERETT_AUTH_ISSUER`, `EVERETT_AUTH_CLIENT_ID`, `EVERETT_CONVEX_URL`, and `EVERETT_HOME` (the root used in place of `~`).
+Environment overrides: `EVERETT_VAULT`, `EVERETT_VAULT_DIR`, `EVERETT_HARNESS`, `EVERETT_ROUTER`, `TYPESAFE_API_KEY`, `EVERETT_NOTIFY`, `EVERETT_NOTIFY_COMMAND`, `EVERETT_ESCALATE_MINUTES`, `EVERETT_AUTH_ISSUER`, `EVERETT_AUTH_CLIENT_ID`, `EVERETT_CONVEX_URL`, `EVERETT_RELAY_CA_FILE`, and `EVERETT_HOME` (the root used in place of `~`).
+
+Relay connections require HTTPS and verify certificate signatures, validity, and hostnames.
+By default only bundled WebPKI roots are trusted. An explicit `relay.ca_file` or
+`EVERETT_RELAY_CA_FILE` adds PEM roots for that relay client, including reconnects;
+it does not change system trust or OIDC/other HTTP clients. A nonempty environment
+value takes precedence over the config file. Missing or invalid CA files fail
+closed; TLS failures report their certificate error instead of a request timeout.
 
 ## Accounts
 

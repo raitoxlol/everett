@@ -348,6 +348,22 @@ describe("actual Convex functions, offline", () => {
     const third = await f.c.query(query("pending"), { deviceId: "agent-c", cursor: second.continueCursor });
     expect(third.envelopes).toEqual([{ envelope: valid, trust: "same-org" }]);
   });
+  test("pending pages past expired rows with stable cursors as time advances", async () => {
+    vi.useFakeTimers(); const now = Date.now();
+    const f = await fixture();
+    for (let i = 0; i < 33; i++) {
+      await f.a.mutation(ref("enqueue"), { envelope: seal(f.ka, f.kc, { messageId: `expired-${i}`, idempotencyKey: `expired-${i}`, expiresAt: now + 1000 }) });
+    }
+    const fresh = seal(f.ka, f.kc, { messageId: "fresh-page", idempotencyKey: "fresh-page" });
+    await f.a.mutation(ref("enqueue"), { envelope: fresh });
+    vi.setSystemTime(now + 1001);
+    const first = await f.c.query(query("pending"), { deviceId: "agent-c" });
+    expect(first.envelopes).toEqual([]); expect(first.isDone).toBe(false);
+    vi.setSystemTime(now + 2001);
+    const second = await f.c.query(query("pending"), { deviceId: "agent-c", cursor: first.continueCursor });
+    expect(second.envelopes).toEqual([{ envelope: fresh, trust: "same-org" }]);
+    expect(second.isDone).toBe(true);
+  });
   test("grant fixed-minute rate is shared across directions and retries do not consume quota", async () => {
     const f = await fixture(); await f.activate(1);
     const e = seal(f.ka, f.kb, { grantId: "grant-ab" });

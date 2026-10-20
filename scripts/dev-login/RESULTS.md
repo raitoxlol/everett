@@ -1,0 +1,219 @@
+# Local login and encrypted relay verification
+
+## Current branch: PASS, 2026-10-19
+
+Built this branch's Rust binary (`everett 1.6.0`) on Linux x86_64, Rust 1.97.1,
+Node 24.19.0; pinned Convex backend `precompiled-2026-10-06-a3538c6`.
+The old installed Homebrew binary has not acquired the new CA support: rebuild
+this branch and select it explicitly, rather than retesting an old executable.
+
+Commands from the checkout root:
+
+```sh
+cargo build --manifest-path everett-rs/Cargo.toml --locked
+./scripts/dev-login/up.sh
+# In another terminal after startup reports ready:
+EVERETT_VERIFY_BINARY="$PWD/everett-rs/target/debug/everett" ./scripts/dev-login/smoke.sh
+EVERETT_VERIFY_BINARY="$PWD/everett-rs/target/debug/everett" node --test scripts/dev-login/regression.mjs
+cargo test --manifest-path everett-rs/Cargo.toml --locked
+cargo clippy --manifest-path everett-rs/Cargo.toml --locked --all-targets -- -D warnings
+npm run typecheck
+npm test -- --exclude 'scripts/dev-login/.state/**'
+```
+
+This VM is Ubuntu 22.04: the pinned backend required newer glibc/libstdc++.
+For this run only, Ubuntu 24.04 runtime libraries were extracted under
+`/home/ubuntu/.devin-files/everett-runtime` and a local wrapper launched the
+unmodified backend with that isolated dynamic loader/library path. No system library or trust store
+was changed. The normal Linux prerequisite is Ubuntu 24.04 or equivalent; this
+workaround is not part of the repository or a cloud deployment.
+
+### Measured smoke
+
+Independent rerun of commit `7dd462d`: `2026-10-19T07-43-30-403Z`, exit **0**,
+`SUMMARY PASS: 0 failed checks`. This confirms the earlier passing run
+`2026-10-19T06-57-36-849Z` on a fresh local stack.
+Per-command output remains ignored under `.state/runs/<run>/`.
+
+- Both isolated Codex fixture sessions discovered before relay checks.
+- Both fixed identities (`alice-a`, `alice-b`) completed native device login
+  using **`--open=false`**, native refresh, `whoami`, and relay
+  `whoami`/`register`/`devices`.
+- Convex accepted signed issuer claims with authoritative enrollment and correct
+  namespaces/roles, rejected a tampered token, and credentials remained mode 0600.
+- Native HTTPS worked with the extra CA from the environment and independently
+  from `[relay] ca_file`. Removing both sources of trust rejected the certificate
+  in **12 ms**, with `relay TLS/certificate verification failed`, the underlying
+  `invalid peer certificate: UnknownIssuer`, and explicit CA configuration guidance.
+  HTTP remained rejected (`Convex deployment must be an HTTPS origin`).
+- Real native encrypted send A → B, B inbox pickup/decryption, B reply by its
+  local inbox ID, A reply pickup/decryption, and signed **`replied`** status passed.
+  Before starting either listener, the smoke queried B's real backend queue and
+  asserted a signed ciphertext envelope with no `Hello from A` plaintext.
+  A message ID: `3acce1f8-711c-4728-943c-b8b4e6b7cce2`.
+- Fixing TLS exposed a separate real-backend `InvalidCursor`: `pending` had a
+  changing `Date.now()` lower bound. It now paginates a stable recipient range
+  and filters expiry after pagination; expired mail is still withheld. The full
+  native exchange above passed after that change.
+
+### Other checks
+
+- Rust full test suite passed (**287 tests**), including CLI/MCP release journey,
+  relay native suite, Jev, OMP and pi coverage; explicit `--open=false` auth
+  regression passed.
+- Four TLS transport tests passed: custom CA handshake and reconnect, default
+  roots/unrelated CA rejection, hostname mismatch rejection, and missing/empty/
+  malformed CA files failing closed. Certificate failures include actionable
+  guidance and are tested to return in under five seconds rather than 20 seconds.
+- Strict all-target clippy passed. Convex typecheck and all 35 backend tests passed,
+  including pagination through expired rows while time advances.
+- All six local-stack regression tests passed (including CA/leaf chain, renewal,
+  key permissions, and explicit-CA HTTPS); shell/Node syntax and diff checks passed.
+- `cargo fmt --check` reports repository-wide formatting differences, including
+  files unchanged from `main` (for example `src/adapters/claude.rs`). Formatting
+  is not a configured CI gate; no unrelated formatting changes were applied.
+
+### Security choice and remaining limits
+
+HTTPS-only with an explicitly configured **extra CA** was selected instead of
+an HTTP exception: it exercises the production TLS/hostname-verification path.
+WebPKI roots remain enabled. Only that relay client trusts extra roots; reconnects
+reuse the same connector. OIDC and other HTTP clients, the process environment's
+global TLS settings, and system trust are not modified. Convex 0.10.4 is vendored
+only because its published builder exposes neither a TLS connector nor TLS error
+state; `everett-rs/vendor/convex/PATCHES.md` records the small transport-only delta.
+
+Not verified by this run: end-to-end smoke on macOS/the Homebrew package, real
+remote/NAT/SSH transport, live Jev/model/harness processes, browser approval UI,
+production issuer/enrollment/endpoints, cross-org live grants, revocation during
+subscriptions, or full message recovery across outages. The smoke uses synthetic
+session files, real CLI processes/crypto, a real local backend, and automated
+device approval; it makes no model calls. No cloud deployment or merge occurred.
+
+---
+
+## Historical installed-binary baseline, 2026-10-15
+
+The following results describe the pre-fix binary, not this branch's current smoke.
+
+## Environment
+
+The run used macOS on Apple Silicon, Node v24.16.0, and the existing `/opt/homebrew/bin/everett`, which reported `everett 1.6.0`. The binary was never rebuilt or replaced. The Rust CLI and `convex/` functions were not modified.
+
+The issuer used `oidc-provider` 9.12.2. Convex used the repo's CLI 1.46.0 and native backend `precompiled-2026-10-06-a3538c6`. All 40 issuer packages in the lockfile were checked against npm publication timestamps and predate 2026-10-08.
+
+The initial anonymous `convex dev` experiment succeeded without login. Its default backend listened on `0.0.0.0`; the delivered scripts instead start the same native backend with `--interface 127.0.0.1`. `lsof` confirmed loopback listeners on 3210, 3211, 4444, and 4445. Convex's local self-hosted operator mode required no account or paid service.
+
+## Passed
+
+- `up.sh` started the issuer and backend, set both auth environment variables, pushed the unchanged functions with typechecking enabled, and provisioned both exact identities. Repeated startup/provisioning succeeded. A second concurrent `up.sh` refused the live PID without stopping the first stack.
+- The installed binary completed both device-code logins, both `whoami --json` commands, and both native refresh paths. The smoke sets only the stored expiry timestamp to zero to trigger refresh. Convex validated the resulting signed ID tokens and returned the expected per-agent IDs, common org namespace, and distinct admin/member roles. Both altered-signature tokens were rejected. Both credential files had mode 0600.
+- Browser approval was executed in T3's collaborative browser. The provider's complete verification URL prefilled the code, clicking **Approve** returned HTTP 200, and the real waiting binary completed sign-in as `alice-a` with device display name `browser`. This used a separate isolated browser-test home.
+- Root `npm run typecheck` and `npm test` passed. Vitest reported **2 files, 68 tests passed**. Every new `.mjs` passed `node --check`, and every shell entrypoint passed `bash -n`. Rust tests and a source rebuild were not run because the production code is unchanged and the requested verification target is the installed binary.
+- `down.sh` stopped the stack. A direct bind check confirmed that all four ports were free, PID/readiness files were removed, and the database and private device credentials remained. No CA was installed, system trust changed, cloud deployment created, or real harness started.
+
+## Native 1.6.0 blockers
+
+### The requested boolean spelling is invalid
+
+Exact command:
+
+```sh
+/opt/homebrew/bin/everett login --device alice-a --open=false
+```
+
+Exit code 2, exact stderr:
+
+```text
+error: unexpected value 'false' for '--open' found; no more were expected
+
+Usage: everett login --open
+
+For more information, try '--help'.
+```
+
+`--open` is a switch, as documented in `docs/auth.md`. The smoke records the failed requested spelling, then continues with the documented non-browser command `login --device alice-a --force --json`. This is an input mismatch, not a device-flow failure.
+
+### HTTP relay URLs are rejected; private TLS roots cannot be supplied
+
+With Alice A signed in, this exact command exits 7:
+
+```sh
+EVERETT_CONVEX_URL=http://127.0.0.1:3210 /opt/homebrew/bin/everett relay whoami
+```
+
+Exact stderr:
+
+```text
+everett: relay: Convex deployment must be an HTTPS origin
+```
+
+With `EVERETT_CONVEX_URL=https://127.0.0.1:4445`, all six real `relay whoami`, `relay register`, and `relay devices` calls, across A and B, exit 5 after about 20 seconds. Exact stderr:
+
+```text
+everett: Convex request timed out; delivery is unconfirmed. Retry with the same idempotency key.
+```
+
+The TLS proxy recorded the client's actual handshake rejection in `.state/tls-errors.log`:
+
+```text
+2026-10-15T09:24:10.324Z 805E10F401000000:error:0A000416:SSL routines:ssl3_read_bytes:ssl/tls alert certificate unknown:ssl/record/rec_layer_s3.c:918:SSL alert number 46
+```
+
+A Node HTTPS request with explicit CA trust returned HTTP 200 for the same proxy's `/version`. Real authenticated HTTP backend queries also succeeded. This isolates the native failure to certificate trust, rather than provisioning or an absent deployment. `everett-rs/Cargo.toml` selects `rustls-tls-webpki-roots` for the Convex client, and `src/relay/mod.rs` requires HTTPS without exposing custom trust configuration. Keychain trust or a generated `mkcert` root cannot change that compiled trust source.
+
+The product limitation is the lack of a supported loopback HTTP or custom-CA option for local relay testing. The diagnostic bug is that certificate rejection becomes a generic delivery timeout even for `relay whoami`. No CLI or backend patch was made. A public-trusted certificate or hosted service would exceed this task's local-only setup, so neither was used.
+
+## Real smoke output
+
+Final command `./scripts/dev-login/smoke.sh` exited **1**. The run directory is `.state/runs/2026-10-15T09-23-10-933Z/`. Output tail:
+
+```text
+PASS alice-b backend diagnostic: verified JWT/claims/enrollment, refresh ID token, tamper rejection, credentials mode 0600
+PASS alice-a backend diagnostic: verified JWT/claims/enrollment, refresh ID token, tamper rejection, credentials mode 0600
+FAIL alice-a relay whoami
+  everett: Convex request timed out; delivery is unconfirmed. Retry with the same idempotency key.
+FAIL alice-b relay whoami
+  everett: Convex request timed out; delivery is unconfirmed. Retry with the same idempotency key.
+FAIL alice-a relay register
+  everett: Convex request timed out; delivery is unconfirmed. Retry with the same idempotency key.
+FAIL alice-b relay register
+  everett: Convex request timed out; delivery is unconfirmed. Retry with the same idempotency key.
+FAIL alice-b relay devices
+  everett: Convex request timed out; delivery is unconfirmed. Retry with the same idempotency key.
+FAIL alice-a relay devices
+  everett: Convex request timed out; delivery is unconfirmed. Retry with the same idempotency key.
+PASS HTTP rejection reproduced: everett: relay: Convex deployment must be an HTTPS origin
+PASS TLS proxy /version with explicit Node CA trust (diagnostic only; Everett trust is unchanged)
+SKIP message exchange: installed binary could not complete relay identity/registration/devices
+SUMMARY FAIL: 7 failed checks; real output in /Users/wrightwilliams/.t3/worktrees/everett/t3-dcb3322b/scripts/dev-login/.state/runs/2026-10-15T09-23-10-933Z
+```
+
+The count is one rejected requested flag spelling plus six native relay commands. A fully passing native relay smoke and the A-to-B encrypted exchange were **not achieved**. The exchange branch is implemented following `docs/cross-device.md` and explicitly skipped when native setup fails; it remains unverified against a live native relay. Real NAT, sshd, active-subscription revocation, and real model sessions were not exercised.
+
+An earlier development run hit a full-disk error, including `can't create temp file for here document: no space left on device` and a backend SQLite `unable to open database file` shutdown. Only this task's duplicate downloaded Convex cache was removed. The final run used the healthy restarted backend, and `up.sh` now checks for at least 500 MB free before startup. This was an environment failure, not a CLI auth bug.
+
+## Review repair verification, 2026-10-16
+
+The original report above is preserved. These checks repair four PR22 findings against head `6f566ef3d29efa70ab9aba2a5a601066d0fa7c09`. The installed binary still reports `everett 1.6.0`. No Rust CLI or Convex function changed.
+
+Before the repair, isolated executions of the original scripts reproduced all four defects. The real installed `ls --json` returned no seeded session. Copying retained a deleted Convex module. A matching local certificate and key with validity from 2000-01-01 through 2001-01-01 were reused unchanged. Existing dependency directories caused startup to perform zero installs after a lockfile change.
+
+The smoke now writes Codex transcripts under `.codex/sessions/YYYY/MM/DD/` and checks both exact session IDs through the installed CLI before requiring stack readiness. Each startup runs both clean locked installs, with issuer `--ignore-scripts` retained. Copying replaces only the disposable `operator/convex/` subtree. TLS reuse checks validity dates, localhost and loopback identity, and the private key. Invalid files regenerate locally.
+
+Verification passed with the following commands.
+
+```sh
+node --test --test-skip-pattern 'renewed certificate serves loopback HTTPS' scripts/dev-login/regression.mjs
+node --test --test-name-pattern 'renewed certificate serves loopback HTTPS' scripts/dev-login/regression.mjs
+npm run typecheck
+node node_modules/vitest/vitest.mjs run --cache=false
+```
+
+The first command passed five regressions. They cover both real session IDs, smoke preflight before a missing-stack failure, real offline npm installs with unchanged and changed lockfiles, stale-file removal, suppression of issuer install scripts, failure of either install, Convex source deletion and rename with preserved sibling state, missing TLS files, valid reuse, an expired matching certificate, malformed certificates, and a mismatched key. The second command passed one HTTPS regression after narrowly scoped sandbox approval for its temporary loopback listener. The regenerated certificate returned HTTP 200 with explicit Node CA trust. System trust stayed unchanged.
+
+Root typechecking passed. Vitest passed one file with 34 tests. All six `.mjs` files passed `node --check`, and all three shell entrypoints passed `bash -n`. Dependency manifests and lockfiles match the original PR22 bytes.
+
+The first regression run passed four checks and failed two. The offline npm test fixture had an invalid lockfile due to a macOS `/var` versus `/private/var` path mismatch, and the sandbox denied the ephemeral HTTPS listener with `EPERM`. The fixture now uses real paths and package names. The approved focused HTTPS run passed. One initial typecheck attempt reported TS2339 in the unchanged relay tests while workspace file reads stalled. Untouched checkout files were restored atomically from the exact clean PR22 checkout, and a fresh typecheck passed. These initial attempts are not counted as successful checks.
+
+The complete stack and native encrypted exchange were not rerun. The original `--open=false`, HTTP-origin, and native self-signed TLS failures remain. No hosted deployment, live device, paid call, system trust change, commit, or push occurred.

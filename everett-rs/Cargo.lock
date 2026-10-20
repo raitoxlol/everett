@@ -464,8 +464,6 @@ dependencies = [
 [[package]]
 name = "convex"
 version = "0.10.4"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4ca2fbc7cfc35747ade0731b173cf72c70c7f72c4578440f9a77c871adaa1e2f"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -872,6 +870,7 @@ dependencies = [
  "rmcp",
  "rpassword",
  "rusqlite",
+ "rustls",
  "serde",
  "serde_json",
  "sha2",
@@ -880,12 +879,15 @@ dependencies = [
  "tempfile",
  "terminal_size",
  "tokio",
+ "tokio-rustls",
+ "tokio-tungstenite",
  "toml",
  "ureq",
  "url",
  "uuid",
  "vt100",
  "wait-timeout",
+ "webpki-roots 1.0.9",
  "x25519-dalek",
 ]
 
