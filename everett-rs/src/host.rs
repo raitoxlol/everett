@@ -193,15 +193,19 @@ fn started_at(session: &crate::session::Session) -> Option<f64> {
     crate::timefmt::epoch_from_iso(&session.started)
 }
 
-/// The single session of `host.harness` created in the host's cwd since the host started,
-/// when no other live process of that harness could own it.
-fn store_binding(host: &Host, procs: &HashMap<i32, Proc>) -> std::result::Result<String, String> {
-    let hours = ((now() - host.started) / 3600.0 + 1.0).max(1.0);
-    let sessions = crate::registry::scan(hours, false, None, &host.harness);
+/// The single session of `host.harness` created in the host's cwd since the host started.
+/// A session or host without a cwd never matches, and two or more candidates is an error.
+pub fn new_session_in_cwd<'a>(
+    host: &Host,
+    sessions: &'a [crate::session::Session],
+) -> std::result::Result<&'a crate::session::Session, String> {
+    if host.cwd.is_empty() {
+        return Err(format!("the {} process (pid {}) has no known cwd; Everett will not guess", host.harness, host.pid));
+    }
     let candidates: Vec<&crate::session::Session> = sessions
         .iter()
         .filter(|s| started_at(s).is_some_and(|t| t >= host.started - SLACK))
-        .filter(|s| s.cwd.is_empty() || same_dir(&s.cwd, &host.cwd))
+        .filter(|s| same_dir(&s.cwd, &host.cwd))
         .filter(|s| host.harness != "hermes" || crate::adapters::hermes::INTERACTIVE.contains(&s.source.as_str()))
         .filter(|s| crate::inbox::live(&s.id).is_none_or(|rec| rec.get("pid").and_then(Value::as_i64) == Some(host.pid as i64)))
         .collect();
@@ -223,6 +227,14 @@ fn store_binding(host: &Host, procs: &HashMap<i32, Proc>) -> std::result::Result
             ))
         }
     };
+    Ok(session)
+}
+
+/// [`new_session_in_cwd`], when no other live process of that harness could own it.
+fn store_binding(host: &Host, procs: &HashMap<i32, Proc>) -> std::result::Result<String, String> {
+    let hours = ((now() - host.started) / 3600.0 + 1.0).max(1.0);
+    let sessions = crate::registry::scan(hours, false, None, &host.harness);
+    let session = new_session_in_cwd(host, &sessions)?;
     let created = started_at(session).unwrap_or(host.started);
     let rivals: Vec<i32> = procs
         .values()
