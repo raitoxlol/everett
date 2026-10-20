@@ -55,16 +55,24 @@ async function fixture() {
       code_challenge: s256(verifier), code_challenge_method: "S256", resource, scope: "everett", ...overrides });
     return await backend.fetch(`/oauth/authorize?${params}`);
   };
+  const bindings = new Map<string, string>();
   const pending = async (clientId: string, overrides: Record<string, string> = {}) => {
     const response = await authorize(clientId, overrides);
     expect(response.status).toBe(302);
     const location = new URL(response.headers.get("Location")!);
     expect(location.origin + location.pathname).toBe(`${issuer}/enroll`);
-    return location.searchParams.get("oauth")!;
+    const requestId = location.searchParams.get("oauth")!;
+    const cookie = response.headers.get("Set-Cookie")!;
+    expect(cookie).toMatch(/Path=\/enroll; Max-Age=600; Secure; SameSite=Lax$/);
+    const [id, binding] = cookie.split(";")[0].split("=")[1].split(".");
+    expect(id).toBe(requestId);
+    bindings.set(requestId, binding);
+    return requestId;
   };
+  const binding = (requestId: string) => bindings.get(requestId)!;
   const approve = async (clientId: string, name = "ChatGPT dot") => {
     const requestId = await pending(clientId);
-    const { redirect } = await owner.action(decide, { requestId, approve: true, name }) as { redirect: string };
+    const { redirect } = await owner.action(decide, { requestId, approve: true, name, binding: binding(requestId) }) as { redirect: string };
     const url = new URL(redirect);
     expect(url.origin + url.pathname).toBe(redirectUri);
     expect(url.searchParams.get("iss")).toBe(issuer);
@@ -83,7 +91,7 @@ async function fixture() {
     expect(response.headers.get("Cache-Control")).toBe("no-store");
     return await response.json() as { access_token: string; refresh_token: string; expires_in: number; scope: string; token_type: string };
   };
-  return { backend, owner, other, post, register, authorize, pending, approve, exchange, refresh, introspect, tokens };
+  return { backend, owner, other, post, register, authorize, pending, binding, approve, exchange, refresh, introspect, tokens };
 }
 
 describe("owner-only OAuth authorization server", () => {
@@ -147,13 +155,52 @@ describe("owner-only OAuth authorization server", () => {
     const clientId = await f.register();
     const requestId = await f.pending(clientId);
     await expect(f.other.query(inspectRequest, { requestId })).rejects.toThrow("Owner only");
-    await expect(f.other.action(decide, { requestId, approve: true, name: "x" })).rejects.toThrow("Owner only");
-    await expect(f.backend.action(decide, { requestId, approve: true, name: "x" })).rejects.toThrow("Hosted sign in required");
+    await expect(f.other.action(decide, { requestId, approve: true, name: "x", binding: f.binding(requestId) })).rejects.toThrow("Owner only");
+    await expect(f.backend.action(decide, { requestId, approve: true, name: "x", binding: f.binding(requestId) })).rejects.toThrow("Hosted sign in required");
     expect(await f.owner.query(inspectRequest, { requestId })).toMatchObject({ clientName: "ChatGPT", resource, redirectUri, scope: "everett" });
-    const { redirect } = await f.owner.action(decide, { requestId, approve: false, name: "x" }) as { redirect: string };
+    const { redirect } = await f.owner.action(decide, { requestId, approve: false, name: "x", binding: f.binding(requestId) }) as { redirect: string };
     expect(Object.fromEntries(new URL(redirect).searchParams)).toMatchObject({ error: "access_denied", state: "st-1", iss: issuer });
-    await expect(f.owner.action(decide, { requestId, approve: true, name: "x" })).rejects.toThrow("expired or unknown");
+    await expect(f.owner.action(decide, { requestId, approve: true, name: "x", binding: f.binding(requestId) })).rejects.toThrow("expired or unknown");
     expect(await f.backend.run(ctx => ctx.db.query("credentials").collect())).toEqual([]);
+  });
+  test("approval from a browser that did not start the request fails, even for the owner", async () => {
+    const f = await fixture();
+    const clientId = await f.register();
+    // The attacker starts the flow in their own browser and forwards the /enroll link to the owner.
+    const requestId = await f.pending(clientId);
+    const victim = await f.pending(clientId);
+    for (const wrong of ["", "0".repeat(64), f.binding(victim)]) {
+      await expect(f.owner.action(decide, { requestId, approve: true, name: "x", binding: wrong })).rejects.toThrow("different browser");
+    }
+    expect(await f.backend.run(ctx => ctx.db.query("credentials").collect())).toEqual([]);
+    expect(await f.owner.query(inspectRequest, { requestId })).toMatchObject({ clientName: "ChatGPT", redirectHost: "chatgpt.com" });
+    await f.owner.action(decide, { requestId, approve: true, name: "x", binding: f.binding(requestId) });
+  });
+  test("unused DCR clients expire, the oldest unused is evicted when full, and limits are per source", async () => {
+    const f = await fixture();
+    const dcr = async (source: string) => await f.backend.fetch("/oauth/register", { method: "POST",
+      headers: { "Content-Type": "application/json", "X-Forwarded-For": `${source}, 10.0.0.1` },
+      body: JSON.stringify({ client_name: "ChatGPT", redirect_uris: [redirectUri], token_endpoint_auth_method: "none" }) });
+    vi.useFakeTimers({ toFake: ["Date"] });
+    try {
+      vi.setSystemTime(new Date("2026-10-20T00:00:00Z"));
+      const used = await f.register();
+      await f.approve(used);
+      for (let i = 0; i < 10; i++) expect((await dcr("198.51.100.7")).status).toBe(201);
+      expect((await dcr("198.51.100.7")).status).toBe(400);
+      expect((await dcr("203.0.113.9")).status).toBe(201);
+      for (let minute = 1; minute <= 10; minute++) {
+        vi.setSystemTime(new Date(Date.parse("2026-10-20T00:00:00Z") + minute * 61_000));
+        for (let i = 0; i < 10; i++) expect((await dcr("198.51.100.7")).status).toBe(201);
+      }
+      const clients = await f.backend.run(ctx => ctx.db.query("oauthClients").collect());
+      expect(clients.filter(c => c.expiresAt !== undefined)).toHaveLength(100);
+      expect(clients.find(c => c.clientId === used)).not.toHaveProperty("expiresAt");
+      vi.setSystemTime(new Date(Date.parse("2026-10-20T00:00:00Z") + 3 * 3600_000));
+      await f.backend.mutation(makeFunctionReference<"mutation">("oauth:expire"), {});
+      const left = await f.backend.run(ctx => ctx.db.query("oauthClients").collect());
+      expect(left.map(c => c.clientId)).toEqual([used]);
+    } finally { vi.useRealTimers(); }
   });
   test("resource indicator mismatches are rejected at authorize, token and refresh", async () => {
     const f = await fixture();

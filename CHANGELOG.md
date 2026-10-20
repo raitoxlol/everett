@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- OAuth approvals are bound to the browser that started `/oauth/authorize`
+  (cookie binding) and show the redirect host. Unused DCR clients expire, the
+  oldest unused is evicted instead of a hard 100-client lock, and registration
+  is rate-limited per source.
 - Codex MCP calls bind from the per-call `_meta.threadId` (this landed after the
   1.6.0 tag; it is not in any release yet).
 - Pi, OMP, Devin, and Hermes MCP callers bind to their session without a

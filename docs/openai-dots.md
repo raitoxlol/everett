@@ -92,6 +92,18 @@ DCR. Either way every redirect URI must also be in `EVERETT_OAUTH_REDIRECT_URIS`
 exactly; anything else gets a plain 400 that names the URI to add. Authorization
 redirects carry `iss` on success and error.
 
+`/oauth/authorize` sets a short-lived `everett_oauth` cookie (`Path=/enroll`,
+`Secure`, `SameSite=Lax`) holding the request ID and a random binding. Approval
+must present that binding, so an `/enroll?oauth=…` link forwarded from another
+browser cannot be approved. The approval page shows the redirect host and the
+client name.
+
+DCR clients that never complete an approval expire after an hour (the `expire`
+cron deletes them). When 100 unused clients exist, the oldest unused one is
+evicted rather than refusing new registrations. Registration is limited to 10
+per minute per source (first `X-Forwarded-For` hop). Convex does not document
+that header for HTTP actions; without it every caller shares one bucket.
+
 Approval is owner-only: `/enroll` requires the PR #25 GitHub sign-in (numeric ID +
 login). Approving mints a **new** `agent-…` identity and credential (`kind: oauth`)
 listed with other credentials on `/enroll`. Codes last 5 minutes, access tokens

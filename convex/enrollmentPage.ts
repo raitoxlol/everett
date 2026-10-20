@@ -8,7 +8,7 @@ export function enrollmentPage(cloud: string) {
 <p><label>Device code <input id="code" autocomplete="off" maxlength="12"></label><button id="inspect">Inspect</button></p>
 <pre id="details"></pre><button id="approve" disabled>Approve this agent</button><button id="deny" disabled>Deny</button>
 <section id="oauth" hidden><h2>Connect an OAuth client</h2>
-<p>Approving mints a new, separately revocable agent identity for this client.</p>
+<p>Approving mints a new, separately revocable agent identity for this client. Only approve a request you started in this browser, and check that the redirect host is the client you expect.</p>
 <pre id="oauthDetails"></pre><p><label>Agent name <input id="oauthName" maxlength="100" value="ChatGPT dot"></label></p>
 <button id="oauthApprove">Approve and mint agent</button><button id="oauthDeny">Deny</button></section>
 <h2>Agent credentials</h2><button id="refresh">Refresh list</button><ul id="agents"></ul><p id="status" role="status"></p>
@@ -41,11 +41,13 @@ $('approve').onclick=run(()=>decide(true));$('deny').onclick=run(()=>decide(fals
 async function showOauth(){
   const id=sessionStorage.getItem('oauthRequest');if(!id||!sessionStorage.getItem('ownerToken'))return;
   const row=await api('query','oauth:inspectRequest',{requestId:id});$('oauth').hidden=false;
-  $('oauthDetails').textContent=['Client: '+row.clientName,'Client ID: '+row.clientId,'Redirect: '+row.redirectUri,'Resource: '+row.resource,'Scope: '+row.scope].join(String.fromCharCode(10));
+  $('oauthDetails').textContent=['Redirect host: '+row.redirectHost,'Client: '+row.clientName,'Client ID: '+row.clientId,'Redirect: '+row.redirectUri,'Resource: '+row.resource,'Scope: '+row.scope].join(String.fromCharCode(10));
 }
 async function decideOauth(approve){
   const id=sessionStorage.getItem('oauthRequest');if(!id)throw Error('No OAuth request pending');
-  const result=await api('action','oauth:decide',{requestId:id,approve,name:$('oauthName').value});
+  const bound=document.cookie.split('; ').find(c=>c.startsWith('everett_oauth='))?.slice(14).split('.');
+  if(!bound||bound[0]!==id)throw Error('This OAuth request was started in a different browser. Start it again from your client here.');
+  const result=await api('action','oauth:decide',{requestId:id,approve,name:$('oauthName').value,binding:bound[1]});
   sessionStorage.removeItem('oauthRequest');location.assign(result.redirect);
 }
 $('oauthApprove').onclick=run(()=>decideOauth(true));$('oauthDeny').onclick=run(()=>decideOauth(false));
