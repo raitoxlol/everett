@@ -186,6 +186,13 @@ fn install_writes_host_binding_launchers_and_hooks() {
     assert!(!fx.home().join(".omp").exists(), "OMP files written without OMP installed");
     assert!(!fx.home().join(".pi").exists());
 
+    // An OMP home without `omp` on PATH (HERMETIC_PATH has none) still counts as installed.
+    std::fs::create_dir_all(fx.home().join(".omp")).unwrap();
+    run(&["install-hooks", "--apply"]);
+    let omp = std::fs::read_to_string(fx.home().join(".omp/agent/extensions/everett.ts")).unwrap();
+    assert!(omp.contains("omp_bind"), "{omp}");
+    assert!(!fx.home().join(".pi").exists(), "a ~/.omp home must not install Pi files");
+
     run(&["install-hooks", "--pi", "--apply"]);
     let ext = std::fs::read_to_string(fx.home().join(".pi/agent/extensions/everett.ts")).unwrap();
     assert!(ext.contains("registerMcpServer") && ext.contains("EVERETT_SESSION_ID") && ext.contains("pi_bind"));
@@ -205,4 +212,13 @@ fn install_writes_host_binding_launchers_and_hooks() {
     let bound = fx.run_stdin(&["hook", "devin_bind"], &json!({"session_id": "devin-sess"}).to_string(), &[]);
     assert!(bound.status.success());
     assert!(fx.home().join(".everett/inbox/live/devin-sess.json").exists());
+}
+
+#[test]
+fn mcp_calls_returns_only_after_the_everett_server_exits() {
+    let fx = fixture();
+    let pidfile = fx.home().join(".mcp-server.pid");
+    common::mcp_calls(&fx, &[], &[("EVERETT_SESSION_ID", "s1")], &[("everett_whoami", json!({}))]);
+    let pid: i32 = std::fs::read_to_string(&pidfile).unwrap().trim().parse().unwrap();
+    assert_ne!(unsafe { libc::kill(pid, 0) }, 0, "everett mcp pid {pid} outlived mcp_calls");
 }

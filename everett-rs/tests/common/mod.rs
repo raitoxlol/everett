@@ -143,7 +143,9 @@ pub fn mcp_calls(
 ) -> Vec<serde_json::Value> {
     use std::io::{BufRead, BufReader, Write};
     let mut cmd = Command::new("/bin/sh");
-    cmd.args(["-c", r#"exec 3<&0; ( "$0" "$@" <&3 3<&- & )"#, env!("CARGO_BIN_EXE_everett"), "mcp"])
+    let pidfile = fixture.home().join(".mcp-server.pid");
+    let _ = std::fs::remove_file(&pidfile);
+    cmd.args(["-c", r#"exec 3<&0; ( "$0" "$@" <&3 3<&- & echo $! > "$EVERETT_HOME/.mcp-server.pid" )"#, env!("CARGO_BIN_EXE_everett"), "mcp"])
         .args(args)
         .env_clear()
         .env("HOME", fixture.home())
@@ -178,6 +180,7 @@ pub fn mcp_calls(
     }
     drop(stdin);
     let _ = child.wait();
+    wait_for_exit(&pidfile);
     results
 }
 
@@ -232,4 +235,14 @@ pub fn lib_home() -> LibHome {
         std::env::remove_var(name);
     }
     LibHome { dir, _guard: guard }
+}
+
+/// The orphaned server is not our child, so poll its pid (recorded by the launching shell) until it exits.
+pub fn wait_for_exit(pidfile: &std::path::Path) {
+    let pid: i32 = std::fs::read_to_string(pidfile).expect("mcp server pid").trim().parse().unwrap();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    while unsafe { libc::kill(pid, 0) } == 0 {
+        assert!(std::time::Instant::now() < deadline, "everett mcp (pid {pid}) still running after stdin closed");
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
 }
