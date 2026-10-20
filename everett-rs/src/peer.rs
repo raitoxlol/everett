@@ -580,6 +580,17 @@ pub fn add(
     })
 }
 
+pub fn local_device_id() -> Result<Option<String>> {
+    match fs::read_to_string(root().join("device_id")) {
+        Ok(id) => {
+            valid(&id)?;
+            Ok(Some(id))
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(e) => Err(io_error(e)),
+    }
+}
+
 fn tag(client: &str) -> String {
     format!("# everett-peer:{client}")
 }
@@ -593,7 +604,12 @@ fn authorized(client: &str) -> Result<()> {
     Ok(())
 }
 
-fn edit_authorized(client: &str, replacement: Option<&str>) -> Result<()> {
+fn edit_authorized(client: &str, replacement: Option<&str>) -> Result<bool> {
+    rewrite_authorized(client, None, replacement)
+}
+
+/// Drops lines tagged for `client` (only those carrying `key`, when given), then appends `replacement`.
+fn rewrite_authorized(client: &str, key: Option<&str>, replacement: Option<&str>) -> Result<bool> {
     valid(client)?;
     let dir = session::home().join(".ssh");
     private_dir(&dir)?;
@@ -608,7 +624,11 @@ fn edit_authorized(client: &str, replacement: Option<&str>) -> Result<()> {
         .map_err(|_| bad("authorized_keys is not UTF-8; refusing to rewrite"))?;
     let mut next: String = text
         .split_inclusive('\n')
-        .filter(|line| !line.trim_end_matches(['\r', '\n']).ends_with(&tag(client)))
+        .filter(|line| {
+            let line = line.trim_end_matches(['\r', '\n']);
+            !(line.ends_with(&tag(client))
+                && key.is_none_or(|key| line.split_whitespace().any(|field| field == key)))
+        })
         .collect();
     if let Some(line) = replacement {
         if !next.is_empty() && !next.ends_with('\n') {
@@ -617,6 +637,9 @@ fn edit_authorized(client: &str, replacement: Option<&str>) -> Result<()> {
         next.push_str(line);
         next.push('\n');
     }
+    if next.as_bytes() == raw {
+        return Ok(false);
+    }
     if !raw.is_empty() {
         let backup = dir.join(format!(
             "authorized_keys.everett-{}.bak",
@@ -624,7 +647,48 @@ fn edit_authorized(client: &str, replacement: Option<&str>) -> Result<()> {
         ));
         save(&backup, &raw)?;
     }
-    save(&file, next.as_bytes())
+    save(&file, next.as_bytes())?;
+    Ok(true)
+}
+
+pub fn prune_revoked(client: &str) -> Result<bool> {
+    edit_authorized(client, None)
+}
+
+/// Prunes `client`'s authorization only where it holds this exact SSH key.
+pub fn prune_revoked_key(client: &str, key: &str) -> Result<bool> {
+    rewrite_authorized(client, Some(key), None)
+}
+
+/// This machine's SSH peer id, the base64 field of its public key, and its signing key.
+pub fn local_ssh_key() -> Result<Option<(String, String, ed25519_dalek::SigningKey)>> {
+    let Some(id) = local_device_id()? else {
+        return Ok(None);
+    };
+    let path = root().join("id_ed25519");
+    if !path.exists() {
+        return Ok(None);
+    }
+    let private =
+        ssh_key::PrivateKey::read_openssh_file(&path).map_err(|e| bad(format!("SSH identity: {e}")))?;
+    let pair = private
+        .key_data()
+        .ed25519()
+        .ok_or_else(|| bad("SSH identity is not Ed25519"))?;
+    let public = private
+        .public_key()
+        .to_openssh()
+        .map_err(|e| bad(format!("SSH identity: {e}")))?;
+    let field = public
+        .split_whitespace()
+        .nth(1)
+        .ok_or_else(|| bad("invalid SSH public key"))?
+        .to_string();
+    Ok(Some((
+        id,
+        field,
+        ed25519_dalek::SigningKey::from_bytes(&pair.private.to_bytes()),
+    )))
 }
 
 pub fn revoke(client: &str) -> Result<Value> {
@@ -1085,9 +1149,28 @@ pub fn status(name: &str, message_id: &str) -> Result<Value> {
 
 fn remove_ssh_locked(name: &str) -> Result<Value> {
     rpc(name, &Request::Revoke)?;
-    fs::remove_file(config_path(name)?).map_err(io_error)?;
-    fs::remove_file(known_hosts(name)?).map_err(io_error)?;
+    forget_ssh_locked(name)?;
     Ok(json!({"removed": name, "remote_key_revoked": true}))
+}
+
+fn forget_ssh_locked(name: &str) -> Result<()> {
+    match fs::remove_file(known_hosts(name)?) {
+        Ok(()) => (),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => (),
+        Err(e) => return Err(io_error(e)),
+    }
+    fs::remove_file(config_path(name)?).map_err(io_error)
+}
+
+pub(crate) fn forget_device_locked(device_id: &str) -> Result<Vec<String>> {
+    let mut removed = Vec::new();
+    for (name, peer) in peers()? {
+        if peer.device_id == device_id {
+            forget_ssh_locked(&name)?;
+            removed.push(name);
+        }
+    }
+    Ok(removed)
 }
 
 /// Removing a duplicate alias is fail-closed unless a transport is named.

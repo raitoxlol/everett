@@ -5,7 +5,7 @@ import nacl from "tweetnacl";
 import schema from "../schema";
 import { namespace } from "../authorization";
 import { queuedAttemptCount } from "../relay";
-import { aadBytes, deviceBytes, envelopeBytes, fingerprint, observationBytes, rotationBytes, hexString, type Envelope } from "../protocol";
+import { aadBytes, deviceBytes, sshBindingBytes, envelopeBytes, fingerprint, observationBytes, rotationBytes, hexString, type Envelope } from "../protocol";
 import { key, seal, open, resign, type Keys } from "./crypto.test-helper";
 import wire from "./relay-wire-v2.json";
 
@@ -50,7 +50,7 @@ async function fixture() {
   };
   return { backend, identities, a, b, c, d, ka, kb, kc, kd, invite, activate, observe };
 }
-afterEach(() => vi.useRealTimers());
+afterEach(() => { vi.useRealTimers(); vi.restoreAllMocks(); });
 
 type Fixture = Awaited<ReturnType<typeof fixture>>;
 async function expectRoutingDenied(f: Fixture, client: Fixture["a"] | Fixture["backend"], reason: RegExp) {
@@ -58,7 +58,7 @@ async function expectRoutingDenied(f: Fixture, client: Fixture["a"] | Fixture["b
   const observation = { deviceId: f.ka.device.deviceId, senderOwner: ownerA, messageId: e.messageId,
     at: Date.now(), signature: "00".repeat(64) };
   for (const [name, args] of [
-    ["whoami", {}], ["devices", {}], ["credentials", {}], ["memberships", {}],
+    ["whoami", {}], ["devices", {}], ["revokedDevices", {}], ["credentials", {}], ["memberships", {}],
     ["pending", { deviceId: f.ka.device.deviceId }],
     ["status", { fromDevice: f.ka.device.deviceId, messageId: e.messageId }],
     ["grants:list", {}], ["grants:get", { grantId: "grant-ab" }],
@@ -66,7 +66,7 @@ async function expectRoutingDenied(f: Fixture, client: Fixture["a"] | Fixture["b
   for (const [name, args] of [
     ["register", { device: f.ka.device }],
     ["rotate", { device: f.ka.device, oldFingerprint: fingerprint(f.ka.device), signature: "00".repeat(64) }],
-    ["revokeAgent", { deviceId: "agent-c" }], ["revokeMember", { subject: "alice-member" }],
+    ["revokeAgent", { deviceId: "agent-c" }], ["revokeDevice", { deviceId: "agent-c" }], ["revokeMember", { subject: "alice-member" }],
     ["enqueue", { envelope: e }], ["accept", observation],
     ["observe", { ...observation, state: "delivered" }],
     ["grants:invite", { grantId: "grant-ab", deviceId: "agent-a", peerOwner: ownerB, peerDeviceId: "agent-b",
@@ -79,6 +79,120 @@ async function expectRoutingDenied(f: Fixture, client: Fixture["a"] | Fixture["b
 }
 
 describe("actual Convex functions, offline", () => {
+  test("self-revocation records a permanent device and credential tombstone", async () => {
+    const f = await fixture();
+    vi.spyOn(Date, "now").mockReturnValue(1700000000000);
+    await f.c.mutation(ref("revokeDevice"), { deviceId: "agent-c" });
+    expect(await f.a.query(query("revokedDevices"), {})).toEqual({ devices: [{ deviceId: "agent-c", revokedAt: 1700000000000 }], cursor: null });
+    await expectRoutingDenied(f, f.c, /revoked/);
+    await expect(f.c.mutation(ref("register"), { device: f.kc.device })).rejects.toThrow("revoked");
+    await expect(f.backend.mutation(ref("provisionIdentity"), {
+      issuer, subject: "alice-member", org: "org-a", agentId: "agent-c", role: "member",
+    })).rejects.toThrow("tombstone");
+    await f.a.mutation(ref("revokeDevice"), { deviceId: "agent-c" });
+    expect(await f.a.query(query("revokedDevices"), {})).toEqual({ devices: [{ deviceId: "agent-c", revokedAt: 1700000000000 }], cursor: null });
+  });
+  test("admin revokes only its namespace and members cannot revoke other devices", async () => {
+    const f = await fixture();
+    await expect(f.c.mutation(ref("revokeDevice"), { deviceId: "agent-a" })).rejects.toThrow("admin");
+    const forgedAdmin = f.backend.withIdentity({ ...f.identities[2], everett_role: "admin" });
+    await expect(forgedAdmin.mutation(ref("revokeDevice"), { deviceId: "agent-a" })).rejects.toThrow("admin");
+    await expect(f.a.mutation(ref("revokeDevice"), { deviceId: "agent-d" })).rejects.toThrow("organization");
+    await f.a.mutation(ref("revokeDevice"), { deviceId: "agent-c" });
+    await f.b.mutation(ref("revokeDevice"), { deviceId: "agent-d" });
+    expect(await f.a.query(query("revokedDevices"), {})).toEqual({ devices: [{ deviceId: "agent-c", revokedAt: expect.any(Number) }], cursor: null });
+    expect(await f.b.query(query("revokedDevices"), {})).toEqual({ devices: [{ deviceId: "agent-d", revokedAt: expect.any(Number) }], cursor: null });
+    await expect(f.c.query(query("device"), { deviceId: "agent-a" })).rejects.toThrow("revoked");
+    await expect(f.a.query(query("device"), { deviceId: "agent-c" })).rejects.toThrow("revoked");
+  });
+  test("device tombstones deny registration even if a credential was incorrectly restored", async () => {
+    const f = await fixture();
+    await f.a.mutation(ref("revokeDevice"), { deviceId: "agent-c" });
+    await f.backend.run(async ctx => {
+      const row = await ctx.db.query("credentials").withIndex("by_agent", q => q.eq("issuer", issuer).eq("agentId", "agent-c")).unique();
+      await ctx.db.patch(row!._id, { status: "active" });
+    });
+    await expect(f.c.mutation(ref("register"), { device: f.kc.device })).rejects.toThrow("tombstone");
+    await expect(f.c.query(query("devices"), {})).rejects.toThrow("revoked");
+  });
+  test("revoked devices page past 256 tombstones and skip active rows", async () => {
+    const f = await fixture();
+    await f.backend.run(async ctx => {
+      for (let i = 0; i < 300; i++) {
+        await ctx.db.insert("devices", { ...f.kc.device, deviceId: `z-revoked-${String(i).padStart(3, "0")}`, generation: 0, revokedAt: 1000 + i });
+      }
+    });
+    const first = await f.a.query(query("revokedDevices"), {});
+    expect(first.devices).toHaveLength(256);
+    expect(first.cursor).toEqual(expect.any(String));
+    const second = await f.a.query(query("revokedDevices"), { cursor: first.cursor });
+    expect(second.cursor).toBeNull();
+    const ids = [...first.devices, ...second.devices].map(d => d.deviceId);
+    expect(ids).toHaveLength(300);
+    expect(new Set(ids).size).toBe(300);
+    expect(ids.every(id => id.startsWith("z-revoked-"))).toBe(true);
+    expect(await f.b.query(query("revokedDevices"), {})).toEqual({ devices: [], cursor: null });
+  });
+  const sshKey = (seed: number) => {
+    const pair = nacl.sign.keyPair.fromSeed(new Uint8Array(32).fill(seed));
+    const prefix = [0, 0, 0, 11, ...new TextEncoder().encode("ssh-ed25519"), 0, 0, 0, 32];
+    return { pair, publicKey: Buffer.from([...prefix, ...pair.publicKey]).toString("base64") };
+  };
+  const binding = (owner: string, deviceId: string, sshDeviceId: string, key: ReturnType<typeof sshKey>, signer = key) => ({
+    sshDeviceId, sshPublicKey: key.publicKey,
+    sshSignature: hexString(nacl.sign.detached(sshBindingBytes(owner, deviceId, sshDeviceId, key.publicKey), signer.pair.secretKey)),
+  });
+  test("SSH binding bytes match the Rust client", () => {
+    expect(new TextDecoder().decode(sshBindingBytes("[\"i\",\"org\",\"o\"]", "agent", "ssh-id", "AAAA")))
+      .toBe('["everett-ssh-bind-v1","[\\"i\\",\\"org\\",\\"o\\"]","agent","ssh-id","AAAA"]');
+  });
+  test("registration binds a proven SSH peer id once and revocation reports it", async () => {
+    const f = await fixture();
+    const keyC = sshKey(21);
+    await expect(f.c.mutation(ref("register"), { device: f.kc.device, ssh: binding(ownerA, "agent-c", "bad id!", keyC) })).rejects.toThrow();
+    const proof = binding(ownerA, "agent-c", "ssh-c", keyC);
+    await f.c.mutation(ref("register"), { device: f.kc.device, ssh: proof });
+    await f.c.mutation(ref("register"), { device: f.kc.device, ssh: binding(ownerA, "agent-c", "ssh-other", keyC) });
+    await f.a.mutation(ref("revokeDevice"), { deviceId: "agent-c" });
+    expect(await f.a.query(query("revokedDevices"), {})).toEqual({
+      devices: [{ deviceId: "agent-c", ...proof, revokedAt: expect.any(Number) }], cursor: null,
+    });
+  });
+  test("a member cannot claim another device's SSH id to prune it by self-revoking", async () => {
+    const f = await fixture();
+    const victim = sshKey(31), attacker = sshKey(32);
+    const victimProof = binding(ownerA, "agent-a", "ssh-victim", victim);
+    await f.a.mutation(ref("register"), { device: f.ka.device, ssh: victimProof });
+    const claims = [
+      { sshDeviceId: "ssh-victim" },
+      { ...victimProof },
+      binding(ownerA, "agent-c", "ssh-victim", victim, attacker),
+      { ...victimProof, sshSignature: "00".repeat(64) },
+      binding(ownerA, "agent-c", "ssh-victim", attacker),
+    ];
+    for (const ssh of claims) {
+      await expect(f.c.mutation(ref("register"), { device: f.kc.device, ssh } as never)).rejects.toThrow();
+    }
+    await f.c.mutation(ref("revokeDevice"), { deviceId: "agent-c" });
+    expect(await f.a.query(query("revokedDevices"), {})).toEqual({
+      devices: [{ deviceId: "agent-c", revokedAt: expect.any(Number) }], cursor: null,
+    });
+  });
+  test("device rows written before revokedAt existed stay active and can be revoked", async () => {
+    const f = await fixture();
+    await f.backend.run(async ctx => {
+      const row = await ctx.db.query("devices").withIndex("by_owner_device", q => q.eq("owner", f.kc.device.owner).eq("deviceId", "agent-c")).unique();
+      const { _id, _creationTime, revokedAt, ...legacy } = row!;
+      void revokedAt;
+      await ctx.db.replace(_id, legacy);
+    });
+    await f.c.mutation(ref("register"), { device: f.kc.device });
+    await expect(f.c.query(query("devices"), {})).resolves.toEqual(expect.any(Array));
+    expect(await f.a.query(query("revokedDevices"), {})).toEqual({ devices: [], cursor: null });
+    await f.a.mutation(ref("revokeDevice"), { deviceId: "agent-c" });
+    await expect(f.c.mutation(ref("register"), { device: f.kc.device })).rejects.toThrow("revoked");
+    expect((await f.a.query(query("revokedDevices"), {})).devices.map((d: { deviceId: string }) => d.deviceId)).toEqual(["agent-c"]);
+  });
   test("every relay and grant entry point rejects missing auth, wrong issuer and legacy claim-only enrollment", async () => {
     const f = await fixture();
     await expectRoutingDenied(f, f.backend, /Sign in/);
@@ -155,12 +269,12 @@ describe("actual Convex functions, offline", () => {
     await f.backend.run(async (ctx) => {
       for (let i = 0; i < 256; i++) {
         const historical = key(`000-revoked-${String(i).padStart(3, "0")}`, ownerA, (i % 180) + 20);
-        await ctx.db.insert("devices", { ...historical.device, generation: 0 });
+        await ctx.db.insert("devices", { ...historical.device, generation: 0, revokedAt: 1000 });
         await ctx.db.insert("credentials", { issuer, agentId: historical.device.deviceId, owner: ownerA, subject: "alice", status: "revoked" });
       }
-      await ctx.db.insert("devices", { ...late.device, generation: 0 });
+      await ctx.db.insert("devices", { ...late.device, generation: 0, revokedAt: null });
       await ctx.db.insert("credentials", { issuer, agentId: late.device.deviceId, owner: ownerA, subject: "alice", status: "active" });
-      await ctx.db.insert("devices", { ...memberDevice.device, generation: 0 });
+      await ctx.db.insert("devices", { ...memberDevice.device, generation: 0, revokedAt: null });
       await ctx.db.insert("credentials", { issuer, agentId: memberDevice.device.deviceId, owner: ownerA, subject: "alice-member", status: "active" });
     });
     expect(await f.a.query(query("devices"), {})).toEqual([]);

@@ -610,6 +610,180 @@ pub fn admin_call(name: &str, value: Value, is_query: bool) -> Result<Value> {
     })
 }
 
+/// The owner namespace of the stored sign-in, without refreshing or contacting the backend.
+pub fn signed_in_owner() -> Result<String> {
+    let stored = auth::load().ok_or_else(|| bad("run everett login first"))?;
+    checked_identity(&stored, &claims(&stored.id_token)?, session::now())
+}
+
+pub fn signed_in_device_id() -> Result<String> {
+    let stored = auth::load().ok_or_else(|| bad("run everett login first"))?;
+    let id = claims(&stored.id_token)?["everett_agent"]
+        .as_str()
+        .ok_or_else(|| bad("missing agent claim"))?
+        .to_string();
+    valid(&id)?;
+    Ok(id)
+}
+
+pub fn revoke_device(device_id: &str) -> Result<Value> {
+    let (_, owner) = account()?;
+    let deployment = deployment()?;
+    revoke_device_with(device_id, &owner, &deployment, admin_call)
+}
+
+pub fn revoke_device_with(
+    device_id: &str,
+    owner: &str,
+    deployment: &str,
+    call: impl FnOnce(&str, Value, bool) -> Result<Value>,
+) -> Result<Value> {
+    valid(device_id)?;
+    call("relay:revokeDevice", json!({"deviceId":device_id}), false)?;
+    let cleanup = || -> Result<Vec<String>> {
+        let _guard = peer::alias_lock()?;
+        let mut removed = peer::forget_device_locked(device_id)?;
+        for path in crate::paths::glob(&root().join("peers"), "*.json") {
+            let pin: Paired = read(&path)?;
+            if pin.device.device_id == device_id
+                && pin.device.owner == owner
+                && pin.deployment == deployment
+            {
+                let name = path.file_stem().unwrap().to_string_lossy().to_string();
+                remove_locked(&name)?;
+                removed.push(name);
+            }
+        }
+        Ok(removed)
+    };
+    let removed =
+        cleanup().map_err(|e| bad(format!("device revoked; local peer cleanup failed: {e}")))?;
+    Ok(json!({"revoked":device_id,"removed_peers":removed}))
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct RevokedDevice {
+    pub device_id: String,
+    pub revoked_at: f64,
+    /// The revoked device's SSH peer id when it registered one; its SSH authorization carries this tag.
+    #[serde(default)]
+    pub ssh_device_id: Option<String>,
+    /// Base64 field of the `ssh-ed25519` key that signed the binding.
+    #[serde(default)]
+    pub ssh_public_key: Option<String>,
+    /// Hex Ed25519 signature over `ssh_binding_bytes` by `ssh_public_key`.
+    #[serde(default)]
+    pub ssh_signature: Option<String>,
+}
+
+pub fn ssh_binding_bytes(
+    owner: &str,
+    device_id: &str,
+    ssh_device_id: &str,
+    ssh_public_key: &str,
+) -> Vec<u8> {
+    json!([
+        "everett-ssh-bind-v1",
+        owner,
+        device_id,
+        ssh_device_id,
+        ssh_public_key
+    ])
+    .to_string()
+    .into_bytes()
+}
+
+const SSH_ED25519_PREFIX: &[u8] = b"\0\0\0\x0bssh-ed25519\0\0\0\x20";
+
+/// The SSH id and key a revoked row may prune, only when its binding is signed by that key for this owner.
+pub fn verified_ssh_binding<'a>(
+    owner: &str,
+    row: &'a RevokedDevice,
+) -> Result<Option<(&'a str, &'a str)>> {
+    let (Some(ssh), Some(key), Some(signature)) =
+        (&row.ssh_device_id, &row.ssh_public_key, &row.ssh_signature)
+    else {
+        return Ok(None);
+    };
+    let invalid = || {
+        bad(format!(
+            "invalid SSH binding proof for revoked device {}",
+            row.device_id
+        ))
+    };
+    let blob = base64::engine::general_purpose::STANDARD
+        .decode(key)
+        .map_err(|_| invalid())?;
+    let raw: [u8; 32] = blob
+        .strip_prefix(SSH_ED25519_PREFIX)
+        .and_then(|raw| raw.try_into().ok())
+        .ok_or_else(invalid)?;
+    let signature: [u8; 64] = hex::decode(signature)
+        .ok()
+        .and_then(|sig| sig.try_into().ok())
+        .ok_or_else(invalid)?;
+    ed25519_dalek::VerifyingKey::from_bytes(&raw)
+        .and_then(|vk| {
+            vk.verify_strict(
+                &ssh_binding_bytes(owner, &row.device_id, ssh, key),
+                &ed25519_dalek::Signature::from_bytes(&signature),
+            )
+        })
+        .map_err(|_| invalid())?;
+    Ok(Some((ssh, key)))
+}
+
+const MAX_REVOKED_PAGES: usize = 64;
+
+pub fn revoked_devices() -> Result<Vec<RevokedDevice>> {
+    revoked_devices_with(|cursor| admin_call("relay:revokedDevices", json!({"cursor": cursor}), true))
+}
+
+/// Follow the query's cursor until the backend reports the last page.
+pub fn revoked_devices_with(
+    mut fetch: impl FnMut(Option<String>) -> Result<Value>,
+) -> Result<Vec<RevokedDevice>> {
+    let mut all = Vec::new();
+    let mut cursor = None;
+    for _ in 0..MAX_REVOKED_PAGES {
+        let mut page = fetch(cursor)?;
+        all.extend(parse_revoked_devices(page["devices"].take())?);
+        cursor = match page["cursor"].take() {
+            Value::Null => return Ok(all),
+            Value::String(next) => Some(next),
+            _ => return Err(bad("invalid revocation cursor")),
+        };
+    }
+    Err(bad(format!("revocation list exceeds {MAX_REVOKED_PAGES} pages")))
+}
+
+pub fn parse_revoked_devices(value: Value) -> Result<Vec<RevokedDevice>> {
+    let rows: Vec<RevokedDevice> = serde_json::from_value(value).map_err(bad)?;
+    if rows.len() > 256 {
+        return Err(bad("revocation response exceeds 256 devices"));
+    }
+    for row in &rows {
+        valid(&row.device_id)?;
+        if let Some(ssh) = &row.ssh_device_id {
+            valid(ssh)?;
+        }
+        if row.ssh_device_id.is_some() != row.ssh_public_key.is_some()
+            || row.ssh_device_id.is_some() != row.ssh_signature.is_some()
+        {
+            return Err(bad("incomplete SSH binding in revocation"));
+        }
+        if !row.revoked_at.is_finite()
+            || row.revoked_at.fract() != 0.0
+            || row.revoked_at < 0.0
+            || row.revoked_at > 9_007_199_254_740_991.0
+        {
+            return Err(bad("invalid revocation timestamp"));
+        }
+    }
+    Ok(rows)
+}
+
 pub fn rotate() -> Result<Value> {
     let (_, owner) = account()?;
     let _daemon_guard = daemon_lock()?;
@@ -658,13 +832,40 @@ pub fn rotate() -> Result<Value> {
     )
 }
 
+/// Register args carry this machine's SSH peer id and key, signed by that key, so a later
+/// revocation can prune exactly this device's SSH authorization.
+fn register_args(device: &Device) -> Result<Value> {
+    let mut args = json!({"device": device});
+    if let Some(ssh) = ssh_binding(device)? {
+        args["ssh"] = ssh;
+    }
+    Ok(args)
+}
+
+pub fn ssh_binding(device: &Device) -> Result<Option<Value>> {
+    use ed25519_dalek::Signer;
+    let Some((ssh, key, signing)) = peer::local_ssh_key()? else {
+        return Ok(None);
+    };
+    let signature = signing.sign(&ssh_binding_bytes(
+        &device.owner,
+        &device.device_id,
+        &ssh,
+        &key,
+    ));
+    Ok(Some(
+        json!({"sshDeviceId": ssh, "sshPublicKey": key, "sshSignature": hex::encode(signature.to_bytes())}),
+    ))
+}
+
 pub fn register() -> Result<Value> {
     let (_, owner) = account()?;
     let key = verified_keys(&owner)?;
     let device = key.device.clone();
+    let args = register_args(&device)?;
     runtime(async move {
         let mut client = client(&owner).await?;
-        mutation(&mut client, "relay:register", json!({"device":device})).await?;
+        mutation(&mut client, "relay:register", args).await?;
         Ok(json!({"device":device, "fingerprint":device.fingerprint()}))
     })
 }
@@ -1428,12 +1629,13 @@ fn finish_staged(
 pub fn run() -> Result<Value> {
     let (_, owner) = account()?;
     let keys = verified_keys(&owner)?;
+    let register = register_args(&keys.device)?;
     let _guard = daemon_lock()?;
     let ingress = root().join("ingress");
     peer::private_dir(&ingress)?;
     let outcome = tokio::runtime::Runtime::new().map_err(bad)?.block_on(async {
         let mut client = client(&owner).await?;
-        mutation(&mut client,"relay:register",json!({"device":keys.device})).await?;
+        mutation(&mut client,"relay:register",register.clone()).await?;
         let mut final_cursor: Option<String> = None;
         let mut subscription = client.subscribe("relay:pending",args(json!({"deviceId":keys.device.device_id,"cursor":final_cursor}))?).await.map_err(|_| bad("Convex subscription failed"))?;
         eprintln!("everett relay: subscribed; inbox-only, no session wake-up");
@@ -1451,7 +1653,7 @@ pub fn run() -> Result<Value> {
                     let (stored,current) = account()?;
                     if current != owner || claims(&stored.id_token)?["everett_agent"] != keys.device.device_id { return Err(bad("signed-in identity changed; restart the relay")); }
                     // Mutation barrier rejects a revoked credential even if a query snapshot is stale.
-                    mutation(&mut client,"relay:register",json!({"device":keys.device})).await?;
+                    mutation(&mut client,"relay:register",register.clone()).await?;
                     for path in crate::paths::glob(&ingress,"*.json") {
                         let envelope: Envelope = read(&path)?;
                         if envelope.recipient_owner == owner && envelope.to_device == keys.device.device_id {
