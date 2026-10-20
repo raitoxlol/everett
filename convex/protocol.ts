@@ -1,4 +1,4 @@
-import type { Infer } from "convex/values";
+import { ConvexError, type Infer } from "convex/values";
 import nacl from "tweetnacl";
 import { sha256 } from "@noble/hashes/sha256";
 import { deviceValidator, envelopeValidator } from "./schema";
@@ -63,4 +63,10 @@ export function validateDevice(d: Device) {
   hex(d.encryptionKey, 32);
   if (d.encryptionKey === "00".repeat(32)) throw new Error("Invalid encryption key");
   verify(d.signingKey, d.signature, deviceBytes(d));
+}
+
+// User-facing rejections carry a stable code so clients never parse message text or function names.
+export type UserErrorCode = "invalid_ssh_address" | "name_taken" | "name_collision" | "device_revoked";
+export function userError(code: UserErrorCode, message: string) {
+  return new ConvexError({ code, message });
 }

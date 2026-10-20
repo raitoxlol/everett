@@ -10,7 +10,7 @@ import {
 } from "./authorization";
 import {
   deviceBytes, envelopeBytes, fingerprint, rotationBytes, observationBytes,
-  hex, hexString, identifier, verify, validateDevice, digest, sshBindingBytes, sshEd25519Key, type Envelope,
+  hex, hexString, identifier, verify, validateDevice, digest, sshBindingBytes, sshEd25519Key, userError, type Envelope,
 } from "./protocol";
 import { allowedGrant } from "./grants";
 import { named } from "./registry";
@@ -65,7 +65,7 @@ export const register = mutation({
     if (existing) {
       if (bind) await ctx.db.patch(existing._id, ssh);
     } else {
-      if (await named(ctx, p.owner, d.deviceId)) throw new Error("Device name is already in use in this account");
+      if (await named(ctx, p.owner, d.deviceId)) throw userError("name_taken", "Device name is already in use in this account");
       await ctx.db.insert("devices", { ...d, generation: 0, revokedAt: null, name: d.deviceId, sshAddress: null, lastSeenAt: Date.now(), ...(bind ? ssh : {}) });
     }
     return null;

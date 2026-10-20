@@ -231,6 +231,7 @@ describe("actual Convex functions, offline", () => {
       signature: hexString(nacl.sign.detached(metadataBytes(keys.device.owner, keys.device.deviceId, name, null), keys.pair.secretKey)) });
     await f.a.mutation(ref("registry:publish"), publish(f.ka, "workstation"));
     await expect(f.c.mutation(ref("registry:publish"), publish(f.kc, "workstation"))).rejects.toThrow("already in use");
+    await expect(f.c.mutation(ref("registry:publish"), publish(f.kc, "workstation"))).rejects.toMatchObject({ data: { code: "name_taken" } });
     await f.b.mutation(ref("registry:publish"), publish(f.kb, "workstation"));
     await f.a.mutation(ref("registry:publish"), publish(f.ka, "workstation"));
     await expect(f.a.mutation(ref("registry:publish"), publish(f.ka, "agent-c"))).rejects.toThrow("already in use");
