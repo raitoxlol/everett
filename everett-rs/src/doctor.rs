@@ -148,7 +148,7 @@ pub fn device_revocation_checks(
             if ssh == agent {
                 "IDs match"
             } else {
-                "IDs DO NOT MATCH; registry revocation cannot prune this SSH identity"
+                "IDs differ; registration records the SSH id so revocation still prunes it"
             }
         ),
         (Ok(None), _) => "SSH device_id: not created; no local SSH identity binding".into(),
@@ -172,12 +172,10 @@ pub fn device_revocation_checks(
             return checks;
         }
     };
-    if revoked.len() == 256 {
-        checks.push((Some(false), "device revocations reached the 256-device bound; additional revocations may be omitted".into()));
-    }
     let mut removed = false;
     for row in revoked {
-        match crate::peer::prune_revoked(&row.device_id) {
+        let ssh = row.ssh_device_id.as_deref().unwrap_or(&row.device_id);
+        match crate::peer::prune_revoked(ssh) {
             Ok(true) => {
                 removed = true;
                 checks.push((

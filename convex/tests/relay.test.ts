@@ -83,14 +83,14 @@ describe("actual Convex functions, offline", () => {
     const f = await fixture();
     vi.spyOn(Date, "now").mockReturnValue(1700000000000);
     await f.c.mutation(ref("revokeDevice"), { deviceId: "agent-c" });
-    expect(await f.a.query(query("revokedDevices"), {})).toEqual([{ deviceId: "agent-c", revokedAt: 1700000000000 }]);
+    expect(await f.a.query(query("revokedDevices"), {})).toEqual({ devices: [{ deviceId: "agent-c", revokedAt: 1700000000000 }], cursor: null });
     await expectRoutingDenied(f, f.c, /revoked/);
     await expect(f.c.mutation(ref("register"), { device: f.kc.device })).rejects.toThrow("revoked");
     await expect(f.backend.mutation(ref("provisionIdentity"), {
       issuer, subject: "alice-member", org: "org-a", agentId: "agent-c", role: "member",
     })).rejects.toThrow("tombstone");
     await f.a.mutation(ref("revokeDevice"), { deviceId: "agent-c" });
-    expect(await f.a.query(query("revokedDevices"), {})).toEqual([{ deviceId: "agent-c", revokedAt: 1700000000000 }]);
+    expect(await f.a.query(query("revokedDevices"), {})).toEqual({ devices: [{ deviceId: "agent-c", revokedAt: 1700000000000 }], cursor: null });
   });
   test("admin revokes only its namespace and members cannot revoke other devices", async () => {
     const f = await fixture();
@@ -100,8 +100,8 @@ describe("actual Convex functions, offline", () => {
     await expect(f.a.mutation(ref("revokeDevice"), { deviceId: "agent-d" })).rejects.toThrow("organization");
     await f.a.mutation(ref("revokeDevice"), { deviceId: "agent-c" });
     await f.b.mutation(ref("revokeDevice"), { deviceId: "agent-d" });
-    expect(await f.a.query(query("revokedDevices"), {})).toEqual([{ deviceId: "agent-c", revokedAt: expect.any(Number) }]);
-    expect(await f.b.query(query("revokedDevices"), {})).toEqual([{ deviceId: "agent-d", revokedAt: expect.any(Number) }]);
+    expect(await f.a.query(query("revokedDevices"), {})).toEqual({ devices: [{ deviceId: "agent-c", revokedAt: expect.any(Number) }], cursor: null });
+    expect(await f.b.query(query("revokedDevices"), {})).toEqual({ devices: [{ deviceId: "agent-d", revokedAt: expect.any(Number) }], cursor: null });
     await expect(f.c.query(query("device"), { deviceId: "agent-a" })).rejects.toThrow("revoked");
     await expect(f.a.query(query("device"), { deviceId: "agent-c" })).rejects.toThrow("revoked");
   });
@@ -115,18 +115,48 @@ describe("actual Convex functions, offline", () => {
     await expect(f.c.mutation(ref("register"), { device: f.kc.device })).rejects.toThrow("tombstone");
     await expect(f.c.query(query("devices"), {})).rejects.toThrow("revoked");
   });
-  test("revoked devices query filters before its 256-row bound", async () => {
+  test("revoked devices page past 256 tombstones and skip active rows", async () => {
     const f = await fixture();
     await f.backend.run(async ctx => {
-      for (let i = 0; i < 260; i++) {
-        await ctx.db.insert("devices", { ...f.kc.device, deviceId: `z-revoked-${String(i).padStart(3, "0")}`, generation: 0, revokedAt: 1000 });
+      for (let i = 0; i < 300; i++) {
+        await ctx.db.insert("devices", { ...f.kc.device, deviceId: `z-revoked-${String(i).padStart(3, "0")}`, generation: 0, revokedAt: 1000 + i });
       }
     });
-    const revoked = await f.a.query(query("revokedDevices"), {});
-    expect(revoked).toHaveLength(256);
-    expect(revoked[0]).toEqual({ deviceId: "z-revoked-000", revokedAt: 1000 });
-    expect(revoked[255]).toEqual({ deviceId: "z-revoked-255", revokedAt: 1000 });
-    expect(await f.b.query(query("revokedDevices"), {})).toEqual([]);
+    const first = await f.a.query(query("revokedDevices"), {});
+    expect(first.devices).toHaveLength(256);
+    expect(first.cursor).toEqual(expect.any(String));
+    const second = await f.a.query(query("revokedDevices"), { cursor: first.cursor });
+    expect(second.cursor).toBeNull();
+    const ids = [...first.devices, ...second.devices].map(d => d.deviceId);
+    expect(ids).toHaveLength(300);
+    expect(new Set(ids).size).toBe(300);
+    expect(ids.every(id => id.startsWith("z-revoked-"))).toBe(true);
+    expect(await f.b.query(query("revokedDevices"), {})).toEqual({ devices: [], cursor: null });
+  });
+  test("registration records the SSH peer id once and revocation reports it", async () => {
+    const f = await fixture();
+    await expect(f.c.mutation(ref("register"), { device: f.kc.device, sshDeviceId: "bad id!" })).rejects.toThrow();
+    await f.c.mutation(ref("register"), { device: f.kc.device, sshDeviceId: "ssh-c" });
+    await f.c.mutation(ref("register"), { device: f.kc.device, sshDeviceId: "ssh-a" });
+    await f.a.mutation(ref("revokeDevice"), { deviceId: "agent-c" });
+    expect(await f.a.query(query("revokedDevices"), {})).toEqual({
+      devices: [{ deviceId: "agent-c", sshDeviceId: "ssh-c", revokedAt: expect.any(Number) }], cursor: null,
+    });
+  });
+  test("device rows written before revokedAt existed stay active and can be revoked", async () => {
+    const f = await fixture();
+    await f.backend.run(async ctx => {
+      const row = await ctx.db.query("devices").withIndex("by_owner_device", q => q.eq("owner", f.kc.device.owner).eq("deviceId", "agent-c")).unique();
+      const { _id, _creationTime, revokedAt, ...legacy } = row!;
+      void revokedAt;
+      await ctx.db.replace(_id, legacy);
+    });
+    await f.c.mutation(ref("register"), { device: f.kc.device });
+    await expect(f.c.query(query("devices"), {})).resolves.toEqual(expect.any(Array));
+    expect(await f.a.query(query("revokedDevices"), {})).toEqual({ devices: [], cursor: null });
+    await f.a.mutation(ref("revokeDevice"), { deviceId: "agent-c" });
+    await expect(f.c.mutation(ref("register"), { device: f.kc.device })).rejects.toThrow("revoked");
+    expect((await f.a.query(query("revokedDevices"), {})).devices.map((d: { deviceId: string }) => d.deviceId)).toEqual(["agent-c"]);
   });
   test("every relay and grant entry point rejects missing auth, wrong issuer and legacy claim-only enrollment", async () => {
     const f = await fixture();

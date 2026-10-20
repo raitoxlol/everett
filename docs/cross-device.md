@@ -622,8 +622,9 @@ registered device row. The ID cannot re-register or be reprovisioned. The older
 also removes matching local SSH peer configuration and known-hosts pins without contacting
 the lost device, plus matching relay pins for the current owner and deployment.
 
-Each peer's next successful doctor fetch removes only lines ending in
-`# everett-peer:<revoked-device-id>` from its own `~/.ssh/authorized_keys`. The locked rewrite
+Registration records the device's SSH peer id (`~/.everett/peer/device_id`) next to its relay
+agent id, so the two need not match. Each peer's next successful doctor fetch removes only lines ending in
+`# everett-peer:<revoked-ssh-device-id>` from its own `~/.ssh/authorized_keys`. The locked rewrite
 backs up changed files and preserves unrelated bytes. It never installs keys, changes
 addresses, or replaces pins from registry data. A failed rewrite prints `[warn]` for that ID;
 successful removals print `[ok]`. When not signed in, when the relay is unconfigured, or
@@ -631,9 +632,9 @@ when it is unreachable, doctor prints `[--]` and leaves authorizations unchanged
 
 Offline peers keep SSH access until they next run doctor and fetch the revocation. This is
 not immediate enforcement, and existing SSH connections are not terminated. A malicious
-registry can hide a revocation. The query returns at most 256 revoked registered devices;
-doctor warns at that bound because additional revocations may be omitted. Use receiver-side
-`peer revoke` for immediate local cleanup, mismatched IDs, or revocations beyond this bound.
+registry can hide a revocation. Doctor pages through every revoked device. A device that
+never registered after this change has no recorded SSH id; it is pruned only if its relay id equals
+its SSH id. Use receiver-side `peer revoke` for immediate local cleanup or such unbound devices.
 Membership revocation does not produce per-device SSH tombstones; revoke affected devices
 before removing their membership. Preserve tombstones and do not restore revoked keys from backups.
 

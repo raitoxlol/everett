@@ -28,7 +28,10 @@ export default defineSchema({
   credentials: defineTable({
     issuer: v.string(), agentId: v.string(), owner: v.string(), subject: v.string(), status,
   }).index("by_agent", ["issuer", "agentId"]).index("by_owner", ["owner"]),
-  devices: defineTable({ ...deviceFields, generation: v.number(), revokedAt: v.union(v.null(), v.number()) }).index("by_owner_device", ["owner", "deviceId"]),
+  // revokedAt is optional so rows written before revocation existed stay valid (absent = active).
+  // sshDeviceId is the device's SSH peer id, which differs from its relay agent id on default installs.
+  devices: defineTable({ ...deviceFields, generation: v.number(), revokedAt: v.optional(v.union(v.null(), v.number())), sshDeviceId: v.optional(v.string()) })
+    .index("by_owner_device", ["owner", "deviceId"]).index("by_owner_revoked", ["owner", "revokedAt"]),
   grants: defineTable({
     grantId: v.string(), aOwner: v.string(), aDevice: v.string(), bOwner: v.string(), bDevice: v.string(),
     aBundle: deviceValidator, bBundle: deviceValidator, aFingerprint: v.string(), bFingerprint: v.string(),

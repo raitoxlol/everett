@@ -39,16 +39,19 @@ export const provisionIdentity = internalMutation({
   },
 });
 export const register = mutation({
-  args: { device: deviceValidator },
-  handler: async (ctx: WriteContext, { device: d }) => {
+  args: { device: deviceValidator, sshDeviceId: v.optional(v.string()) },
+  handler: async (ctx: WriteContext, { device: d, sshDeviceId }) => {
     const p = await authorize(ctx); ownAgent(p, d.deviceId);
     if (d.owner !== p.owner) throw new Error("Wrong organization");
     validateDevice(d);
+    if (sshDeviceId !== undefined) identifier(sshDeviceId);
     const existing = await ctx.db.query("devices").withIndex("by_owner_device", (q) => q.eq("owner", p.owner).eq("deviceId", d.deviceId)).unique();
     if (existing) {
-      if (existing.revokedAt !== null) throw new Error("Device tombstone cannot be reused");
+      if (existing.revokedAt != null) throw new Error("Device tombstone cannot be reused");
       if (fingerprint(existing) !== fingerprint(d)) throw new Error("Device keys cannot be replaced; use signed rotation");
-    } else await ctx.db.insert("devices", { ...d, generation: 0, revokedAt: null });
+      // The SSH binding is set once; a later register cannot redirect pruning at another device's SSH key.
+      if (sshDeviceId !== undefined && existing.sshDeviceId === undefined) await ctx.db.patch(existing._id, { sshDeviceId });
+    } else await ctx.db.insert("devices", { ...d, generation: 0, revokedAt: null, ...(sshDeviceId === undefined ? {} : { sshDeviceId }) });
     return null;
   },
 });
@@ -78,7 +81,7 @@ export const rotate = mutation({
     if (fingerprint(old) !== args.oldFingerprint) throw new Error("Old fingerprint mismatch");
     verify(old.signingKey, args.signature, rotationBytes(args.device, args.oldFingerprint));
     if (!Number.isSafeInteger(old.generation + 1)) throw new Error("Device rotation limit reached");
-    await ctx.db.replace(old._id, { ...args.device, generation: old.generation + 1, revokedAt: old.revokedAt });
+    await ctx.db.replace(old._id, { ...args.device, generation: old.generation + 1, revokedAt: old.revokedAt ?? null });
     return { fingerprint: fingerprint(args.device) };
   },
 });
@@ -93,19 +96,23 @@ export const revokeDevice = mutation({
     await ctx.db.patch(credential._id, { status: "revoked" });
     const device = await ctx.db.query("devices").withIndex("by_owner_device", q =>
       q.eq("owner", p.owner).eq("deviceId", args.deviceId)).unique();
-    if (device && device.revokedAt === null) await ctx.db.patch(device._id, { revokedAt: Date.now() });
+    if (device && device.revokedAt == null) await ctx.db.patch(device._id, { revokedAt: Date.now() });
     return null;
   },
 });
 export const revokeAgent = revokeDevice;
 
+export const REVOKED_PAGE = 256;
 export const revokedDevices = query({
-  args: {},
-  handler: async (ctx: Context) => {
+  args: { cursor: v.optional(v.union(v.null(), v.string())) },
+  handler: async (ctx: Context, args) => {
     const p = await authorize(ctx); await activeDevice(ctx, p.owner, p.agentId);
-    const rows = await ctx.db.query("devices").withIndex("by_owner_device", q => q.eq("owner", p.owner))
-      .filter(q => q.neq(q.field("revokedAt"), null)).take(256);
-    return rows.map(({ deviceId, revokedAt }) => ({ deviceId, revokedAt }));
+    const page = await ctx.db.query("devices").withIndex("by_owner_revoked", q => q.eq("owner", p.owner).gte("revokedAt", 0))
+      .paginate({ cursor: args.cursor ?? null, numItems: REVOKED_PAGE });
+    return {
+      devices: page.page.map(({ deviceId, revokedAt, sshDeviceId }) => ({ deviceId, revokedAt: revokedAt!, ...(sshDeviceId === undefined ? {} : { sshDeviceId }) })),
+      cursor: page.isDone ? null : page.continueCursor,
+    };
   },
 });
 export const revokeMember = mutation({
