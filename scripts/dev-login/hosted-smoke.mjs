@@ -147,10 +147,15 @@ try {
     assert.ok(pending, 'login must print an approval code');
     const agentClient = new ConvexHttpClient(backend);
     agentClient.setAuth(JSON.parse(fs.readFileSync(path.join(homeOf('hosted-a'), '.everett/auth.json'), 'utf8')).access_token);
-    const generic = new ConvexHttpClient(backend);
+    const callers = [['non-owner GitHub', intruder], ['enrolled agent', agentClient], ['anonymous', new ConvexHttpClient(backend)]];
     const alice = path.join(state, 'homes/alice-a/.everett/auth.json');
-    if (fs.existsSync(alice)) generic.setAuth(remember(JSON.parse(fs.readFileSync(alice, 'utf8')).id_token));
-    for (const [who, client] of [['non-owner GitHub', intruder], ['enrolled agent', agentClient], ['generic OIDC', generic], ['anonymous', new ConvexHttpClient(backend)]]) {
+    const aliceAuth = fs.existsSync(alice) ? JSON.parse(fs.readFileSync(alice, 'utf8')) : null;
+    if (aliceAuth?.expires_at > Date.now() / 1000 + 30) {
+      const generic = new ConvexHttpClient(backend);
+      generic.setAuth(remember(aliceAuth.id_token));
+      callers.push(['generic OIDC', generic]);
+    } else note('  generic OIDC caller skipped: no fresh alice-a token (run smoke.sh first)');
+    for (const [who, client] of callers) {
       await assert.rejects(client.mutation('hosted:approve', { code: pending, approve: true }), /Owner only|sign in required|denies external|Hosted/i, `${who} approve`);
       await assert.rejects(client.query('hosted:inspect', { code: pending }), undefined, `${who} inspect`);
       await assert.rejects(client.query('hosted:credentials', {}), undefined, `${who} list`);

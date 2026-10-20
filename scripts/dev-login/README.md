@@ -25,7 +25,7 @@ Read the summary even when the command exits 1. Full command output is private u
 
 ## Owner-only hosted smoke
 
-The stack starts in generic OIDC mode: `convex/auth.config.ts` no longer reads `EVERETT_OWNER_GITHUB_ID`, so `convex dev` and `convex deploy` succeed with it unset, and hosted requests fail closed until it is set. With the stack running, the hosted smoke switches the local backend to owner mode (GitHub ID `424242`, login `dev-owner`, a local Convex Auth signing key), runs its checks, then removes `EVERETT_OWNER_GITHUB_ID` again.
+The stack starts in generic OIDC mode: `convex/auth.config.ts` no longer reads `EVERETT_OWNER_GITHUB_ID`, so `convex dev` and `convex deploy` succeed with it unset, and hosted requests fail closed until it is set. With the stack running (run `smoke.sh` first so the generic OIDC caller has a fresh token), the hosted smoke switches the local backend to owner mode (GitHub ID `424242`, login `dev-owner`, a local Convex Auth signing key), runs its checks, then removes `EVERETT_OWNER_GITHUB_ID` again.
 
 ```sh
 EVERETT_VERIFY_BINARY="$PWD/everett-rs/target/debug/everett" node scripts/dev-login/hosted-smoke.mjs
