@@ -302,3 +302,48 @@ fn login_resumes_pending_enrollment_and_keeps_polling_through_failed_polls() {
     assert!(stderr.contains("expired"), "{stderr}");
     assert!(!output.status.success());
 }
+fn assert_stale_enrollment_is_replaced(seed_file: fn(&common::Fixture) -> std::path::PathBuf) {
+    let unreachable = "https://127.0.0.1:9";
+    let home = common::fixture();
+    let path = seed_file(&home);
+    let output = run(
+        &home,
+        &["login", "--device", "vm"],
+        &[("EVERETT_HOSTED_URL", unreachable)],
+    );
+    safe(&output);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(!stderr.contains("another deployment"), "{stderr}");
+    assert!(!stderr.contains("No valid pending"), "{stderr}");
+    assert!(stderr.contains("request failed"), "{stderr}");
+    assert!(!path.exists(), "login must discard the stale enrollment");
+
+    let path = seed_file(&home);
+    let results = common::mcp_calls(
+        &home,
+        &[],
+        &[("EVERETT_HOSTED_URL", unreachable)],
+        &[("everett_agent_relay", json!({"action":"enroll","name":"vm"}))],
+    );
+    let text = results[0].to_string();
+    safe_text(&text);
+    assert!(!text.contains("another deployment"), "{text}");
+    assert!(!text.contains("No valid pending"), "{text}");
+    assert!(!path.exists(), "MCP enroll must discard the stale enrollment");
+}
+#[test]
+fn enrollment_from_another_deployment_is_replaced_not_fatal() {
+    assert_stale_enrollment_is_replaced(|home| seed_pending(home, "https://other.convex.cloud", 300.0));
+}
+#[test]
+fn corrupt_enrollment_file_is_replaced_not_fatal() {
+    assert_stale_enrollment_is_replaced(|home| {
+        let path = home.write(".everett/enrollment.json", "{not json");
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
+        path
+    });
+}
+#[test]
+fn expired_enrollment_from_another_deployment_is_replaced_not_fatal() {
+    assert_stale_enrollment_is_replaced(|home| seed_pending(home, "https://other.convex.cloud", -1.0));
+}

@@ -149,14 +149,25 @@ fn pending() -> Result<Option<Pending>> {
     }
     let pending: Pending = serde_json::from_str(&read_private(&file)?)
         .map_err(|_| bad("No valid pending enrollment"))?;
-    if pending.deployment != deployment()? {
-        return Err(bad("Enrollment belongs to another deployment"));
-    }
     if pending.expires_at <= crate::session::now() {
         let _ = fs::remove_file(&file);
         return Ok(None);
     }
+    if pending.deployment != deployment()? {
+        return Err(bad("Enrollment belongs to another deployment"));
+    }
     Ok(Some(pending))
+}
+/// Like `pending`, but a corrupt, expired or other-deployment file is discarded so a fresh enrollment can start.
+fn resumable() -> Result<Option<Pending>> {
+    deployment()?;
+    match pending() {
+        Ok(found) => Ok(found),
+        Err(_) => {
+            let _ = fs::remove_file(path("enrollment.json"));
+            Ok(None)
+        }
+    }
 }
 
 /// A private-CA hosted origin (the local dev stack) trusts only the explicit relay CA file.
@@ -325,7 +336,7 @@ pub fn session(force: bool) -> Result<Stored> {
     exchange(&secret, &auth::hostname())
 }
 pub fn begin(name: &str) -> Result<Value> {
-    if let Some(pending) = pending()? {
+    if let Some(pending) = resumable()? {
         return Ok(pending.public(true));
     }
     let mut bytes = [0u8; 96];
