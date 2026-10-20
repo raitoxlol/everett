@@ -2,7 +2,7 @@
 mod common;
 
 use common::{fixture, lib_home, tool_json, Fixture};
-use everett::host::{bind, find_host_in, harness_of, parse_etime, Host, Proc};
+use everett::host::{bind, find_host_in, harness_of, new_session_in_cwd, parse_etime, Host, Proc};
 use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::io::{BufRead, BufReader, Write};
@@ -57,6 +57,28 @@ fn bind_prefers_the_live_record_for_this_host_pid() {
     let stranger = Host { pid: me + 2, ..host };
     let err = bind(&stranger, &HashMap::new()).unwrap_err();
     assert!(err.contains("no omp session"), "{err}");
+}
+
+#[test]
+fn store_guess_never_matches_an_empty_cwd_and_refuses_ambiguity() {
+    let home = lib_home();
+    let dir = home.path().to_string_lossy().to_string();
+    let now = everett::session::now();
+    let started = everett::timefmt::iso_from_epoch(now - 10.0);
+    let session = |id: &str, cwd: &str| -> everett::session::Session {
+        serde_json::from_value(json!({"harness": "omp", "id": id, "cwd": cwd, "path": "", "started": started, "last_active": now}))
+            .unwrap()
+    };
+    let host = Host { harness: "omp".into(), pid: 1, started: now - 60.0, cwd: dir.clone() };
+    let mine = [session("mine", &dir), session("cwdless", "")];
+    assert_eq!(new_session_in_cwd(&host, &mine).unwrap().id, "mine", "a session without a cwd is not a candidate");
+    let err = new_session_in_cwd(&host, &[session("cwdless", "")]).unwrap_err();
+    assert!(err.contains("no omp session"), "{err}");
+    let err = new_session_in_cwd(&host, &[session("a", &dir), session("b", &dir)]).unwrap_err();
+    assert!(err.contains("cannot tell which one"), "{err}");
+    let blind = Host { cwd: String::new(), ..host };
+    let err = new_session_in_cwd(&blind, &[session("cwdless", "")]).unwrap_err();
+    assert!(err.contains("no known cwd"), "{err}");
 }
 
 /// initialize + tools/call over stdio for any launcher, returning each raw response.
