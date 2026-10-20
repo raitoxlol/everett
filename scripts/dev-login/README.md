@@ -23,6 +23,16 @@ EVERETT_VERIFY_BINARY="$PWD/everett-rs/target/debug/everett" ./scripts/dev-login
 
 Read the summary even when the command exits 1. Full command output is private under `scripts/dev-login/.state/runs/`. The latest summary is `scripts/dev-login/.state/last-smoke.txt`. No tokens are printed. Run the smoke only while the stack is running.
 
+## Owner-only hosted smoke
+
+The stack starts in generic OIDC mode: `convex/auth.config.ts` no longer reads `EVERETT_OWNER_GITHUB_ID`, so `convex dev` and `convex deploy` succeed with it unset, and hosted requests fail closed until it is set. With the stack running, the hosted smoke switches the local backend to owner mode (GitHub ID `424242`, login `dev-owner`, a local Convex Auth signing key), runs its checks, then removes `EVERETT_OWNER_GITHUB_ID` again.
+
+```sh
+EVERETT_VERIFY_BINARY="$PWD/everett-rs/target/debug/everett" node scripts/dev-login/hosted-smoke.mjs
+```
+
+It mints real Convex Auth sessions for the owner and a non-owner GitHub account (only GitHub's OAuth exchange is replaced, via `auth:store` as Convex Auth records it), enrolls two agents through real `everett login`, checks that non-owner, agent, generic OIDC and anonymous callers cannot approve, inspect, list or revoke, revokes one agent and checks its still-valid cached JWT fails on the next relay call while the other keeps working, and scans every log and transcript for the tokens, JWTs, refresh tokens and signing key it saw. Output goes to `.state/hosted-runs/`; the summary is `.state/last-hosted-smoke.txt`.
+
 ## Log in interactively
 
 For device A, run the following in a terminal at the checkout root.
