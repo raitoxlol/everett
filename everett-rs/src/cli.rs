@@ -1337,7 +1337,7 @@ pub fn cmd_logout(args: &Args) -> i32 {
         if args.json {
             println!(
                 "{}",
-                serde_json::to_string(&json!({"signed_out": true, "revoked": false})).unwrap()
+                serde_json::to_string(&json!({"signed_out": true, "revoked": false, "device_revoked": false})).unwrap()
             );
         } else {
             println!("not signed in");

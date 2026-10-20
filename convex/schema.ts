@@ -30,8 +30,12 @@ export default defineSchema({
   }).index("by_agent", ["issuer", "agentId"]).index("by_owner", ["owner"]),
   // revokedAt is optional so rows written before revocation existed stay valid (absent = active).
   // sshDeviceId is the device's SSH peer id, which differs from its relay agent id on default installs.
-  devices: defineTable({ ...deviceFields, generation: v.number(), revokedAt: v.optional(v.union(v.null(), v.number())), sshDeviceId: v.optional(v.string()) })
-    .index("by_owner_device", ["owner", "deviceId"]).index("by_owner_revoked", ["owner", "revokedAt"]),
+  // It is bound once, unique per owner, and proven by sshSignature from the key in sshPublicKey.
+  devices: defineTable({
+    ...deviceFields, generation: v.number(), revokedAt: v.optional(v.union(v.null(), v.number())),
+    sshDeviceId: v.optional(v.string()), sshPublicKey: v.optional(v.string()), sshSignature: v.optional(v.string()),
+  }).index("by_owner_device", ["owner", "deviceId"]).index("by_owner_revoked", ["owner", "revokedAt"])
+    .index("by_owner_ssh", ["owner", "sshDeviceId"]),
   grants: defineTable({
     grantId: v.string(), aOwner: v.string(), aDevice: v.string(), bOwner: v.string(), bDevice: v.string(),
     aBundle: deviceValidator, bBundle: deviceValidator, aFingerprint: v.string(), bFingerprint: v.string(),

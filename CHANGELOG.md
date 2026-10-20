@@ -27,8 +27,9 @@
   reply retains the external provenance.
 - Propagate permanent registry device revocations through `everett devices revoke`, best
   effort `logout --revoke-device`, and doctor cleanup of matching tagged SSH authorizations.
-  Preserve unrelated keys and existing SSH UUIDs; registration records the SSH device ID
-  so revocation prunes it even when it differs from the relay agent ID. Doctor pages all
+  Preserve unrelated keys and existing SSH UUIDs; registration binds the SSH device ID and
+  key with a signature by that SSH key (set once, unique per owner), so revocation prunes
+  exactly that key even when the SSH ID differs from the relay agent ID. Doctor pages all
   tombstones; `revokedAt` is optional so existing rows need no backfill. Offline peers
   retain access until their next successful revocation fetch.
 ## 1.6.0 — 2026-10-15

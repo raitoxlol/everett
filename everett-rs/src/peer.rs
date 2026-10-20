@@ -605,6 +605,11 @@ fn authorized(client: &str) -> Result<()> {
 }
 
 fn edit_authorized(client: &str, replacement: Option<&str>) -> Result<bool> {
+    rewrite_authorized(client, None, replacement)
+}
+
+/// Drops lines tagged for `client` (only those carrying `key`, when given), then appends `replacement`.
+fn rewrite_authorized(client: &str, key: Option<&str>, replacement: Option<&str>) -> Result<bool> {
     valid(client)?;
     let dir = session::home().join(".ssh");
     private_dir(&dir)?;
@@ -619,7 +624,11 @@ fn edit_authorized(client: &str, replacement: Option<&str>) -> Result<bool> {
         .map_err(|_| bad("authorized_keys is not UTF-8; refusing to rewrite"))?;
     let mut next: String = text
         .split_inclusive('\n')
-        .filter(|line| !line.trim_end_matches(['\r', '\n']).ends_with(&tag(client)))
+        .filter(|line| {
+            let line = line.trim_end_matches(['\r', '\n']);
+            !(line.ends_with(&tag(client))
+                && key.is_none_or(|key| line.split_whitespace().any(|field| field == key)))
+        })
         .collect();
     if let Some(line) = replacement {
         if !next.is_empty() && !next.ends_with('\n') {
@@ -644,6 +653,42 @@ fn edit_authorized(client: &str, replacement: Option<&str>) -> Result<bool> {
 
 pub fn prune_revoked(client: &str) -> Result<bool> {
     edit_authorized(client, None)
+}
+
+/// Prunes `client`'s authorization only where it holds this exact SSH key.
+pub fn prune_revoked_key(client: &str, key: &str) -> Result<bool> {
+    rewrite_authorized(client, Some(key), None)
+}
+
+/// This machine's SSH peer id, the base64 field of its public key, and its signing key.
+pub fn local_ssh_key() -> Result<Option<(String, String, ed25519_dalek::SigningKey)>> {
+    let Some(id) = local_device_id()? else {
+        return Ok(None);
+    };
+    let path = root().join("id_ed25519");
+    if !path.exists() {
+        return Ok(None);
+    }
+    let private =
+        ssh_key::PrivateKey::read_openssh_file(&path).map_err(|e| bad(format!("SSH identity: {e}")))?;
+    let pair = private
+        .key_data()
+        .ed25519()
+        .ok_or_else(|| bad("SSH identity is not Ed25519"))?;
+    let public = private
+        .public_key()
+        .to_openssh()
+        .map_err(|e| bad(format!("SSH identity: {e}")))?;
+    let field = public
+        .split_whitespace()
+        .nth(1)
+        .ok_or_else(|| bad("invalid SSH public key"))?
+        .to_string();
+    Ok(Some((
+        id,
+        field,
+        ed25519_dalek::SigningKey::from_bytes(&pair.private.to_bytes()),
+    )))
 }
 
 pub fn revoke(client: &str) -> Result<Value> {
