@@ -410,7 +410,26 @@ const IDENTITY_ENV: &[(&str, &str)] = &[
 
 /// {session_id, harness, source} of the session running this process, if detectable.
 pub fn caller_identity() -> Map<String, Value> {
+    identity_from_env(None)
+}
+
+/// Like caller_identity, but for a server launched for `harness`: only EVERETT_SESSION_ID
+/// and that harness's own variable count, so ids inherited from an outer session are ignored.
+pub fn caller_identity_for(harness: &str) -> Map<String, Value> {
+    let mut out = identity_from_env(Some(harness));
+    if out.get("source").and_then(Value::as_str) == Some("env EVERETT_SESSION_ID")
+        && out.get("harness").and_then(Value::as_str).unwrap_or("").is_empty()
+    {
+        out.insert("harness".into(), json!(harness));
+    }
+    out
+}
+
+fn identity_from_env(only: Option<&str>) -> Map<String, Value> {
     for (name, harness) in IDENTITY_ENV {
+        if only.is_some_and(|h| !harness.is_empty() && *harness != h) {
+            continue;
+        }
         let Ok(value) = std::env::var(name) else { continue };
         let value = value.trim();
         if value.is_empty() {
@@ -818,23 +837,28 @@ pub fn reply_as(
         ));
     };
     let who = sender_info_as(caller, caller_harness);
-    let hops = inbox::reply_hops(
-        &original,
-        caller_hops_for(Some(who["sender"].as_str().unwrap_or(inbox::HUMAN))),
-    )?;
+    let env_hops = caller_hops_for(Some(who["sender"].as_str().unwrap_or(inbox::HUMAN)));
     if original.contains_key("relay_device") {
+        let hops = inbox::reply_hops(&original, env_hops)?;
         return crate::relay::retain_reply(&original, text, &who, hops);
     }
     if original.contains_key("peer_client") {
+        let hops = inbox::reply_hops(&original, env_hops)?;
         return crate::peer::retain_reply(&original, text, &who, hops);
     }
-    let to = original.get("from").and_then(|v| v.as_str()).filter(|s| !s.is_empty()).unwrap_or(inbox::HUMAN);
     let context = inbox::relay_context(who["sender"].as_str().unwrap_or(inbox::HUMAN));
+    let (mut hops, depth) = inbox::local_reply_hops(&original, env_hops)?;
+    if context.as_ref().is_some_and(inbox::external) {
+        // Remote-derived answers get no free hop: untrusted lineage keeps spending the budget.
+        hops = inbox::reply_hops(&original, env_hops)?;
+    }
+    let to = original.get("from").and_then(|v| v.as_str()).filter(|s| !s.is_empty()).unwrap_or(inbox::HUMAN);
     let mut provenance = inbox::forward_provenance(&original)
         .or_else(|| context.as_ref().and_then(inbox::forward_provenance));
     if context.as_ref().is_some_and(inbox::external) {
         provenance.get_or_insert_with(Map::new).extend(serde_json::from_value::<Map<String,Value>>(json!({"external":true,"untrusted":true,"trust":"external-untrusted","instruction_source":"agent-data"})).unwrap());
     }
+    provenance.get_or_insert_with(Map::new).insert("reply_depth".into(), json!(depth));
     let message = inbox::post(
         to,
         text,

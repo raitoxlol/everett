@@ -52,6 +52,7 @@ pub struct OnboardConfig {
     pub jev_key: String,
     pub jev_found_source: String,
     pub jev_validated: Option<bool>,
+    pub jev_error: String,
     pub trunk_schedule_enabled: bool,
 }
 
@@ -178,17 +179,51 @@ pub fn apply_mcp(cfg: &OnboardConfig) -> Vec<String> {
         .collect()
 }
 
+pub fn key_source_label(source: &str) -> &'static str {
+    match source {
+        "env" => "TYPESAFE_API_KEY in the environment",
+        "config" => "typesafe_api_key in ~/.everett/config.toml",
+        "hermes" => "TYPESAFE_API_KEY in ~/.hermes/.env",
+        _ => "an unknown source",
+    }
+}
+
+/// What a skip leaves in effect: routing keeps using any key already found.
+fn jev_skip_line(prefix: &str) -> String {
+    let (key, source) = find_jev_key_with_source();
+    if key.is_empty() {
+        format!("jev: {}; using local matching", prefix)
+    } else {
+        format!(
+            "jev: {}; a key is still set ({}) and routing will use it (`everett doctor` tests it)",
+            prefix,
+            key_source_label(&source)
+        )
+    }
+}
+
 /// Persist a pasted Jev key (never a found one -- it's already wherever it was found).
 pub fn apply_jev(cfg: &OnboardConfig) -> String {
+    match cfg.jev_choice.as_str() {
+        "rejected" => return jev_skip_line(&format!("new key NOT saved (validation failed: {})", cfg.jev_error)),
+        "missing" => return jev_skip_line(&cfg.jev_error),
+        _ => {}
+    }
     if cfg.jev_choice != "paste" || cfg.jev_key.is_empty() {
-        return "jev: skipped (using local matching)".to_string();
+        return jev_skip_line("skipped");
     }
     match crate::config::set_value("typesafe_api_key", &cfg.jev_key) {
-        Ok(path) => format!(
-            "jev: key saved to {} ({})",
-            path.display(),
-            if cfg.jev_validated.unwrap_or(false) { "validated" } else { "validation failed; kept anyway" }
-        ),
+        Ok(path) => {
+            let mut line = format!(
+                "jev: key saved to {} ({})",
+                path.display(),
+                if cfg.jev_validated.unwrap_or(false) { "validated" } else { "validation failed; kept anyway" }
+            );
+            if std::env::var("TYPESAFE_API_KEY").is_ok_and(|v| !v.trim().is_empty()) {
+                line.push_str("; note: TYPESAFE_API_KEY in the environment still takes precedence");
+            }
+            line
+        }
         Err(e) => format!("jev: could not save key: {}", e),
     }
 }
@@ -265,7 +300,15 @@ pub fn run_apply(cfg: &OnboardConfig, backfill_progress: Option<&dyn Fn(usize, u
 }
 
 pub fn summary_lines(cfg: &OnboardConfig, result: &ApplyResult) -> Vec<String> {
-    let mut lines = vec!["Everett onboarding complete.".to_string(), String::new(), "Hooks:".to_string()];
+    let warnings = setup_warnings(cfg, result);
+    let mut lines = if warnings.is_empty() {
+        vec!["Everett onboarding complete.".to_string()]
+    } else {
+        let mut l = vec![format!("Everett onboarding finished with {} warning(s):", warnings.len())];
+        l.extend(warnings.iter().map(|w| format!("  WARNING: {}", w)));
+        l
+    };
+    lines.extend([String::new(), "Hooks:".to_string()]);
     if result.hook_lines.is_empty() {
         lines.push("  (none)".to_string());
     } else {
@@ -296,22 +339,58 @@ pub fn summary_lines(cfg: &OnboardConfig, result: &ApplyResult) -> Vec<String> {
     lines
 }
 
-/// --yes mode: read a Jev key from the named env var, validate it, and stage it for saving.
+/// --yes mode: read a Jev key from the named env var and stage it only if Jev accepts it.
+/// A named key replaces a saved one; a rejected key is never saved.
 fn apply_jev_key_env(cfg: &mut OnboardConfig, var: Option<&str>) {
-    let (found_key, found_source) = find_jev_key_with_source();
-    if !found_key.is_empty() {
-        cfg.jev_found_source = found_source;
-        cfg.jev_choice = "skip".to_string();
-        return;
-    }
+    cfg.jev_found_source = find_jev_key_with_source().1;
+    cfg.jev_choice = "skip".to_string();
     let Some(var) = var else { return };
     let key = std::env::var(var).unwrap_or_default().trim().to_string();
     if key.is_empty() {
+        cfg.jev_choice = "missing".to_string();
+        cfg.jev_error = format!("--jev-key-env {} is unset or empty; nothing saved", var);
         return;
     }
-    cfg.jev_validated = Some(crate::route::verify_key(&key));
-    cfg.jev_key = key;
-    cfg.jev_choice = "paste".to_string();
+    match crate::route::check_key(&key) {
+        Ok(()) => {
+            cfg.jev_validated = Some(true);
+            cfg.jev_key = key;
+            cfg.jev_choice = "paste".to_string();
+        }
+        Err(reason) => {
+            cfg.jev_validated = Some(false);
+            cfg.jev_error = reason;
+            cfg.jev_choice = "rejected".to_string();
+        }
+    }
+}
+
+/// Problems that leave the user without a working setup; printed above the summary.
+pub fn setup_warnings(cfg: &OnboardConfig, result: &ApplyResult) -> Vec<String> {
+    let mut warnings = Vec::new();
+    let hooks_on = cfg.hooks.iter().any(|(_, events)| events.values().any(|on| *on));
+    let mcp_on = cfg.mcp.iter().any(|(_, on)| *on);
+    if cfg.detected.is_empty() {
+        warnings.push(format!(
+            "No supported harness was found ({}). Nothing was configured; install one and rerun `everett onboard --yes`.",
+            crate::registry::ADAPTERS.join(", ")
+        ));
+    } else if !hooks_on && !mcp_on {
+        warnings.push(
+            "No hooks or MCP registrations were selected, so no agent can reach Everett yet. \
+             Rerun without --no-mcp, or run `everett install-mcp --apply`."
+                .to_string(),
+        );
+    }
+    for line in result.hook_lines.iter().chain(result.mcp_lines.iter()) {
+        if line.contains("error") || line.contains("failed") || line.contains("refus") {
+            warnings.push(line.clone());
+        }
+    }
+    if cfg.jev_choice == "rejected" || cfg.jev_choice == "missing" {
+        warnings.push(result.jev_line.clone());
+    }
+    warnings
 }
 
 pub fn run_yes(args: &crate::cli::Args) -> i32 {

@@ -349,7 +349,8 @@ fn local_reply_from_remote_derived_session_preserves_external_context_and_local_
     assert_eq!(result["mode"], "reply");
     let reply = everett::inbox::pending("recipient", None).pop().unwrap();
     assert!(everett::inbox::external(&reply));
-    assert_eq!(reply["hops"], 3);
+    assert_eq!(reply["hops"], 3, "remote-derived replies still spend a hop");
+    assert_eq!(reply["reply_depth"], 1);
     assert_eq!(reply["relay_lineage"]["relay_message_id"], "remote-parent");
     assert!(everett::inbox::take("recipient").contains("EXTERNAL / UNTRUSTED"));
     assert!(everett::inbox::external(

@@ -23,7 +23,7 @@ const INTERNAL_ERROR: i64 = -32603;
 const MAX_TOOL_RESULT: usize = 240 * 1024;
 
 const INSTRUCTIONS: &str =
-    "Everett is the layer above every coding-agent session on this machine (Claude Code, Codex, OMP, Pi, Hermes). \
+    "Everett is the layer above every coding-agent session on this machine (Claude Code, Codex, OMP, Pi, Hermes, Grok CLI, Devin; OpenAI dots and Grok Bot reach it through the gateway). \
      To hand off work, call everett_send with just `text` describing the task and let Everett route it -- do not \
      eyeball everett_ls and pick a target yourself. Only pass `to` when the user named a specific session, or when \
      you are replying to one. everett_ls is for a quick overview of what other sessions are doing, not for picking \
@@ -59,7 +59,6 @@ pub fn tools() -> &'static Vec<Value> {
                 "inputSchema": {"type": "object", "properties": {
                     "text": s("The request, as you would send it."),
                     "router": {"type": "string", "enum": ["local", "jev"], "description": "Default: jev if configured, else local."},
-                    "session_id": s("Your host-bound session id, to exclude it from routing; must match everett_whoami."),
                     "hours": hours_prop(),
                 }, "required": ["text"], "additionalProperties": false},
             }),
@@ -75,7 +74,6 @@ pub fn tools() -> &'static Vec<Value> {
                     "dir": s("Working directory for a spawned session."),
                     "harness": {"type": "string", "enum": crate::send::SPAWNABLE, "description": "Harness for a spawned session."},
                     "timeout": {"type": "number", "description": "Seconds to wait for the reply (default 300).", "minimum": 1},
-                    "session_id": s("Your host-bound session id; must match everett_whoami."),
                     "mode": {"type": "string", "enum": crate::send::MODES, "description": "auto (default): inbox when the target has a live harness process, else headless resume."},
                     "wait": {"type": "number", "minimum": 0, "description": "Inbox mode: seconds to wait for the reply (default 0: it arrives in your inbox later)."},
                     "reply_to": s("Answer this Everett message id; the reply goes to its sender."),
@@ -85,7 +83,6 @@ pub fn tools() -> &'static Vec<Value> {
                 "name": "everett_inbox",
                 "description": "Read the Everett messages waiting for your session (requests, replies, events) and mark them delivered. Hooks normally inject these automatically; use this where they cannot.",
                 "inputSchema": {"type": "object", "properties": {
-                    "session_id": s("Your host-bound session id; must match everett_whoami."),
                     "peek": {"type": "boolean", "description": "Do not mark them delivered.", "default": false},
                 }, "additionalProperties": false},
             }),
@@ -96,7 +93,6 @@ pub fn tools() -> &'static Vec<Value> {
                     "kind": {"type": "string", "enum": crate::events::KINDS},
                     "message": {"type": "string", "description": "One line, e.g. \"waiting on staging key\".", "maxLength": crate::events::MAX_TEXT},
                     "project": s("Project name (default: the current folder's project)."),
-                    "session_id": s("Your host-bound session id; must match everett_whoami."),
                 }, "required": ["kind", "message"], "additionalProperties": false},
             }),
             json!({
@@ -105,7 +101,6 @@ pub fn tools() -> &'static Vec<Value> {
                 "inputSchema": {"type": "object", "properties": {
                     "target": s("Session id prefix or name, project name, \"project:<name>\", or \"*\"."),
                     "unsubscribe": {"type": "boolean", "default": false},
-                    "session_id": s("Your host-bound session id; must match everett_whoami."),
                 }, "required": ["target"], "additionalProperties": false},
             }),
             json!({
@@ -131,12 +126,11 @@ pub fn tools() -> &'static Vec<Value> {
                     "what": s("What this session is about."),
                     "state": s("Where it stands now."),
                     "next": s("The next step."),
-                    "session_id": s("Your host-bound session id; must match everett_whoami."),
                 }, "required": ["what", "state", "next"], "additionalProperties": false},
             }),
             json!({
                 "name": "everett_whoami",
-                "description": "Your own session id and harness as Everett detects them, and how it detected them. If none is detected, the host must set EVERETT_SESSION_ID before starting MCP; tool arguments cannot establish identity.",
+                "description": "Your own session id and harness as Everett detects them, and how it detected them. Everett binds the caller from the host (EVERETT_SESSION_ID, the harness's own env, Codex request metadata, or the host process for `everett mcp --harness pi|omp|devin|hermes`); tool arguments cannot establish identity. If none is detected, `note` says how to set it up.",
                 "inputSchema": {"type": "object", "properties": {}, "additionalProperties": false},
             }),
             json!({
@@ -173,7 +167,6 @@ pub fn tools() -> &'static Vec<Value> {
                     "agent":s("Pinned relay alias, defaulting to its named recipient agent ID."),"session":s("Exact recipient session ID, obtained out of band."),
                     "harness":s("Recipient harness, e.g. omp or pi."),"text":{"type":"string","maxLength":65536},
                     "idempotency_key":s("Required stable unique key; changing the request with the same key is rejected."),
-                    "session_id":s("Your host-bound local sending session; must match everett_whoami.")
                 },"required":["agent","session","harness","text","idempotency_key"],"additionalProperties":false}
             }),
             json!({
@@ -327,7 +320,11 @@ fn err2(code: i32, msg: impl Into<String>) -> ToolFailure {
 /// harness session, that binding is authoritative for safety and lineage.
 /// Model-supplied arguments cannot establish a missing host binding.
 fn call_identity(params: &Map<String, Value>) -> Map<String, Value> {
-    let identity = caller_identity();
+    let launch = crate::host::launch_harness();
+    let identity = match launch {
+        Some(h) => crate::send::caller_identity_for(h),
+        None => caller_identity(),
+    };
     if identity
         .get("session_id")
         .and_then(Value::as_str)
@@ -335,21 +332,47 @@ fn call_identity(params: &Map<String, Value>) -> Map<String, Value> {
     {
         return identity;
     }
-    let Some(thread_id) = params
-        .get("_meta")
-        .and_then(Value::as_object)
-        .and_then(|meta| meta.get("threadId"))
+    if launch.is_none_or(|h| h == "codex") {
+        if let Some(thread_id) = params
+            .get("_meta")
+            .and_then(Value::as_object)
+            .and_then(|meta| meta.get("threadId"))
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|id| !id.is_empty())
+        {
+            let mut identity = Map::new();
+            identity.insert("session_id".into(), json!(thread_id));
+            identity.insert("harness".into(), json!("codex"));
+            identity.insert("source".into(), json!("request _meta.threadId"));
+            return identity;
+        }
+    }
+    match crate::host::identify(launch) {
+        Ok(Some(found)) => found,
+        Ok(None) => identity,
+        Err(reason) => {
+            let mut identity = identity;
+            identity.insert("harness".into(), json!(launch.unwrap_or("")));
+            identity.insert("unbound".into(), json!(reason));
+            identity
+        }
+    }
+}
+
+/// Why this caller has no session, and how to fix it, in one readable sentence.
+fn unbound_message(identity: &Map<String, Value>) -> String {
+    let harness = identity.get("harness").and_then(Value::as_str).unwrap_or("");
+    let reason = identity
+        .get("unbound")
         .and_then(Value::as_str)
-        .map(str::trim)
-        .filter(|id| !id.is_empty())
-    else {
-        return identity;
-    };
-    let mut identity = Map::new();
-    identity.insert("session_id".into(), json!(thread_id));
-    identity.insert("harness".into(), json!("codex"));
-    identity.insert("source".into(), json!("request _meta.threadId"));
-    identity
+        .map(|r| format!(" ({})", r))
+        .unwrap_or_default();
+    format!(
+        "Cannot tell which session you are{}. {}",
+        reason,
+        crate::host::setup_hint(harness)
+    )
 }
 
 fn caller_session(
@@ -364,16 +387,18 @@ fn caller_session(
         .to_string();
     if !bound.is_empty() {
         if !requested.is_empty() && requested != bound {
-            return Err(ToolFailure::Params(
-                "\"session_id\" conflicts with the host-detected caller session".to_string(),
-            ));
+            return Err(ToolFailure::Tool(EverettError::new(
+                2,
+                "\"session_id\" conflicts with the host-detected caller session; omit it, Everett binds the caller itself.",
+            )));
         }
         return Ok((bound, true));
     }
     if !requested.is_empty() {
-        return Err(ToolFailure::Params(
-            "\"session_id\" requires a host-detected caller session".to_string(),
-        ));
+        return Err(ToolFailure::Tool(EverettError::new(
+            2,
+            format!("\"session_id\" cannot establish identity. {}", unbound_message(identity)),
+        )));
     }
     Ok((String::new(), false))
 }
@@ -436,6 +461,8 @@ fn tool_route(
         "suggested",
         "candidates",
         "command",
+        "fallback_from",
+        "warning",
     ] {
         if let Some(v) = r.get(k) {
             if !v.is_null() {
@@ -639,6 +666,11 @@ fn tool_send(
             "router".into(),
             r.get("router").cloned().unwrap_or(Value::Null),
         );
+        for key in ["fallback_from", "warning"] {
+            if let Some(v) = r.get(key) {
+                decision.insert(key.into(), v.clone());
+            }
+        }
         if r.get("decision").and_then(|v| v.as_str()) == Some("NEW") {
             if !spawn_ok
                 || r.get("confidence").and_then(|v| v.as_f64()).unwrap_or(0.0)
@@ -849,10 +881,7 @@ fn tool_card(
     }
     let (sid, _) = caller_session(args, identity)?;
     if sid.is_empty() {
-        return Err(ToolFailure::Tool(EverettError::new(
-            2,
-            "Cannot tell which session you are. Set EVERETT_SESSION_ID in the MCP launch environment.",
-        )));
+        return Err(ToolFailure::Tool(EverettError::new(2, unbound_message(identity))));
     }
     if !crate::inbox::valid_id(&sid) {
         return Err(ToolFailure::Params(
@@ -887,10 +916,7 @@ fn tool_inbox(
 ) -> std::result::Result<Map<String, Value>, ToolFailure> {
     let (sid, _) = caller_session(args, identity)?;
     if sid.is_empty() {
-        return Err(ToolFailure::Tool(EverettError::new(
-            2,
-            "Cannot tell which session you are. Set EVERETT_SESSION_ID in the MCP launch environment.",
-        )));
+        return Err(ToolFailure::Tool(EverettError::new(2, unbound_message(identity))));
     }
     if !crate::inbox::valid_id(&sid) {
         return Err(ToolFailure::Params(
@@ -931,6 +957,9 @@ fn tool_inbox(
             "ts",
         ] {
             msg.insert(k.to_string(), m.get(k).cloned().unwrap_or(Value::Null));
+        }
+        if let Some(depth) = m.get("reply_depth") {
+            msg.insert("reply_depth".into(), depth.clone());
         }
         if m.contains_key("relay_device") {
             for k in [
@@ -1010,11 +1039,6 @@ fn tool_inbox(
         if let Some(hops) = items
             .iter()
             .filter(|m| {
-                m.contains_key("peer_client")
-                    || m.contains_key("peer_reply_id")
-                    || m.contains_key("relay_device")
-            })
-            .filter(|m| {
                 m.get("id")
                     .and_then(Value::as_str)
                     .is_some_and(|id| ids.contains(&id))
@@ -1065,7 +1089,7 @@ fn tool_event(
     if sid.is_empty() {
         out.insert(
             "note".into(),
-            json!("No session detected: the event is logged but not attached to a card. Set EVERETT_SESSION_ID."),
+            json!(format!("The event is logged but not attached to a card. {}", unbound_message(identity))),
         );
     }
     Ok(out)
@@ -1118,11 +1142,7 @@ fn tool_whoami(
         .unwrap_or(false);
     out.insert(
         "note".into(),
-        json!(if has_session {
-            ""
-        } else {
-            "Not detected. Set EVERETT_SESSION_ID in this session's MCP launch environment."
-        }),
+        json!(if has_session { String::new() } else { unbound_message(ident) }),
     );
     Ok(out)
 }
@@ -1326,6 +1346,13 @@ fn call_tool(params: &Map<String, Value>) -> std::result::Result<Map<String, Val
         .cloned()
         .unwrap_or_default();
     for (key, value) in &args {
+        if key == "session_id" && !properties.contains_key(key) {
+            // Deprecated: identity comes from the host. Still accepted when it matches the binding.
+            if !value.is_string() {
+                return Err(json!({"code": INVALID_PARAMS, "message": "\"session_id\" must be a string"}));
+            }
+            continue;
+        }
         let Some(spec) = properties.get(key).and_then(|v| v.as_object()) else {
             return Err(
                 json!({"code": INVALID_PARAMS, "message": "unexpected argument; use the tool inputSchema"}),

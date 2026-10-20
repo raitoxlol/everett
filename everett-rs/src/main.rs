@@ -227,12 +227,22 @@ enum Cmd {
         omp: bool,
         #[arg(long)]
         grok: bool,
+        /// Pi extension: registers the MCP server per session with its id
+        #[arg(long)]
+        pi: bool,
+        /// Devin CLI hooks that bind `everett mcp --harness devin` to the session
+        #[arg(long)]
+        devin: bool,
         /// back up, then merge into the harness config
         #[arg(long)]
         apply: bool,
     },
     /// run the stdio MCP server (for harnesses; see install-mcp)
-    Mcp,
+    Mcp {
+        /// bind callers to sessions of this host harness (pi, omp, devin, hermes)
+        #[arg(long, value_parser = ["pi", "omp", "devin", "hermes"])]
+        harness: Option<String>,
+    },
     /// print (or --apply) the MCP server registration
     InstallMcp {
         #[arg(long)]
@@ -245,6 +255,12 @@ enum Cmd {
         grok: bool,
         #[arg(long)]
         devin: bool,
+        /// via the Pi extension (same as install-hooks --pi)
+        #[arg(long)]
+        pi: bool,
+        /// print the ~/.hermes/config.yaml entry (not applied automatically)
+        #[arg(long)]
+        hermes: bool,
         /// back up, then register
         #[arg(long)]
         apply: bool,
@@ -758,16 +774,25 @@ fn main() {
             codex,
             omp,
             grok,
+            pi,
+            devin,
             apply,
         } => {
             a.claude = claude;
             a.codex = codex;
             a.omp = omp;
             a.grok = grok;
+            a.pi = pi;
+            a.devin = devin;
             a.apply = apply;
             cli::cmd_install_hooks(&a)
         }
-        Cmd::Mcp => cli::cmd_mcp(&a),
+        Cmd::Mcp { harness } => {
+            if let Some(h) = harness {
+                everett::host::set_launch_harness(&h);
+            }
+            cli::cmd_mcp(&a)
+        }
         Cmd::Gateway {
             config,
             transport,
@@ -779,6 +804,8 @@ fn main() {
             omp,
             grok,
             devin,
+            pi,
+            hermes,
             apply,
             repair,
         } => {
@@ -787,6 +814,8 @@ fn main() {
             a.omp = omp;
             a.grok = grok;
             a.devin = devin;
+            a.pi = pi;
+            a.hermes = hermes;
             a.apply = apply;
             a.repair = repair;
             cli::cmd_install_mcp(&a)

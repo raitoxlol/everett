@@ -81,6 +81,8 @@ pub struct Args {
     pub omp: bool,
     pub grok: bool,
     pub devin: bool,
+    pub pi: bool,
+    pub hermes: bool,
     pub repair: bool,
     pub onboard_yes: bool,
     pub span_days: i64,
@@ -314,6 +316,7 @@ pub fn cmd_route(args: &Args) -> i32 {
             return e.code;
         }
     };
+    warn_fallback(&r);
     if args.json {
         println!("{}", serde_json::to_string_pretty(&r).unwrap_or_default());
         return 0;
@@ -354,6 +357,12 @@ pub fn cmd_route(args: &Args) -> i32 {
         }
     }
     0
+}
+
+fn warn_fallback(r: &Map<String, Value>) {
+    if let Some(warning) = r.get("warning").and_then(|v| v.as_str()) {
+        eprintln!("everett: warning: {}", warning);
+    }
 }
 
 fn emit(json_mode: bool, payload: &Map<String, Value>, lines: Vec<Option<String>>) {
@@ -522,6 +531,7 @@ pub fn cmd_send(args: &Args) -> i32 {
                 return e.code;
             }
         };
+        warn_fallback(&result);
         if result.get("decision").and_then(|v| v.as_str()) == Some("NEW")
             && args.spawn
             && result.get("confidence").and_then(|v| v.as_f64()).unwrap_or(0.0) >= crate::route::MIN_CONFIDENCE
@@ -1109,15 +1119,14 @@ pub fn cmd_core(args: &Args) -> i32 {
 }
 
 fn harnesses(args: &Args, mcp: bool) -> Vec<String> {
-    let mut choices = vec!["claude", "codex", "omp"];
-    if home().join(".grok").is_dir() || args.grok {
-        choices.push("grok");
+    let mut choices = vec!["claude", "codex"];
+    for (h, asked) in [("omp", args.omp), ("grok", args.grok), ("pi", args.pi), ("devin", args.devin)] {
+        if asked || crate::install::harness_present(h) {
+            choices.push(h);
+        }
     }
-    if mcp && (args.devin
-        || crate::install::mcp_path("devin").parent().map(|p| p.is_dir()).unwrap_or(false)
-        || crate::proc::which("devin", &std::env::var("PATH").unwrap_or_default()).is_some())
-    {
-        choices.push("devin");
+    if mcp && args.hermes {
+        choices.push("hermes");
     }
     let mut picked: Vec<String> = Vec::new();
     for h in &choices {
@@ -1127,6 +1136,8 @@ fn harnesses(args: &Args, mcp: bool) -> Vec<String> {
             "omp" => args.omp,
             "grok" => args.grok,
             "devin" => args.devin,
+            "pi" => args.pi,
+            "hermes" => args.hermes,
             _ => false,
         } {
             picked.push(h.to_string());
