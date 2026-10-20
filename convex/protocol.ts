@@ -34,6 +34,16 @@ export function observationBytes(a: {
 }) {
   return encode(["everett-observe-v2", a.owner, a.deviceId, a.senderOwner, a.messageId, a.state, a.at]);
 }
+export function sshBindingBytes(owner: string, deviceId: string, sshDeviceId: string, sshPublicKey: string) {
+  return encode(["everett-ssh-bind-v1", owner, deviceId, sshDeviceId, sshPublicKey]);
+}
+const SSH_ED25519_PREFIX = [0, 0, 0, 11, ...new TextEncoder().encode("ssh-ed25519"), 0, 0, 0, 32];
+/** Raw Ed25519 key from the base64 field of an `ssh-ed25519` public key line. */
+export function sshEd25519Key(blob: string) {
+  const bytes = /^[A-Za-z0-9+/]{68}$/.test(blob) ? Uint8Array.from(atob(blob), (c) => c.charCodeAt(0)) : new Uint8Array();
+  if (bytes.length !== 51 || SSH_ED25519_PREFIX.some((b, i) => bytes[i] !== b)) throw new Error("Invalid SSH public key");
+  return bytes.slice(SSH_ED25519_PREFIX.length);
+}
 export function hex(value: string, bytes?: number) {
   if (!/^(?:[0-9a-f]{2})+$/.test(value) || (bytes !== undefined && value.length !== bytes * 2)) {
     throw new Error("Invalid cryptographic field");

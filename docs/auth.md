@@ -156,12 +156,13 @@ issuer-enrollment wizard is included.
 
 ## Private storage and revocation
 
-For registry-driven SSH revocation, provision the issuer's `everett_agent` to match the
-device's existing SSH UUID from `everett peer identity` (`~/.everett/peer/device_id`). SSH
-and relay keys remain independent. This release preserves existing SSH identities and
-does not enroll, bind, or migrate them. If those IDs differ, doctor cannot associate the
-SSH authorization with the revoked relay credential. Doctor displays both local IDs and
-their match status while signed in. Identity binding is follow-up work.
+SSH and relay keys remain independent, and existing SSH identities are preserved, not
+migrated. `everett relay register` (and the listener) binds the device's SSH UUID from
+`everett peer identity` (`~/.everett/peer/device_id`) and its SSH public key to the relay
+device, signed by that SSH key; the binding is set once and unique per owner. Registry
+revocation then prunes that SSH authorization even when the IDs differ. A device that has
+not registered with an SSH identity is pruned only where its relay ID equals its SSH tag.
+Doctor displays both local IDs and their match status while signed in.
 
 `everett devices revoke DEVICE_ID` permanently revokes a same-owner credential as self
 or as an active registered admin. It records the registered device's revocation timestamp

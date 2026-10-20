@@ -93,10 +93,14 @@ or duplicate keys. Plan storage/quota monitoring and tombstone-preserving migrat
 - Registry revocations can only remove tagged SSH authorizations during doctor. They never
   install keys, modify addresses, or replace pins. A compromised registry can hide a
   revocation and delay SSH enforcement indefinitely; this is an accepted limitation.
-  Offline peers retain SSH access until a successful doctor fetch. Propagation matches the
-  SSH UUID the device recorded at registration (or its registry ID if none was recorded).
-  An org member can record any SSH id for its own device and then self-revoke, which only
-  removes that tag's SSH authorization; it can never add access. Doctor pages all tombstones. Use receiver-side `peer revoke` when propagation is insufficient.
+  Offline peers retain SSH access until a successful doctor fetch. Registration binds the
+  device's SSH UUID and `ssh-ed25519` public key with a signature by that SSH key over the
+  owner, relay device ID, SSH UUID and key. The backend verifies it, sets it once, and
+  rejects an SSH UUID already bound to another device in the owner. Doctor re-verifies the
+  signature against its own sign-in owner and removes only lines tagged with that UUID
+  **and** holding that exact key, so a member cannot claim another device's SSH UUID and
+  self-revoke to strip it. A device without a proven binding is matched by its relay ID
+  only. Doctor pages all tombstones. Use receiver-side `peer revoke` when propagation is insufficient.
 - **No forward secrecy for past recipient static-key compromise.** Anyone with captured
   ciphertext and a later stolen recipient X25519 private key can decrypt those past
   envelopes. Fresh ephemeral sender keys/rotation are not a ratchet. Delete old keys

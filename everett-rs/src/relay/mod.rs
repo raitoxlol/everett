@@ -610,6 +610,12 @@ pub fn admin_call(name: &str, value: Value, is_query: bool) -> Result<Value> {
     })
 }
 
+/// The owner namespace of the stored sign-in, without refreshing or contacting the backend.
+pub fn signed_in_owner() -> Result<String> {
+    let stored = auth::load().ok_or_else(|| bad("run everett login first"))?;
+    checked_identity(&stored, &claims(&stored.id_token)?, session::now())
+}
+
 pub fn signed_in_device_id() -> Result<String> {
     let stored = auth::load().ok_or_else(|| bad("run everett login first"))?;
     let id = claims(&stored.id_token)?["everett_agent"]
@@ -663,6 +669,69 @@ pub struct RevokedDevice {
     /// The revoked device's SSH peer id when it registered one; its SSH authorization carries this tag.
     #[serde(default)]
     pub ssh_device_id: Option<String>,
+    /// Base64 field of the `ssh-ed25519` key that signed the binding.
+    #[serde(default)]
+    pub ssh_public_key: Option<String>,
+    /// Hex Ed25519 signature over `ssh_binding_bytes` by `ssh_public_key`.
+    #[serde(default)]
+    pub ssh_signature: Option<String>,
+}
+
+pub fn ssh_binding_bytes(
+    owner: &str,
+    device_id: &str,
+    ssh_device_id: &str,
+    ssh_public_key: &str,
+) -> Vec<u8> {
+    json!([
+        "everett-ssh-bind-v1",
+        owner,
+        device_id,
+        ssh_device_id,
+        ssh_public_key
+    ])
+    .to_string()
+    .into_bytes()
+}
+
+const SSH_ED25519_PREFIX: &[u8] = b"\0\0\0\x0bssh-ed25519\0\0\0\x20";
+
+/// The SSH id and key a revoked row may prune, only when its binding is signed by that key for this owner.
+pub fn verified_ssh_binding<'a>(
+    owner: &str,
+    row: &'a RevokedDevice,
+) -> Result<Option<(&'a str, &'a str)>> {
+    let (Some(ssh), Some(key), Some(signature)) =
+        (&row.ssh_device_id, &row.ssh_public_key, &row.ssh_signature)
+    else {
+        return Ok(None);
+    };
+    let invalid = || {
+        bad(format!(
+            "invalid SSH binding proof for revoked device {}",
+            row.device_id
+        ))
+    };
+    let blob = base64::engine::general_purpose::STANDARD
+        .decode(key)
+        .map_err(|_| invalid())?;
+    let raw: [u8; 32] = blob
+        .strip_prefix(SSH_ED25519_PREFIX)
+        .and_then(|raw| raw.try_into().ok())
+        .ok_or_else(invalid)?;
+    let signature: [u8; 64] = hex::decode(signature)
+        .ok()
+        .and_then(|sig| sig.try_into().ok())
+        .ok_or_else(invalid)?;
+    ed25519_dalek::VerifyingKey::from_bytes(&raw)
+        .and_then(|vk| {
+            vk.verify_strict(
+                &ssh_binding_bytes(owner, &row.device_id, ssh, key),
+                &ed25519_dalek::Signature::from_bytes(&signature),
+            )
+        })
+        .map_err(|_| invalid())?;
+    Ok(Some((ssh, key)))
 }
 
 const MAX_REVOKED_PAGES: usize = 64;
@@ -698,6 +767,11 @@ pub fn parse_revoked_devices(value: Value) -> Result<Vec<RevokedDevice>> {
         valid(&row.device_id)?;
         if let Some(ssh) = &row.ssh_device_id {
             valid(ssh)?;
+        }
+        if row.ssh_device_id.is_some() != row.ssh_public_key.is_some()
+            || row.ssh_device_id.is_some() != row.ssh_signature.is_some()
+        {
+            return Err(bad("incomplete SSH binding in revocation"));
         }
         if !row.revoked_at.is_finite()
             || row.revoked_at.fract() != 0.0
@@ -758,13 +832,30 @@ pub fn rotate() -> Result<Value> {
     )
 }
 
-/// Register args carry this machine's SSH peer id so a later revocation can prune its SSH key.
+/// Register args carry this machine's SSH peer id and key, signed by that key, so a later
+/// revocation can prune exactly this device's SSH authorization.
 fn register_args(device: &Device) -> Result<Value> {
     let mut args = json!({"device": device});
-    if let Some(ssh) = peer::local_device_id()? {
-        args["sshDeviceId"] = json!(ssh);
+    if let Some(ssh) = ssh_binding(device)? {
+        args["ssh"] = ssh;
     }
     Ok(args)
+}
+
+pub fn ssh_binding(device: &Device) -> Result<Option<Value>> {
+    use ed25519_dalek::Signer;
+    let Some((ssh, key, signing)) = peer::local_ssh_key()? else {
+        return Ok(None);
+    };
+    let signature = signing.sign(&ssh_binding_bytes(
+        &device.owner,
+        &device.device_id,
+        &ssh,
+        &key,
+    ));
+    Ok(Some(
+        json!({"sshDeviceId": ssh, "sshPublicKey": key, "sshSignature": hex::encode(signature.to_bytes())}),
+    ))
 }
 
 pub fn register() -> Result<Value> {

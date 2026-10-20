@@ -5,7 +5,7 @@ import nacl from "tweetnacl";
 import schema from "../schema";
 import { namespace } from "../authorization";
 import { queuedAttemptCount } from "../relay";
-import { aadBytes, deviceBytes, envelopeBytes, fingerprint, observationBytes, rotationBytes, hexString, type Envelope } from "../protocol";
+import { aadBytes, deviceBytes, sshBindingBytes, envelopeBytes, fingerprint, observationBytes, rotationBytes, hexString, type Envelope } from "../protocol";
 import { key, seal, open, resign, type Keys } from "./crypto.test-helper";
 import wire from "./relay-wire-v2.json";
 
@@ -133,14 +133,49 @@ describe("actual Convex functions, offline", () => {
     expect(ids.every(id => id.startsWith("z-revoked-"))).toBe(true);
     expect(await f.b.query(query("revokedDevices"), {})).toEqual({ devices: [], cursor: null });
   });
-  test("registration records the SSH peer id once and revocation reports it", async () => {
+  const sshKey = (seed: number) => {
+    const pair = nacl.sign.keyPair.fromSeed(new Uint8Array(32).fill(seed));
+    const prefix = [0, 0, 0, 11, ...new TextEncoder().encode("ssh-ed25519"), 0, 0, 0, 32];
+    return { pair, publicKey: Buffer.from([...prefix, ...pair.publicKey]).toString("base64") };
+  };
+  const binding = (owner: string, deviceId: string, sshDeviceId: string, key: ReturnType<typeof sshKey>, signer = key) => ({
+    sshDeviceId, sshPublicKey: key.publicKey,
+    sshSignature: hexString(nacl.sign.detached(sshBindingBytes(owner, deviceId, sshDeviceId, key.publicKey), signer.pair.secretKey)),
+  });
+  test("SSH binding bytes match the Rust client", () => {
+    expect(new TextDecoder().decode(sshBindingBytes("[\"i\",\"org\",\"o\"]", "agent", "ssh-id", "AAAA")))
+      .toBe('["everett-ssh-bind-v1","[\\"i\\",\\"org\\",\\"o\\"]","agent","ssh-id","AAAA"]');
+  });
+  test("registration binds a proven SSH peer id once and revocation reports it", async () => {
     const f = await fixture();
-    await expect(f.c.mutation(ref("register"), { device: f.kc.device, sshDeviceId: "bad id!" })).rejects.toThrow();
-    await f.c.mutation(ref("register"), { device: f.kc.device, sshDeviceId: "ssh-c" });
-    await f.c.mutation(ref("register"), { device: f.kc.device, sshDeviceId: "ssh-a" });
+    const keyC = sshKey(21);
+    await expect(f.c.mutation(ref("register"), { device: f.kc.device, ssh: binding(ownerA, "agent-c", "bad id!", keyC) })).rejects.toThrow();
+    const proof = binding(ownerA, "agent-c", "ssh-c", keyC);
+    await f.c.mutation(ref("register"), { device: f.kc.device, ssh: proof });
+    await f.c.mutation(ref("register"), { device: f.kc.device, ssh: binding(ownerA, "agent-c", "ssh-other", keyC) });
     await f.a.mutation(ref("revokeDevice"), { deviceId: "agent-c" });
     expect(await f.a.query(query("revokedDevices"), {})).toEqual({
-      devices: [{ deviceId: "agent-c", sshDeviceId: "ssh-c", revokedAt: expect.any(Number) }], cursor: null,
+      devices: [{ deviceId: "agent-c", ...proof, revokedAt: expect.any(Number) }], cursor: null,
+    });
+  });
+  test("a member cannot claim another device's SSH id to prune it by self-revoking", async () => {
+    const f = await fixture();
+    const victim = sshKey(31), attacker = sshKey(32);
+    const victimProof = binding(ownerA, "agent-a", "ssh-victim", victim);
+    await f.a.mutation(ref("register"), { device: f.ka.device, ssh: victimProof });
+    const claims = [
+      { sshDeviceId: "ssh-victim" },
+      { ...victimProof },
+      binding(ownerA, "agent-c", "ssh-victim", victim, attacker),
+      { ...victimProof, sshSignature: "00".repeat(64) },
+      binding(ownerA, "agent-c", "ssh-victim", attacker),
+    ];
+    for (const ssh of claims) {
+      await expect(f.c.mutation(ref("register"), { device: f.kc.device, ssh } as never)).rejects.toThrow();
+    }
+    await f.c.mutation(ref("revokeDevice"), { deviceId: "agent-c" });
+    expect(await f.a.query(query("revokedDevices"), {})).toEqual({
+      devices: [{ deviceId: "agent-c", revokedAt: expect.any(Number) }], cursor: null,
     });
   });
   test("device rows written before revokedAt existed stay active and can be revoked", async () => {

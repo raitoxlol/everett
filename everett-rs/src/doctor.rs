@@ -148,7 +148,7 @@ pub fn device_revocation_checks(
             if ssh == agent {
                 "IDs match"
             } else {
-                "IDs differ; registration records the SSH id so revocation still prunes it"
+                "IDs differ; registration records the SSH id and key, signed by that key, so revocation still prunes it"
             }
         ),
         (Ok(None), _) => "SSH device_id: not created; no local SSH identity binding".into(),
@@ -172,10 +172,16 @@ pub fn device_revocation_checks(
             return checks;
         }
     };
+    let owner = crate::relay::signed_in_owner();
     let mut removed = false;
     for row in revoked {
-        let ssh = row.ssh_device_id.as_deref().unwrap_or(&row.device_id);
-        match crate::peer::prune_revoked(ssh) {
+        let pruned = owner.clone().and_then(|owner| {
+            match crate::relay::verified_ssh_binding(&owner, &row)? {
+                Some((ssh, key)) => crate::peer::prune_revoked_key(ssh, key),
+                None => crate::peer::prune_revoked(&row.device_id),
+            }
+        });
+        match pruned {
             Ok(true) => {
                 removed = true;
                 checks.push((

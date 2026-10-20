@@ -10,7 +10,7 @@ import {
 } from "./authorization";
 import {
   deviceBytes, envelopeBytes, fingerprint, rotationBytes, observationBytes,
-  hex, identifier, verify, validateDevice, digest, type Envelope,
+  hex, hexString, identifier, verify, validateDevice, digest, sshBindingBytes, sshEd25519Key, type Envelope,
 } from "./protocol";
 import { allowedGrant } from "./grants";
 export { deviceBytes, envelopeBytes } from "./protocol";
@@ -38,20 +38,32 @@ export const provisionIdentity = internalMutation({
     return { owner, deviceId: args.agentId };
   },
 });
+const sshBindingValidator = v.object({ sshDeviceId: v.string(), sshPublicKey: v.string(), sshSignature: v.string() });
 export const register = mutation({
-  args: { device: deviceValidator, sshDeviceId: v.optional(v.string()) },
-  handler: async (ctx: WriteContext, { device: d, sshDeviceId }) => {
+  args: { device: deviceValidator, ssh: v.optional(sshBindingValidator) },
+  handler: async (ctx: WriteContext, { device: d, ssh }) => {
     const p = await authorize(ctx); ownAgent(p, d.deviceId);
     if (d.owner !== p.owner) throw new Error("Wrong organization");
     validateDevice(d);
-    if (sshDeviceId !== undefined) identifier(sshDeviceId);
+    if (ssh !== undefined) {
+      identifier(ssh.sshDeviceId);
+      verify(hexString(sshEd25519Key(ssh.sshPublicKey)), ssh.sshSignature, sshBindingBytes(p.owner, d.deviceId, ssh.sshDeviceId, ssh.sshPublicKey));
+    }
     const existing = await ctx.db.query("devices").withIndex("by_owner_device", (q) => q.eq("owner", p.owner).eq("deviceId", d.deviceId)).unique();
     if (existing) {
       if (existing.revokedAt != null) throw new Error("Device tombstone cannot be reused");
       if (fingerprint(existing) !== fingerprint(d)) throw new Error("Device keys cannot be replaced; use signed rotation");
-      // The SSH binding is set once; a later register cannot redirect pruning at another device's SSH key.
-      if (sshDeviceId !== undefined && existing.sshDeviceId === undefined) await ctx.db.patch(existing._id, { sshDeviceId });
-    } else await ctx.db.insert("devices", { ...d, generation: 0, revokedAt: null, ...(sshDeviceId === undefined ? {} : { sshDeviceId }) });
+    }
+    // The SSH binding is set once; a later register cannot redirect pruning at another device's SSH key.
+    const bind = ssh !== undefined && existing?.sshSignature === undefined;
+    if (bind) {
+      const holder = await ctx.db.query("devices").withIndex("by_owner_ssh", q => q.eq("owner", p.owner).eq("sshDeviceId", ssh.sshDeviceId))
+        .filter(q => q.and(q.neq(q.field("deviceId"), d.deviceId), q.neq(q.field("sshSignature"), undefined))).first();
+      if (holder) throw new Error("SSH identity is already bound to another device");
+    }
+    if (existing) {
+      if (bind) await ctx.db.patch(existing._id, ssh);
+    } else await ctx.db.insert("devices", { ...d, generation: 0, revokedAt: null, ...(bind ? ssh : {}) });
     return null;
   },
 });
@@ -110,7 +122,9 @@ export const revokedDevices = query({
     const page = await ctx.db.query("devices").withIndex("by_owner_revoked", q => q.eq("owner", p.owner).gte("revokedAt", 0))
       .paginate({ cursor: args.cursor ?? null, numItems: REVOKED_PAGE });
     return {
-      devices: page.page.map(({ deviceId, revokedAt, sshDeviceId }) => ({ deviceId, revokedAt: revokedAt!, ...(sshDeviceId === undefined ? {} : { sshDeviceId }) })),
+      devices: page.page.map(({ deviceId, revokedAt, sshDeviceId, sshPublicKey, sshSignature }) => ({
+        deviceId, revokedAt: revokedAt!, ...(sshSignature === undefined ? {} : { sshDeviceId, sshPublicKey, sshSignature }),
+      })),
       cursor: page.isDone ? null : page.continueCursor,
     };
   },

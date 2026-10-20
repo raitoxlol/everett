@@ -1,6 +1,10 @@
 mod common;
 
-use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
+use base64::{
+    engine::general_purpose::{STANDARD, URL_SAFE_NO_PAD},
+    Engine,
+};
+use ed25519_dalek::{Signer, SigningKey};
 use everett::{doctor, relay};
 use serde_json::{json, Value};
 use std::fs;
@@ -232,8 +236,8 @@ fn cli_exposes_device_revoke_and_best_effort_logout() {
     let out = fixture.run(&["logout", "--revoke-device", "--json"]);
     assert!(out.status.success());
     assert_eq!(
-        serde_json::from_slice::<Value>(&out.stdout).unwrap()["signed_out"],
-        true
+        serde_json::from_slice::<Value>(&out.stdout).unwrap(),
+        json!({"signed_out": true, "revoked": false, "device_revoked": false})
     );
     fixture.write(".everett/auth.json", &json!({"issuer":"http://127.0.0.1:1","client_id":"fixture","sub":"alice","email":"fixture","access_token":"synthetic","expires_at":0}).to_string());
     let out = fixture.run(&["logout", "--revoke-device", "--json"]);
@@ -246,19 +250,122 @@ fn cli_exposes_device_revoke_and_best_effort_logout() {
     assert!(String::from_utf8_lossy(&out.stderr).contains("registry device revocation"));
 }
 
+fn ssh_key(seed: u8) -> (SigningKey, String) {
+    let signing = SigningKey::from_bytes(&[seed; 32]);
+    let mut blob = b"\0\0\0\x0bssh-ed25519\0\0\0\x20".to_vec();
+    blob.extend(signing.verifying_key().to_bytes());
+    (signing, STANDARD.encode(blob))
+}
+
+fn revoked_row(owner: &str, device: &str, ssh: &str, key: &str, signer: &SigningKey) -> Value {
+    let signature = signer.sign(&relay::ssh_binding_bytes(owner, device, ssh, key));
+    json!({"deviceId":device,"revokedAt":1000,"sshDeviceId":ssh,"sshPublicKey":key,"sshSignature":hex::encode(signature.to_bytes())})
+}
+
 #[test]
-fn doctor_prunes_the_ssh_id_recorded_for_a_revoked_relay_agent() {
+fn ssh_binding_bytes_match_the_convex_backend() {
+    let bytes = relay::ssh_binding_bytes(r#"["i","org","o"]"#, "agent", "ssh-id", "AAAA");
+    assert_eq!(
+        String::from_utf8(bytes).unwrap(),
+        r#"["everett-ssh-bind-v1","[\"i\",\"org\",\"o\"]","agent","ssh-id","AAAA"]"#
+    );
+}
+
+#[test]
+fn doctor_prunes_the_proven_ssh_binding_of_a_revoked_relay_agent() {
     let home = common::lib_home();
-    sign_in(&home.path(), "relay-agent-local");
+    let owner = sign_in(&home.path(), "relay-agent-local");
+    let (laptop, laptop_key) = ssh_key(1);
     fs::create_dir_all(home.path().join(".ssh")).unwrap();
     let file = home.path().join(".ssh/authorized_keys");
-    fs::write(&file, "ssh-ed25519 a # everett-peer:ssh-of-laptop\nssh-ed25519 b # everett-peer:keep\n").unwrap();
-    let checks = doctor::device_revocation_checks(|| {
-        rows(json!([{"deviceId":"relay-agent-laptop","sshDeviceId":"ssh-of-laptop","revokedAt":1000}]))
-    });
-    assert!(checks.iter().any(|(ok, t)| *ok == Some(true) && t.contains("relay-agent-laptop")), "{checks:?}");
-    assert_eq!(fs::read_to_string(&file).unwrap(), "ssh-ed25519 b # everett-peer:keep\n");
+    fs::write(&file, format!("ssh-ed25519 {laptop_key} # everett-peer:ssh-of-laptop\nssh-ed25519 b # everett-peer:keep\n")).unwrap();
+    let row = revoked_row(
+        &owner,
+        "relay-agent-laptop",
+        "ssh-of-laptop",
+        &laptop_key,
+        &laptop,
+    );
+    let checks = doctor::device_revocation_checks(|| rows(json!([row])));
+    assert!(
+        checks
+            .iter()
+            .any(|(ok, t)| *ok == Some(true) && t.contains("relay-agent-laptop")),
+        "{checks:?}"
+    );
+    assert_eq!(
+        fs::read_to_string(&file).unwrap(),
+        "ssh-ed25519 b # everett-peer:keep\n"
+    );
     assert!(rows(json!([{"deviceId":"x","sshDeviceId":"bad id!","revokedAt":1}])).is_err());
+    assert!(rows(json!([{"deviceId":"x","sshDeviceId":"ssh-of-laptop","revokedAt":1}])).is_err());
+}
+
+#[test]
+fn self_revoked_device_claiming_a_victims_ssh_id_cannot_prune_the_victim() {
+    let home = common::lib_home();
+    let owner = sign_in(&home.path(), "relay-agent-local");
+    let (victim, victim_key) = ssh_key(2);
+    let (attacker, attacker_key) = ssh_key(3);
+    fs::create_dir_all(home.path().join(".ssh")).unwrap();
+    let file = home.path().join(".ssh/authorized_keys");
+    let before = format!("ssh-ed25519 {victim_key} # everett-peer:ssh-victim\n");
+    fs::write(&file, &before).unwrap();
+    let claims = [
+        revoked_row(
+            &owner,
+            "relay-agent-attacker",
+            "ssh-victim",
+            &attacker_key,
+            &attacker,
+        ),
+        revoked_row(
+            &owner,
+            "relay-agent-attacker",
+            "ssh-victim",
+            &victim_key,
+            &attacker,
+        ),
+        revoked_row(
+            r#"["https://issuer.example/","org","org-b"]"#,
+            "relay-agent-attacker",
+            "ssh-victim",
+            &victim_key,
+            &victim,
+        ),
+    ];
+    for claim in claims {
+        let checks = doctor::device_revocation_checks(|| rows(json!([claim])));
+        assert!(
+            !checks.iter().any(|(_, t)| t.starts_with("removed")),
+            "{checks:?}"
+        );
+        assert_eq!(fs::read_to_string(&file).unwrap(), before);
+    }
+}
+
+#[test]
+fn local_ssh_identity_signs_a_binding_doctor_accepts() {
+    let home = common::lib_home();
+    let owner = sign_in(&home.path(), "relay-agent-local");
+    fs::remove_file(home.path().join(".everett/peer/device_id")).unwrap();
+    assert!(everett::peer::local_ssh_key().unwrap().is_none());
+    let identity = everett::peer::identity().unwrap();
+    let (ssh, key, signing) = everett::peer::local_ssh_key().unwrap().unwrap();
+    assert_eq!(identity["device_id"], ssh.as_str());
+    assert!(identity["public_key"].as_str().unwrap().contains(&key));
+    let row = rows(json!([revoked_row(
+        &owner,
+        "relay-agent-local",
+        &ssh,
+        &key,
+        &signing
+    )]))
+    .unwrap();
+    assert_eq!(
+        relay::verified_ssh_binding(&owner, &row[0]).unwrap(),
+        Some((ssh.as_str(), key.as_str()))
+    );
 }
 
 #[test]
@@ -273,7 +380,10 @@ fn revoked_devices_follow_the_cursor_to_the_last_page() {
         })
     })
     .unwrap();
-    assert_eq!(all.iter().map(|d| d.device_id.as_str()).collect::<Vec<_>>(), ["a", "b"]);
+    assert_eq!(
+        all.iter().map(|d| d.device_id.as_str()).collect::<Vec<_>>(),
+        ["a", "b"]
+    );
     assert_eq!(seen, [None, Some("p2".to_string())]);
     let endless = relay::revoked_devices_with(|_| Ok(json!({"devices":[],"cursor":"again"})));
     assert!(endless.is_err());
