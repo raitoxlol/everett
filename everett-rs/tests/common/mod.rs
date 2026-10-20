@@ -4,6 +4,9 @@
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
+/// Host-installed harness CLIs (omp, devin, pi, ...) must not leak into tests.
+pub const HERMETIC_PATH: &str = "/usr/bin:/bin";
+
 pub struct Fixture {
     pub dir: tempfile::TempDir,
 }
@@ -20,6 +23,7 @@ impl Fixture {
             .env("EVERETT_HOME", self.home())
             .env("HOME", self.home())
             .env("EVERETT_NOTIFY", "none")
+            .env("PATH", HERMETIC_PATH)
             .env_remove("TYPESAFE_API_KEY")
             .env_remove("EVERETT_SEND");
         cmd.output().unwrap()
@@ -33,6 +37,7 @@ impl Fixture {
             .env("EVERETT_HOME", self.home())
             .env("HOME", self.home())
             .env("EVERETT_NOTIFY", "none")
+            .env("PATH", HERMETIC_PATH)
             .env_remove("TYPESAFE_API_KEY")
             .env_remove("EVERETT_SEND")
             .stdin(std::process::Stdio::piped())
@@ -129,6 +134,7 @@ pub fn jev_stub(status: u16, body: &'static str) -> String {
 }
 
 /// Run `everett mcp` with an isolated env, send initialize plus each tools/call, return the call results.
+/// The server is orphaned so harnesses running the test suite (devin, omp, ...) are not its ancestors.
 pub fn mcp_calls(
     fixture: &Fixture,
     args: &[&str],
@@ -136,14 +142,14 @@ pub fn mcp_calls(
     calls: &[(&str, serde_json::Value)],
 ) -> Vec<serde_json::Value> {
     use std::io::{BufRead, BufReader, Write};
-    let mut cmd = Command::new(env!("CARGO_BIN_EXE_everett"));
-    cmd.arg("mcp")
+    let mut cmd = Command::new("/bin/sh");
+    cmd.args(["-c", r#"exec 3<&0; ( "$0" "$@" <&3 3<&- & )"#, env!("CARGO_BIN_EXE_everett"), "mcp"])
         .args(args)
         .env_clear()
         .env("HOME", fixture.home())
         .env("EVERETT_HOME", fixture.home())
         .env("EVERETT_NOTIFY", "none")
-        .env("PATH", "/usr/bin:/bin")
+        .env("PATH", HERMETIC_PATH)
         .current_dir(fixture.home())
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
