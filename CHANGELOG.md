@@ -26,6 +26,11 @@
   untrusted without tainting unrelated later resume/spawn work; an explicit
   reply retains the external provenance.
 
+- The local dev stack starts again: `convex/auth.config.ts` no longer reads
+  `EVERETT_OWNER_GITHUB_ID` (hosted requests still fail closed while it is unset).
+  Hosted login trusts `EVERETT_RELAY_CA_FILE` for private-CA origins. New
+  `scripts/dev-login/hosted-smoke.mjs` checks owner-only approval, immediate per-agent
+  revocation and no secrets in logs against the running stack.
 - Add owner-only hosted Convex Auth enrollment through allowlisted GitHub approval,
   immutable per-agent credentials and immediate relay revocation. Preserve generic OIDC.
 - Add single-URL hosted login, private agent-token exports with independent client relay

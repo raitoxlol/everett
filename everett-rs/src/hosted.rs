@@ -108,14 +108,37 @@ struct Pending {
     expires_at: f64,
 }
 
+/// A private-CA hosted origin (the local dev stack) trusts only the explicit relay CA file.
+fn private_ca() -> Result<Option<ureq::tls::RootCerts>> {
+    let file = crate::config::get("relay.ca_file", Some("EVERETT_RELAY_CA_FILE"), "");
+    if file.is_empty() {
+        return Ok(None);
+    }
+    let invalid = || bad("EVERETT_RELAY_CA_FILE / [relay] ca_file must be a readable PEM certificate file");
+    let pem = fs::read(&file).map_err(|_| invalid())?;
+    let certs = ureq::tls::parse_pem(&pem)
+        .filter_map(|item| match item {
+            Ok(ureq::tls::PemItem::Certificate(cert)) => Some(Ok(cert)),
+            Ok(_) => None,
+            Err(_) => Some(Err(invalid())),
+        })
+        .collect::<Result<Vec<_>>>()?;
+    if certs.is_empty() {
+        return Err(invalid());
+    }
+    Ok(Some(ureq::tls::RootCerts::new_with_certs(&certs)))
+}
+
 fn call(kind: &str, function: &str, args: Value, bearer: Option<&str>) -> Result<Value> {
     let endpoint = format!("{}/api/{kind}", deployment()?);
-    let config = ureq::Agent::config_builder()
+    let mut config = ureq::Agent::config_builder()
         .timeout_global(Some(Duration::from_secs(15)))
         .max_redirects(0)
-        .http_status_as_error(false)
-        .build();
-    let agent: ureq::Agent = config.into();
+        .http_status_as_error(false);
+    if let Some(roots) = private_ca()? {
+        config = config.tls_config(ureq::tls::TlsConfig::builder().root_certs(roots).build());
+    }
+    let agent: ureq::Agent = config.build().into();
     let mut request = agent.post(&endpoint);
     if let Some(token) = bearer {
         request = request.header("Authorization", &format!("Bearer {token}"));
