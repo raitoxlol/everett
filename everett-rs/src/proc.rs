@@ -191,17 +191,21 @@ pub fn pid_alive(pid: i32) -> bool {
     alive || std::io::Error::last_os_error().raw_os_error() == Some(libc::EPERM)
 }
 
-/// Parent pid and comm of a process, via `ps -o ppid=,comm= -p`.
-pub fn parent_of(pid: i32) -> Option<(i32, String)> {
-    let out = Command::new("ps")
-        .args(["-o", "ppid=,comm=", "-p", &pid.to_string()])
-        .output()
-        .ok()?;
+/// Parent pid and full command line of a process: `/proc` on Linux, one `ps` call elsewhere.
+pub fn parent_args(pid: i32) -> Option<(i32, String)> {
+    if let (Ok(stat), Ok(cmdline)) =
+        (std::fs::read_to_string(format!("/proc/{pid}/stat")), std::fs::read(format!("/proc/{pid}/cmdline")))
+    {
+        // comm sits in parentheses and may contain spaces; ppid is the second field after it.
+        let ppid = stat.rsplit_once(')')?.1.split_whitespace().nth(1)?.parse().ok()?;
+        let args = cmdline.split(|b| *b == 0).filter(|a| !a.is_empty()).map(String::from_utf8_lossy).collect::<Vec<_>>();
+        return Some((ppid, args.join(" ")));
+    }
+    let out = Command::new("ps").args(["-o", "ppid=,args=", "-p", &pid.to_string()]).output().ok()?;
     if !out.status.success() {
         return None;
     }
     let text = String::from_utf8_lossy(&out.stdout);
-    let line = text.trim();
-    let (ppid, comm) = line.split_once(char::is_whitespace)?;
-    Some((ppid.trim().parse().ok()?, comm.trim().to_string()))
+    let (ppid, args) = text.trim().split_once(char::is_whitespace)?;
+    Some((ppid.trim().parse().ok()?, args.trim().to_string()))
 }

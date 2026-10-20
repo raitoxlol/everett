@@ -236,3 +236,32 @@ fn cli_send_inbox_reply_and_human_inbox() {
     assert!(fx.stdout(&fx.run(&["inbox"])).contains("build is green"));
     assert!(fx.stdout(&fx.run(&["inbox"])).contains("empty"));
 }
+
+#[test]
+fn shell_hop_skips_plain_shells_but_not_harness_launcher_scripts() {
+    for shell in ["sh -c everett hook omp_bind s1", "/bin/bash -lc x", "-zsh", "zsh"] {
+        assert!(inbox::shell_hop(shell), "{shell}");
+    }
+    for harness in ["sh /opt/homebrew/bin/omp", "/bin/sh /home/u/.local/bin/pi --resume", "node /usr/bin/omp", "omp", ""] {
+        assert!(!inbox::shell_hop(harness), "{harness}");
+    }
+}
+
+#[test]
+fn parent_args_reads_the_ppid_and_full_command_line() {
+    let mut child = std::process::Command::new("sleep").arg("30").spawn().unwrap();
+    // Right after fork the child may still carry the test binary's argv until exec completes.
+    let mut got = None;
+    for _ in 0..200 {
+        got = everett::proc::parent_args(child.id() as i32);
+        if got.as_ref().is_some_and(|(_, args)| args.ends_with("sleep 30")) {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    child.kill().unwrap();
+    child.wait().unwrap();
+    let (ppid, args) = got.unwrap();
+    assert_eq!(ppid, std::process::id() as i32);
+    assert!(args.ends_with("sleep 30"), "{args}");
+}
