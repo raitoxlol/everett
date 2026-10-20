@@ -1,10 +1,11 @@
 pub mod crypto;
+mod transport;
 
 #[cfg(test)]
 use self::tests::ConvexClient;
-use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
 #[cfg(not(test))]
-use convex::ConvexClient;
+use self::transport::Client as ConvexClient;
+use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
 use convex::FunctionResult;
 use fs2::FileExt;
 use futures::StreamExt;
@@ -492,7 +493,7 @@ async fn client(owner: &str) -> Result<ConvexClient> {
     let expected_agent = agent.clone();
     let mut client = ConvexClient::new(&deployment()?)
         .await
-        .map_err(|_| bad("cannot connect to Convex"))?;
+        .map_err(|e| bad(format!("cannot connect to Convex: {e:#}")))?;
     client
         .set_auth_callback(Some(Box::new(move |force| {
             let expected = expected.clone();
@@ -531,7 +532,11 @@ async fn mutation(client: &mut ConvexClient, name: &str, value: Value) -> Result
         tokio::time::timeout(DEADLINE, client.mutation(name, args(value)?))
             .await
             .map_err(|_| bad("Convex mutation timed out; delivery unconfirmed"))?
-            .map_err(|_| bad("Convex mutation failed; delivery unconfirmed"))?,
+            .map_err(|e| {
+                bad(format!(
+                    "Convex mutation failed; delivery unconfirmed: {e:#}"
+                ))
+            })?,
     )
 }
 
@@ -540,7 +545,7 @@ async fn query(client: &mut ConvexClient, name: &str, value: Value) -> Result<Va
         tokio::time::timeout(DEADLINE, client.query(name, args(value)?))
             .await
             .map_err(|_| bad("Convex query timed out"))?
-            .map_err(|_| bad("Convex query failed"))?,
+            .map_err(|e| bad(format!("Convex query failed: {e:#}")))?,
     )
 }
 
@@ -1436,6 +1441,7 @@ pub fn run() -> Result<Value> {
         let mut rejected = RejectedCache::new();
         loop {
             tokio::select! {
+                error = client.tls_error() => return Err(bad(error)),
                 update = subscription.next() => {
                     // No pending result cache: a denied subscription terminates delivery.
                     result(update.ok_or_else(|| bad("Convex subscription ended"))?)?;

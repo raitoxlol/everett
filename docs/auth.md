@@ -18,7 +18,8 @@ everett whoami --json
 
 `--device` is a **local display name**, not an agent credential selector. It is not sent
 as a trusted enrollment claim. `--open` explicitly opens the verification URL;
-otherwise login only prints it. Discovery uses `{issuer}/.well-known/openid-configuration`;
+`--open=true` does the same. Omit it or use `--open=false` to only print the URL.
+Discovery uses `{issuer}/.well-known/openid-configuration`;
 RFC 8628 device authorization requests `openid email profile offline_access` without a
 client secret. The CLI handles `authorization_pending`, `slow_down` (+5 seconds), denial
 and expiration, then obtains user information. Login is idempotent unless `--force`.
