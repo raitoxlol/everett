@@ -585,7 +585,7 @@ fn main() {
         Some(cmd) => cmd,
         None => {
             use std::io::IsTerminal;
-            if !everett::onboard::completed()
+            if everett::onboard::first_run_needed()
                 && std::io::stdin().is_terminal()
                 && std::io::stdout().is_terminal()
             {

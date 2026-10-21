@@ -469,7 +469,7 @@ fn screen_welcome(t: &mut Terminal<CrosstermBackend<io::Stdout>>, p: &Palette) -
 }
 
 fn screen_account(t: &mut Terminal<CrosstermBackend<io::Stdout>>, p: &Palette) -> TResult<Dir> {
-    let configured = crate::cloudflare_auth::available();
+    let configured = crate::cloudflare_auth::onboarding_issuer().is_some();
     let mut attempt = configured;
     let mut verified = false;
     let mut status = if configured {
@@ -515,18 +515,17 @@ fn screen_account(t: &mut Terminal<CrosstermBackend<io::Stdout>>, p: &Palette) -
             attempt = false;
             disable_raw_mode().map_err(|_| Quit)?;
             execute!(t.backend_mut(), LeaveAlternateScreen, cursor::Show).map_err(|_| Quit)?;
-            let result = crate::cloudflare_auth::sign_in(&crate::cli::Args {
-                open: std::env::var_os("SSH_CONNECTION").is_none()
+            let result = crate::cloudflare_auth::onboard_sign_in(
+                std::env::var_os("SSH_CONNECTION").is_none()
                     && std::env::var_os("SSH_TTY").is_none(),
-                auth_provider: Some("cloudflare".into()),
-                ..Default::default()
-            });
+            );
             enable_raw_mode().map_err(|_| Quit)?;
             execute!(t.backend_mut(), EnterAlternateScreen, cursor::Hide).map_err(|_| Quit)?;
             t.clear().map_err(|_| Quit)?;
             status = match result {
                 Ok(identity) => {
                     verified = identity["verified"] == true;
+                    if verified { return Ok(Dir::Forward); }
                     format!("Signed in. Identity verified for {}.\nBrowser approval complete; you can close that page.", identity["device_name"].as_str().unwrap_or("this computer"))
                 }
                 Err(error) => format!("Sign-in did not complete: {error}"),

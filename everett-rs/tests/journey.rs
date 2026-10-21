@@ -477,6 +477,7 @@ fn tui_command(fx: &common::Fixture, args: &[&str]) -> std::process::Command {
         .env_clear()
         .env("HOME", &home)
         .env("EVERETT_HOME", &home)
+        .env("EVERETT_AUTH_PROVIDER", "oidc")
         .env("PATH", "/nonexistent")
         .env("LANG", "en_US.UTF-8")
         .env("TERM", "xterm");
