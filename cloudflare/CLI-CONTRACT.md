@@ -21,6 +21,8 @@ Issuer: `https://everett-dev.raitox-everett-dev.workers.dev` (exact origin, no t
 
 Native credentials expire after 30 days. No native renewal endpoint exists. Non-2xx JSON errors are `{error:code}`. Invalid credentials 401; owner/CSRF denials 403; validation 400; body cap 413; rate limiting 429; unconfigured 503; provider failure 502. A transient failure must not erase an otherwise valid stored credential. All Everett commands must continue honoring EVERETT_HOME. Device IDs are immutable server-issued IDs; caller names are display labels.
 
+Browser enrollment distinguishes waiting, completed approval, denied, cancelled, expired and revoked credentials. Close guidance appears only for an authoritatively approved/consumed request whose credential remains active. It confirms browser approval; CLI polling and private persistence complete in the terminal. Native credentials never appear in HTML.
+
 Browser mutations use exact Origin, owner session cookie and hidden CSRF value. POST `/enroll/decision` form `{csrf,user_code,decision:"approve"|"deny"}`; `/enroll/revoke` form `{csrf,agent_id}`; `/auth/logout` form `{csrf}`. These return 303. Native credentials never grant browser owner authority.
 
 ## OAuth for the existing HTTP gateway
