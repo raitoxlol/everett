@@ -1,6 +1,6 @@
 # Everett Cloudflare backend
 
-**Status: isolated development backend deployed; live sign-in awaits its private GitHub secret.** Draft PR #43 targets `main`; implementation began from PR #29 `bd70fbf`. Existing Convex, native transport, MCP tools and live OAuth are unchanged by this package. See [CLI-CONTRACT.md](CLI-CONTRACT.md) for the implemented native enrollment and gateway OAuth contract. Development health: `https://everett-dev.raitox-everett-dev.workers.dev/health` returned HTTPS 200 on 2026-10-21. The new app's public `AUTH_GITHUB_ID` was configured and read back successfully; private GitHub and gateway introspection bindings remain absent.
+**Status: development and public backend Workers are deployed; live sign-in awaits its private GitHub secret.** Draft PR #43 targets `main`; implementation began from PR #29 `bd70fbf`. Existing Convex, native transport, MCP tools and live OAuth are unchanged by this package. See [CLI-CONTRACT.md](CLI-CONTRACT.md) for the implemented native enrollment and gateway OAuth contract. Development health: `https://everett-dev.raitox-everett-dev.workers.dev/health` returned HTTPS 200 on 2026-10-21. The new app's public `AUTH_GITHUB_ID` was configured and read back successfully; private GitHub and gateway introspection bindings remain absent.
 
 The Worker HTTP adapter uses one SQLite-backed `OwnerRelay` Durable Object per owner namespace. Membership, credentials, permanent revocation/replay records, device keys, counters and ciphertext queues share one authoritative transaction boundary. No D1 permission mirror is needed for this slice.
 
@@ -13,10 +13,11 @@ npm --prefix cloudflare ci --legacy-peer-deps --no-audit --no-fund
 npm --prefix cloudflare run typecheck
 npm --prefix cloudflare test
 npm --prefix cloudflare run build
+npm --prefix cloudflare run build:public
 npm --prefix cloudflare run dev
 ```
 
-`build` is a **local Wrangler dry run**. `dev` uses local Workers storage. The checked-in default has no account ID, public route, API credential or production binding. A separate development Worker was uploaded through the authenticated Cloudflare connector. Wrangler metrics are disabled. The legacy-peer flag works around an npm 10 optional-peer resolver crash observed during installation; dependencies are pinned in the lockfile.
+`build` is a **local Wrangler dry run**. `build:public` dry-runs the separate `wrangler.public.jsonc` profile against the deployed `everett` Worker configuration, including its account, custom domain, public variables and SQLite Durable Object migrations. `dev` uses local Workers storage. The default `wrangler.jsonc` remains local and has no account ID, public route, API credential or production binding. The public profile has no secret values; private GitHub and OAuth introspection secrets must be managed through Cloudflare's encrypted secret settings. Wrangler metrics are disabled. The legacy-peer flag works around an npm 10 optional-peer resolver crash observed during installation; dependencies are pinned in the lockfile.
 
 `GET /health` reports configuration presence only. Hosted auth validates all required settings and fails closed with 503 when incomplete. There is no user-header bypass or insecure auth mode. Anonymous device requests cannot create membership. No deploy script targets production.
 
