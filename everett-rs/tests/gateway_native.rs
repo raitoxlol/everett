@@ -6,11 +6,16 @@ use std::io::{BufRead, BufReader, Read, Write};
 use std::net::TcpStream;
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, Command, Output, Stdio};
+use std::collections::HashMap;
+use std::net::TcpListener;
 use std::sync::mpsc::{channel, Receiver};
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 const BIN: &str = env!("CARGO_BIN_EXE_everett");
 const TOKEN: &str = "synthetic-gateway-test-token-not-a-real-secret";
+const INTROSPECTION_SECRET: &str = "synthetic-introspection-secret-not-real-000";
+const RESOURCE: &str = "https://dot.example.com/mcp";
 const TOOLS: [&str; 5] = ["everett_core", "everett_whoami", "everett_inbox", "everett_card", "everett_send"];
 
 fn initialize() -> Value {
@@ -45,7 +50,7 @@ fn backend(args: &[String]) {
             "tools/call" => {
                 let name = message["params"]["name"].as_str().unwrap().to_string();
                 let a = message["params"]["arguments"].clone();
-                let has_secret = ["EVERETT_GATEWAY_TOKEN", "OPENAI_API_KEY", "TYPESAFE_API_KEY"].iter().any(|k| std::env::var_os(k).is_some());
+                let has_secret = ["EVERETT_GATEWAY_TOKEN", "EVERETT_OAUTH_INTROSPECTION_SECRET", "OPENAI_API_KEY", "TYPESAFE_API_KEY"].iter().any(|k| std::env::var_os(k).is_some());
                 let record = json!({"name": name, "arguments": a, "pid": std::process::id(),
                     "cwd": std::env::current_dir().unwrap(), "agent_id": own, "harness": harness, "has_secret": has_secret});
                 let mut log = std::fs::OpenOptions::new().create(true).append(true).open(home.join("worker-calls.jsonl")).unwrap();
@@ -230,8 +235,26 @@ impl Ctx {
 
     fn http_server(&self, changes: &Value) -> u16 {
         let path = self.config_path(changes);
-        let mut child = self.command(&["gateway", "--config", path.to_str().unwrap(), "--transport", "http", "--port", "0"])
-            .stdout(Stdio::null()).stderr(Stdio::piped()).spawn().unwrap();
+        self.spawn_http(self.command(&["gateway", "--config", path.to_str().unwrap(), "--transport", "http", "--port", "0"]))
+    }
+
+    fn oauth_command(&self, changes: &Value) -> Command {
+        let path = self.config_path(changes);
+        let mut command = self.command(&["gateway", "--config", path.to_str().unwrap(), "--transport", "http", "--port", "0"]);
+        command.env_remove("EVERETT_GATEWAY_TOKEN").env("EVERETT_OAUTH_INTROSPECTION_SECRET", INTROSPECTION_SECRET);
+        command
+    }
+
+    fn oauth_server(&self, issuer: &str) -> u16 {
+        self.spawn_http(self.oauth_command(&json!({"oauth": {"issuer": issuer, "resource": RESOURCE}})))
+    }
+
+    fn with_backend_oauth_server(&self, issuer: &str) -> u16 {
+        self.spawn_http(self.oauth_command(&with(fixture(&[]), json!({"oauth": {"issuer": issuer, "resource": RESOURCE}}))))
+    }
+
+    fn spawn_http(&self, mut command: Command) -> u16 {
+        let mut child = command.stdout(Stdio::null()).stderr(Stdio::piped()).spawn().unwrap();
         let lines = line_reader(child.stderr.take().unwrap());
         self.servers.borrow_mut().push(child);
         let line = lines.recv_timeout(Duration::from_secs(5)).expect("HTTP startup timed out");
@@ -297,6 +320,10 @@ fn dechunk(mut body: &[u8]) -> Vec<u8> {
 }
 
 fn http(port: u16, method: &str, body: &str, overrides: &[(&str, Option<&str>)]) -> Reply {
+    http_at(port, method, "/mcp", body, overrides)
+}
+
+fn http_at(port: u16, method: &str, path: &str, body: &str, overrides: &[(&str, Option<&str>)]) -> Reply {
     let auth = format!("Bearer {}", TOKEN);
     let mut headers: Vec<(String, String)> = [("Authorization", auth.as_str()), ("Host", "127.0.0.1:8788"),
         ("Content-Type", "application/json"), ("Accept", "application/json, text/event-stream"),
@@ -307,7 +334,7 @@ fn http(port: u16, method: &str, body: &str, overrides: &[(&str, Option<&str>)])
             headers.push((key.to_string(), v.to_string()));
         }
     }
-    let mut request = format!("{} /mcp HTTP/1.1\r\n", method);
+    let mut request = format!("{} {} HTTP/1.1\r\n", method, path);
     for (k, v) in &headers {
         request += &format!("{}: {}\r\n", k, v);
     }
@@ -334,6 +361,185 @@ fn body_json(reply: &Reply) -> Value {
     let text = String::from_utf8_lossy(&reply.body).to_string();
     let data = text.lines().find_map(|l| l.strip_prefix("data:")).map(|d| d.trim().to_string()).unwrap_or(text);
     serde_json::from_str(&data).unwrap_or_else(|_| panic!("{}", data))
+}
+
+/// Synthetic RFC 7662 introspection endpoint; tokens map to the response it returns.
+struct FakeIssuer {
+    url: String,
+    tokens: Arc<Mutex<HashMap<String, Value>>>,
+    calls: Arc<Mutex<u32>>,
+}
+
+fn fake_issuer() -> FakeIssuer {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let url = format!("http://127.0.0.1:{}", listener.local_addr().unwrap().port());
+    let tokens: Arc<Mutex<HashMap<String, Value>>> = Arc::default();
+    let calls: Arc<Mutex<u32>> = Arc::default();
+    let (map, count) = (tokens.clone(), calls.clone());
+    std::thread::spawn(move || {
+        for mut stream in listener.incoming().map_while(Result::ok) {
+            let mut raw = Vec::new();
+            let mut buf = [0u8; 4096];
+            let body_start = loop {
+                let n = stream.read(&mut buf).unwrap_or(0);
+                if n == 0 { break None; }
+                raw.extend_from_slice(&buf[..n]);
+                if let Some(i) = raw.windows(4).position(|w| w == b"\r\n\r\n") { break Some(i + 4); }
+            };
+            let Some(start) = body_start else { continue };
+            let head = String::from_utf8_lossy(&raw[..start]).to_lowercase();
+            let length: usize = head.lines().find_map(|l| l.strip_prefix("content-length:")).map_or(0, |v| v.trim().parse().unwrap());
+            while raw.len() < start + length {
+                let n = stream.read(&mut buf).unwrap_or(0);
+                if n == 0 { break; }
+                raw.extend_from_slice(&buf[..n]);
+            }
+            *count.lock().unwrap() += 1;
+            let body = String::from_utf8_lossy(&raw[start..]).to_string();
+            let token = body.split('&').find_map(|kv| kv.strip_prefix("token=")).unwrap_or_default().to_string();
+            let authorized = head.contains(&format!("authorization: bearer {}", INTROSPECTION_SECRET.to_lowercase()));
+            let (status, reply) = if authorized {
+                ("200 OK", map.lock().unwrap().get(&token).cloned().unwrap_or(json!({"active": false})))
+            } else {
+                ("401 Unauthorized", json!({"error": "invalid_client"}))
+            };
+            let reply = reply.to_string();
+            let _ = write!(stream, "HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{reply}", reply.len());
+        }
+    });
+    FakeIssuer { url, tokens, calls }
+}
+
+impl FakeIssuer {
+    fn grant(&self, token: &str, agent: &str, changes: Value) {
+        let exp = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs() + 600;
+        let claims = merged(&json!({"active": true, "iss": self.url, "aud": RESOURCE, "exp": exp, "scope": "everett", "sub": agent,
+            "everett_agent": agent, "everett_agent_name": "ChatGPT dot", "client_id": "https://chatgpt.com/oauth/client.json"}), &changes);
+        self.tokens.lock().unwrap().insert(token.to_string(), claims);
+    }
+}
+
+fn access(c: char) -> String {
+    format!("eva_{}", c.to_string().repeat(64))
+}
+
+fn bearer(token: &str) -> String {
+    format!("Bearer {token}")
+}
+
+fn header<'a>(reply: &'a Reply, name: &str) -> Option<&'a str> {
+    reply.headers.iter().find(|(k, _)| k == name).map(|(_, v)| v.as_str())
+}
+
+fn whoami() -> Value {
+    json!({"jsonrpc": "2.0", "id": 3, "method": "tools/call", "params": {"name": "everett_whoami", "arguments": {}}})
+}
+
+fn oauth_serves_protected_resource_metadata_and_challenges() {
+    let c = ctx();
+    let issuer = fake_issuer();
+    let port = c.oauth_server(&issuer.url);
+    for path in ["/.well-known/oauth-protected-resource", "/.well-known/oauth-protected-resource/mcp"] {
+        let reply = http_at(port, "GET", path, "", &[("Authorization", None)]);
+        assert_eq!(reply.status, 200, "{path}");
+        let metadata: Value = serde_json::from_slice(&reply.body).unwrap();
+        assert_eq!(metadata["resource"], RESOURCE);
+        assert_eq!(metadata["authorization_servers"], json!([issuer.url]));
+        assert_eq!(metadata["scopes_supported"], json!(["everett"]));
+    }
+    assert_eq!(http_at(port, "GET", "/.well-known/oauth-protected-resource", "", &[("Host", Some("evil.example"))]).status, 421);
+    let message = json!({"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": initialize()});
+    let missing = post(port, &message, &[("Authorization", None)]);
+    assert_eq!(missing.status, 401);
+    let challenge = header(&missing, "www-authenticate").unwrap();
+    assert!(challenge.starts_with("Bearer resource_metadata=\"https://dot.example.com/.well-known/oauth-protected-resource/mcp\""), "{challenge}");
+    assert!(challenge.contains("scope=\"everett\"") && !challenge.contains("invalid_token"), "{challenge}");
+    let static_bearer = post(port, &message, &[]);
+    assert_eq!(static_bearer.status, 401);
+    assert!(header(&static_bearer, "www-authenticate").unwrap().contains("error=\"invalid_token\""));
+    assert_eq!(*issuer.calls.lock().unwrap(), 0, "malformed tokens never reach the issuer");
+}
+
+fn oauth_token_maps_to_its_dot_identity() {
+    let c = ctx();
+    let issuer = fake_issuer();
+    issuer.grant(&access('a'), "agent-aaaa", json!({}));
+    issuer.grant(&access('b'), "agent-bbbb", json!({"aud": [RESOURCE, "https://other.example/mcp"]}));
+    let port = c.with_backend_oauth_server(&issuer.url);
+    for (token, agent) in [(access('a'), "agent-aaaa"), (access('b'), "agent-bbbb")] {
+        let auth = bearer(&token);
+        let auth = [("Authorization", Some(auth.as_str()))];
+        let list = body_json(&post(port, &json!({"jsonrpc": "2.0", "id": 2, "method": "tools/list"}), &auth));
+        let tools = list["result"]["tools"].as_array().unwrap();
+        let card = tools.iter().find(|t| t["name"] == "everett_card").unwrap();
+        assert_eq!(card["inputSchema"]["properties"]["session_id"]["enum"], json!([agent]), "{card}");
+        let data = success(&body_json(&post(port, &whoami(), &auth)));
+        assert_eq!(data["session_id"], agent);
+        assert_eq!(data["gateway_auth"], json!({"mode": "oauth", "agent_name": "ChatGPT dot", "client_id": "https://chatgpt.com/oauth/client.json"}));
+        let foreign = json!({"jsonrpc": "2.0", "id": 4, "method": "tools/call", "params": {"name": "everett_card", "arguments": {"session_id": "dot-one", "summary": "x"}}});
+        denied(&body_json(&post(port, &foreign, &auth)));
+    }
+    let agents: Vec<Value> = c.records().iter().map(|r| r["agent_id"].clone()).collect();
+    assert_eq!(agents, vec![json!("agent-aaaa"), json!("agent-bbbb")]);
+    assert!(c.records().iter().all(|r| r["has_secret"] == false), "introspection secret must not reach workers");
+}
+
+fn oauth_rejects_wrong_issuer_audience_expiry_scope_identity_and_revoked_tokens() {
+    let c = ctx();
+    let issuer = fake_issuer();
+    let cases = [("issuer", json!({"iss": "https://evil.example"})), ("audience", json!({"aud": "https://other.example/mcp"})),
+        ("expired", json!({"exp": 1})), ("scope", json!({"scope": "other"})), ("agent", json!({"everett_agent": "agent-other"})),
+        ("reserved", json!({"sub": "live", "everett_agent": "live"})), ("destination", json!({"sub": "agent-two", "everett_agent": "agent-two"}))];
+    for (i, (_, changes)) in cases.iter().enumerate() {
+        issuer.grant(&access(char::from(b'0' + i as u8)), "agent-aaaa", changes.clone());
+    }
+    issuer.grant(&access('f'), "agent-ffff", json!({}));
+    let port = c.with_backend_oauth_server(&issuer.url);
+    for (i, (name, _)) in cases.iter().enumerate() {
+        let auth = bearer(&access(char::from(b'0' + i as u8)));
+        let reply = post(port, &whoami(), &[("Authorization", Some(auth.as_str()))]);
+        assert_eq!(reply.status, 401, "{name}");
+        assert!(header(&reply, "www-authenticate").unwrap().contains("error=\"invalid_token\""), "{name}");
+    }
+    let auth = bearer(&access('f'));
+    let auth = [("Authorization", Some(auth.as_str()))];
+    assert_eq!(success(&body_json(&post(port, &whoami(), &auth)))["session_id"], "agent-ffff");
+    issuer.tokens.lock().unwrap().insert(access('f'), json!({"active": false}));
+    let revoked = post(port, &whoami(), &auth);
+    assert_eq!(revoked.status, 401);
+    assert!(String::from_utf8_lossy(&revoked.body).contains("revoked"));
+    assert!(c.records().iter().all(|r| r["agent_id"] == "agent-ffff"));
+    issuer.grant(&access('e'), "agent-eeee", json!({}));
+    let independent = bearer(&access('e'));
+    let reply = post(port, &whoami(), &[("Authorization", Some(independent.as_str()))]);
+    assert_eq!(reply.status, 200);
+    assert_eq!(success(&body_json(&reply))["session_id"], "agent-eeee");
+    assert_eq!(post(port, &whoami(), &auth).status, 401);
+}
+
+fn oauth_configuration_fails_closed_and_stdio_keeps_fixed_identity() {
+    let c = ctx();
+    let issuer = fake_issuer();
+    let oauth = json!({"oauth": {"issuer": issuer.url, "resource": RESOURCE}});
+    let run = |mut command: Command| command.output().unwrap().status.code();
+    let mut without_secret = c.oauth_command(&oauth);
+    without_secret.env_remove("EVERETT_OAUTH_INTROSPECTION_SECRET");
+    assert_eq!(run(without_secret), Some(2));
+    let mut weak = c.oauth_command(&oauth);
+    weak.env("EVERETT_OAUTH_INTROSPECTION_SECRET", "short");
+    assert_eq!(run(weak), Some(2));
+    let mut both = c.oauth_command(&oauth);
+    both.env("EVERETT_GATEWAY_TOKEN", TOKEN);
+    assert_eq!(run(both), Some(2));
+    for bad in [json!({"issuer": "http://issuer.example", "resource": RESOURCE}), json!({"issuer": issuer.url, "resource": "ftp://x/mcp"}),
+        json!({"issuer": issuer.url, "resource": RESOURCE, "scope": "a\"b"}), json!({"issuer": issuer.url, "resource": RESOURCE, "extra": 1})] {
+        assert_eq!(run(c.oauth_command(&json!({"oauth": bad}))), Some(2), "{bad}");
+    }
+    let mut peer = c.peer(&with(fixture(&[]), oauth));
+    assert_eq!(success(&peer.call("everett_whoami", json!({})))["session_id"], "dot-one");
+    let down = Ctx::with_backend_oauth_server(&c, "http://127.0.0.1:9");
+    let auth = bearer(&access('a'));
+    assert_eq!(post(down, &whoami(), &[("Authorization", Some(auth.as_str()))]).status, 503);
 }
 
 fn pid_alive(pid: u64) -> bool {
@@ -711,6 +917,10 @@ const CASES: &[Case] = &[
     ("backend_results_are_structured_bounded_and_identity_checked", backend_results_are_structured_bounded_and_identity_checked),
     ("native_backend_never_resolves_destination_prefix_or_title", native_backend_never_resolves_destination_prefix_or_title),
     ("symlinked_working_directory_is_canonicalized", symlinked_working_directory_is_canonicalized),
+    ("oauth_serves_protected_resource_metadata_and_challenges", oauth_serves_protected_resource_metadata_and_challenges),
+    ("oauth_token_maps_to_its_dot_identity", oauth_token_maps_to_its_dot_identity),
+    ("oauth_rejects_wrong_issuer_audience_expiry_scope_identity_and_revoked_tokens", oauth_rejects_wrong_issuer_audience_expiry_scope_identity_and_revoked_tokens),
+    ("oauth_configuration_fails_closed_and_stdio_keeps_fixed_identity", oauth_configuration_fails_closed_and_stdio_keeps_fixed_identity),
 ];
 
 fn main() {
