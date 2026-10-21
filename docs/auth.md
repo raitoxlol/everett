@@ -2,16 +2,23 @@
 
 Local indexing, routing, inboxes, hooks, MCP, and SSH peers need no Everett sign-in.
 The existing Convex relay needs an OIDC provider **and deployment-side enrollment**;
-`everett login` alone does not grant relay access. There is no hosted default issuer
-or public enrollment service in this checkout. See [deployment and journeys](cross-device.md)
+`everett login` alone does not grant relay access. Fresh interactive onboarding uses
+Everett's public native approval site; OIDC remains separately configured. See [deployment and journeys](cross-device.md)
 and the [relay threat model](relay-threat-model.md).
 
 ## Hosted Cloudflare native sign-in (development adapter)
 
 Cloudflare enrollment uses its own native API and credential, separate from OIDC ID
-and refresh tokens. Select it explicitly; changing a Convex URL does not migrate the
-relay. The adapter has no hosted default until a real owner login passes acceptance.
-The development Worker is owner-only and requires separately configured GitHub login.
+and refresh tokens. On a new installation, run `everett` normally: onboarding opens
+`https://everett.raitox.tech/enroll` with this device's approval code. Continue with GitHub,
+compare and approve the named device, and return to the terminal; verified approval
+automatically opens agent selection. No separate login command or issuer setup is needed.
+Existing explicit account configuration is preserved, and authenticated normal launches
+skip automatic onboarding. Use `everett onboard` to repeat setup. Cancelled approval can
+be retried or followed by explicit local setup; headless bare runs print help.
+
+The public Worker is currently owner-only. Real hosted approval and public delivery
+acceptance are in progress. For a custom deployment or an explicit repair:
 
 ```sh
 everett login --provider cloudflare --issuer https://YOUR-EVERETT-ISSUER --device laptop --open
@@ -33,7 +40,8 @@ is a display label. Approval never signs into Claude, Codex or another agent's p
 
 For a configured installation, `[auth] provider = "cloudflare"` (environment
 `EVERETT_AUTH_PROVIDER`) and `issuer` (`EVERETT_AUTH_ISSUER`) select this path. Omit the
-provider setting, or use `provider = "oidc"`, to retain existing OIDC behavior.
+provider setting for legacy explicit login commands, or use `provider = "oidc"`, to
+retain existing OIDC behavior. Successful native onboarding saves `provider = "cloudflare"`.
 `cloudflare-auth.json` and `cloudflare-pending.json` live beneath the `.everett` directory
 rooted by `EVERETT_HOME`/`HOME`, written atomically with mode 0600 in a private directory.
 Neither native tokens nor device polling secrets appear in command output. Failed
@@ -44,10 +52,13 @@ Native credentials expire after 30 days; there is no refresh endpoint.
 `logout --provider cloudflare --revoke-device` requests server revocation and removes
 the local credential only after confirmation. This requires registered relay keys;
 revoke a never-registered credential through the owner approval page. Local sign-out
-and remote revocation are distinct. The existing relay/notification transport still
-uses Convex and its independently configured OIDC identity; this adapter does not yet
-migrate encrypted peers or imply cloud-agent OAuth is connected. Dots/Grok client OAuth
-has its own consent/grant; Hark/Muse compatibility remains unverified.
+and remote revocation are distinct. The selected Cloudflare provider now supports
+encrypted native relay operations and outbound inbox polling. Its private relay state
+is isolated under `.everett/relay-cloudflare`; existing OIDC/Convex keys and pins stay
+under `.everett/relay`. Peers are pinned explicitly for each provider. See
+[connect two computers through Cloudflare](cloudflare-native.md) for exact commands and
+verification boundaries. Dots/Grok client OAuth has its own consent/grant;
+Hark/Muse compatibility remains unverified.
 
 ## Existing OIDC sign-in
 

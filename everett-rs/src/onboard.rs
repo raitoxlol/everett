@@ -46,6 +46,14 @@ pub fn completed() -> bool {
         .unwrap_or(false)
 }
 
+pub fn first_run_needed() -> bool {
+    if completed() { return false; }
+    let provider = crate::config::get("auth.provider", Some("EVERETT_AUTH_PROVIDER"), "");
+    let native = (provider.is_empty() || provider == "cloudflare") && crate::cloudflare_auth::authenticated();
+    let oidc = (provider.is_empty() || provider == "oidc") && crate::auth::load().is_some_and(|stored| stored.expires_at > crate::session::now());
+    !native && !oidc
+}
+
 fn record_completion() -> std::io::Result<()> {
     use std::io::Write;
     let dir = home().join(".everett");

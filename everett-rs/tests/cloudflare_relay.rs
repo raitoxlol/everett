@@ -1,0 +1,230 @@
+mod common;
+use common::{fixture, Fixture};
+use serde_json::{json, Value};
+use std::io::{Read, Write};
+use std::net::{TcpListener, TcpStream};
+use std::process::{Child, Command, Stdio};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
+
+const TOKEN: &str = "evt_cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc";
+struct Server {
+    url: String,
+    pending: Arc<AtomicUsize>,
+    revoked: Arc<AtomicBool>,
+    calls: Arc<Mutex<Vec<String>>>,
+}
+impl Server {
+    fn new() -> Self {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = format!("http://{}", listener.local_addr().unwrap());
+        let pending = Arc::new(AtomicUsize::new(0));
+        let revoked = Arc::new(AtomicBool::new(false));
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        let (p, r, c) = (pending.clone(), revoked.clone(), calls.clone());
+        std::thread::spawn(move || {
+            for stream in listener.incoming() {
+                let mut stream = stream.unwrap();
+                let (path, _) = request(&mut stream);
+                c.lock().unwrap().push(path.clone());
+                let (status, result) = if r.load(Ordering::SeqCst) {
+                    (401, json!({"error":"invalid_token"}))
+                } else {
+                    match path.as_str() {
+                        "/v2/relay/whoami" => (
+                            200,
+                            json!({"result":{"owner":"synthetic-owner","deviceId":"synthetic-agent","role":"member"}}),
+                        ),
+                        "/v2/relay/register" => (200, json!({"result":null})),
+                        "/v2/relay/pending" if p.fetch_add(1, Ordering::SeqCst) == 0 => {
+                            (503, json!({"error":"service_unavailable"}))
+                        }
+                        "/v2/relay/pending" => (
+                            200,
+                            json!({"result":{"serverNow":(everett::session::now()*1000.0) as i64,"envelopes":[],"isDone":true,"continueCursor":"0","padding":"x".repeat(100_000)}}),
+                        ),
+                        _ => (404, json!({"error":"unsupported"})),
+                    }
+                };
+                let body = result.to_string();
+                let _ = write!(stream, "HTTP/1.1 {status} Test\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len());
+            }
+        });
+        Self {
+            url,
+            pending,
+            revoked,
+            calls,
+        }
+    }
+    fn configure(&self, f: &Fixture) {
+        f.write(
+            ".everett/config.toml",
+            &format!("[auth]\nprovider = 'cloudflare'\nissuer = '{}'\n", self.url),
+        );
+        f.write(".everett/cloudflare-auth.json", &json!({"issuer":self.url,"owner":"synthetic-owner","agent_id":"synthetic-agent","device_name":"test-device","token":TOKEN,"expires_at":(everett::session::now()*1000.0) as u64+120_000}).to_string());
+        f.write(".everett/auth.json", "synthetic-old-oidc");
+    }
+}
+fn request(stream: &mut TcpStream) -> (String, Value) {
+    stream
+        .set_read_timeout(Some(Duration::from_secs(5)))
+        .unwrap();
+    let mut data = Vec::new();
+    let mut byte = [0u8; 1];
+    while !data.ends_with(b"\r\n\r\n") {
+        stream.read_exact(&mut byte).unwrap();
+        data.push(byte[0]);
+        assert!(data.len() < 8192);
+    }
+    let headers = String::from_utf8(data).unwrap();
+    assert!(headers.contains(TOKEN));
+    let length: usize = headers
+        .lines()
+        .find_map(|line| {
+            line.split_once(':')
+                .filter(|(k, _)| k.eq_ignore_ascii_case("content-length"))
+                .map(|(_, v)| v.trim().parse().unwrap())
+        })
+        .unwrap();
+    let mut body = vec![0; length];
+    stream.read_exact(&mut body).unwrap();
+    (
+        headers
+            .lines()
+            .next()
+            .unwrap()
+            .split_whitespace()
+            .nth(1)
+            .unwrap()
+            .to_string(),
+        serde_json::from_slice(&body).unwrap(),
+    )
+}
+struct Running(Child);
+impl Drop for Running {
+    fn drop(&mut self) {
+        let _ = self.0.kill();
+        let _ = self.0.wait();
+    }
+}
+fn listener(f: &Fixture) -> Running {
+    Running(
+        Command::new(env!("CARGO_BIN_EXE_everett"))
+            .arg("relay")
+            .env_clear()
+            .env("HOME", f.home())
+            .env("EVERETT_HOME", f.home())
+            .env("PATH", "/usr/bin:/bin")
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap(),
+    )
+}
+fn until(mut condition: impl FnMut() -> bool) {
+    let deadline = Instant::now() + Duration::from_secs(15);
+    while !condition() {
+        assert!(
+            Instant::now() < deadline,
+            "native receiver did not reach expected state"
+        );
+        std::thread::sleep(Duration::from_millis(25));
+    }
+}
+#[test]
+fn transient_pending_failure_reconnects_large_page_then_revocation_stops() {
+    let f = fixture();
+    let server = Server::new();
+    server.configure(&f);
+    let original = std::fs::read(f.home().join(".everett/cloudflare-auth.json")).unwrap();
+    let mut child = listener(&f);
+    until(|| server.pending.load(Ordering::SeqCst) >= 2);
+    assert!(child.0.try_wait().unwrap().is_none());
+    server.revoked.store(true, Ordering::SeqCst);
+    until(|| child.0.try_wait().unwrap().is_some());
+    assert_eq!(child.0.try_wait().unwrap().unwrap().code(), Some(1));
+    let mut errors = String::new();
+    child
+        .0
+        .stderr
+        .take()
+        .unwrap()
+        .read_to_string(&mut errors)
+        .unwrap();
+    assert!(errors.contains("retrying in 5s"), "{errors}");
+    assert!(
+        !errors.contains("invalid response"),
+        "large pending response was rejected: {errors}"
+    );
+    assert!(!errors.contains(TOKEN));
+    assert_eq!(
+        std::fs::read(f.home().join(".everett/cloudflare-auth.json")).unwrap(),
+        original
+    );
+    assert_eq!(
+        std::fs::read_to_string(f.home().join(".everett/auth.json")).unwrap(),
+        "synthetic-old-oidc"
+    );
+    assert!(!f.home().join(".everett/relay").exists());
+}
+#[test]
+fn provider_switch_stops_native_listener_without_using_oidc() {
+    let f = fixture();
+    let server = Server::new();
+    server.configure(&f);
+    let mut child = listener(&f);
+    until(|| server.pending.load(Ordering::SeqCst) >= 1);
+    f.write(".everett/config.toml", "[auth]\nprovider = 'oidc'\n");
+    let count = server.calls.lock().unwrap().len();
+    until(|| child.0.try_wait().unwrap().is_some());
+    assert_eq!(child.0.try_wait().unwrap().unwrap().code(), Some(1));
+    assert_eq!(server.calls.lock().unwrap().len(), count);
+    assert!(!f.home().join(".everett/relay").exists());
+}
+#[test]
+fn same_owner_credential_replacement_stops_before_another_request() {
+    let f = fixture();
+    let server = Server::new();
+    server.configure(&f);
+    let mut child = listener(&f);
+    until(|| server.pending.load(Ordering::SeqCst) >= 1);
+    let path = f.home().join(".everett/cloudflare-auth.json");
+    let mut replacement: Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+    replacement["agent_id"] = json!("synthetic-replacement-agent");
+    replacement["token"] =
+        json!("evt_dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd");
+    let bytes = serde_json::to_vec(&replacement).unwrap();
+    std::fs::write(&path, &bytes).unwrap();
+    let count = server.calls.lock().unwrap().len();
+    until(|| child.0.try_wait().unwrap().is_some());
+    assert_eq!(child.0.try_wait().unwrap().unwrap().code(), Some(1));
+    assert_eq!(server.calls.lock().unwrap().len(), count);
+    let mut errors = String::new();
+    child
+        .0
+        .stderr
+        .take()
+        .unwrap()
+        .read_to_string(&mut errors)
+        .unwrap();
+    assert!(errors.contains("signed-in identity changed"), "{errors}");
+    assert!(!errors.contains(TOKEN));
+    assert_eq!(std::fs::read(&path).unwrap(), bytes);
+    assert_eq!(
+        std::fs::read_to_string(f.home().join(".everett/auth.json")).unwrap(),
+        "synthetic-old-oidc"
+    );
+    assert!(!f.home().join(".everett/relay").exists());
+}
+#[test]
+fn unsupported_registry_operation_never_falls_back_to_oidc() {
+    let f = fixture();
+    let server = Server::new();
+    server.configure(&f);
+    let out = f.run(&["devices", "--json"]);
+    assert!(!out.status.success());
+    assert!(String::from_utf8_lossy(&out.stderr).contains("requires OIDC/Convex"));
+    assert!(server.calls.lock().unwrap().is_empty());
+}

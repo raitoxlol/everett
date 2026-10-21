@@ -469,7 +469,7 @@ fn screen_welcome(t: &mut Terminal<CrosstermBackend<io::Stdout>>, p: &Palette) -
 }
 
 fn screen_account(t: &mut Terminal<CrosstermBackend<io::Stdout>>, p: &Palette) -> TResult<Dir> {
-    let configured = crate::cloudflare_auth::available();
+    let configured = crate::cloudflare_auth::onboarding_issuer().is_some();
     let mut attempt = configured;
     let mut verified = false;
     let mut status = if configured {
@@ -515,18 +515,17 @@ fn screen_account(t: &mut Terminal<CrosstermBackend<io::Stdout>>, p: &Palette) -
             attempt = false;
             disable_raw_mode().map_err(|_| Quit)?;
             execute!(t.backend_mut(), LeaveAlternateScreen, cursor::Show).map_err(|_| Quit)?;
-            let result = crate::cloudflare_auth::sign_in(&crate::cli::Args {
-                open: std::env::var_os("SSH_CONNECTION").is_none()
+            let result = crate::cloudflare_auth::onboard_sign_in(
+                std::env::var_os("SSH_CONNECTION").is_none()
                     && std::env::var_os("SSH_TTY").is_none(),
-                auth_provider: Some("cloudflare".into()),
-                ..Default::default()
-            });
+            );
             enable_raw_mode().map_err(|_| Quit)?;
             execute!(t.backend_mut(), EnterAlternateScreen, cursor::Hide).map_err(|_| Quit)?;
             t.clear().map_err(|_| Quit)?;
             status = match result {
                 Ok(identity) => {
                     verified = identity["verified"] == true;
+                    if verified { return Ok(Dir::Forward); }
                     format!("Signed in. Identity verified for {}.\nBrowser approval complete; you can close that page.", identity["device_name"].as_str().unwrap_or("this computer"))
                 }
                 Err(error) => format!("Sign-in did not complete: {error}"),
@@ -803,11 +802,19 @@ impl RemoteConnection {
                 "https://github.com/raitoxlol/everett/blob/main/docs/grok-bot.md",
             ],
             Self::Computer => &[
-                "Run Everett on that computer too.",
-                "Pair it with this computer using everett peer.",
-                "Check the encrypted link before sending work.",
-                "Then test a send, inbox read and reply.",
-                "Use everett peer --help for current commands.",
+                "Give the other computer its own identity.",
+                "1. Install Everett on that computer.",
+                "2. Run everett login --provider cloudflare.",
+                "Open its URL on your phone or any browser.",
+                "Compare the code and approve the same account.",
+                "3. Run everett relay register on both devices.",
+                "Compare fingerprints; use peer add-relay.",
+                "4. Run everett relay on both devices.",
+                "Test a send, inbox read and reply.",
+                "5. Revoke one device from the owner page.",
+                "Hosted sign-in needs a configured deployment.",
+                "SSH peer pairing is an advanced alternative.",
+                "docs/cloudflare-native.md has exact commands.",
             ],
             Self::Muse => &[
                 "Muse has not been tested with Everett.",
