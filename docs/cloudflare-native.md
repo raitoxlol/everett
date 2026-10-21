@@ -1,19 +1,21 @@
 # Connect two computers through Cloudflare
 
 The development native adapter uses the configured Cloudflare issuer and the existing
-custom device approval protocol. There is no hosted default. Real hosted GitHub approval
+custom device approval protocol. Fresh interactive onboarding uses `https://everett.raitox.tech`.
+Existing account/custom issuer configuration is preserved. Real hosted GitHub approval
 and public-issuer delivery remain pending. Acceptance passed with the production Worker
 and native CLI on a physical Mac and NUC, with outbound GitHub mocked and private SSH
 forwarding to the local Worker. This includes send/read/reply, reconnect and independent revoke.
 
 ## Approve and connect each computer
 
-Use your configured Everett deployment on both computers. Set `EVERETT_AUTH_PROVIDER=cloudflare`
+Run `everett` normally on each new computer and follow browser approval; no separate login
+command is required. For a custom deployment, set `EVERETT_AUTH_PROVIDER=cloudflare`
 and `EVERETT_AUTH_ISSUER` to that deployment's HTTPS origin, or the equivalent `[auth]`
 provider and issuer settings. These are public configuration values. Do not copy a credential
 file, relay keys or an existing device identity to another computer.
 
-1. Install Everett on each computer. On the other computer, run `everett login --device second-computer`.
+1. Install Everett on each computer and run `everett` to begin automatic onboarding.
    Open the printed approval URL on your phone or any browser. Compare the full code and device
    name, then approve the same Everett account. The terminal polls outbound HTTPS and verifies
    the server identity. It needs no incoming port or localhost browser callback.

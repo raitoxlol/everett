@@ -51,12 +51,40 @@ fn pending_path() -> PathBuf {
     root().join("cloudflare-pending.json")
 }
 
-pub fn available() -> bool {
-    credential_path().exists()
-        || pending_path().exists()
-        || (crate::config::get("auth.provider", Some("EVERETT_AUTH_PROVIDER"), "oidc")
-            == "cloudflare"
-            && !auth::issuer().is_empty())
+pub const PUBLIC_ISSUER: &str = "https://everett.raitox.tech";
+
+pub fn onboarding_issuer() -> Option<String> {
+    crate::config::values().ok()?;
+    let provider = crate::config::get("auth.provider", Some("EVERETT_AUTH_PROVIDER"), "");
+    if (!provider.is_empty() && provider != "cloudflare")
+        || (provider.is_empty() && (auth::auth_path().exists() || !auth::client_id().is_empty()))
+    {
+        return None;
+    }
+    if credential_path().exists() || pending_path().exists() {
+        return Some(String::new());
+    }
+    let issuer = auth::issuer();
+    Some(if issuer.is_empty() { PUBLIC_ISSUER.into() } else { issuer })
+}
+
+pub fn authenticated() -> bool {
+    load().ok().flatten().is_some_and(|stored| stored.expires_at > (session::now() * 1000.0) as u64)
+}
+
+pub fn onboard_sign_in(open: bool) -> Result<Value> {
+    let issuer = onboarding_issuer().ok_or_else(|| fail(2, "existing account configuration requires its selected sign-in provider"))?;
+    let identity = sign_in(&Args {
+        open,
+        auth_provider: Some("cloudflare".into()),
+        auth_issuer: (!issuer.is_empty()).then_some(issuer),
+        ..Default::default()
+    })?;
+    if identity["verified"] == true {
+        crate::config::set_value("auth.provider", "cloudflare")
+            .map_err(|_| fail(6, "identity verified, but could not save the selected account provider; retry sign-in"))?;
+    }
+    Ok(identity)
 }
 
 fn read<T: serde::de::DeserializeOwned>(path: &Path) -> Result<Option<T>> {
