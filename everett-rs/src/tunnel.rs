@@ -310,6 +310,14 @@ fn spawn_client(config: &WatchConfig, env: &HashMap<String, String>) -> Result<S
             if libc::setsid() == -1 {
                 return Err(std::io::Error::last_os_error());
             }
+            let mut signals = std::mem::zeroed::<libc::sigset_t>();
+            if libc::sigemptyset(&mut signals) == -1
+                || libc::sigaddset(&mut signals, libc::SIGINT) == -1
+                || libc::sigaddset(&mut signals, libc::SIGTERM) == -1
+                || libc::sigprocmask(libc::SIG_UNBLOCK, &signals, std::ptr::null_mut()) == -1
+            {
+                return Err(std::io::Error::last_os_error());
+            }
             Ok(())
         });
     }
