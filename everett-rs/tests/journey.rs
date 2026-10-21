@@ -367,6 +367,33 @@ impl TuiProc {
         }
     }
 
+    fn review(&mut self) {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        let mut last = String::new();
+        loop {
+            let screen = self.screen();
+            if screen.contains("Review your setup") {
+                return;
+            }
+            if screen.contains("/ setup guide") {
+                let title = screen
+                    .lines()
+                    .find(|line| line.contains("/ setup guide"))
+                    .unwrap()
+                    .to_string();
+                if title != last {
+                    self.send("\r");
+                    last = title;
+                }
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "never reached review:\n{screen}"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
+    }
+
     fn send(&mut self, keys: &str) {
         self.session.send(keys).unwrap();
     }
@@ -382,6 +409,14 @@ impl TuiProc {
     fn exited(&mut self) {
         for _ in 0..100 {
             self.drain();
+            if self
+                .vt
+                .screen()
+                .contents()
+                .contains("Teach your agents about Everett")
+            {
+                self.send("\r");
+            }
             if !self.session.is_alive().unwrap() {
                 return;
             }
@@ -468,7 +503,7 @@ fn onboard_tui_quit_makes_no_changes() {
     let mut p = spawn_tui(&fx);
     p.see("Welcome to Everett");
     p.send("q");
-    p.see("Cancelled -- no changes were made");
+    p.see("Setup stopped. Applied changes, if any, are kept.");
     assert!(!fx.home().join(".claude.json").exists());
 }
 
@@ -477,15 +512,20 @@ fn onboard_tui_quit_makes_no_changes() {
 fn onboard_tui_full_wizard_applies() {
     let fx = fixture();
     plant(&fx, "claude.jsonl", ".claude/projects/app/claude.jsonl");
+    fx.write("AGENTS.md", "Existing user rules.\n");
     let mut p = spawn_tui(&fx);
     p.see("Welcome to Everett");
     for screen in [
-        "What can Everett do?",
+        "Sign in to Everett",
         "Choose your agents",
         "Review your setup",
     ] {
         p.send("\r");
-        p.see(screen);
+        if screen == "Review your setup" {
+            p.review();
+        } else {
+            p.see(screen);
+        }
     }
     p.send("a");
     p.see("Local setup applied");
@@ -495,6 +535,14 @@ fn onboard_tui_full_wizard_applies() {
         std::fs::write(path, serde_json::to_vec(&p.frame()).unwrap()).unwrap();
     }
     p.send("\r");
+    p.see("Teach your agents about Everett");
+    p.see("Prompt / review before applying");
+    p.send("\r");
+    p.see("Copy into your selected agents:");
+    assert_eq!(
+        std::fs::read_to_string(fx.home().join("AGENTS.md")).unwrap(),
+        "Existing user rules.\n"
+    );
     for _ in 0..100 {
         p.drain();
         if !p.session.is_alive().unwrap() {
@@ -521,26 +569,26 @@ fn onboard_tui_agents_empty_and_discovery_only() {
     let mut p = spawn_tui(&fx);
     p.see("Welcome to Everett");
     p.send("\r");
-    p.see("What can Everett do?");
+    p.see("Sign in to Everett");
     p.send("\r");
     p.see("No supported agents found");
     p.see("everett onboard again.");
     p.send("q");
-    p.see("Cancelled -- no changes were made");
+    p.see("Setup stopped. Applied changes, if any, are kept.");
 
     std::fs::create_dir_all(fx.home().join(".hermes")).unwrap();
     let mut p = spawn_tui_with(&fx, &[], 54, 14);
     p.see("Welcome to Everett");
-    p.see("Enter ↵   See what Everett can do");
+    p.see("Enter ↵   Sign in and get started");
     p.send("\r");
-    p.see("What can Everett do?");
+    p.see("Sign in to Everett");
     p.send("\r");
     p.see("discovery only");
     p.see("Enter ↵   Continue without integrations");
     p.send(" d");
     p.see("No automatic changes enabled for this agent.");
     p.send("bq");
-    p.see("Cancelled -- no changes were made");
+    p.see("Setup stopped. Applied changes, if any, are kept.");
     assert!(!fx.home().join(".everett/onboarding-complete").exists());
 }
 
@@ -557,7 +605,7 @@ fn onboard_tui_custom_agent_selection_survives_resize_and_back() {
     let mut p = spawn_tui(&fx);
     p.see("Welcome to Everett");
     p.send("\r");
-    p.see("What can Everett do?");
+    p.see("Sign in to Everett");
     p.send("\r");
     p.see("Choose your agents");
     p.see("[x] Claude Code");
@@ -583,11 +631,15 @@ fn onboard_tui_custom_agent_selection_survives_resize_and_back() {
     p.resize(80, 24);
     p.see("File changed on apply:");
     p.send("\r\r");
-    p.see("Review your setup");
+    p.review();
+    p.send("b");
+    p.see("Codex / setup guide");
+    p.send("b");
+    p.see("Claude Code / setup guide");
     p.send("b");
     p.see("[-] Claude Code");
     p.send("q");
-    p.see("Cancelled -- no changes were made");
+    p.see("Setup stopped. Applied changes, if any, are kept.");
     assert!(!fx.home().join(".claude/settings.json").exists());
     assert!(!fx.home().join(".claude.json").exists());
     assert!(!fx.home().join(".codex/config.toml").exists());
@@ -610,14 +662,14 @@ fn onboard_tui_deselected_agent_preserves_existing_settings() {
     let mut p = spawn_tui_with(&fx, &["--no-backfill"], 80, 24);
     p.see("Welcome to Everett");
     p.send("\r");
-    p.see("What can Everett do?");
+    p.see("Sign in to Everett");
     p.send("\r");
     p.see("Choose your agents");
     p.send(" ");
     p.see("[ ] Claude Code");
     p.see("Skipped. Existing settings will be left as they are.");
     p.send("\r");
-    p.see("Review your setup");
+    p.review();
     p.send("a");
     p.see("Local setup applied");
     p.send("\r");
@@ -645,13 +697,13 @@ fn onboard_tui_agent_toggle_respects_no_mcp() {
     let mut p = spawn_tui_with(&fx, &["--no-mcp", "--no-backfill"], 80, 24);
     p.see("Welcome to Everett");
     p.send("\r");
-    p.see("What can Everett do?");
+    p.see("Sign in to Everett");
     p.send("\r");
     p.see("Choose your agents");
     p.send("  ");
     p.see("[x] Claude Code");
     p.send("\r");
-    p.see("Review your setup");
+    p.review();
     p.send("a");
     p.see("Local setup applied");
     p.send("\r");
@@ -677,7 +729,7 @@ fn onboard_tui_animation_and_multiple_colors_reach_the_terminal() {
     std::fs::create_dir_all(fx.home().join(".hermes")).unwrap();
     let mut p = spawn_tui_command(tui_command(&fx, &["--no-backfill"]), 80, 24);
     p.see("Welcome to Everett");
-    p.see("Enter ↵   See what Everett can do");
+    p.see("Enter ↵   Sign in and get started");
     let first = p.screen();
     std::thread::sleep(std::time::Duration::from_millis(200));
     assert_ne!(first, p.screen(), "welcome animation did not reach the PTY");
@@ -691,17 +743,11 @@ fn onboard_tui_animation_and_multiple_colors_reach_the_terminal() {
     record(&mut p, 45);
     let pressed = std::time::Instant::now();
     p.send("\r");
-    p.see("What can Everett do?");
+    p.see("Sign in to Everett");
     assert!(
         pressed.elapsed() < std::time::Duration::from_secs(2),
         "animation delayed input"
     );
-    record(&mut p, 14);
-    p.send("3");
-    p.see("OpenAI Dots / Grok Bot");
-    record(&mut p, 14);
-    p.send("4");
-    p.see("Muse integration has not been verified.");
     record(&mut p, 14);
     p.send("\r");
     p.see("Choose your agents");
@@ -726,13 +772,16 @@ fn onboard_tui_animation_and_multiple_colors_reach_the_terminal() {
     p.see("[x] Muse");
     record(&mut p, 10);
     p.send("\r");
+    p.see("Claude Code / setup guide");
+    record(&mut p, 10);
+    p.send("\r");
     p.see("OpenAI Dots / setup needed");
     record(&mut p, 10);
     p.send("\r");
     p.see("Muse / unverified");
     record(&mut p, 10);
     p.send("\r");
-    p.see("Review your setup");
+    p.review();
     p.see("OpenAI Dots / pending, not added");
     record(&mut p, 10);
     let emitted: std::collections::HashSet<_> = frames
@@ -759,7 +808,7 @@ fn onboard_tui_animation_and_multiple_colors_reach_the_terminal() {
         .unwrap();
     }
     p.send("q");
-    p.see("Cancelled -- no changes were made");
+    p.see("Setup stopped. Applied changes, if any, are kept.");
     assert!(!fx.home().join(".everett/onboarding-complete").exists());
 }
 
@@ -782,7 +831,7 @@ fn onboard_tui_motion_and_color_can_be_disabled_independently() {
         .iter()
         .any(|cell| cell[3].is_number()));
     p.send("q");
-    p.see("Cancelled -- no changes were made");
+    p.see("Setup stopped. Applied changes, if any, are kept.");
 
     let mut cmd = tui_command(&fx, &[]);
     cmd.env("NO_COLOR", "1");
@@ -801,17 +850,17 @@ fn onboard_tui_motion_and_color_can_be_disabled_independently() {
             .all(|cell| cell[3].is_null() && cell[4].is_null()));
     }
     p.send("\x03");
-    p.see("Cancelled -- no changes were made");
+    p.see("Setup stopped. Applied changes, if any, are kept.");
 }
 
 #[cfg(unix)]
 #[test]
-fn onboard_tui_explains_connections_before_selection() {
+fn onboard_tui_optional_explanation_and_account_back_navigation() {
     let fx = fixture();
     plant(&fx, "claude.jsonl", ".claude/projects/app/claude.jsonl");
     let mut p = spawn_tui(&fx);
-    p.see("Enter ↵   See what Everett can do");
-    p.send("\r");
+    p.see("Enter ↵   Sign in and get started");
+    p.send("d");
     p.see("What can Everett do?");
     p.see("Hand off work");
     p.see("Share context");
@@ -831,13 +880,18 @@ fn onboard_tui_explains_connections_before_selection() {
     p.send("jjjjjjjjjjjjjjj");
     p.see("Does the connection survive a VM restart?");
     p.send("\r");
+    p.see("Welcome to Everett");
+    p.send("\r");
+    p.see("Sign in to Everett");
+    p.see("Account sign-in is not available");
+    p.send("l");
     p.see("Choose your agents");
     p.send("b");
-    p.see("What can Everett do?");
+    p.see("Sign in to Everett");
     p.send("b");
     p.see("Welcome to Everett");
     p.send("\r3q");
-    p.see("Cancelled -- no changes were made");
+    p.see("Setup stopped. Applied changes, if any, are kept.");
     assert!(!fx.home().join(".claude/settings.json").exists());
     assert!(!fx.home().join(".claude.json").exists());
     assert!(!fx.home().join(".everett/onboarding-complete").exists());
@@ -861,11 +915,11 @@ fn onboard_tui_cloud_vm_choices_remain_pending_and_cancel_without_writes() {
     p.send("\r");
     p.see("OpenAI Dots / setup needed");
     p.send("\x1b[F");
-    p.see("It stays pending; no account or grant is added.");
+    p.see("It stays pending; no client grant is added.");
     p.send("\r");
     p.see("Muse / unverified");
     p.send("\r");
-    p.see("Review your setup");
+    p.review();
     p.see("OpenAI Dots / pending, not added");
     p.see("Muse / pending, not added");
     p.send("bb");
@@ -877,7 +931,7 @@ fn onboard_tui_cloud_vm_choices_remain_pending_and_cancel_without_writes() {
     p.send("3");
     p.see("[x] Muse");
     p.send("q");
-    p.see("Cancelled -- no changes were made");
+    p.see("Setup stopped. Applied changes, if any, are kept.");
     assert!(!fx.home().join(".everett/auth.json").exists());
     assert!(!fx.home().join(".everett/external").exists());
     assert!(!fx.home().join(".everett/onboarding-complete").exists());
@@ -891,7 +945,7 @@ fn onboard_tui_review_hides_advanced_and_preserves_opt_in() {
     let mut p = spawn_tui_with(&fx, &[], 54, 14);
     p.see("Welcome to Everett");
     p.send("\r\r\r");
-    p.see("Review your setup");
+    p.review();
     p.send("\x1b[F");
     p.see("Older cards: off / nightly merge: off");
     p.see("Apply local changes");
@@ -901,15 +955,15 @@ fn onboard_tui_review_hides_advanced_and_preserves_opt_in() {
     p.see("Backfill cards / optional");
     p.see("☐ enabled");
     p.send(" \r\r");
-    p.see("Review your setup");
+    p.review();
     p.send("\x1b[F");
     p.see("Older cards: on / nightly merge: off");
     p.send("b\r");
-    p.see("Review your setup");
+    p.review();
     p.send("\x1b[F");
     p.see("Older cards: on / nightly merge: off");
     p.send("q");
-    p.see("Cancelled -- no changes were made");
+    p.see("Setup stopped. Applied changes, if any, are kept.");
     assert!(!fx.home().join(".everett/cards").exists());
 }
 
@@ -923,7 +977,7 @@ fn onboard_tui_apply_failure_has_no_completion_marker() {
     let mut p = spawn_tui(&fx);
     p.see("Welcome to Everett");
     p.send("\r\r\r");
-    p.see("Review your setup");
+    p.review();
     p.send("a");
     p.see("Setup needs attention");
     p.see("Run: everett doctor");
@@ -952,13 +1006,13 @@ fn onboard_tui_remote_only_apply_never_claims_a_connection() {
     p.send("\r\r2 \r");
     p.see("OpenAI Dots / setup needed");
     p.send("\r");
-    p.see("Review your setup");
+    p.review();
     p.send("a");
     p.see("Remote setup pending");
-    p.see("No account, grant or connection was added.");
+    p.see("No cloud client or VM connection was added.");
     p.see("Press d for OpenAI Dots setup steps.");
     p.send("d\x1b[F");
-    p.see("It stays pending; no account or grant is added.");
+    p.see("It stays pending; no client grant is added.");
     p.send("b\r");
     p.exited();
     assert!(!fx.home().join(".everett/auth.json").exists());
@@ -977,7 +1031,7 @@ fn onboard_tui_masked_key_accepts_q_and_escape_cancels() {
     p.see("> **");
     assert!(!p.screen().contains("qx"));
     p.send("\x1b");
-    p.see("Cancelled -- no changes were made");
+    p.see("Setup stopped. Applied changes, if any, are kept.");
     assert!(!fx.home().join(".everett/config.toml").exists());
     assert!(!fx.home().join(".everett/onboarding-complete").exists());
 }
@@ -990,7 +1044,7 @@ fn onboard_tui_too_small_terminal_cannot_apply_hidden_review() {
     let mut p = spawn_tui(&fx);
     p.see("Welcome to Everett");
     p.send("\r\r\r");
-    p.see("Review your setup");
+    p.review();
     p.resize(40, 10);
     p.see("terminal too small");
     p.send("a\r");
@@ -999,8 +1053,8 @@ fn onboard_tui_too_small_terminal_cannot_apply_hidden_review() {
     assert!(!fx.home().join(".claude/settings.json").exists());
     assert!(!fx.home().join(".claude.json").exists());
     p.resize(54, 14);
-    p.see("Review your setup");
+    p.review();
     p.send("q");
-    p.see("Cancelled -- no changes were made");
+    p.see("Setup stopped. Applied changes, if any, are kept.");
     assert!(!fx.home().join(".everett/onboarding-complete").exists());
 }

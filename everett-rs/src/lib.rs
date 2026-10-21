@@ -2,6 +2,7 @@ pub mod adapters;
 pub mod auth;
 pub mod cards;
 pub mod cli;
+pub mod cloudflare_auth;
 pub mod config;
 pub mod core;
 pub mod dashboard;

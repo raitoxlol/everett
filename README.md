@@ -50,22 +50,34 @@ wizard was applied, not that an agent has loaded its tools. Cancellation or an a
 first-run setup pending. Later bare runs show help. Run `everett onboard` to repeat setup. Explicit
 commands and noninteractive bare runs do not prompt.
 
-The terminal flow is welcome, explore, choose, selected connection guidance, then review and apply.
-Local choices use detected sessions. Cloud and VM tabs include Dots, Grok Bot, Hark, Muse, and
-another computer. Remote choices open setup guidance and remain pending. They do not add an account,
-grant, registration, or live connection. Muse and Hark compatibility is unverified.
+The terminal flow is welcome, browser account sign-in, choose agents, per-agent setup guides,
+review/apply, then a copyable instruction prompt. With a configured hosted Cloudflare issuer, the
+CLI opens the approval page locally, prints a URL and code usable on another device, waits for
+approval, saves its private credential, and verifies its identity with the server before continuing.
+SSH sessions keep the URL/code path. There is no hosted default in this development build;
+unconfigured or cancelled sign-in offers an explicit local-only path. See [account setup](docs/auth.md).
+
+Local choices use detected sessions and installed CLIs. Cloud and VM tabs include Dots, Grok Bot,
+Hark, Muse and another computer. Each selected local agent gets a guide for its actual settings,
+restart and tool verification. Cloud/VM choices remain pending until their own connection is
+completed. Everett account approval, local hooks/MCP and external-client OAuth are separate.
+Muse and Hark compatibility is unverified.
 
 Space selects a local agent's supported integrations together. Press `d` for individual controls and
 file paths. At review, `d` shows exact changes and `v` opens Advanced. Routing keys, nightly merges,
 and older session cards live there. Cards and nightly merges start off in the interactive wizard.
 `--schedule-merge` explicitly enables the schedule. Plain prompts and `--yes` retain their defaults.
 
-The summary distinguishes apply errors from settings saved, and gives one next action. Loading and
-using Everett tools in the chosen agent still needs verification. Results and errors are scrollable
-with `j` and `k`. `q`, Escape, or Ctrl-C cancels before apply. The explanation has Overview, Local,
-Cloud, and VM tabs on keys `1`-`4`; the chooser uses `1`-`3`. A usable terminal starts at 54 columns
-and 14 rows. Smaller terminals ask you to resize. Without a usable terminal, Everett uses plain
-prompts. While entering a key, use Escape or Ctrl-C to cancel.
+The result distinguishes apply errors from settings saved. Loading and using Everett tools in the
+chosen agent still needs verification. The final prompt asks each agent to read its appropriate
+instruction Markdown and show a scoped addition before applying it. The wizard never edits those
+instruction files. The prompt is printed after leaving the full-screen UI so it can be selected and
+copied. Results, guides and the prompt scroll with `j` and `k`.
+
+`q`, Escape or Ctrl-C cancels before apply; completed account approval is retained. `d` on welcome
+opens the optional explanation, with Overview, Local, Cloud and VM tabs on keys `1`-`4`; the chooser
+uses `1`-`3`. A usable terminal starts at 54 columns and 14 rows. Smaller terminals ask you to resize.
+Without a usable terminal, Everett uses plain prompts. While entering a key, Escape or Ctrl-C cancels.
 
 The welcome has an animated balloon and multiple colors. Set `EVERETT_NO_ANIM=1` to disable motion
 or `NO_COLOR=1` to disable color. Input stays available during animation. To review with synthetic
@@ -185,7 +197,7 @@ Done. MAX_RETRIES is now 5 and the backoff test covers the cap.
 | `everett send --to <id-prefix\|name> "<text>"` | Skips routing and delivers to one session. The target is an exact id, a unique id prefix, an exact title (case-insensitive), the card's name (`Atlas: …` → `atlas`), or the project folder name. If more than one session matches, Everett lists them and sends nothing. |
 | `everett send --spawn [--dir D] [--harness H] "<text>"` | When routing says `NEW` with confidence ≥ 0.6, starts a new headless session and prints its reply and new session id. The directory defaults to the folder of the best-matching session, else the current one. |
 | `everett cards` | Card coverage per harness: agent-written, automatic, missing. |
-| `everett onboard [--yes] [--span-days N] [--no-backfill] [--no-mcp]` | Friendly first-time setup TUI (welcome, detect, hooks, MCP, optional Jev key + nightly merge, optional card backfill, summary); `--yes` runs it non-interactively for scripts. |
+| `everett onboard [--yes] [--span-days N] [--no-backfill] [--no-mcp]` | Human setup TUI (welcome, account approval, agents, guides, review/apply and instruction prompt; optional settings under Advanced); `--yes` runs it non-interactively for scripts. |
 | `everett install-hooks [--claude] [--codex] [--omp] [--grok] [--apply]` | Prints the hook registrations. `--apply` backs up the file, then merges idempotently. |
 | `everett mcp` | Runs the stdio MCP server (harnesses start it; see below). |
 | `everett install-mcp [--claude] [--codex] [--omp] [--grok] [--devin] [--apply]` | Prints or registers the MCP server for each harness. |

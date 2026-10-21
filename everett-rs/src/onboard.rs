@@ -84,6 +84,7 @@ pub struct OnboardConfig {
 
 #[derive(Default)]
 pub struct ApplyResult {
+    pub instruction_prompt: String,
     pub errors: Vec<String>,
     pub hook_lines: Vec<String>,
     pub mcp_lines: Vec<String>,
@@ -91,6 +92,10 @@ pub struct ApplyResult {
     pub backfill_skipped: usize,
     pub jev_line: String,
     pub trunk_schedule_line: String,
+}
+
+pub fn instruction_prompt(agents: &[String]) -> String {
+    format!("Set up your use of Everett for {}. Inspect the Everett tools actually available in this session (or `everett --help` if you have a terminal). Read the instruction Markdown you normally follow. Show me a small proposed addition and the exact target file before applying it. Preserve every existing rule; do not overwrite files or add global rules without approval. Explain how to find agent sessions, share context, send work and check replies. A queued message is not a confirmed reply. Verify the available tools; say what is missing. Do not include credentials.", if agents.is_empty() { "the agents I choose".into() } else { agents.join(", ") })
 }
 
 /// harness -> session count, including CLIs that have not created a session yet.
@@ -351,6 +356,7 @@ pub fn run_apply(
         (0, 0)
     };
     ApplyResult {
+        instruction_prompt: String::new(),
         errors,
         hook_lines,
         mcp_lines,
@@ -687,9 +693,14 @@ pub fn run(args: &crate::cli::Args) -> i32 {
     }
     if let Ok(result) = crate::tui::run(args, default_config()) {
         match result {
-            Some(result) => return if result.errors.is_empty() { finish() } else { 1 },
+            Some(result) => {
+                if !result.instruction_prompt.is_empty() {
+                    println!("\nCopy into your selected agents:\n\n{}\n", result.instruction_prompt);
+                }
+                return if result.errors.is_empty() { finish() } else { 1 };
+            },
             None => {
-                println!("Cancelled -- no changes were made.");
+                println!("Setup stopped. Applied changes, if any, are kept.");
                 return 0;
             }
         }
@@ -697,7 +708,7 @@ pub fn run(args: &crate::cli::Args) -> i32 {
     match run_plain(args) {
         Ok(code) => code,
         Err(QuitOnboarding) => {
-            println!("Cancelled -- no changes were made.");
+            println!("Setup stopped. Applied changes, if any, are kept.");
             0
         }
     }
