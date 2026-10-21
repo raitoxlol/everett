@@ -172,10 +172,60 @@ fn request(issuer: &str, path: &str, value: &Value, token: Option<&str>) -> Resu
     request_limited(issuer, path, value, token, 64 * 1024)
 }
 
+enum RequestFailure {
+    Transport,
+    Terminal(EverettError),
+}
+
+impl RequestFailure {
+    fn from_send(error: ureq::Error) -> Self {
+        match error {
+            ureq::Error::Timeout(_) | ureq::Error::HostNotFound | ureq::Error::ConnectionFailed => {
+                Self::Transport
+            }
+            ureq::Error::Io(error)
+                if matches!(
+                    error.kind(),
+                    std::io::ErrorKind::ConnectionReset
+                        | std::io::ErrorKind::ConnectionAborted
+                        | std::io::ErrorKind::ConnectionRefused
+                        | std::io::ErrorKind::NotConnected
+                        | std::io::ErrorKind::BrokenPipe
+                        | std::io::ErrorKind::UnexpectedEof
+                        | std::io::ErrorKind::TimedOut
+                        | std::io::ErrorKind::Interrupted
+                        | std::io::ErrorKind::WouldBlock
+                        | std::io::ErrorKind::HostUnreachable
+                        | std::io::ErrorKind::NetworkUnreachable
+                ) => Self::Transport,
+            _ => Self::Terminal(fail(6, "Cloudflare is unreachable; stored credentials were kept")),
+        }
+    }
+
+    fn into_error(self) -> EverettError {
+        match self {
+            Self::Transport => fail(6, "Cloudflare is unreachable; stored credentials were kept"),
+            Self::Terminal(error) => error,
+        }
+    }
+}
+
 fn request_limited(issuer: &str, path: &str, value: &Value, token: Option<&str>, limit: u64) -> Result<(u16, Value)> {
-    let issuer = origin(issuer)?;
+    request_with_timeout(issuer, path, value, token, limit, Duration::from_secs(10))
+        .map_err(RequestFailure::into_error)
+}
+
+fn request_with_timeout(
+    issuer: &str,
+    path: &str,
+    value: &Value,
+    token: Option<&str>,
+    limit: u64,
+    timeout: Duration,
+) -> std::result::Result<(u16, Value), RequestFailure> {
+    let issuer = origin(issuer).map_err(RequestFailure::Terminal)?;
     let agent: ureq::Agent = ureq::Agent::config_builder()
-        .timeout_global(Some(Duration::from_secs(10)))
+        .timeout_global(Some(timeout))
         .http_status_as_error(false)
         .max_redirects(0)
         .build()
@@ -186,7 +236,7 @@ fn request_limited(issuer: &str, path: &str, value: &Value, token: Option<&str>,
     }
     let mut response = request
         .send_json(value)
-        .map_err(|_| fail(6, "Cloudflare is unreachable; stored credentials were kept"))?;
+        .map_err(RequestFailure::from_send)?;
     let status = response.status().as_u16();
     let body = response
         .body_mut()
@@ -194,10 +244,10 @@ fn request_limited(issuer: &str, path: &str, value: &Value, token: Option<&str>,
         .limit(limit)
         .read_json::<Value>()
         .map_err(|_| {
-            fail(
+            RequestFailure::Terminal(fail(
                 6,
                 "Cloudflare returned an invalid response; stored credentials were kept",
-            )
+            ))
         })?;
     Ok((status, body))
 }
@@ -407,11 +457,17 @@ fn wait(pending: &Pending) -> Result<Credential> {
             }
             std::thread::sleep(Duration::from_millis(50));
         }
-        let response = request(
+        let remaining = pending.expires_at - session::now();
+        if remaining <= 0.0 {
+            continue;
+        }
+        let response = request_with_timeout(
             &pending.issuer,
             "/v2/auth/poll",
             &json!({"device_code":pending.device_code}),
             None,
+            64 * 1024,
+            Duration::from_secs_f64(remaining.min(10.0)),
         );
         if INTERRUPTED.load(Ordering::Relaxed) {
             // An approved response must be saved even when Ctrl-C races approval delivery.
@@ -419,7 +475,15 @@ fn wait(pending: &Pending) -> Result<Credential> {
                 return Err(cancel(pending)?.error());
             }
         }
-        let (status, body) = response?;
+        let (status, body) = match response {
+            Ok(response) => response,
+            Err(RequestFailure::Transport) => {
+                interval = interval.saturating_mul(2).min(60);
+                eprintln!("Connection interrupted. Retrying approval…");
+                continue;
+            }
+            Err(RequestFailure::Terminal(error)) => return Err(error),
+        };
         if status == 429 && body["error"] == "slow_down" {
             interval = (interval + 5).min(60);
             continue;

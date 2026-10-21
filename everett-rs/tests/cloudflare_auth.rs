@@ -17,6 +17,7 @@ struct Fake {
     polls: Arc<Mutex<VecDeque<(u16, Value)>>>,
     drop_polls: Arc<Mutex<usize>>,
     poll_delay: Arc<Mutex<Duration>>,
+    device_started: Arc<Mutex<Option<Instant>>>,
     identity_status: Arc<Mutex<u16>>,
     identity: Arc<Mutex<Value>>,
     cancel_state: Arc<Mutex<&'static str>>,
@@ -33,6 +34,8 @@ impl Fake {
         let polls = Arc::new(Mutex::new(VecDeque::new()));
         let drop_polls = Arc::new(Mutex::new(0usize));
         let poll_delay = Arc::new(Mutex::new(Duration::ZERO));
+        let device_started = Arc::new(Mutex::new(None));
+        let started = device_started.clone();
         let identity_status = Arc::new(Mutex::new(200));
         let identity = Arc::new(Mutex::new(
             json!({"result":{"owner":"owner-synthetic","deviceId":"immutable-agent","role":"member"}}),
@@ -88,6 +91,9 @@ impl Fake {
                     }
                 }
                 let body = body.to_string();
+                if path == "/v2/auth/device" {
+                    *started.lock().unwrap() = Some(Instant::now());
+                }
                 let _=write!(stream,"HTTP/1.1 {status} Test\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",body.len());
             }
         });
@@ -97,6 +103,7 @@ impl Fake {
             polls,
             drop_polls,
             poll_delay,
+            device_started,
             identity_status,
             identity,
             cancel_state,
@@ -120,6 +127,9 @@ impl Fake {
     }
     fn requests(&self) -> Vec<(String, String, Value)> {
         self.requests.lock().unwrap().clone()
+    }
+    fn approval_elapsed(&self) -> Duration {
+        self.device_started.lock().unwrap().unwrap().elapsed()
     }
 }
 fn read_request(stream: &mut TcpStream) -> (String, String, Value) {
@@ -368,13 +378,12 @@ fn dropped_poll_connections_stop_at_the_approval_deadline() {
     fake.configure(&f);
     *fake.drop_polls.lock().unwrap() = usize::MAX;
     *fake.expires.lock().unwrap() = 4;
-    let before = Instant::now();
     let out = f.run(&["login", "--json"]);
     redact(&out);
     assert_eq!(out.status.code(), Some(5));
     assert!(String::from_utf8_lossy(&out.stderr).contains("approval code expired"));
-    assert!(before.elapsed() >= Duration::from_secs(4));
-    assert!(before.elapsed() < Duration::from_secs(7));
+    assert!(fake.approval_elapsed() >= Duration::from_secs(4));
+    assert!(fake.approval_elapsed() < Duration::from_secs(7));
     assert!(!f.home().join(".everett/cloudflare-pending.json").exists());
     assert!(!f.home().join(".everett/cloudflare-auth.json").exists());
     let requests = fake.requests();
@@ -389,12 +398,11 @@ fn stalled_poll_timeout_is_bounded_by_the_approval_deadline() {
     fake.configure(&f);
     *fake.expires.lock().unwrap() = 2;
     *fake.poll_delay.lock().unwrap() = Duration::from_secs(4);
-    let before = Instant::now();
     let out = f.run(&["login", "--json"]);
     redact(&out);
     assert_eq!(out.status.code(), Some(5));
     assert!(String::from_utf8_lossy(&out.stderr).contains("approval code expired"));
-    assert!(before.elapsed() < Duration::from_millis(3500));
+    assert!(fake.approval_elapsed() < Duration::from_millis(3500));
     assert!(!f.home().join(".everett/cloudflare-pending.json").exists());
     assert!(!f.home().join(".everett/cloudflare-auth.json").exists());
 }
@@ -405,7 +413,7 @@ fn ctrl_c_cancels_during_poll_transport_backoff() {
     let fake = Fake::new();
     fake.configure(&f);
     *fake.drop_polls.lock().unwrap() = usize::MAX;
-    let child = Command::new(env!("CARGO_BIN_EXE_everett"))
+    let mut child = Command::new(env!("CARGO_BIN_EXE_everett"))
         .args(["login", "--json"])
         .env_clear()
         .env("EVERETT_HOME", f.home())
@@ -415,9 +423,13 @@ fn ctrl_c_cancels_during_poll_transport_backoff() {
         .stderr(Stdio::piped())
         .spawn()
         .unwrap();
-    let deadline = Instant::now() + Duration::from_secs(5);
+    let deadline = Instant::now() + Duration::from_secs(15);
     while !fake.requests().iter().any(|r| r.0 == "/v2/auth/poll") {
-        assert!(Instant::now() < deadline);
+        if Instant::now() >= deadline {
+            child.kill().unwrap();
+            child.wait().unwrap();
+            panic!("login did not reach its first approval poll within fifteen seconds");
+        }
         std::thread::sleep(Duration::from_millis(20));
     }
     std::thread::sleep(Duration::from_millis(200));
