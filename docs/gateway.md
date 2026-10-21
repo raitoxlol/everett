@@ -124,10 +124,10 @@ owner/workspace. This pass does not add end-user OAuth to stdio.
 
 ## Loopback Streamable HTTP / Grok Remote HTTPS
 
-HTTP always requires a separately provisioned high-entropy bearer token in
+Without an `oauth` block, HTTP requires a separately provisioned high-entropy bearer token in
 `EVERETT_GATEWAY_TOKEN` (32–512 ASCII characters without whitespace). Generate and
 store it securely outside the repository; never put it in command arguments, URLs,
-configuration examples, or logs. There is no token issuance or OAuth service here.
+configuration examples, or logs. For OpenAI/ChatGPT, use [OAuth mode](#oauth-resource-server-mode-openai-chatgpt) instead.
 
 ```sh
 # Set EVERETT_GATEWAY_TOKEN securely in this process's environment first.
@@ -139,7 +139,7 @@ The listener is always `127.0.0.1`; there is no public-bind override. `/mcp` use
 official Rust SDK's stateless Streamable HTTP transport. The gateway verifies a
 SHA-256 digest of the bearer token with a constant-time comparison before SDK
 dispatch. Missing or invalid authentication fails; there is no HTTP no-auth mode.
-The gateway does not serve OAuth metadata, authorization, or token endpoints.
+In bearer mode the gateway serves no OAuth metadata.
 
 For Grok, the owner must supply a trusted HTTPS reverse proxy/tunnel, a valid TLS
 certificate, and Remote HTTPS connector setup using `Authorization: Bearer …`.
@@ -153,8 +153,68 @@ by [xAI](https://docs.x.ai/grok-bot/team-bots).
 
 Do not expose a local bearer token over plaintext internet HTTP. TLS/reachability,
 connector authorization, network controls, and runtime approval prompts are owner
-hookup, not deployments performed by this implementation. OpenAI direct public
-HTTPS requiring OAuth is **not implemented**; use the Secure MCP Tunnel stdio path.
+hookup, not deployments performed by this implementation.
+
+## OAuth resource-server mode (OpenAI / ChatGPT)
+
+Adding an `oauth` block to the binding switches HTTP mode from the static bearer
+token to OAuth 2.1 access tokens issued by the owner's hosted Everett deployment
+(see [OpenAI dots setup](openai-dots.md#oauth-http-gateway-with-the-cloudflare-candidate)). stdio
+ignores the block and keeps the fixed `agent_id`.
+
+```json
+{
+  "agent_id": "wright-dot",
+  "harness": "openai-dot",
+  "cwd": "/absolute/path/to/everett",
+  "project": "everett",
+  "destinations": ["complete-local-agent-id"],
+  "allow_shared_core": true,
+  "allowed_hosts": ["127.0.0.1:8788"],
+  "oauth": {
+    "issuer": "https://<your-worker>.workers.dev",
+    "resource": "https://<public gateway URL>/mcp"
+  }
+}
+```
+
+- `issuer` must equal the authorization server's configured `EVERETT_ISSUER` exactly; `resource` must
+  be listed in the deployment's `EVERETT_OAUTH_RESOURCES`. Both are https (plain
+  http only to a loopback host). Optional: `scope` (default `everett`) and
+  `introspection_endpoint` (default `<issuer>/oauth/introspect`).
+- Set `EVERETT_OAUTH_INTROSPECTION_SECRET` (32–512 printable ASCII, same value as
+  the deployment's) in the gateway's environment, and **unset**
+  `EVERETT_GATEWAY_TOKEN`; startup fails if both or neither are present.
+- `GET /.well-known/oauth-protected-resource` (and the RFC 9728 path-suffixed
+  `/.well-known/oauth-protected-resource/mcp`) returns `resource`,
+  `authorization_servers: [issuer]` and `scopes_supported`, without auth but with
+  the same Host/Origin checks.
+- `/mcp` without a token returns `401` with
+  `WWW-Authenticate: Bearer resource_metadata="<resource origin>/.well-known/oauth-protected-resource/mcp", scope="everett"`;
+  a bad token adds `error="invalid_token"` and a reason (`token audience is not
+  this gateway`, `token inactive, expired or revoked`, …). An unreachable
+  authorization server returns `503`.
+- Every request is introspected (no cache), so owner revocation applies to tokens
+  already issued. The gateway checks `active`, `iss`, `aud` (= `resource`), `exp`,
+  `scope`, and that `sub` equals `everett_agent` and is a valid agent ID that is not
+  one of the binding's destinations. The introspection secret is never passed to
+  workers.
+- The token's agent ID **replaces `agent_id` for that request**: workers run with
+  `EVERETT_SESSION_ID=<token agent>`, tool schemas pin `session_id` to it, and
+  `everett_whoami` adds `gateway_auth: {mode: "oauth", agent_name, client_id}`.
+  Each separate owner approval mints a new agent with its own inbox and card.
+  Clients sharing one authorized connection also share its identity; the gateway
+  does not attest a vendor Bot or conversation. Project, cwd, destinations and
+  core grant still come from the binding.
+
+The Cloudflare candidate in PR #43 implements the authorization server contract;
+this gateway port does not deploy it or configure the live issuer. Its OAuth
+settings include exact client IDs, redirect URIs and resources plus the private
+introspection secret. Dynamic client registration is not implemented by that
+Cloudflare candidate. Native CLI credentials are separate from OAuth access
+credentials and cannot be used as gateway access tokens. The development issuer
+and actual provider/client connection must be verified before claiming hosted
+support.
 
 ## Bounds and verification
 
@@ -174,8 +234,9 @@ again after SDK encoding.
 
 `everett-rs/tests/gateway_native.rs` drives the native CLI and real loopback HTTP
 sockets with `PATH=/nonexistent` for the gateway process. Adversarial worker tests
-use the test binary itself as a synthetic MCP backend. No test invokes a
-model, live bot, tunnel, or production credentials:
+use the test binary itself as a synthetic MCP backend; OAuth tests use a synthetic
+loopback introspection endpoint. No test invokes a model, live bot, tunnel,
+ChatGPT, or production credentials:
 
 ```sh
 cargo test --locked --manifest-path everett-rs/Cargo.toml --test gateway_native
@@ -183,6 +244,66 @@ cargo test --locked --manifest-path everett-rs/Cargo.toml --test gateway_native
 
 Tests do not
 prove actual dot/Grok plan availability, TLS deployment, or runtime approval flow.
+
+### Local Cloudflare gateway acceptance
+
+`scripts/verify-cloudflare-gateway.py` also drives the actual gateway and native
+MCP backend against the local Worker fixture from [PR #43](https://github.com/raitoxlol/everett/pull/43).
+Use a separate checkout of that PR with its pinned Node dependencies installed.
+The test uses fixed loopback ports 18839 and 18840. It refreshes and owner-revokes
+the first test credential, so coordinate exclusive fixture use before you run it.
+Use fresh test directories. Never use real account credentials with this fixture.
+
+1. Start the Worker in one terminal. Set `cf_checkout` to that checkout's absolute
+   path and `fixture_home` to a fresh absolute private directory:
+
+   ```sh
+   node "$cf_checkout/cloudflare/test/oauth-fixture.mjs" serve "$fixture_home" 18839 http://127.0.0.1:18840/mcp
+   ```
+
+   Wait for the fixture's ready message. Keep this process alive through the test.
+   It creates the private directory and configuration with modes 0700 and 0600.
+2. In a second terminal, set the same paths and set `second_home` to another fresh
+   absolute directory. Create a second independent grant on the same local issuer:
+
+   ```sh
+   node "$cf_checkout/cloudflare/test/oauth-fixture.mjs" issue "$fixture_home"
+   python3 - "$fixture_home" "$second_home" <<'PY'
+   from pathlib import Path
+   import shutil
+   import sys
+   source, destination = map(Path, sys.argv[1:])
+   destination.mkdir(mode=0o700)
+   for name in ("fixture.json", "introspection.secret"):
+       shutil.copyfile(source / name, destination / name)
+       (destination / name).chmod(0o600)
+   PY
+   node "$cf_checkout/cloudflare/test/oauth-fixture.mjs" issue "$second_home"
+   ```
+
+   Only the fixture configuration and shared test introspection secret are copied.
+   Each `issue` command performs its own consent and PKCE exchange. Never display
+   the private files in a terminal, log or chat.
+3. Build this branch, then pass the five absolute paths to the verification script.
+   Set `node_binary` to the Node executable used by the fixture:
+
+   ```sh
+   cargo build --locked --manifest-path everett-rs/Cargo.toml
+   python3 scripts/verify-cloudflare-gateway.py "$fixture_home" \
+     "$cf_checkout/cloudflare/test/oauth-fixture.mjs" "$node_binary" \
+     "$PWD/everett-rs/target/debug/everett" "$second_home"
+   ```
+
+The script prints status fields without credentials. It checks metadata, missing
+access, two distinct worker identities, refresh, rejection after owner revocation,
+and continued access for the independent agent. It stops its gateway process and
+leaves the Worker and private test files with their owner. Stop the fixture with
+Ctrl-C after the test.
+
+This journey passed locally with the production Worker routes and SQLite storage.
+Only outbound GitHub responses and the exact synthetic CIMD document were mocked.
+The test does not prove live provider consent, public TLS, an actual cloud client,
+or physical-device delivery.
 
 **No automatic dot wake-ups, MCP2 Events, webhook engine, Slack bridge, or external
 Grok Bot messaging API is implemented.** The owner must start the bot or configure

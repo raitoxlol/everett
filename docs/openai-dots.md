@@ -65,6 +65,47 @@ the risk warning, then **Create as a plugin**. Inspect discovered tools and
 annotations. Do not publish a public unauthenticated endpoint to work around a
 workspace restriction. [Official connection flow](https://developers.openai.com/plugins/deploy/connect-chatgpt)
 
+## OAuth HTTP gateway with the Cloudflare candidate
+
+The gateway also has an optional [OAuth resource-server mode](gateway.md#oauth-resource-server-mode-openai-chatgpt).
+This port is exercised with isolated local tests. Live ChatGPT discovery,
+approval, token exchange, refresh and revocation remain acceptance checks.
+
+The Cloudflare authorization-server candidate in PR #43 serves owner GitHub
+sign-in, exact-allowlisted CIMD client authorization with PKCE S256, rotating
+refresh, introspection and revocation. It does not provide dynamic client
+registration. A client that requires DCR cannot use that candidate yet. Native
+CLI enrollment credentials are separate from these gateway OAuth credentials.
+
+For a separately configured development server:
+
+1. Configure the server's exact `EVERETT_ISSUER`, owner identity, GitHub OAuth
+   app and private GitHub secret. Its GitHub callback is
+   `<issuer>/auth/callback/github`; the connector callback belongs in the
+   authorization server's redirect allowlist, not the GitHub app.
+2. Configure exact `EVERETT_OAUTH_CLIENT_IDS`, `EVERETT_OAUTH_REDIRECT_URIS`, and
+   `EVERETT_OAUTH_RESOURCES`. Use the client metadata URL, callback and resource
+   actually presented by the selected client; do not guess them. Set the private
+   `EVERETT_OAUTH_INTROSPECTION_SECRET` securely on the server and gateway.
+3. Add the gateway's `oauth` block with that issuer and resource, preserve exact
+   Host/Origin allowlists, unset `EVERETT_GATEWAY_TOKEN`, and start HTTP mode.
+   Verify protected-resource metadata and the unauthenticated `401` challenge.
+   The listener stays on loopback; a trusted authenticated tunnel or HTTPS proxy
+   must make it reachable to the chosen client.
+4. Create a separate test connector using OAuth and approve it through the
+   owner's browser. Verify `everett_whoami` reports its `agent-…` identity and
+   `gateway_auth.mode: "oauth"`. Register that exact ID locally if local routing
+   must discover it. A shared connector is one logical identity even if several
+   dots use it.
+5. Exchange a synthetic handoff and reply, test refresh, then revoke that test
+   credential on the owner page. Its next call must fail while a separately
+   authorized connector continues working. This last boundary needs actual
+   provider/client evidence; the isolated gateway suite does not establish it.
+
+Do not replace an existing working connector until the separate connection has
+passed those checks. Tunnel HTTP forwarding and the client's actual OAuth
+metadata choices remain runtime verification, not guarantees from this runbook.
+
 ## Use with the existing dot
 
 Ask the dot to use the installed Everett plugin, verify its logical identity with
@@ -90,8 +131,8 @@ remain available.
 
 - A shared plugin is an owner-scoped logical binding, not cryptographic isolation
   between dots using the same authorized account/connection.
-- Direct HTTPS with OpenAI OAuth is not implemented. The gateway's bearer-only
-  HTTP option is for compatible Grok connectors, not an advertised OpenAI OAuth app.
+- OAuth HTTP resource-server support is implemented and tested locally. Live
+  ChatGPT discovery, consent, exchange, refresh and revocation are unverified.
 - MCP2 protocol/events, event subscriptions, callback signing, webhook verification
   and automatic wake-ups are not implemented. OpenAI documents a future extension
   path in [MCP Events](https://developers.openai.com/plugins/build/mcp-events).
