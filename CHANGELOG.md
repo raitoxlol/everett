@@ -1,14 +1,35 @@
 # Changelog
 
-## Unreleased
+## 2.0.0 — 2026-10-22
+
+### Onboarding and accounts
+
+- Add a compact interactive setup flow with a local, cloud and VM chooser. Cloud and VM selections remain pending until their own connections are configured.
+- Add native Cloudflare device approval to first-run setup. GitHub identifies the account owner; approving a device does not sign in to an agent provider.
+- Keep Cloudflare device credentials and relay state separate from OIDC/Convex credentials and state. Existing OIDC configuration remains available.
+
+### Relay and OAuth
+
+- Add encrypted native Cloudflare relay messaging with outbound polling, durable ciphertext staging, temporary-failure retries and explicit peer fingerprint pins.
+- Add an OAuth resource-server mode to the Rust gateway for allowlisted external clients. It uses PKCE, rotating refresh tokens, introspection and revocation. Dynamic client registration is not supported.
+- Keep local and SSH workflows usable without an Everett account. Native Cloudflare device authorization is a custom protocol, not RFC 8628.
+
+### Device discovery and caller identity
+
+- Add paged `everett devices` and signed registry metadata for `peer add NAME`. Pairing still requires out-of-band fingerprint checks.
+- Propagate permanent device revocations through the registry and clean matching tagged SSH authorizations. Offline peers receive revocations after their next successful fetch; existing SSH connections are not terminated.
+- Bind MCP calls to host or per-call session identity, return identity failures as tool errors, and fall back to local routing when Jev rejects a request.
+- Track reply depth separately from forward hops. Install only the hooks and extensions for harnesses that Everett detects or the user selects.
+
+### Detailed changes included in 2.0.0
 
 - Document the OpenAI dot tunnel that was checked on 1.6.0, including the
   gateway file, exact session ids, `CONTROL_PLANE_API_KEY`, and ChatGPT's
   no-authentication plugin path. Add `everett tunnel watch` plus systemd and
   launchd examples so a live `tunnel-client` that stops forwarding after
   repeated poll timeouts is restarted without putting keys in the unit file.
-- Codex MCP calls bind from the per-call `_meta.threadId` (this landed after the
-  1.6.0 tag; it is not in any release yet).
+- Codex MCP calls bind from the per-call `_meta.threadId` (first included in
+  2.0.0).
 - Pi, OMP, Devin, and Hermes MCP callers bind to their session without a
   hand-set `EVERETT_SESSION_ID`: `everett mcp --harness <name>` finds the host
   process and the session its Everett hook recorded (Pi extension, OMP
@@ -26,7 +47,6 @@
   and remote-derived replies still spend hops.
 - `install-hooks` writes OMP/Pi/Devin files only when that harness is installed
   or asked for. `onboard --yes` warns when no harness was configured.
-- Version is `1.6.1-dev`; `rust-version = "1.89"`.
 - Reading or peeking at a local Grok Bot or OpenAI dot message labels it
   untrusted without tainting unrelated later resume/spawn work; an explicit
   reply retains the external provenance.
