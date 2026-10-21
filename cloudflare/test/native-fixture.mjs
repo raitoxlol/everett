@@ -52,7 +52,7 @@ async function browserAction(value, decision) {
   console.log(`Synthetic local browser ${decision} completed. Credential values were not displayed.`);
 }
 
-async function serve(value = '18789') {
+export async function serve(value = '18789', oauth = null) {
   const port = Number(value);
   if (!Number.isInteger(port) || port < 1024 || port > 65535) throw new Error('fixture_port');
   const { Miniflare, Log, LogLevel, convertV4MiniflareOptions } = require(require.resolve('miniflare', { paths: dependencies }));
@@ -65,7 +65,9 @@ async function serve(value = '18789') {
     handleUncaughtError() { console.error('Local fixture runtime error; request data suppressed.'); },
     durableObjects: { OWNERS: { className: 'OwnerRelay', useSQLite: true }, AUTH_STATE: { className: 'HostedAuth', useSQLite: true } },
     bindings: { EVERETT_ISSUER: issuer, AUTH_GITHUB_ID: 'synthetic-fixture-client', AUTH_GITHUB_SECRET: 'synthetic-fixture-only',
-      EVERETT_OWNER_GITHUB_ID: '282002453', EVERETT_OWNER_GITHUB_LOGIN: 'raitoxlol' },
+      EVERETT_OWNER_GITHUB_ID: '282002453', EVERETT_OWNER_GITHUB_LOGIN: 'raitoxlol',
+      ...(oauth ? { EVERETT_OAUTH_CLIENT_IDS: oauth.clientId, EVERETT_OAUTH_REDIRECT_URIS: oauth.redirectUri,
+        EVERETT_OAUTH_RESOURCES: oauth.resource, EVERETT_OAUTH_INTROSPECTION_SECRET: oauth.introspectionSecret } : {}) },
     outboundService(request) {
       const url = new URL(request.url);
       if (url.href === 'https://github.com/login/oauth/access_token' && request.method === 'POST') return Response.json({
@@ -73,22 +75,28 @@ async function serve(value = '18789') {
         refresh_token: 'synthetic-fixture-refresh-only', refresh_token_expires_in: 15811200,
       });
       if (url.href === 'https://api.github.com/user' && request.method === 'GET') return Response.json({ id: 282002453, login: 'raitoxlol' });
+      if (oauth && url.href === oauth.clientId && request.method === 'GET') return Response.json({
+        client_id: oauth.clientId, client_name: 'Synthetic gateway acceptance', redirect_uris: [oauth.redirectUri],
+        token_endpoint_auth_method: 'none', grant_types: ['authorization_code', 'refresh_token'], response_types: ['code'],
+      });
       return Response.json({ error: 'fixture_outbound_denied' }, { status: 502 });
     },
   }));
   try {
     await mf.ready;
     console.log(`SYNTHETIC LOCAL FIXTURE ready: ${issuer}`);
-    console.log('No real GitHub, Cloudflare, OAuth gateway or physical-device proof. State is temporary; Ctrl-C stops it.');
+    console.log('Synthetic providers only; public accounts and physical-device acceptance remain unverified. State is temporary; Ctrl-C stops it.');
     await new Promise(resolve => { process.once('SIGINT', resolve); process.once('SIGTERM', resolve); });
   } finally { await mf.dispose(); }
 }
 
-try {
-  if (mode === 'serve') await serve(target);
-  else if (mode === 'approve' || mode === 'deny' || mode === 'revoke') await browserAction(target, mode);
-  else throw new Error('fixture_usage');
-} catch (error) {
-  console.error('Local fixture failed (' + (error instanceof Error && /^fixture_[a-z_]+$/.test(error.message) ? error.message : 'runtime') + '). No credential or request values logged.');
-  process.exitCode = 1;
+if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+  try {
+    if (mode === 'serve') await serve(target);
+    else if (mode === 'approve' || mode === 'deny' || mode === 'revoke') await browserAction(target, mode);
+    else throw new Error('fixture_usage');
+  } catch (error) {
+    console.error('Local fixture failed (' + (error instanceof Error && /^fixture_[a-z_]+$/.test(error.message) ? error.message : 'runtime') + '). No credential or request values logged.');
+    process.exitCode = 1;
+  }
 }

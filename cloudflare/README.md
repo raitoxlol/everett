@@ -105,3 +105,26 @@ node cloudflare/test/native-fixture.mjs revoke 'http://127.0.0.1:18790/' 'agent-
 The helper performs the local browser-bound GitHub state/callback and CSRF-protected owner decision. It does not visit GitHub or display a credential. Any process on this machine can approve these synthetic requests, so keep the fixture on loopback and use isolated homes. Ctrl-C disposes the runtime and temporary state; never use the fixture issuer or its credentials for a hosted deployment. Miniflare is resolved from pinned Wrangler dependencies; no additional install is needed.
 
 Latest local verification: typecheck and **38 Workers checks pass** (18 relay +20 hosted auth). The integrated hosted-auth test exercises two actual approvals, independently signed device registrations, encrypted send/read/reply, storage eviction/reload, signed delivery/reply observations and revocation through the production HTTP entrypoint. Local fixture smoke also verified two approvals, native identity, denial and revocation with the other agent remaining active. Native Rust execution against this fixture remains the CLI owner's acceptance step.
+
+## Gateway OAuth acceptance fixture
+
+`test/oauth-fixture.mjs` adds an exact synthetic CIMD document to the local GitHub fixture. It exercises real server metadata, owner session/state/CSRF, authorization code/S256 consent, token exchange, introspection, refresh and revocation. It does not inject a caller identity or change deployed source. Start it with a fresh private directory, a free issuer port and the exact loopback gateway resource:
+
+```sh
+node cloudflare/test/oauth-fixture.mjs serve /absolute/private-fixture-directory 18839 http://127.0.0.1:18840/mcp
+```
+
+The directory must be owned mode0700. `fixture.json` and `introspection.secret` are created mode0600; values are suppressed. In another terminal:
+
+```sh
+node cloudflare/test/oauth-fixture.mjs issue /absolute/private-fixture-directory
+node cloudflare/test/oauth-fixture.mjs refresh /absolute/private-fixture-directory
+node cloudflare/test/oauth-fixture.mjs check /absolute/private-fixture-directory
+node cloudflare/test/oauth-fixture.mjs revoke /absolute/private-fixture-directory
+```
+
+`issue` saves `tokens.json` and `access.token` mode0600 after verifying resource-bound introspection. `refresh` rotates and updates those private files. `revoke` revokes the OAuth family; `revoke-agent` instead exercises owner credential revocation. Both verify inactive introspection and HTTP400 on refresh. A second `issue` in the same directory is refused before creating an agent. Use a fresh fixture directory/runtime for a separate journey.
+
+For the actual gateway binary, configure the fixture issuer and exact resource, load the matching `introspection.secret` into `EVERETT_OAUTH_INTROSPECTION_SECRET` inside a local process, unset `EVERETT_GATEWAY_TOKEN`, and use an isolated `EVERETT_HOME`. Read `access.token` directly inside the local MCP client process when setting its Authorization header. Never print/cat any of these files into agent context or logs. The fixture itself does not run the gateway or claim its tool behavior.
+
+Actual HTTP smoke passed exchange/introspection/refresh, token-family and owner revocation, revoked refresh refusal and duplicate-issue refusal while another fixture agent stayed active. Public provider acceptance, actual gateway tool calls, physical devices, quotas and OpenAI remain separate proof. Native fixture commands remain backward compatible. Ctrl-C stops the local runtime; its private files remain for inspection or explicit cleanup.
