@@ -1,6 +1,4 @@
-//! `everett onboard`: friendly first-time setup. On a TTY the ratatui wizard in `tui.rs`
-//! runs the same seven steps as the Python curses TUI; `--yes` is the non-interactive path
-//! and the plain sequential prompts are the fallback when no usable terminal exists.
+//! Human setup through the terminal wizard, plain prompts, or explicit `--yes` flags.
 
 use std::collections::HashMap;
 use std::io::Write;
@@ -41,6 +39,34 @@ pub const JEV_LINES: &[&str] = &[
 
 struct QuitOnboarding;
 
+/// Records that the wizard was applied, not that an agent has loaded its tools.
+pub fn completed() -> bool {
+    std::fs::read(home().join(".everett/onboarding-complete"))
+        .map(|bytes| bytes == b"completed\n")
+        .unwrap_or(false)
+}
+
+fn record_completion() -> std::io::Result<()> {
+    use std::io::Write;
+    let dir = home().join(".everett");
+    std::fs::create_dir_all(&dir)?;
+    let mut file = tempfile::NamedTempFile::new_in(&dir)?;
+    file.write_all(b"completed\n")?;
+    file.persist(dir.join("onboarding-complete"))
+        .map_err(|e| e.error)?;
+    Ok(())
+}
+
+fn finish() -> i32 {
+    match record_completion() {
+        Ok(()) => 0,
+        Err(e) => {
+            eprintln!("everett: could not save onboarding completion: {e}. Setup will open again on the next interactive run.");
+            1
+        }
+    }
+}
+
 #[derive(Default)]
 pub struct OnboardConfig {
     pub detected: Vec<(String, usize)>,
@@ -58,12 +84,18 @@ pub struct OnboardConfig {
 
 #[derive(Default)]
 pub struct ApplyResult {
+    pub instruction_prompt: String,
+    pub errors: Vec<String>,
     pub hook_lines: Vec<String>,
     pub mcp_lines: Vec<String>,
     pub backfill_written: usize,
     pub backfill_skipped: usize,
     pub jev_line: String,
     pub trunk_schedule_line: String,
+}
+
+pub fn instruction_prompt(agents: &[String]) -> String {
+    format!("Set up your use of Everett for {}. Inspect the Everett tools actually available in this session (or `everett --help` if you have a terminal). Read the instruction Markdown you normally follow. Show me a small proposed addition and the exact target file before applying it. Preserve every existing rule; do not overwrite files or add global rules without approval. Explain how to find agent sessions, share context, send work and check replies. A queued message is not a confirmed reply. Verify the available tools; say what is missing. Do not include credentials.", if agents.is_empty() { "the agents I choose".into() } else { agents.join(", ") })
 }
 
 /// harness -> session count, including CLIs that have not created a session yet.
@@ -139,41 +171,51 @@ pub fn find_jev_key_with_source() -> (String, String) {
     (String::new(), String::new())
 }
 
-pub fn apply_hooks(cfg: &OnboardConfig) -> Vec<String> {
-    let mut report = Vec::new();
-    for (harness, events) in &cfg.hooks {
-        if harness == "omp" {
-            if *events.get("extension").unwrap_or(&false) {
-                match crate::install::apply("omp", None) {
-                    Ok(msg) => report.push(msg),
-                    Err(e) => report.push(format!("omp: {}", e)),
+fn apply_hooks(cfg: &OnboardConfig, errors: &mut Vec<String>) -> Vec<String> {
+    cfg.hooks
+        .iter()
+        .map(|(harness, events)| {
+            let selected: Vec<String> = events
+                .iter()
+                .filter(|(_, on)| **on)
+                .map(|(e, _)| e.clone())
+                .collect();
+            if selected.is_empty() {
+                return format!("{}: skipped (not selected)", harness);
+            }
+            match crate::install::apply(
+                harness,
+                if harness == "omp" {
+                    None
+                } else {
+                    Some(&selected)
+                },
+            ) {
+                Ok(message) => message,
+                Err(error) => {
+                    let message = format!("{} hooks: {}", harness, error);
+                    errors.push(message.clone());
+                    message
                 }
-            } else {
-                report.push("omp: skipped (not selected)".to_string());
             }
-            continue;
-        }
-        let selected: Vec<String> = events.iter().filter(|(_, on)| **on).map(|(e, _)| e.clone()).collect();
-        if selected.is_empty() {
-            report.push(format!("{}: skipped (not selected)", harness));
-        } else {
-            match crate::install::apply(harness, Some(&selected)) {
-                Ok(msg) => report.push(msg),
-                Err(e) => report.push(format!("{}: {}", harness, e)),
-            }
-        }
-    }
-    report
+        })
+        .collect()
 }
 
-pub fn apply_mcp(cfg: &OnboardConfig) -> Vec<String> {
+fn apply_mcp(cfg: &OnboardConfig, errors: &mut Vec<String>) -> Vec<String> {
     cfg.mcp
         .iter()
         .map(|(harness, on)| {
-            if *on {
-                crate::install::apply_mcp(harness, false).unwrap_or_else(|e| format!("{}: {}", harness, e))
-            } else {
-                format!("{}: skipped (not selected)", harness)
+            if !on {
+                return format!("{}: skipped (not selected)", harness);
+            }
+            match crate::install::apply_mcp(harness, false) {
+                Ok(message) => message,
+                Err(error) => {
+                    let message = format!("{} tools: {}", harness, error);
+                    errors.push(message.clone());
+                    message
+                }
             }
         })
         .collect()
@@ -204,41 +246,55 @@ fn jev_skip_line(prefix: &str) -> String {
 
 /// Persist a pasted Jev key (never a found one -- it's already wherever it was found).
 pub fn apply_jev(cfg: &OnboardConfig) -> String {
+    save_jev(cfg).unwrap_or_else(|error| error)
+}
+
+fn save_jev(cfg: &OnboardConfig) -> Result<String, String> {
     match cfg.jev_choice.as_str() {
-        "rejected" => return jev_skip_line(&format!("new key NOT saved (validation failed: {})", cfg.jev_error)),
-        "missing" => return jev_skip_line(&cfg.jev_error),
+        "rejected" => {
+            return Ok(jev_skip_line(&format!(
+                "new key NOT saved (validation failed: {})",
+                cfg.jev_error
+            )))
+        }
+        "missing" => return Ok(jev_skip_line(&cfg.jev_error)),
         _ => {}
     }
     if cfg.jev_choice != "paste" || cfg.jev_key.is_empty() {
-        return jev_skip_line("skipped");
+        return Ok(jev_skip_line("skipped"));
     }
     match crate::config::set_value("typesafe_api_key", &cfg.jev_key) {
         Ok(path) => {
             let mut line = format!(
                 "jev: key saved to {} ({})",
                 path.display(),
-                if cfg.jev_validated.unwrap_or(false) { "validated" } else { "validation failed; kept anyway" }
+                if cfg.jev_validated.unwrap_or(false) {
+                    "validated"
+                } else {
+                    "validation failed; kept anyway"
+                }
             );
             if std::env::var("TYPESAFE_API_KEY").is_ok_and(|v| !v.trim().is_empty()) {
                 line.push_str("; note: TYPESAFE_API_KEY in the environment still takes precedence");
             }
-            line
+            Ok(line)
         }
-        Err(e) => format!("jev: could not save key: {}", e),
+        Err(e) => Err(format!("jev: could not save key: {}", e)),
     }
 }
 
-pub fn apply_trunk_schedule(cfg: &OnboardConfig) -> String {
+fn apply_trunk_schedule(cfg: &OnboardConfig) -> Result<String, String> {
     if !cfg.trunk_schedule_enabled {
-        return "trunk schedule: skipped (not selected)".to_string();
+        return Ok("trunk schedule: skipped (not selected)".to_string());
     }
-    match crate::trunk_schedule::install("04:00", "claude", None, None) {
-        Ok(result) => format!(
-            "trunk schedule: installed ({}, nightly at 04:00, --llm claude)",
-            result.get("path").and_then(|v| v.as_str()).unwrap_or("")
-        ),
-        Err(e) => format!("trunk schedule: {}", e.message),
-    }
+    crate::trunk_schedule::install("04:00", "claude", None, None)
+        .map(|result| {
+            format!(
+                "trunk schedule: installed ({}, nightly at 04:00, --llm claude)",
+                result.get("path").and_then(|v| v.as_str()).unwrap_or("")
+            )
+        })
+        .map_err(|error| format!("trunk schedule: {}", error.message))
 }
 
 pub fn missing_card_sessions(span_days: i64) -> Vec<crate::session::Session> {
@@ -279,17 +335,29 @@ pub fn generate_backfill_cards(sessions: &[crate::session::Session], progress: O
     (written, skipped)
 }
 
-pub fn run_apply(cfg: &OnboardConfig, backfill_progress: Option<&dyn Fn(usize, usize)>) -> ApplyResult {
-    let hook_lines = apply_hooks(cfg);
-    let mcp_lines = apply_mcp(cfg);
-    let jev_line = apply_jev(cfg);
-    let trunk_schedule_line = apply_trunk_schedule(cfg);
+pub fn run_apply(
+    cfg: &OnboardConfig,
+    backfill_progress: Option<&dyn Fn(usize, usize)>,
+) -> ApplyResult {
+    let mut errors = Vec::new();
+    let hook_lines = apply_hooks(cfg, &mut errors);
+    let mcp_lines = apply_mcp(cfg, &mut errors);
+    let mut record = |result: Result<String, String>| {
+        result.unwrap_or_else(|error| {
+            errors.push(error.clone());
+            error
+        })
+    };
+    let jev_line = record(save_jev(cfg));
+    let trunk_schedule_line = record(apply_trunk_schedule(cfg));
     let (written, skipped) = if cfg.backfill_enabled {
         generate_backfill_cards(&missing_card_sessions(cfg.span_days), backfill_progress)
     } else {
         (0, 0)
     };
     ApplyResult {
+        instruction_prompt: String::new(),
+        errors,
         hook_lines,
         mcp_lines,
         backfill_written: written,
@@ -304,7 +372,11 @@ pub fn summary_lines(cfg: &OnboardConfig, result: &ApplyResult) -> Vec<String> {
     let mut lines = if warnings.is_empty() {
         vec!["Everett onboarding complete.".to_string()]
     } else {
-        let mut l = vec![format!("Everett onboarding finished with {} warning(s):", warnings.len())];
+        let mut l = if result.errors.is_empty() {
+            vec![format!("Everett onboarding finished with {} warning(s):", warnings.len())]
+        } else {
+            vec!["Everett setup needs attention. Run everett doctor.".to_string()]
+        };
         l.extend(warnings.iter().map(|w| format!("  WARNING: {}", w)));
         l
     };
@@ -382,11 +454,7 @@ pub fn setup_warnings(cfg: &OnboardConfig, result: &ApplyResult) -> Vec<String> 
                 .to_string(),
         );
     }
-    for line in result.hook_lines.iter().chain(result.mcp_lines.iter()) {
-        if line.contains("error") || line.contains("failed") || line.contains("refus") {
-            warnings.push(line.clone());
-        }
-    }
+    warnings.extend(result.errors.iter().cloned());
     if cfg.jev_choice == "rejected" || cfg.jev_choice == "missing" {
         warnings.push(result.jev_line.clone());
     }
@@ -406,7 +474,11 @@ pub fn run_yes(args: &crate::cli::Args) -> i32 {
     for line in summary_lines(&cfg, &result) {
         println!("{}", line);
     }
-    0
+    if result.errors.is_empty() {
+        finish()
+    } else {
+        1
+    }
 }
 
 fn ask_yes(prompt: &str, default: bool) -> Result<bool, QuitOnboarding> {
@@ -604,7 +676,7 @@ fn run_plain(args: &crate::cli::Args) -> Result<i32, QuitOnboarding> {
     for line in summary_lines(&cfg, &result) {
         println!("{}", line);
     }
-    Ok(0)
+    Ok(if result.errors.is_empty() { finish() } else { 1 })
 }
 
 pub fn run(args: &crate::cli::Args) -> i32 {
@@ -621,9 +693,14 @@ pub fn run(args: &crate::cli::Args) -> i32 {
     }
     if let Ok(result) = crate::tui::run(args, default_config()) {
         match result {
-            Some(()) => return 0,
+            Some(result) => {
+                if !result.instruction_prompt.is_empty() {
+                    println!("\nCopy into your selected agents:\n\n{}\n", result.instruction_prompt);
+                }
+                return if result.errors.is_empty() { finish() } else { 1 };
+            },
             None => {
-                println!("Cancelled -- no changes were made.");
+                println!("Setup stopped. Applied changes, if any, are kept.");
                 return 0;
             }
         }
@@ -631,7 +708,7 @@ pub fn run(args: &crate::cli::Args) -> i32 {
     match run_plain(args) {
         Ok(code) => code,
         Err(QuitOnboarding) => {
-            println!("Cancelled -- no changes were made.");
+            println!("Setup stopped. Applied changes, if any, are kept.");
             0
         }
     }
