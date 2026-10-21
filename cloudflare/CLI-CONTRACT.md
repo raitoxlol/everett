@@ -44,3 +44,7 @@ Required native auth names: EVERETT_ISSUER, AUTH_GITHUB_ID, AUTH_GITHUB_SECRET, 
 New GitHub app callback: `https://everett-dev.raitox-everett-dev.workers.dev/auth/callback/github`. Existing Convex app/deployment and existing gateway remain unchanged. Do not copy credentials into source, reports, chat or vault. Configure secret values privately through Cloudflare secret input. No production DNS or paid plan has been changed.
 
 Remaining: native HTTP adapter and notification transport; live GitHub/ChatGPT acceptance; two physical machine encrypted send/read/reply, reconnect and revocation; explicit re-enrollment/migration plan; cross-owner grants; deployed CPU/free-plan capacity measurement. This backend is currently owner-only.
+
+## Remote-device standards assessment
+
+Current /v2/auth/device and /v2/auth/poll are an Everett-specific protocol, not RFC8628. They already use public HTTPS and outbound polling, so a separate browser can approve without localhost callbacks. [DEVICE-FLOW-PLAN.md](DEVICE-FLOW-PLAN.md) records the additive standard grant proposal, exact gaps and live acceptance gates. That proposal is not implemented or advertised; existing endpoints and JSON fields remain stable.
