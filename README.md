@@ -262,8 +262,9 @@ The listener polls outbound HTTPS, stages ciphertext durably, reauthorizes befor
 publication and retries temporary failures. It never wakes a session. Read, reply and
 revocation need their own verification. See [the native relay guide](docs/cloudflare-native.md).
 
-The actual native CLI passed a local production-Worker journey with synthetic GitHub.
-Real hosted GitHub approval and physical cross-device acceptance remain pending.
+The actual native CLI passed local production-Worker acceptance and a physical Mac/NUC
+send/read/reply/reconnect/revoke journey, with synthetic GitHub and private SSH forwarding
+to the local Worker. Real hosted GitHub approval and public-issuer delivery remain pending.
 There is no hosted default. Cloudflare's current device protocol is custom, not RFC8628.
 Cross-owner grants, Convex registry/SSH-address publication and cloud-agent OAuth are separate.
 

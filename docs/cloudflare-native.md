@@ -2,8 +2,9 @@
 
 The development native adapter uses the configured Cloudflare issuer and the existing
 custom device approval protocol. There is no hosted default. Real hosted GitHub approval
-and physical cross-device acceptance remain pending. Local acceptance uses the production
-Worker and native CLI, with only outbound GitHub mocked.
+and public-issuer delivery remain pending. Acceptance passed with the production Worker
+and native CLI on a physical Mac and NUC, with outbound GitHub mocked and private SSH
+forwarding to the local Worker. This includes send/read/reply, reconnect and independent revoke.
 
 ## Approve and connect each computer
 
@@ -61,5 +62,8 @@ The harness creates and removes isolated temporary homes. It checks separate app
 signed registration and pins, an offline encrypted send, idempotent retry, durable inbox
 pickup, signed claimed/replied status, encrypted reply, independent owner revocation and
 preservation of old OIDC files. It never reads real account files. Stop the local fixture
-with Ctrl-C. This proves the local Worker/native contract. Real GitHub, public-network
-and physical-device journeys need separate acceptance.
+with Ctrl-C. This harness proves the local Worker/native contract on one machine.
+The separately verified physical Mac/NUC journey used independent temporary identities,
+interrupted the private fixture connection, verified queued delivery after reconnect and
+revoked the NUC while the Mac remained active. Real GitHub and public-issuer delivery
+still need separate acceptance.
