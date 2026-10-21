@@ -74,6 +74,20 @@ async function begin(name = 'mac-mini-test') {
   expect(response.status).toBe(200);
   return await response.json() as { device_code: string; user_code: string; expires_in: number; interval: number; verification_uri_complete: string };
 }
+function expectAuthShell(page: string) {
+  expect(page).toContain('<html lang="en">');
+  expect(page).toContain('<header class="auth-header">');
+  expect(page).toContain('<main id="main" class="auth-main">');
+  expect(page).toContain('<span class="auth-brand" aria-label="Everett">everett</span>');
+  expect(page).toContain('<div class="auth-content">');
+  expect(page).toMatch(/<div class="auth-lead"><h1>[^<]+<\/h1>/);
+  expect(page).not.toContain('auth-card');
+  expect(page).not.toContain('PRIVATE BY DESIGN');
+  expect(page).not.toContain('SECURE DEVICE ACCESS');
+}
+function expectAuthState(page: string, state: 'pending' | 'connected' | 'denied' | 'cancelled' | 'expired' | 'revoked') {
+  expect(page).toContain(`<section class="auth-state" data-state="${state}"`);
+}
 async function enroll(browser: Browser, name = 'mac-mini-test') {
   const pending = await begin(name);
   const csrf = await browser.csrf('/enroll?code=' + pending.user_code);
@@ -103,6 +117,7 @@ async function consent(browser: Browser, verifier = 'v'.repeat(64)) {
   const location = new URL(response.headers.get('Location')!, issuer);
   const requestId = location.searchParams.get('request')!;
   expect(Boolean(requestId)).toBe(true);
+  expectAuthShell(await (await browser.request(location.pathname + location.search)).text());
   const csrf = await browser.csrf(location.pathname + location.search);
   const approved = await browser.request('/oauth/consent', form({ csrf, request_id: requestId, decision: 'approve', name: 'argos-test' }));
   expect(approved.status).toBe(303);
@@ -190,27 +205,45 @@ describe('Hosted device login through real Worker routes', () => {
     expect((await nativeWhoami(second.token)).status).toBe(200);
   });
   it('shows close guidance only after authoritative approval and never renders the native token', async () => {
-    const browser = new Browser(); await browser.login();
     const pending = await begin('browser-flow');
     const pagePath = '/enroll?code=' + pending.user_code;
+    const anonymous = await (await fetchWorker(pagePath)).text();
+    expectAuthShell(anonymous);
+    expect(anonymous).toContain('<h1>Sign in to Everett</h1>');
+    expect(anonymous).toContain('Continue with GitHub');
+    expect(anonymous).toContain('class="auth-button"');
+    expect(anonymous).toContain('href="/auth/github?return_to=');
+    expect(anonymous).toContain(`%2Fenroll%3Fcode%3D${pending.user_code}`);
+    expect(anonymous).not.toContain(pending.device_code);
+
+    const browser = new Browser(); await browser.login();
     const before = await (await browser.request(pagePath)).text();
+    expectAuthShell(before);
+    expectAuthState(before, 'pending');
     expect(before.includes('Waiting for approval')).toBe(true);
-    expect(before.includes('You can close this page')).toBe(false);
+    expect(before.includes('You can close this tab')).toBe(false);
     expect(before.includes(pending.device_code)).toBe(false);
     const decision = await browser.request('/enroll/decision', form({ csrf: await browser.csrf(pagePath), user_code: pending.user_code, decision: 'approve' }));
     expect(decision.status).toBe(303);
     const approved = await (await browser.request(pagePath)).text();
+    expectAuthShell(approved);
+    expectAuthState(approved, 'connected');
+    expect(approved).toContain('<h2 class="auth-state__title">Connected</h2>');
     expect(approved.includes('Approval complete')).toBe(true);
-    expect(approved.includes('You can close this page')).toBe(true);
+    expect(approved.includes('You can close this tab')).toBe(true);
     const result = await fetchWorker('/v2/auth/poll', json({ device_code: pending.device_code }));
     const native = await result.json() as { token: string; agent_id: string };
     const consumed = await (await browser.request(pagePath)).text();
+    expectAuthShell(consumed);
+    expectAuthState(consumed, 'connected');
     expect(consumed.includes('Approval complete')).toBe(true);
     expect(consumed.includes(native.token)).toBe(false);
     expect((await browser.request('/enroll/revoke', form({ csrf: await browser.csrf(pagePath), agent_id: native.agent_id }))).status).toBe(303);
     const revoked = await (await browser.request(pagePath)).text();
+    expectAuthShell(revoked);
+    expectAuthState(revoked, 'revoked');
     expect(revoked.includes('Credential revoked')).toBe(true);
-    expect(revoked.includes('You can close this page')).toBe(false);
+    expect(revoked.includes('You can close this tab')).toBe(false);
   });
   it('requires owner session, CSRF and exact Origin for approval', async () => {
     const pending = await begin(), browser = new Browser();
@@ -406,16 +439,20 @@ describe('OAuth resource-bound authorization', () => {
     const response = await fetchWorker('/v2/auth/poll', json({ device_code: denied.device_code }));
     expect((await response.json() as { state: string }).state).toBe('denied');
     const deniedPage = await (await browser.request('/enroll?code=' + denied.user_code)).text();
+    expectAuthShell(deniedPage);
+    expectAuthState(deniedPage, 'denied');
     expect(deniedPage.includes('Request denied')).toBe(true);
-    expect(deniedPage.includes('You can close this page')).toBe(false);
+    expect(deniedPage.includes('You can close this tab')).toBe(false);
     const expired = await begin('expiry-test');
     const auth = env.AUTH_STATE!.get(env.AUTH_STATE!.idFromName(issuer));
     await runInDurableObject(auth, (_instance, state) => { state.storage.sql.exec('UPDATE device_requests SET expires_at=0'); });
     const result = await fetchWorker('/v2/auth/poll', json({ device_code: expired.device_code }));
     expect((await result.json() as { state: string }).state).toBe('expired');
     const expiredPage = await (await browser.request('/enroll?code=' + expired.user_code)).text();
+    expectAuthShell(expiredPage);
+    expectAuthState(expiredPage, 'expired');
     expect(expiredPage.includes('Request expired')).toBe(true);
-    expect(expiredPage.includes('You can close this page')).toBe(false);
+    expect(expiredPage.includes('You can close this tab')).toBe(false);
     expect(await memberCount()).toBe(0);
   });
   it('stores only token hashes and rejects duplicate token parameters', async () => {
