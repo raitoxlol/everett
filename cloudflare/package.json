@@ -1,0 +1,27 @@
+{
+  "name": "everett-cloudflare",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "wrangler dev --local",
+    "test": "vitest run && vitest run --config vitest.auth.config.ts",
+    "test:auth": "vitest run --config vitest.auth.config.ts",
+    "typecheck": "tsc --noEmit",
+    "build": "wrangler deploy --dry-run --outdir dist"
+  },
+  "dependencies": {
+    "@noble/ciphers": "1.3.0",
+    "@noble/curves": "1.9.7",
+    "@noble/hashes": "1.8.0",
+    "zod": "4.3.6"
+  },
+  "devDependencies": {
+    "@cloudflare/vitest-plugin": "1.4.6",
+    "@cloudflare/workers-types": "5.20261021.1",
+    "@types/node": "24.10.1",
+    "typescript": "5.9.3",
+    "vitest": "4.1.11",
+    "wrangler": "4.151.3"
+  }
+}

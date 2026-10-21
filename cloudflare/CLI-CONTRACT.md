@@ -1,0 +1,44 @@
+# Cloudflare native login and OAuth contract
+
+Status: implemented in the isolated Cloudflare backend; the native Rust adapter is still required. This does not change the released CLI. Backend/auth and native CLI integration are separate implementation responsibilities.
+
+## Development endpoint
+
+Issuer: `https://everett-dev.raitox-everett-dev.workers.dev` (exact origin, no trailing slash). Development account Raitox tech, Worker `everett-dev`. HTTPS health returned 200 on 2026-10-21; real GitHub credentials have not been configured. Health configuration presence does not prove auth readiness. No native client default should point here until the adapter and live flow pass.
+
+## Native enrollment
+
+| Request | Response / behavior |
+| --- | --- |
+| POST `/v2/auth/device`, JSON `{name}` | 200 `{device_code,user_code,verification_uri,verification_uri_complete,expires_in:600,interval:5}`. Pending creates no membership. |
+| GET `/enroll?code=<user_code>` | Owner browser page. Sign in through `/auth/github?return_to=<encoded local enroll URL>`. |
+| POST `/v2/auth/poll`, JSON `{device_code}` | 200 `{state,interval:5}` for pending; denied/cancelled/consumed/expired are terminal. Polling sooner than five seconds returns 429 `slow_down`. Approved delivery may proceed immediately. |
+| Approved poll | 200 `{state:"approved",token,agent_id,owner,expires_at}`; Unix milliseconds. Delivered once. Persist atomically with mode 0600 before clearing pending state. Never print the token or device_code. Lost delivery requires new enrollment; revoke an orphan credential in the owner page. |
+| POST `/v2/auth/cancel`, JSON `{device_code}` | Cancels a pending request. |
+| POST `/v2/relay/whoami`, JSON `{}`, Authorization bearer | 200 `{result:{owner,deviceId,role:"member"}}`. Browser sessions and OAuth access tokens cannot substitute for the native credential. |
+| POST `/v2/relay/register` | Existing v2 device signature/key contract. Registration is required for normal relay operations. |
+| POST `/v2/relay/revokeAgent`, JSON `{deviceId:own_id}` | Native self-revoke requires registered keys under existing relay operation rules. Owner browser revoke also handles never-registered credentials. |
+
+Native credentials expire after 30 days. No native renewal endpoint exists. Non-2xx JSON errors are `{error:code}`. Invalid credentials 401; owner/CSRF denials 403; validation 400; body cap 413; rate limiting 429; unconfigured 503; provider failure 502. A transient failure must not erase an otherwise valid stored credential. All Everett commands must continue honoring EVERETT_HOME. Device IDs are immutable server-issued IDs; caller names are display labels.
+
+Browser mutations use exact Origin, owner session cookie and hidden CSRF value. POST `/enroll/decision` form `{csrf,user_code,decision:"approve"|"deny"}`; `/enroll/revoke` form `{csrf,agent_id}`; `/auth/logout` form `{csrf}`. These return 303. Native credentials never grant browser owner authority.
+
+## OAuth for the existing HTTP gateway
+
+Discovery is `/.well-known/oauth-authorization-server`. Authorization code + S256 PKCE only; scope `everett`; public client auth `none`. CIMD client URLs, redirect URIs and resource URLs must be explicitly allowlisted and match exactly. DCR is unsupported and no registration endpoint is advertised.
+
+- GET `/oauth/authorize`: client_id, redirect_uri, resource, response_type=code, scope=everett, state, code_challenge, code_challenge_method=S256. Browser initiation cookie binds consent to this request.
+- POST `/oauth/consent`: form csrf, request_id, decision, name; owner consent redirects to the exact callback with code/state/iss, or access_denied.
+- POST `/oauth/token`: form grant_type=authorization_code, code, client_id, redirect_uri, code_verifier; resource/scope if supplied must match. Refresh uses grant_type=refresh_token, refresh_token, client_id and optional matching resource/scope.
+- POST `/oauth/introspect`: form token plus private introspection bearer secret. Active result contains active, iss, aud, exp (seconds), scope, sub, everett_agent, everett_agent_name, client_id. Compatible with existing Rust gateway OAuth introspection contract.
+- POST `/oauth/revoke`: client-bound token revocation. Owner credential revocation also invalidates introspection and refresh immediately.
+
+Codes expire in five minutes; access tokens in 15 minutes; refresh families have a fixed 30-day lifetime. Refresh rotation is mandatory. Code or refresh replay revokes the family. Tokens are hashes at rest. Native relay credentials and OAuth gateway tokens are separate.
+
+## Configuration and rollout boundary
+
+Required native auth names: EVERETT_ISSUER, AUTH_GITHUB_ID, AUTH_GITHUB_SECRET, EVERETT_OWNER_GITHUB_ID, EVERETT_OWNER_GITHUB_LOGIN. OAuth adds EVERETT_OAUTH_CLIENT_IDS, EVERETT_OAUTH_REDIRECT_URIS, EVERETT_OAUTH_RESOURCES, EVERETT_OAUTH_INTROSPECTION_SECRET (32+ chars).
+
+New GitHub app callback: `https://everett-dev.raitox-everett-dev.workers.dev/auth/callback/github`. Existing Convex app/deployment and existing gateway remain unchanged. Do not copy credentials into source, reports, chat or vault. Configure secret values privately through Cloudflare secret input. No production DNS or paid plan has been changed.
+
+Remaining: native HTTP adapter and notification transport; live GitHub/ChatGPT acceptance; two physical machine encrypted send/read/reply, reconnect and revocation; explicit re-enrollment/migration plan; cross-owner grants; deployed CPU/free-plan capacity measurement. This backend is currently owner-only.
