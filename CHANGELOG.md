@@ -21,7 +21,7 @@
 - Bind MCP calls to host or per-call session identity, return identity failures as tool errors, and fall back to local routing when Jev rejects a request.
 - Track reply depth separately from forward hops. Install only the hooks and extensions for harnesses that Everett detects or the user selects.
 
-## Unreleased
+### Detailed changes included in 2.0.0
 
 - Document the OpenAI dot tunnel that was checked on 1.6.0, including the
   gateway file, exact session ids, `CONTROL_PLANE_API_KEY`, and ChatGPT's
