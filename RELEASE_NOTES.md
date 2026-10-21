@@ -27,7 +27,7 @@ The installer verifies the archive checksum. Set `EVERETT_VERSION=v2.0.0` to pin
 
 ## Verification and release scope
 
-The public first-run GitHub account flow, automatic provider chooser, and repeat bare `everett` invocation passed. A physical Mac/NUC fixture passed. Public cross-device delivery and live ChatGPT OAuth remain unverified.
+The public first-run GitHub account flow automatically advanced to the agent chooser, and a repeat bare `everett` invocation passed. A physical Mac/NUC fixture passed. Public cross-device delivery and live ChatGPT OAuth remain unverified.
 
 The tagged CLI workflow runs Rust tests and Clippy on macOS and Linux, then builds four platform targets. Publishing the CLI does not deploy the Cloudflare Worker; Worker deployment and the Homebrew tap are separate operations.
 
