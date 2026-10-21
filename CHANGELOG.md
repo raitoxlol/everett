@@ -28,8 +28,8 @@
   no-authentication plugin path. Add `everett tunnel watch` plus systemd and
   launchd examples so a live `tunnel-client` that stops forwarding after
   repeated poll timeouts is restarted without putting keys in the unit file.
-- Codex MCP calls bind from the per-call `_meta.threadId` (this landed after the
-  1.6.0 tag; it is not in any release yet).
+- Codex MCP calls bind from the per-call `_meta.threadId` (first included in
+  2.0.0).
 - Pi, OMP, Devin, and Hermes MCP callers bind to their session without a
   hand-set `EVERETT_SESSION_ID`: `everett mcp --harness <name>` finds the host
   process and the session its Everett hook recorded (Pi extension, OMP
