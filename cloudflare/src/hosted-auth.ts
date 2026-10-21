@@ -329,9 +329,15 @@ export class HostedAuth extends DurableObject<HostedAuthEnv> {
       if (p.code) {
         if (!/^[A-F0-9]{12}$/.test(p.code)) throw new RelayError('invalid_user_code', 400);
         const row = this.#row<DeviceRequest>('SELECT * FROM device_requests WHERE user_code=?', p.code);
-        if (!row || row.expires_at <= Date.now()) content += '<p>Request expired or unknown.</p>';
+        if (!row || row.expires_at <= Date.now()) content += '<h2>Request expired</h2><p>Start sign-in again in your CLI to get a new code.</p>';
         else {
           content += `<h2>${esc(row.name)}</h2><p>Device code: <strong>${esc(row.user_code)}</strong></p><p>Status: ${esc(row.state)}</p>${row.agent_id ? `<p>Agent ID: ${esc(row.agent_id)}</p>` : ''}`;
+          if ((row.state === 'approved' || row.state === 'consumed') && row.agent_id) {
+            if (await this.#live(c, row.agent_id)) content += '<h2>Approval complete</h2><p>You can close this page and return to your terminal. Your CLI will finish signing in automatically.</p>';
+            else content += '<h2>Credential revoked</h2><p>Start a new sign-in in your CLI if you want to connect this agent again.</p>';
+          } else if (row.state === 'denied') content += '<h2>Request denied</h2><p>This agent was not approved. Start a new sign-in in your CLI to try again.</p>';
+          else if (row.state === 'cancelled') content += '<h2>Request cancelled</h2><p>Start a new sign-in in your CLI to continue.</p>';
+          else content += '<h2>Waiting for approval</h2><p>Check the full code and device name, then approve below. Keep your CLI running.</p>';
           if (row.state === 'pending' || row.state === 'approving') content += `<form method="post" action="/enroll/decision">${csrfField(session.csrf)}<input type="hidden" name="user_code" value="${esc(row.user_code)}"><button name="decision" value="approve">Approve this agent</button><button name="decision" value="deny">Deny</button></form>`;
         }
       }

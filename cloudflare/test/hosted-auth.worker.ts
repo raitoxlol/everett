@@ -187,6 +187,29 @@ describe('Hosted device login through real Worker routes', () => {
     expect((await nativeWhoami(first.token)).status).toBe(401);
     expect((await nativeWhoami(second.token)).status).toBe(200);
   });
+  it('shows close guidance only after authoritative approval and never renders the native token', async () => {
+    const browser = new Browser(); await browser.login();
+    const pending = await begin('browser-flow');
+    const pagePath = '/enroll?code=' + pending.user_code;
+    const before = await (await browser.request(pagePath)).text();
+    expect(before.includes('Waiting for approval')).toBe(true);
+    expect(before.includes('You can close this page')).toBe(false);
+    expect(before.includes(pending.device_code)).toBe(false);
+    const decision = await browser.request('/enroll/decision', form({ csrf: await browser.csrf(pagePath), user_code: pending.user_code, decision: 'approve' }));
+    expect(decision.status).toBe(303);
+    const approved = await (await browser.request(pagePath)).text();
+    expect(approved.includes('Approval complete')).toBe(true);
+    expect(approved.includes('You can close this page')).toBe(true);
+    const result = await fetchWorker('/v2/auth/poll', json({ device_code: pending.device_code }));
+    const native = await result.json() as { token: string; agent_id: string };
+    const consumed = await (await browser.request(pagePath)).text();
+    expect(consumed.includes('Approval complete')).toBe(true);
+    expect(consumed.includes(native.token)).toBe(false);
+    expect((await browser.request('/enroll/revoke', form({ csrf: await browser.csrf(pagePath), agent_id: native.agent_id }))).status).toBe(303);
+    const revoked = await (await browser.request(pagePath)).text();
+    expect(revoked.includes('Credential revoked')).toBe(true);
+    expect(revoked.includes('You can close this page')).toBe(false);
+  });
   it('requires owner session, CSRF and exact Origin for approval', async () => {
     const pending = await begin(), browser = new Browser();
     expect((await fetchWorker('/enroll/decision', form({ csrf: 'forged', user_code: pending.user_code, decision: 'approve' }))).status).toBeGreaterThanOrEqual(400);
@@ -306,11 +329,17 @@ describe('OAuth resource-bound authorization', () => {
     expect((await browser.request('/enroll/decision', form({ csrf: await browser.csrf('/enroll?code=' + denied.user_code), user_code: denied.user_code, decision: 'deny' }))).status).toBe(303);
     const response = await fetchWorker('/v2/auth/poll', json({ device_code: denied.device_code }));
     expect((await response.json() as { state: string }).state).toBe('denied');
+    const deniedPage = await (await browser.request('/enroll?code=' + denied.user_code)).text();
+    expect(deniedPage.includes('Request denied')).toBe(true);
+    expect(deniedPage.includes('You can close this page')).toBe(false);
     const expired = await begin('expiry-test');
     const auth = env.AUTH_STATE!.get(env.AUTH_STATE!.idFromName(issuer));
     await runInDurableObject(auth, (_instance, state) => { state.storage.sql.exec('UPDATE device_requests SET expires_at=0'); });
     const result = await fetchWorker('/v2/auth/poll', json({ device_code: expired.device_code }));
     expect((await result.json() as { state: string }).state).toBe('expired');
+    const expiredPage = await (await browser.request('/enroll?code=' + expired.user_code)).text();
+    expect(expiredPage.includes('Request expired')).toBe(true);
+    expect(expiredPage.includes('You can close this page')).toBe(false);
     expect(await memberCount()).toBe(0);
   });
   it('stores only token hashes and rejects duplicate token parameters', async () => {
