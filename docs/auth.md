@@ -1,12 +1,55 @@
 # Accounts, agents, and relay authorization
 
 Local indexing, routing, inboxes, hooks, MCP, and SSH peers need no Everett sign-in.
-The optional Convex relay needs an OIDC provider **and deployment-side enrollment**;
+The existing Convex relay needs an OIDC provider **and deployment-side enrollment**;
 `everett login` alone does not grant relay access. There is no hosted default issuer
 or public enrollment service in this checkout. See [deployment and journeys](cross-device.md)
 and the [relay threat model](relay-threat-model.md).
 
-## Native sign-in
+## Hosted Cloudflare native sign-in (development adapter)
+
+Cloudflare enrollment uses its own native API and credential, separate from OIDC ID
+and refresh tokens. Select it explicitly; changing a Convex URL does not migrate the
+relay. The adapter has no hosted default until a real owner login passes acceptance.
+The development Worker is owner-only and requires separately configured GitHub login.
+
+```sh
+everett login --provider cloudflare --issuer https://YOUR-EVERETT-ISSUER --device laptop --open
+everett whoami --provider cloudflare --json
+```
+
+The browser compares the full code and device name and approves the request. The CLI
+polls, atomically saves the one-time native credential, then asks the server to verify
+its immutable agent ID and owner. A pending request creates no membership. `--device`
+is a display label. Approval never signs into Claude, Codex or another agent's provider.
+
+| Action | Command / result |
+| --- | --- |
+| Start without waiting | `everett login --provider cloudflare --issuer https://YOUR-EVERETT-ISSUER --no-wait` prints a public approval link/code. |
+| Resume | Run `everett login --provider cloudflare` again; pending issuer and request are retained privately. |
+| Cancel | Ctrl-C during waiting, or `everett login --provider cloudflare --cancel`. Approval racing cancellation is never claimed as cancelled. |
+| Retry | Denied, expired and cancelled requests clear pending state; rerun login. `--force` requests a new approval. |
+| Verify / sign out | `everett whoami --provider cloudflare` checks the server. `everett logout --provider cloudflare` removes the local credential only. |
+
+For a configured installation, `[auth] provider = "cloudflare"` (environment
+`EVERETT_AUTH_PROVIDER`) and `issuer` (`EVERETT_AUTH_ISSUER`) select this path. Omit the
+provider setting, or use `provider = "oidc"`, to retain existing OIDC behavior.
+`cloudflare-auth.json` and `cloudflare-pending.json` live beneath the `.everett` directory
+rooted by `EVERETT_HOME`/`HOME`, written atomically with mode 0600 in a private directory.
+Neither native tokens nor device polling secrets appear in command output. Failed
+verification, transient HTTP errors and failed revocation preserve saved credentials.
+A lost one-time delivery needs a new enrollment; revoke its orphan on the owner page.
+Native credentials expire after 30 days; there is no refresh endpoint.
+
+`logout --provider cloudflare --revoke-device` requests server revocation and removes
+the local credential only after confirmation. This requires registered relay keys;
+revoke a never-registered credential through the owner approval page. Local sign-out
+and remote revocation are distinct. The existing relay/notification transport still
+uses Convex and its independently configured OIDC identity; this adapter does not yet
+migrate encrypted peers or imply cloud-agent OAuth is connected. Dots/Grok client OAuth
+has its own consent/grant; Hark/Muse compatibility remains unverified.
+
+## Existing OIDC sign-in
 
 ```sh
 export EVERETT_AUTH_ISSUER='https://login.example.com/realms/everett'
