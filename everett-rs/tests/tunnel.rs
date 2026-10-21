@@ -232,3 +232,67 @@ exit 1
         std::thread::sleep(Duration::from_millis(30));
     }
 }
+
+#[test]
+fn watch_forwards_termination_to_client() {
+    let dir = tempfile::tempdir().unwrap();
+    let marker = dir.path().join("marker");
+    let env_file = dir.path().join("tunnel.env");
+    let client = dir.path().join("fake-tunnel");
+    write_secret(&env_file, "CONTROL_PLANE_API_KEY=test-runtime-key\n", 0o600);
+    write_exec(
+        &client,
+        &format!(
+            r#"#!/bin/sh
+marker={marker:?}
+printf 'pid %s\n' "$$" >> "$marker"
+printf 'started\n' >> "$marker"
+trap 'printf "graceful\n" >> "$marker"; exit 0' TERM INT
+while :; do sleep 1; done
+"#,
+            marker = marker.display()
+        ),
+    );
+    let mut watcher = Command::new(env!("CARGO_BIN_EXE_everett"))
+        .args([
+            "tunnel",
+            "watch",
+            "--env-file",
+            env_file.to_str().unwrap(),
+            "--tunnel-client",
+            client.to_str().unwrap(),
+        ])
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .unwrap();
+    let mut guard = KillRecorded {
+        marker: marker.clone(),
+        everett: Some(watcher.id()),
+    };
+    let start = Instant::now();
+    while !fs::read_to_string(&marker)
+        .unwrap_or_default()
+        .contains("started")
+    {
+        assert!(
+            start.elapsed() < Duration::from_secs(5),
+            "client did not start"
+        );
+        std::thread::sleep(Duration::from_millis(20));
+    }
+
+    let status = Command::new("kill")
+        .args(["-TERM", &watcher.id().to_string()])
+        .status()
+        .unwrap();
+    assert!(status.success());
+    let status = watcher.wait().unwrap();
+    guard.everett = None;
+    assert!(status.success());
+    assert!(
+        fs::read_to_string(&marker).unwrap().contains("graceful"),
+        "client did not handle SIGTERM gracefully"
+    );
+}
