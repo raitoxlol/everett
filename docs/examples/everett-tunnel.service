@@ -1,0 +1,16 @@
+[Unit]
+Description=Everett OpenAI dot tunnel
+After=network-online.target
+
+[Service]
+Type=simple
+# Absolute path from `command -v everett`. The runtime key stays in the env file.
+ExecStart=%h/.local/bin/everett tunnel watch --profile everett-dot --env-file %h/.config/everett/tunnel.env
+Restart=on-failure
+RestartSec=5
+# A bad env file exits 2. Do not loop on that.
+RestartPreventExitStatus=2
+NoNewPrivileges=true
+
+[Install]
+WantedBy=default.target

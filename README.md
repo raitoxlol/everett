@@ -118,6 +118,8 @@ provider transcripts or API-model substitutes. See [OpenAI dots setup](docs/open
 [Grok Bot registration and polling](docs/grok-bot.md), and [gateway permissions](docs/gateway.md).
 Owner-side connector setup is required; queued messages do not prove pickup or wake-up.
 Manage local bindings with `everett external add`, `list`, and `remove`.
+Keep an OpenAI tunnel client forwarding with `everett tunnel watch`; a ready
+health check does not show a stuck control-plane poll. See the dots doc.
 
 ## Demo
 
