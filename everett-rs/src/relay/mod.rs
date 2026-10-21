@@ -2,9 +2,9 @@ pub mod crypto;
 mod transport;
 
 #[cfg(test)]
-use self::tests::ConvexClient;
+use self::tests::ConvexClient as RelayClient;
 #[cfg(not(test))]
-use self::transport::Client as ConvexClient;
+use self::transport::Client as RelayClient;
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
 use convex::FunctionResult;
 use fs2::FileExt;
@@ -175,8 +175,64 @@ impl RejectedCache {
     }
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Provider {
+    Oidc,
+    Cloudflare,
+}
+impl Provider {
+    fn selected() -> Result<Self> {
+        match crate::config::get("auth.provider", Some("EVERETT_AUTH_PROVIDER"), "oidc").as_str() {
+            "oidc" => Ok(Self::Oidc),
+            "cloudflare" => Ok(Self::Cloudflare),
+            _ => Err(bad("auth.provider must be oidc or cloudflare")),
+        }
+    }
+    fn transport(self) -> &'static str {
+        match self {
+            Self::Oidc => "convex",
+            Self::Cloudflare => "cloudflare",
+        }
+    }
+}
+struct RelayAccount {
+    owner: String,
+    agent: String,
+    name: String,
+}
+fn native_credential() -> Result<crate::cloudflare_auth::Credential> {
+    let stored = crate::cloudflare_auth::load()?
+        .ok_or_else(|| bad("run everett login --provider cloudflare first"))?;
+    stored.relay_origin()?;
+    Ok(stored)
+}
+fn relay_account() -> Result<RelayAccount> {
+    match Provider::selected()? {
+        Provider::Cloudflare => {
+            let stored = native_credential()?;
+            Ok(RelayAccount {
+                owner: stored.owner,
+                agent: stored.agent_id,
+                name: stored.device_name,
+            })
+        }
+        Provider::Oidc => {
+            let (stored, owner) = account()?;
+            let agent = claims(&stored.id_token)?["everett_agent"]
+                .as_str()
+                .ok_or_else(|| bad("missing agent claim"))?
+                .to_string();
+            Ok(RelayAccount {
+                owner,
+                agent,
+                name: stored.device_name,
+            })
+        }
+    }
+}
+
 fn root() -> PathBuf {
-    session::home().join(".everett/relay")
+    session::home().join(if matches!(Provider::selected(), Ok(Provider::Cloudflare)) { ".everett/relay-cloudflare" } else { ".everett/relay" })
 }
 fn milliseconds() -> i64 {
     (session::now() * 1000.0) as i64
@@ -215,6 +271,7 @@ pub fn configured(name: &str) -> bool {
 }
 
 fn deployment() -> Result<String> {
+    if Provider::selected()? == Provider::Cloudflare { return native_credential()?.relay_origin(); }
     let value = crate::config::get("relay.url", Some("EVERETT_CONVEX_URL"), "");
     let url = url::Url::parse(&value).map_err(|_| {
         bad("set EVERETT_CONVEX_URL or [relay] url to your HTTPS Convex deployment")
@@ -238,7 +295,7 @@ pub(crate) fn account() -> Result<(auth::Stored, String)> {
 
 fn account_refresh(force: bool) -> Result<(auth::Stored, String)> {
     if crate::config::get("auth.provider", Some("EVERETT_AUTH_PROVIDER"), "oidc") != "oidc" {
-        return Err(bad("Cloudflare relay transport is not connected by native sign-in yet; the existing Convex relay requires explicit auth.provider = oidc"));
+        return Err(bad("this operation requires OIDC/Convex; the Cloudflare relay does not support the Convex registry"));
     }
     initialize()?;
     let _guard = peer::lock(&root().join("auth.lock"))?;
@@ -336,13 +393,9 @@ fn daemon_lock() -> Result<fs::File> {
 fn verified_keys(owner: &str) -> Result<Keys> {
     let owner = owner.to_string();
     runtime(async move {
-        let (stored, current) = account()?;
-        if current != owner {
-            return Err(bad("owner changed"));
-        }
-        let expected_agent = claims(&stored.id_token)?["everett_agent"].clone();
-        // Creating/reusing secret keys only follows Convex verification of the JWT
-        // and authoritative membership/credential binding, not unverified claims alone.
+        let identity = relay_account()?;
+        if identity.owner != owner { return Err(bad("owner changed")); }
+        let expected_agent = identity.agent;
         client(&owner).await?;
         let keys = keys(&owner)?;
         if expected_agent != keys.device.device_id {
@@ -361,14 +414,9 @@ fn key_path(owner: &str, agent: &str) -> PathBuf {
 
 fn keys(owner: &str) -> Result<Keys> {
     initialize()?;
-    let (stored, current) = account()?;
-    if current != owner {
-        return Err(bad("owner changed"));
-    }
-    let claim = claims(&stored.id_token)?;
-    let agent = claim["everett_agent"]
-        .as_str()
-        .ok_or_else(|| bad("missing agent claim"))?;
+    let identity = relay_account()?;
+    if identity.owner != owner { return Err(bad("owner changed")); }
+    let agent = identity.agent.as_str();
     valid(agent)?;
     let _guard = peer::lock(&root().join("keys.lock"))?;
     let path = key_path(owner, agent);
@@ -439,7 +487,7 @@ pub fn list() -> Result<Value> {
         if ssh.contains_key(&name) {
             return Err(bad("alias is configured for both SSH and Convex; remove one binding explicitly before use"));
         }
-        result.insert(name, json!({"transport":"convex", "device_id":pin.device.device_id, "owner":pin.device.owner, "grant_id":pin.grant_id, "fingerprint":pin.device.fingerprint(), "deployment":pin.deployment}));
+        result.insert(name, json!({"transport":Provider::selected()?.transport(), "device_id":pin.device.device_id, "owner":pin.device.owner, "grant_id":pin.grant_id, "fingerprint":pin.device.fingerprint(), "deployment":pin.deployment}));
     }
     Ok(Value::Object(result))
 }
@@ -447,7 +495,7 @@ pub fn list() -> Result<Value> {
 pub(crate) fn remove_locked(name: &str) -> Result<Value> {
     fs::remove_file(peer_path(name)?).map_err(bad)?;
     Ok(
-        json!({"removed":name,"transport":"convex","note":"Local trust removed; permanent backend revocation is everett relay revoke-agent AGENT_ID."}),
+        json!({"removed":name,"transport":Provider::selected()?.transport(),"note":"Local trust removed; permanent backend revocation is everett relay revoke-agent AGENT_ID."}),
     )
 }
 
@@ -462,7 +510,7 @@ fn runtime<T: Send + 'static>(
 ) -> Result<T> {
     std::thread::spawn(move || {
         tokio::runtime::Runtime::new().map_err(bad)?.block_on(async {
-            tokio::time::timeout(DEADLINE, future).await.map_err(|_| EverettError::new(5, "Convex request timed out; delivery is unconfirmed. Retry with the same idempotency key."))?
+            tokio::time::timeout(DEADLINE, future).await.map_err(|_| EverettError::new(5, "relay request timed out; delivery is unconfirmed. Retry with the same idempotency key."))?
         })
     }).join().map_err(|_| bad("relay worker failed"))?
 }
@@ -489,7 +537,18 @@ fn result(value: FunctionResult) -> Result<Value> {
     }
 }
 
-async fn client(owner: &str) -> Result<ConvexClient> {
+async fn client(owner: &str) -> Result<RelayClient> {
+    if Provider::selected()? == Provider::Cloudflare {
+        let stored = native_credential()?;
+        if stored.owner != owner { return Err(bad("signed-in owner changed; restart the relay")); }
+        let agent = stored.agent_id.clone();
+        let client = RelayClient::native(stored);
+        let identity = client.native_call("relay:whoami", json!({})).await?;
+        if identity["owner"] != owner || identity["deviceId"] != agent {
+            return Err(EverettError::new(1, "Cloudflare relay denied: verified identity changed"));
+        }
+        return Ok(client);
+    }
     let (stored, current) = account()?;
     let agent = claims(&stored.id_token)?["everett_agent"]
         .as_str()
@@ -500,7 +559,7 @@ async fn client(owner: &str) -> Result<ConvexClient> {
     }
     let expected = owner.to_string();
     let expected_agent = agent.clone();
-    let mut client = ConvexClient::new(&deployment()?)
+    let mut client = RelayClient::new(&deployment()?)
         .await
         .map_err(|e| bad(format!("cannot connect to Convex: {e:#}")))?;
     client
@@ -536,7 +595,8 @@ fn anyhow_error() -> anyhow::Error {
     anyhow::anyhow!("Everett OIDC token unavailable; sign in again")
 }
 
-async fn mutation(client: &mut ConvexClient, name: &str, value: Value) -> Result<Value> {
+async fn mutation(client: &mut RelayClient, name: &str, value: Value) -> Result<Value> {
+    if client.is_native() { return client.native_call(name, value).await; }
     let response = tokio::time::timeout(DEADLINE, client.mutation(name, args(value)?))
         .await
         .map_err(|_| bad("Convex mutation timed out; delivery unconfirmed"))?
@@ -553,7 +613,8 @@ async fn mutation(client: &mut ConvexClient, name: &str, value: Value) -> Result
     result(response)
 }
 
-async fn query(client: &mut ConvexClient, name: &str, value: Value) -> Result<Value> {
+async fn query(client: &mut RelayClient, name: &str, value: Value) -> Result<Value> {
+    if client.is_native() { return client.native_call(name, value).await; }
     result(
         tokio::time::timeout(DEADLINE, client.query(name, args(value)?))
             .await
@@ -564,14 +625,14 @@ async fn query(client: &mut ConvexClient, name: &str, value: Value) -> Result<Va
 
 /// The presentation directory is bounded. Existence, key pinning, and
 /// rotation recovery must use the owner-authorized exact-device query instead.
-async fn exact_device(client: &mut ConvexClient, device_id: &str) -> Result<Device> {
+async fn exact_device(client: &mut RelayClient, device_id: &str) -> Result<Device> {
     valid(device_id)?;
     serde_json::from_value(query(client, "relay:device", json!({"deviceId":device_id})).await?)
         .map_err(bad)
 }
 
 async fn commit_rotation(
-    client: &mut ConvexClient,
+    client: &mut RelayClient,
     old: &Keys,
     new: &Keys,
     bytes: &str,
@@ -611,7 +672,7 @@ fn staged_rotation<T>(
 }
 
 pub fn admin_call(name: &str, value: Value, is_query: bool) -> Result<Value> {
-    let (_, owner) = account()?;
+    let owner = relay_account()?.owner;
     let name = name.to_string();
     runtime(async move {
         let mut client = client(&owner).await?;
@@ -624,23 +685,11 @@ pub fn admin_call(name: &str, value: Value, is_query: bool) -> Result<Value> {
 }
 
 /// The owner namespace of the stored sign-in, without refreshing or contacting the backend.
-pub fn signed_in_owner() -> Result<String> {
-    let stored = auth::load().ok_or_else(|| bad("run everett login first"))?;
-    checked_identity(&stored, &claims(&stored.id_token)?, session::now())
-}
-
-pub fn signed_in_device_id() -> Result<String> {
-    let stored = auth::load().ok_or_else(|| bad("run everett login first"))?;
-    let id = claims(&stored.id_token)?["everett_agent"]
-        .as_str()
-        .ok_or_else(|| bad("missing agent claim"))?
-        .to_string();
-    valid(&id)?;
-    Ok(id)
-}
+pub fn signed_in_owner() -> Result<String> { Ok(relay_account()?.owner) }
+pub fn signed_in_device_id() -> Result<String> { Ok(relay_account()?.agent) }
 
 pub fn revoke_device(device_id: &str) -> Result<Value> {
-    let (_, owner) = account()?;
+    let owner = relay_account()?.owner;
     let deployment = deployment()?;
     revoke_device_with(device_id, &owner, &deployment, admin_call)
 }
@@ -798,7 +847,7 @@ pub fn parse_revoked_devices(value: Value) -> Result<Vec<RevokedDevice>> {
 }
 
 pub fn rotate() -> Result<Value> {
-    let (_, owner) = account()?;
+    let owner = relay_account()?.owner;
     let _daemon_guard = daemon_lock()?;
     let old = verified_keys(&owner)?;
     let path = key_path(&owner, &old.device.device_id);
@@ -848,6 +897,7 @@ pub fn rotate() -> Result<Value> {
 /// Register args carry this machine's SSH peer id and key, signed by that key, so a later
 /// revocation can prune exactly this device's SSH authorization.
 fn register_args(device: &Device) -> Result<Value> {
+    if Provider::selected()? == Provider::Cloudflare { return Ok(json!({"device":device})); }
     let mut args = json!({"device": device});
     if let Some(ssh) = ssh_binding(device)? {
         args["ssh"] = ssh;
@@ -876,16 +926,24 @@ pub fn register() -> Result<Value> {
 }
 
 pub fn register_with_address(address: Option<&str>) -> Result<Value> {
-    let (stored, owner) = account()?;
-    let name = stored.device_name;
-    valid(&name).map_err(|_| bad("device name must use 1-160 letters, digits, '.', '_' or '-'; run everett login --device NAME --force"))?;
-    let address = crate::device_registry::declared_address(address)?;
+    let identity = relay_account()?;
+    let (owner, name) = (identity.owner, identity.name);
+    if Provider::selected()? == Provider::Cloudflare && address.is_some() {
+        return Err(bad("Cloudflare relay does not publish SSH addresses; use its device ID and explicit fingerprint"));
+    }
+    let address = if Provider::selected()? == Provider::Cloudflare {
+        None
+    } else {
+        valid(&name).map_err(|_| bad("device name must use 1-160 letters, digits, '.', '_' or '-'; run everett login --device NAME --force"))?;
+        crate::device_registry::declared_address(address)?
+    };
     let key = verified_keys(&owner)?;
     let device = key.device.clone();
     let args = register_args(&device)?;
     runtime(async move {
         let mut client = client(&owner).await?;
         mutation(&mut client, "relay:register", args).await?;
+        if client.is_native() { return Ok(json!({"device":device,"fingerprint":device.fingerprint(),"transport":"cloudflare"})); }
         let signature = key.sign(&crate::device_registry::metadata_bytes(
             &owner,
             &device.device_id,
@@ -898,16 +956,8 @@ pub fn register_with_address(address: Option<&str>) -> Result<Value> {
 }
 
 pub fn devices() -> Result<Value> {
-    let (_, owner) = account()?;
-    runtime(async move {
-        let mut client = client(&owner).await?;
-        result(
-            client
-                .query("relay:devices", BTreeMap::new())
-                .await
-                .map_err(|_| bad("Convex registry query failed"))?,
-        )
-    })
+    let owner = relay_account()?.owner;
+    runtime(async move { let mut client = client(&owner).await?; query(&mut client, "relay:devices", json!({})).await })
 }
 
 pub fn add(
@@ -919,7 +969,7 @@ pub fn add(
     valid(name)?;
     valid(device_id)?;
     initialize()?;
-    let (_, owner) = account()?;
+    let owner = relay_account()?.owner;
     let device: Device = if let Some(grant) = grant_id {
         valid(grant)?;
         let view = admin_call("grants:get", json!({"grantId":grant}), true)?;
@@ -981,7 +1031,7 @@ pub fn add(
             }
             write(&path, &pin)?;
             Ok(
-                json!({"peer":name,"transport":"convex","device_id":device_id,"fingerprint":fingerprint}),
+                json!({"peer":name,"transport":Provider::selected()?.transport(),"device_id":device_id,"fingerprint":fingerprint}),
             )
         },
     )
@@ -1073,7 +1123,7 @@ fn reuse_outgoing(
     Ok(Some(existing))
 }
 
-async fn post(client: &mut ConvexClient, path: &Path, outgoing: &Outgoing) -> Result<Value> {
+async fn post(client: &mut RelayClient, path: &Path, outgoing: &Outgoing) -> Result<Value> {
     let result = mutation(
         client,
         "relay:enqueue",
@@ -1087,7 +1137,7 @@ async fn post(client: &mut ConvexClient, path: &Path, outgoing: &Outgoing) -> Re
     Ok(result)
 }
 
-async fn observe_reply(client: &mut ConvexClient, keys: &Keys, path: &Path) -> Result<()> {
+async fn observe_reply(client: &mut RelayClient, keys: &Keys, path: &Path) -> Result<()> {
     let out: Outgoing = read(path)?;
     if out.posted {
         if let Some(parent) = out.reply_pending {
@@ -1113,7 +1163,7 @@ pub fn send_as(
     caller_harness: Option<&str>,
 ) -> Result<Value> {
     let (name, harness, destination) = peer::target(target)?;
-    let (_, owner) = account()?;
+    let owner = relay_account()?.owner;
     let keys = verified_keys(&owner)?;
     let who = send::sender_info_as(caller, caller_harness);
     let from = who["sender"].as_str().unwrap_or(inbox::HUMAN);
@@ -1170,8 +1220,8 @@ pub fn send_as(
         let response = post(&mut client, &path, &outgoing).await?;
         let (_, observed) = find_outgoing(&owner, &outgoing.envelope.message_id)?;
         let state = if observed.state != State::Queued { json!(observed.state) } else { response["state"].clone() };
-        Ok(json!({"peer":name,"transport":"convex","message_id":outgoing.envelope.message_id,"idempotency_key":outgoing.envelope.idempotency_key,"state":state,"expires_at":outgoing.envelope.expires_at,"pickup":"live relay; hooks/MCP must consume local inbox"}))
-    }).map_err(|e| EverettError::new(e.code, format!("{}; idempotency key {key}. A local retry record exists, but Convex queueing is not confirmed.",e.message)))
+        Ok(json!({"peer":name,"transport":Provider::selected()?.transport(),"message_id":outgoing.envelope.message_id,"idempotency_key":outgoing.envelope.idempotency_key,"state":state,"expires_at":outgoing.envelope.expires_at,"pickup":"live relay; hooks/MCP must consume local inbox"}))
+    }).map_err(|e| EverettError::new(e.code, format!("{}; idempotency key {key}. A local retry record exists, but relay queueing is not confirmed.",e.message)))
 }
 
 pub fn retain_reply(
@@ -1180,7 +1230,7 @@ pub fn retain_reply(
     who: &Map<String, Value>,
     hops: i64,
 ) -> Result<Map<String, Value>> {
-    let (_, owner) = account()?;
+    let owner = relay_account()?.owner;
     let keys = verified_keys(&owner)?;
     if original["relay_owner"] != owner
         || original["relay_recipient_device"] != keys.device.device_id
@@ -1254,7 +1304,7 @@ fn find_outgoing(owner: &str, mid: &str) -> Result<(PathBuf, Outgoing)> {
 }
 
 pub fn status(name: &str, mid: &str) -> Result<Value> {
-    let (_, owner) = account()?;
+    let owner = relay_account()?.owner;
     paired(name, &owner)?;
     let (_, outgoing) = find_outgoing(&owner, mid)?;
     let keys = verified_keys(&owner)?;
@@ -1268,12 +1318,12 @@ pub fn status(name: &str, mid: &str) -> Result<Value> {
     }
     if !outgoing.posted {
         return Ok(
-            json!({"message_id":mid,"state":"unconfirmed","expires_at":outgoing.envelope.expires_at,"note":"A local retry record exists; Convex queueing has not been confirmed. Run everett relay to retry before expiry."}),
+            json!({"message_id":mid,"state":"unconfirmed","expires_at":outgoing.envelope.expires_at,"note":"A local retry record exists; relay queueing has not been confirmed. Run everett relay to retry before expiry."}),
         );
     }
     runtime(async move {
         let mut client = client(&owner).await?;
-        let status = result(client.query("relay:status",args(json!({"fromDevice":outgoing.envelope.from_device,"messageId":outgoing.envelope.message_id}))?).await.map_err(|_| bad("Convex status query failed"))?)?;
+        let status = query(&mut client,"relay:status",json!({"fromDevice":outgoing.envelope.from_device,"messageId":outgoing.envelope.message_id})).await?;
         Ok(
             json!({"message_id":outgoing.envelope.message_id,"state":status["state"],"expires_at":outgoing.envelope.expires_at,"note":"Server state reflects signed observations, never session wake-up."}),
         )
@@ -1281,7 +1331,7 @@ pub fn status(name: &str, mid: &str) -> Result<Value> {
 }
 
 pub fn agent_status(mid: &str) -> Result<Value> {
-    let (_, owner) = account()?;
+    let owner = relay_account()?.owner;
     let (_, outgoing) = find_outgoing(&owner, mid)?;
     status(&outgoing.peer, mid)
 }
@@ -1430,7 +1480,7 @@ fn local_message_id(envelope: &Envelope) -> String {
 }
 
 async fn signed_observation(
-    client: &mut ConvexClient,
+    client: &mut RelayClient,
     keys: &Keys,
     sender_owner: &str,
     mid: &str,
@@ -1451,7 +1501,7 @@ async fn signed_observation(
     Ok(())
 }
 
-async fn reconcile(client: &mut ConvexClient, keys: &Keys) -> Result<()> {
+async fn reconcile(client: &mut RelayClient, keys: &Keys) -> Result<()> {
     for path in crate::paths::glob(&inbox::inbox_dir(), "*.jsonl") {
         let session = path.file_stem().unwrap_or_default().to_string_lossy();
         let done = inbox::done_ids(&session);
@@ -1543,7 +1593,7 @@ struct PendingRow {
 }
 
 /// False means transient uncertainty, not revoked auth. Callers retain staging.
-async fn check_own_identity(client: &mut ConvexClient, keys: &Keys) -> Result<bool> {
+async fn check_own_identity(client: &mut RelayClient, keys: &Keys) -> Result<bool> {
     match query(client, "relay:whoami", json!({})).await {
         Ok(identity)
             if identity["owner"] == keys.device.owner
@@ -1558,7 +1608,7 @@ async fn check_own_identity(client: &mut ConvexClient, keys: &Keys) -> Result<bo
 }
 
 async fn publish_staged(
-    client: &mut ConvexClient,
+    client: &mut RelayClient,
     keys: &Keys,
     path: &Path,
     envelope: &Envelope,
@@ -1625,7 +1675,7 @@ fn remove_stage(path: &Path, envelope: &Envelope) -> Result<()> {
     Ok(())
 }
 fn denied(error: &EverettError) -> bool {
-    error.message.contains("Convex rejected the request")
+    error.message.contains("Convex rejected the request") || error.message.starts_with("Cloudflare relay denied")
 }
 
 fn finish_staged(
@@ -1653,8 +1703,100 @@ fn finish_staged(
     Ok(())
 }
 
+async fn receive(
+    client: &mut RelayClient,
+    keys: &Keys,
+    ingress: &Path,
+    register: &Value,
+    rejected: &mut RejectedCache,
+) -> Result<Option<String>> {
+    mutation(client, "relay:register", register.clone()).await?;
+    for path in crate::paths::glob(ingress, "*.json") {
+        let envelope: Envelope = read(&path)?;
+        if envelope.recipient_owner == keys.device.owner
+            && envelope.to_device == keys.device.device_id
+        {
+            publish_staged(client, keys, &path, &envelope).await?;
+        }
+    }
+    let mut cursor: Option<String> = None;
+    let mut cursors = std::collections::HashSet::new();
+    loop {
+        let page: PendingPage = serde_json::from_value(
+            query(
+                client,
+                "relay:pending",
+                json!({"deviceId":keys.device.device_id,"cursor":cursor}),
+            )
+            .await?,
+        )
+        .map_err(bad)?;
+        if page.envelopes.len() > 256 {
+            return Err(bad("pending page exceeds envelope limit"));
+        }
+        for row in page.envelopes {
+            let envelope = row.envelope;
+            if let Err(error) = import_inner(keys, &envelope, page.server_now, false) {
+                if rejected.insert(
+                    local_message_id(&envelope),
+                    envelope.expires_at,
+                    page.server_now,
+                ) {
+                    eprintln!("everett relay: refusing inbox row: {}", error.message);
+                }
+                continue;
+            }
+            let path = ingress.join(format!("{}.json", local_message_id(&envelope)));
+            write(&path, &envelope)?;
+            publish_staged(client, keys, &path, &envelope).await?;
+        }
+        if page.is_done {
+            break;
+        }
+        if page.continue_cursor.is_empty()
+            || cursor.as_ref() == Some(&page.continue_cursor)
+            || !cursors.insert(page.continue_cursor.clone())
+            || cursors.len() > 256
+        {
+            return Err(bad("pending cursor did not advance within bounds"));
+        }
+        cursor = Some(page.continue_cursor);
+    }
+    reconcile(client, keys).await?;
+    Ok(cursor)
+}
+
+async fn run_native(
+    mut client: RelayClient,
+    keys: &Keys,
+    ingress: &Path,
+    register: &Value,
+) -> Result<Value> {
+    eprintln!("everett relay: Cloudflare outbound polling; inbox-only, no session wake-up");
+    let mut rejected = RejectedCache::new();
+    let mut delay = 5;
+    loop {
+        match receive(&mut client, keys, ingress, register, &mut rejected).await {
+            Ok(_) => {
+                delay = 5;
+            }
+            Err(error) if denied(&error) || !matches!(error.code, 5 | 6) => return Err(error),
+            Err(error) => {
+                eprintln!(
+                    "everett relay: {}; retrying in {delay}s; encrypted staging kept",
+                    error.message
+                );
+                tokio::time::sleep(Duration::from_secs(delay)).await;
+                delay = (delay * 2).min(30);
+                continue;
+            }
+        }
+        tokio::time::sleep(Duration::from_secs(delay)).await;
+    }
+}
+
 pub fn run() -> Result<Value> {
-    let (_, owner) = account()?;
+    let owner = relay_account()?.owner;
     let keys = verified_keys(&owner)?;
     let register = register_args(&keys.device)?;
     let _guard = daemon_lock()?;
@@ -1662,6 +1804,7 @@ pub fn run() -> Result<Value> {
     peer::private_dir(&ingress)?;
     let outcome = tokio::runtime::Runtime::new().map_err(bad)?.block_on(async {
         let mut client = client(&owner).await?;
+        if client.is_native() { return run_native(client, &keys, &ingress, &register).await; }
         mutation(&mut client,"relay:register",register.clone()).await?;
         let mut final_cursor: Option<String> = None;
         let mut subscription = client.subscribe("relay:pending",args(json!({"deviceId":keys.device.device_id,"cursor":final_cursor}))?).await.map_err(|_| bad("Convex subscription failed"))?;
@@ -1679,39 +1822,11 @@ pub fn run() -> Result<Value> {
                 _ = tick.tick() => {
                     let (stored,current) = account()?;
                     if current != owner || claims(&stored.id_token)?["everett_agent"] != keys.device.device_id { return Err(bad("signed-in identity changed; restart the relay")); }
-                    // Mutation barrier rejects a revoked credential even if a query snapshot is stale.
-                    mutation(&mut client,"relay:register",register.clone()).await?;
-                    for path in crate::paths::glob(&ingress,"*.json") {
-                        let envelope: Envelope = read(&path)?;
-                        if envelope.recipient_owner == owner && envelope.to_device == keys.device.device_id {
-                            publish_staged(&mut client,&keys,&path,&envelope).await?;
-                        }
+                    let cursor = receive(&mut client, &keys, &ingress, &register, &mut rejected).await?;
+                    if final_cursor != cursor {
+                        subscription = client.subscribe("relay:pending",args(json!({"deviceId":keys.device.device_id,"cursor":cursor}))?).await.map_err(|_| bad("Convex subscription failed"))?;
+                        final_cursor = cursor;
                     }
-                    let mut cursor: Option<String> = None;
-                    loop {
-                        let page: PendingPage = serde_json::from_value(query(&mut client,"relay:pending",json!({"deviceId":keys.device.device_id,"cursor":cursor})).await?).map_err(bad)?;
-                        for row in page.envelopes {
-                            let envelope = row.envelope;
-                            if let Err(error) = import_inner(&keys,&envelope,page.server_now,false) {
-                                if rejected.insert(local_message_id(&envelope), envelope.expires_at, page.server_now) { eprintln!("everett relay: refusing inbox row: {}",error.message); }
-                                continue;
-                            }
-                            // Persist authenticated encrypted Body in the private ingress inbox first.
-                            let path = ingress.join(format!("{}.json",local_message_id(&envelope)));
-                            write(&path,&envelope)?;
-                            publish_staged(&mut client,&keys,&path,&envelope).await?;
-                        }
-                        if page.is_done {
-                            if final_cursor != cursor {
-                                subscription = client.subscribe("relay:pending",args(json!({"deviceId":keys.device.device_id,"cursor":cursor}))?).await.map_err(|_| bad("Convex subscription failed"))?;
-                                final_cursor = cursor;
-                            }
-                            break;
-                        }
-                        if cursor.as_ref() == Some(&page.continue_cursor) { return Err(bad("pending cursor did not advance")); }
-                        cursor = Some(page.continue_cursor);
-                    }
-                    reconcile(&mut client,&keys).await?;
                 }
             }
         }

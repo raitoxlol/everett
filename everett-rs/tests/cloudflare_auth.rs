@@ -473,7 +473,6 @@ fn browser_approval_resumes_onboarding_then_guides_and_prints_review_prompt() {
     for (cols, rows) in [(80, 24), (54, 14)] {
         let f = fixture();
         let fake = Fake::new();
-        fake.configure(&f);
         fake.approved();
         common::plant(&f, "claude.jsonl", ".claude/projects/app/claude.jsonl");
         f.write("AGENTS.md", "Existing project instructions.\n");
@@ -488,10 +487,10 @@ fn browser_approval_resumes_onboarding_then_guides_and_prints_review_prompt() {
         );
         std::fs::set_permissions(script, std::fs::Permissions::from_mode(0o700)).unwrap();
         let mut cmd = Command::new(env!("CARGO_BIN_EXE_everett"));
-        cmd.args(["onboard", "--no-backfill"])
-            .env_clear()
+        cmd.env_clear()
             .env("HOME", f.home())
             .env("EVERETT_HOME", f.home())
+            .env("EVERETT_AUTH_ISSUER", &fake.issuer)
             .env("PATH", f.home().join("bin"))
             .env("TERM", "xterm")
             .env("LANG", "en_US.UTF-8")
@@ -525,12 +524,21 @@ fn browser_approval_resumes_onboarding_then_guides_and_prints_review_prompt() {
         }
         see(&mut session, &mut vt, "Welcome to Everett");
         session.send("\r").unwrap();
-        see(&mut session, &mut vt, "Signed in. Identity verified");
+        see(&mut session, &mut vt, "Choose your agents");
         let url = std::fs::read_to_string(f.home().join("browser-url")).unwrap();
         assert_eq!(url, format!("{}/enroll?code=ABCDEF123456", fake.issuer));
         assert!(f.home().join(".everett/cloudflare-auth.json").exists());
-        session.send("\r").unwrap();
-        see(&mut session, &mut vt, "Choose your agents");
+        let configured = std::fs::read_to_string(f.home().join(".everett/config.toml")).unwrap();
+        assert!(configured.contains("cloudflare"), "{configured}");
+        assert!(!f.home().join(".everett/onboarding-complete").exists());
+        let mut repeat = Command::new(env!("CARGO_BIN_EXE_everett"));
+        repeat.env_clear().env("HOME", f.home()).env("EVERETT_HOME", f.home())
+            .env("PATH", "/nonexistent").env("TERM", "dumb");
+        let mut repeat = expectrl::Session::spawn(repeat).unwrap();
+        repeat.set_expect_timeout(Some(Duration::from_secs(5)));
+        repeat.expect("Usage: everett").unwrap();
+        repeat.expect(expectrl::Eof).unwrap();
+        assert_eq!(serde_json::from_slice::<Value>(&f.run(&["whoami", "--json"]).stdout).unwrap()["verified"], true);
         session.send("\r").unwrap();
         see(&mut session, &mut vt, "Claude Code / setup guide");
         session.send("\x1b[F").unwrap();
@@ -568,9 +576,9 @@ fn native_profile_and_convex_account_never_fall_back_to_each_other() {
     f.write(".everett/auth.json", "synthetic-existing-oidc");
     assert!(f.run(&["login"]).status.success());
     let out = f.run(&["relay", "whoami"]);
-    assert!(!out.status.success());
-    assert!(String::from_utf8_lossy(&out.stderr)
-        .contains("Cloudflare relay transport is not connected"));
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    assert_eq!(serde_json::from_slice::<Value>(&out.stdout).unwrap()["deviceId"], "immutable-agent");
+    assert!(fake.requests().last().unwrap().1.contains(TOKEN));
     assert!(!f.home().join(".everett/relay/keys.json").exists());
     f.write(".everett/config.toml", "[auth]\nprovider = 'oidc'\nissuer = 'https://old-oidc.example/realm'\nclient_id = 'old-client'\n");
     let out = f.run(&["login", "--provider", "cloudflare", "--json"]);

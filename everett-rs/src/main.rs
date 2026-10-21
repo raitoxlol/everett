@@ -359,7 +359,7 @@ enum Devices {
 
 #[derive(Subcommand)]
 enum PeerCmd {
-    /// pin a Convex device after out-of-band fingerprint confirmation
+    /// pin a device on the selected relay after fingerprint confirmation
     AddRelay {
         name: String,
         #[arg(long)]
@@ -585,7 +585,7 @@ fn main() {
         Some(cmd) => cmd,
         None => {
             use std::io::IsTerminal;
-            if !everett::onboard::completed()
+            if everett::onboard::first_run_needed()
                 && std::io::stdin().is_terminal()
                 && std::io::stdout().is_terminal()
             {

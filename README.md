@@ -179,11 +179,11 @@ Done. MAX_RETRIES is now 5 and the backoff test covers the cap.
 | `everett peer add <name> [--ssh user@host] [--port N] --binary /absolute/everett --host-key SHA256:... --device-key SHA256:...` | Resolve the address by registry name or use an explicit address; reject conflicts and require both confirmed fingerprints before pairing. |
 | `everett peer serve [--address user@host[:port]] --client ID` | Restricted sshd endpoint; signed-in devices attempt to publish their declared address, also configurable with `[peer] address`. |
 | `everett peer status <name> <message-id>` | SSH polls/imports replies; relay queries queued/delivered/claimed/replied/expired state from signed observations (not task completion). |
-| `everett relay` | Hold a live Convex WebSocket inbox subscription; never wake sessions. |
+| `everett relay` | Listen through the selected relay: Convex WebSocket or Cloudflare outbound polling; never wake sessions. |
 | `everett relay register / devices / whoami` | Register this provisioned agent's keys and publish its display name/declared SSH address, list active key bundles (maximum 256), or verify agent/org authorization. |
 | `everett relay revoke-agent ID / revoke-member SUBJECT / rotate` | Revoke this or an admin-selected agent, remove org membership (admin), or rotate this agent's relay keys using its old signing key. |
 | `everett relay grant invite / accept / reconfirm / revoke / get / list` | Bilateral org-admin consent for named cross-org agents; [exact flags and journey](docs/cross-device.md#convex-relay-two-org-trial). |
-| `everett peer add-relay <name> --device ID --fingerprint HEX [--grant GRANT_ID]` | Select Convex after out-of-band bundle confirmation; fingerprint is raw 64-character lowercase hex, not the SSH `SHA256:` format. |
+| `everett peer add-relay <name> --device ID --fingerprint HEX [--grant GRANT_ID]` | Pin a device on the selected relay after out-of-band bundle confirmation; fingerprint is raw 64-character lowercase hex, not the SSH `SHA256:` format. |
 | `everett peer identity / list / remove <name> / revoke <client-id>` | Inspect device keys/peers; remove a remote authorization or revoke a local tagged client key. |
 | `everett dashboard [--port 7347] [--no-open]` | Native Rust binary only: read-only local browser dashboard with session cards, filters, activity state, and copyable CLI actions. |
 | `everett route "<text>" [--router local\|jev] [--json]` | Picks the session a request continues: `SESSION`, `NEW`, or `ASK`, with a confidence and the resume command. It never sends. |
@@ -252,6 +252,22 @@ Safety rails for agents that call `send`:
 - **Spawning is explicit.** `NEW` starts a session only with `--spawn`.
 
 Exit codes: 2 bad input, 3 no Jev key with `--router jev`, 4 session stayed busy, 5 harness did not start or timed out, 6 harness failed, 7 hop limit reached.
+
+## Cloudflare native relay
+
+With `[auth] provider = "cloudflare"`, native account approval and encrypted relay use
+the same separately approved device identity. Register both computers, compare their
+public fingerprints, pin them with `peer add-relay`, and run `everett relay` on both.
+The listener polls outbound HTTPS, stages ciphertext durably, reauthorizes before inbox
+publication and retries temporary failures. It never wakes a session. Read, reply and
+revocation need their own verification. See [the native relay guide](docs/cloudflare-native.md).
+
+The actual native CLI passed local production-Worker acceptance and a physical Mac/NUC
+send/read/reply/reconnect/revoke journey, with synthetic GitHub and private SSH forwarding
+to the local Worker. Real hosted GitHub approval and public-issuer delivery remain pending.
+Fresh interactive onboarding opens `https://everett.raitox.tech` for account approval;
+existing account configuration is preserved. Cloudflare's device protocol is custom, not RFC8628.
+Cross-owner grants, Convex registry/SSH-address publication and cloud-agent OAuth are separate.
 
 ## Cross-device peers (SSH or encrypted Convex)
 
