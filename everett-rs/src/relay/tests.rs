@@ -530,6 +530,16 @@ impl ConvexClient {
         }
     }
 
+    pub fn native(stored: crate::cloudflare_auth::Credential) -> Self {
+        let mut value = Self::fake(vec![]);
+        value.live = Some(super::transport::Client::native(stored));
+        value
+    }
+    pub fn is_native(&self) -> bool { self.live.as_ref().is_some_and(|client| client.is_native()) }
+    pub async fn native_call(&self, name: &str, value: Value) -> Result<Value> {
+        self.live.as_ref().unwrap().native_call(name, value).await
+    }
+
     pub async fn new(url: &str) -> anyhow::Result<Self> {
         let mut value = Self::fake(vec![]);
         value.live = Some(super::transport::Client::new(url).await?);

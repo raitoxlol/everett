@@ -359,7 +359,7 @@ enum Devices {
 
 #[derive(Subcommand)]
 enum PeerCmd {
-    /// pin a Convex device after out-of-band fingerprint confirmation
+    /// pin a device on the selected relay after fingerprint confirmation
     AddRelay {
         name: String,
         #[arg(long)]

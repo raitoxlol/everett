@@ -5,9 +5,87 @@ use rustls::{pki_types::pem::PemObject, pki_types::CertificateDer, ClientConfig,
 use tokio::sync::mpsc;
 use tokio_tungstenite::Connector;
 
-pub(super) struct Client {
+pub(super) struct ConvexTransport {
     inner: ConvexClient,
     states: mpsc::Receiver<WebSocketState>,
+}
+
+pub(super) enum Client {
+    Convex(ConvexTransport),
+    Cloudflare(crate::cloudflare_auth::Credential),
+}
+
+impl Client {
+    pub async fn new(url: &str) -> anyhow::Result<Self> {
+        Ok(Self::Convex(ConvexTransport::new(url).await?))
+    }
+
+    pub fn native(stored: crate::cloudflare_auth::Credential) -> Self {
+        Self::Cloudflare(stored)
+    }
+    pub fn is_native(&self) -> bool {
+        matches!(self, Self::Cloudflare(_))
+    }
+
+    pub async fn native_call(
+        &self,
+        name: &str,
+        value: serde_json::Value,
+    ) -> crate::error::Result<serde_json::Value> {
+        let Self::Cloudflare(stored) = self else {
+            return Err(super::bad("native transport required"));
+        };
+        let stored = stored.clone();
+        let name = name.to_string();
+        tokio::task::spawn_blocking(move || stored.relay_request(&name, &value))
+            .await
+            .map_err(|_| super::bad("Cloudflare relay worker failed"))?
+    }
+
+    pub async fn tls_error(&mut self) -> anyhow::Error {
+        match self {
+            Self::Convex(client) => client.tls_error().await,
+            Self::Cloudflare(_) => std::future::pending().await,
+        }
+    }
+    pub async fn set_auth_callback(
+        &mut self,
+        fetcher: Option<convex::base_client::AuthTokenFetcher>,
+    ) {
+        if let Self::Convex(client) = self {
+            client.set_auth_callback(fetcher).await;
+        }
+    }
+    pub async fn subscribe(
+        &mut self,
+        name: &str,
+        args: BTreeMap<String, convex::Value>,
+    ) -> anyhow::Result<convex::QuerySubscription> {
+        match self {
+            Self::Convex(client) => client.subscribe(name, args).await,
+            Self::Cloudflare(_) => Err(anyhow::anyhow!("Cloudflare relay uses outbound polling")),
+        }
+    }
+    pub async fn query(
+        &mut self,
+        name: &str,
+        args: BTreeMap<String, convex::Value>,
+    ) -> anyhow::Result<FunctionResult> {
+        match self {
+            Self::Convex(client) => client.query(name, args).await,
+            Self::Cloudflare(_) => Err(anyhow::anyhow!("native relay request required")),
+        }
+    }
+    pub async fn mutation(
+        &mut self,
+        name: &str,
+        args: BTreeMap<String, convex::Value>,
+    ) -> anyhow::Result<FunctionResult> {
+        match self {
+            Self::Convex(client) => client.mutation(name, args).await,
+            Self::Cloudflare(_) => Err(anyhow::anyhow!("native relay request required")),
+        }
+    }
 }
 
 fn tls_config(ca_file: &str) -> anyhow::Result<Arc<ClientConfig>> {
@@ -39,7 +117,7 @@ fn tls_config(ca_file: &str) -> anyhow::Result<Arc<ClientConfig>> {
     Ok(Arc::new(config))
 }
 
-impl Client {
+impl ConvexTransport {
     pub async fn new(url: &str) -> anyhow::Result<Self> {
         let ca_file = crate::config::get("relay.ca_file", Some("EVERETT_RELAY_CA_FILE"), "");
         Self::with_ca_file(url, &ca_file).await
@@ -94,14 +172,14 @@ impl Client {
     }
 }
 
-impl std::ops::Deref for Client {
+impl std::ops::Deref for ConvexTransport {
     type Target = ConvexClient;
     fn deref(&self) -> &Self::Target {
         &self.inner
     }
 }
 
-impl std::ops::DerefMut for Client {
+impl std::ops::DerefMut for ConvexTransport {
     fn deref_mut(&mut self) -> &mut Self::Target {
         &mut self.inner
     }
@@ -216,7 +294,7 @@ mod tests {
     async fn explicit_ca_connects_and_reconnects_without_global_trust() {
         let dir = certificate();
         let (port, task) = server(dir.path()).await;
-        let mut client = Client::with_ca_file(
+        let mut client = ConvexTransport::with_ca_file(
             &format!("https://localhost:{port}"),
             dir.path().join("ca.pem").to_str().unwrap(),
         )
@@ -245,7 +323,7 @@ mod tests {
         let (port, task) = server(dir.path()).await;
         let other = unrelated.path().join("ca.pem");
         for ca in ["", other.to_str().unwrap()] {
-            let mut client = Client::with_ca_file(&format!("https://localhost:{port}"), ca)
+            let mut client = ConvexTransport::with_ca_file(&format!("https://localhost:{port}"), ca)
                 .await
                 .unwrap();
             let error = timeout(
@@ -274,7 +352,7 @@ mod tests {
     async fn trusted_ca_still_requires_valid_server_name() {
         let dir = certificate();
         let (port, task) = server(dir.path()).await;
-        let mut client = Client::with_ca_file(
+        let mut client = ConvexTransport::with_ca_file(
             &format!("https://127.0.0.1:{port}"),
             dir.path().join("ca.pem").to_str().unwrap(),
         )

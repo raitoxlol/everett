@@ -141,6 +141,10 @@ fn origin(value: &str) -> Result<String> {
 }
 
 fn request(issuer: &str, path: &str, value: &Value, token: Option<&str>) -> Result<(u16, Value)> {
+    request_limited(issuer, path, value, token, 64 * 1024)
+}
+
+fn request_limited(issuer: &str, path: &str, value: &Value, token: Option<&str>, limit: u64) -> Result<(u16, Value)> {
     let issuer = origin(issuer)?;
     let agent: ureq::Agent = ureq::Agent::config_builder()
         .timeout_global(Some(Duration::from_secs(10)))
@@ -159,7 +163,7 @@ fn request(issuer: &str, path: &str, value: &Value, token: Option<&str>) -> Resu
     let body = response
         .body_mut()
         .with_config()
-        .limit(64 * 1024)
+        .limit(limit)
         .read_json::<Value>()
         .map_err(|_| {
             fail(
@@ -663,4 +667,72 @@ pub fn cmd_logout(args: &Args) -> i32 {
             Ok(())
         })(),
     )
+}
+
+impl Credential {
+    pub(crate) fn relay_origin(&self) -> Result<String> {
+        if self.expires_at <= (session::now() * 1000.0) as u64 {
+            return Err(fail(
+                1,
+                "Cloudflare relay denied: credential expired; sign in again",
+            ));
+        }
+        crate::relay::valid(&self.agent_id)?;
+        origin(&self.issuer)
+    }
+
+    pub(crate) fn relay_request(&self, name: &str, value: &Value) -> Result<Value> {
+        let operation = match name {
+            "relay:whoami" => "whoami", "relay:register" => "register", "relay:device" => "device",
+            "relay:devices" => "devices", "relay:credentials" => "credentials", "relay:memberships" => "memberships",
+            "relay:revokeAgent" => "revokeAgent", "relay:revokeMember" => "revokeMember", "relay:rotate" => "rotate",
+            "relay:enqueue" => "enqueue", "relay:pending" => "pending", "relay:accept" => "accept",
+            "relay:observe" => "observe", "relay:status" => "status",
+            _ => return Err(fail(2, "this operation is not supported by the Cloudflare relay; registry/SSH publication and cross-owner grants require their supported transport")),
+        };
+        if crate::config::get("auth.provider", Some("EVERETT_AUTH_PROVIDER"), "oidc")
+            != "cloudflare"
+        {
+            return Err(fail(
+                1,
+                "Cloudflare relay denied: provider changed; restart the relay",
+            ));
+        }
+        let issuer = self.relay_origin()?;
+        let current = load()?.ok_or_else(|| {
+            fail(
+                1,
+                "Cloudflare relay denied: signed out; restart after signing in",
+            )
+        })?;
+        if current.issuer != self.issuer
+            || current.owner != self.owner
+            || current.agent_id != self.agent_id
+            || current.token != self.token
+        {
+            return Err(fail(
+                1,
+                "Cloudflare relay denied: signed-in identity changed; restart the relay",
+            ));
+        }
+        let (status, body) = request_limited(
+            &issuer,
+            &format!("/v2/relay/{operation}"),
+            value,
+            Some(&self.token),
+            8 * 1024 * 1024,
+        )?;
+        if status != 200 {
+            if (400..500).contains(&status) && status != 429 {
+                return Err(fail(1, &format!("Cloudflare relay denied {operation} (HTTP {status}); check approval, current keys, message expiry and peer pins")));
+            }
+            return Err(fail(6, &format!("Cloudflare relay {operation} unavailable (HTTP {status}); delivery is unconfirmed; retry with the same idempotency key")));
+        }
+        body.get("result").cloned().ok_or_else(|| {
+            fail(
+                6,
+                "Cloudflare relay returned an invalid result; delivery is unconfirmed",
+            )
+        })
+    }
 }
