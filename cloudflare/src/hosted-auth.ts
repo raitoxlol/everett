@@ -23,7 +23,7 @@ const authStyles = `<style>${authFontStyles}
 </style>`;
 const authStateGridStyles = '<style>.auth-action>.auth-state{grid-column:1/-1}</style>';
 const html = (body: string, status = 200, callbackOrigin?: string) => new Response(`<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="color-scheme" content="dark"><meta name="theme-color" content="#0e100f"><title>Everett · Account access</title>${authStyles}${authStateGridStyles}</head><body><a class="auth-skip" href="#main">Skip to content</a><div class="auth-shell"><header class="auth-header"><span class="auth-brand" aria-label="Everett">everett</span></header><main id="main" class="auth-main"><div class="auth-content">${body}</div></main></div></body></html>`, { status, headers: {
-  'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store', 'Referrer-Policy': 'no-referrer', 'X-Content-Type-Options': 'nosniff',
+  'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store', 'Referrer-Policy': 'same-origin', 'X-Content-Type-Options': 'nosniff',
   'Content-Security-Policy': `default-src 'none'; style-src 'unsafe-inline'; font-src data:; form-action 'self'${callbackOrigin ? ` ${callbackOrigin}` : ''}; frame-ancestors 'none'; base-uri 'none'`, 'X-Frame-Options': 'DENY',
 } });
 
@@ -231,7 +231,8 @@ export class HostedAuth extends DurableObject<HostedAuthEnv> {
   }
   async #githubCallback(request: Request, url: URL, c: HostedConfig) {
     this.#rate('github-callback', 30);
-    const p = fields(url.searchParams, ['state', 'code', 'error', 'error_description', 'error_uri']);
+    const p = fields(url.searchParams, ['state', 'code', 'error', 'error_description', 'error_uri', 'iss']);
+    if (p.iss !== undefined && p.iss !== 'https://github.com/login/oauth') throw new RelayError('invalid_github_issuer', 400);
     if (!secretPattern.test(p.state ?? '')) throw new RelayError('invalid_github_state', 400);
     const row = this.#row<{ state_hash: string; binding_hash: string; return_to: string; expires_at: number }>('SELECT * FROM gh_states WHERE state_hash=?', hash(p.state));
     const binding = cookies(request)[cookieName(c, 'github')] ?? '', parts = binding.split('.');
