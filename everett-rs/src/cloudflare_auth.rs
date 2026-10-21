@@ -238,17 +238,22 @@ fn request_with_timeout(
         .send_json(value)
         .map_err(RequestFailure::from_send)?;
     let status = response.status().as_u16();
+    let invalid_response = || {
+        RequestFailure::Terminal(fail(
+            6,
+            "Cloudflare returned an invalid response; stored credentials were kept",
+        ))
+    };
     let body = response
         .body_mut()
         .with_config()
         .limit(limit)
-        .read_json::<Value>()
-        .map_err(|_| {
-            RequestFailure::Terminal(fail(
-                6,
-                "Cloudflare returned an invalid response; stored credentials were kept",
-            ))
+        .read_to_vec()
+        .map_err(|error| match RequestFailure::from_send(error) {
+            RequestFailure::Transport if status == 200 => RequestFailure::Transport,
+            _ => invalid_response(),
         })?;
+    let body = serde_json::from_slice(&body).map_err(|_| invalid_response())?;
     Ok((status, body))
 }
 
