@@ -602,3 +602,62 @@ fn cancel_reports_authoritative_state_instead_of_claiming_cancellation() {
         assert!(!f.home().join(".everett/cloudflare-pending.json").exists());
     }
 }
+
+#[test]
+fn interrupted_blocking_browser_opener_cancels_pending_login() {
+    let f = fixture();
+    let fake = Fake::new();
+    fake.configure(&f);
+    let opener = if cfg!(target_os = "macos") { "open" } else { "xdg-open" };
+    let script = f.write(&format!("bin/{opener}"), "#!/bin/sh\nprintf started > \"$EVERETT_HOME/opener-started\"\nexec /bin/sleep 30\n");
+    std::fs::set_permissions(script, std::fs::Permissions::from_mode(0o700)).unwrap();
+    let mut child = Command::new(env!("CARGO_BIN_EXE_everett"))
+        .args(["login", "--open", "--json"]).env_clear()
+        .env("HOME", f.home()).env("EVERETT_HOME", f.home()).env("PATH", f.home().join("bin"))
+        .stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().unwrap();
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while !f.home().join("opener-started").exists() {
+        assert!(Instant::now() < deadline, "opener did not start");
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    unsafe { libc::kill(child.id() as i32, libc::SIGINT); }
+    let status = wait_timeout::ChildExt::wait_timeout(&mut child, Duration::from_secs(3)).unwrap();
+    if status.is_none() { child.kill().unwrap(); }
+    let out = child.wait_with_output().unwrap();
+    redact(&out);
+    assert!(fake.requests().iter().any(|r| r.0 == "/v2/auth/cancel"), "Ctrl-C did not cancel pending approval");
+    assert_eq!(out.status.code(), Some(130));
+    assert!(!f.home().join(".everett/cloudflare-pending.json").exists());
+}
+
+#[test]
+fn rejected_credential_starts_new_approval_but_uncertainty_keeps_it() {
+    let f = fixture();
+    let fake = Fake::new();
+    fake.configure(&f);
+    fake.approved();
+    assert!(f.run(&["login"]).status.success());
+    let path = f.home().join(".everett/cloudflare-auth.json");
+    let original = std::fs::read(&path).unwrap();
+    for status in [503, 403] {
+        *fake.identity_status.lock().unwrap() = status;
+        assert!(!f.run(&["login", "--no-wait"]).status.success());
+        assert_eq!(std::fs::read(&path).unwrap(), original);
+        assert!(!f.home().join(".everett/cloudflare-pending.json").exists());
+    }
+    *fake.identity_status.lock().unwrap() = 200;
+    fake.identity.lock().unwrap()["result"]["deviceId"] = json!("other-agent");
+    assert!(!f.run(&["login", "--no-wait"]).status.success());
+    assert!(!f.home().join(".everett/cloudflare-pending.json").exists());
+    fake.identity.lock().unwrap()["result"]["deviceId"] = json!("immutable-agent");
+    *fake.identity_status.lock().unwrap() = 401;
+    let out = f.run(&["login", "--no-wait", "--json"]);
+    redact(&out);
+    assert!(out.status.success(), "revoked credential could not restart enrollment: {}", String::from_utf8_lossy(&out.stderr));
+    assert_eq!(serde_json::from_slice::<Value>(&out.stdout).unwrap()["state"], "pending");
+    assert_eq!(std::fs::read(&path).unwrap(), original);
+    assert_eq!(fake.requests().iter().filter(|r| r.0 == "/v2/auth/device").count(), 2);
+    *fake.identity_status.lock().unwrap() = 200;
+    fake.approved();
+    assert!(f.run(&["login"]).status.success());
+}

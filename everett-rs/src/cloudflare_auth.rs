@@ -291,7 +291,7 @@ fn cancel(pending: &Pending) -> Result<StoppedRequest> {
     }
 }
 
-pub fn whoami(stored: &Credential) -> Result<Value> {
+fn verify_identity(stored: &Credential) -> Result<Option<Value>> {
     if stored.expires_at <= (session::now() * 1000.0) as u64 {
         return Err(fail(
             1,
@@ -304,6 +304,9 @@ pub fn whoami(stored: &Credential) -> Result<Value> {
         &json!({}),
         Some(&stored.token),
     )?;
+    if status == 401 {
+        return Ok(None);
+    }
     if status != 200 {
         return Err(status_error(status));
     }
@@ -317,11 +320,15 @@ pub fn whoami(stored: &Credential) -> Result<Value> {
             "Cloudflare identity does not match the approved credential",
         ));
     }
-    Ok(
+    Ok(Some(
         json!({"signed_in":true,"verified":true,"provider":"cloudflare","issuer":stored.issuer,
         "owner":stored.owner,"agent_id":stored.agent_id,"device_name":stored.device_name,
         "role":identity["role"],"expires_at":stored.expires_at}),
-    )
+    ))
+}
+
+pub fn whoami(stored: &Credential) -> Result<Value> {
+    verify_identity(stored)?.ok_or_else(|| status_error(401))
 }
 
 static INTERRUPTED: AtomicBool = AtomicBool::new(false);
@@ -355,7 +362,6 @@ impl Drop for InterruptGuard {
 }
 
 fn wait(pending: &Pending) -> Result<Credential> {
-    let _signal = InterruptGuard::install()?;
     let mut interval = pending.interval;
     loop {
         let delay = Instant::now() + Duration::from_secs(interval);
@@ -447,6 +453,46 @@ fn show(identity: &Value, json_output: bool) {
     }
 }
 
+fn open_browser(pending: &Pending) -> Result<()> {
+    let opener = if cfg!(target_os = "macos") { "open" } else { "xdg-open" };
+    let mut child = match std::process::Command::new(opener)
+        .arg(&pending.verification_uri_complete)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+    {
+        Ok(child) => child,
+        Err(_) => {
+            eprintln!("Could not open the browser; open the link above on any device.");
+            return Ok(());
+        }
+    };
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        if INTERRUPTED.load(Ordering::Relaxed) {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err(cancel(pending)?.error());
+        }
+        match child.try_wait() {
+            Ok(Some(status)) => {
+                if !status.success() {
+                    eprintln!("Could not open the browser; open the link above on any device.");
+                }
+                return Ok(());
+            }
+            Ok(None) if Instant::now() < deadline => std::thread::sleep(Duration::from_millis(50)),
+            _ => {
+                let _ = child.kill();
+                let _ = child.wait();
+                eprintln!("Browser opener did not finish; open the link above on any device.");
+                return Ok(());
+            }
+        }
+    }
+}
+
 pub fn sign_in(args: &Args) -> Result<Value> {
     if args.auth_cancel {
         let Some(pending) = read::<Pending>(&pending_path())? else {
@@ -478,16 +524,19 @@ pub fn sign_in(args: &Args) -> Result<Value> {
     } else {
         &configured_issuer
     })?;
-    if !args.force {
+    if !args.force && pending.is_none() {
         if let Some(stored) = &stored {
             if stored.issuer != issuer {
                 return Err(fail(2, "stored credential belongs to a different issuer; use --force for a new approval"));
             }
             if stored.expires_at > (session::now() * 1000.0) as u64 {
-                return whoami(stored);
+                if let Some(identity) = verify_identity(stored)? {
+                    return Ok(identity);
+                }
             }
         }
     }
+    let _signal = InterruptGuard::install()?;
     if let Some(old) = &pending {
         if old.issuer != issuer {
             return Err(fail(
@@ -511,19 +560,14 @@ pub fn sign_in(args: &Args) -> Result<Value> {
         "Open {}\nCompare code {} and device name {}. Approve in your browser.",
         pending.verification_uri_complete, pending.user_code, pending.device_name
     );
+    if INTERRUPTED.load(Ordering::Relaxed) {
+        return Err(cancel(&pending)?.error());
+    }
     if args.open {
-        let opener = if cfg!(target_os = "macos") {
-            "open"
-        } else {
-            "xdg-open"
-        };
-        if !std::process::Command::new(opener)
-            .arg(&pending.verification_uri_complete)
-            .status()
-            .is_ok_and(|s| s.success())
-        {
-            eprintln!("Could not open the browser; open the link above on any device.");
-        }
+        open_browser(&pending)?;
+    }
+    if INTERRUPTED.load(Ordering::Relaxed) {
+        return Err(cancel(&pending)?.error());
     }
     if args.auth_no_wait {
         return Ok(
