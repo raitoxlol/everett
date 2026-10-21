@@ -193,6 +193,16 @@ describe('Hosted device login through real Worker routes', () => {
     expect((await new Browser().login('/enroll', 282002453, 'imposter')).status).toBe(403);
     expect(await memberCount()).toBe(0);
   });
+  it('sets a referrer policy that preserves same-origin POST Origin while redirects stay private', async () => {
+    const page = await fetchWorker('/enroll');
+    expect(page.headers.get('Referrer-Policy')).toBe('same-origin');
+
+    const start = await fetchWorker('/auth/github');
+    expect(start.headers.get('Referrer-Policy')).toBe('no-referrer');
+
+    const callback = await new Browser().login();
+    expect(callback.headers.get('Referrer-Policy')).toBe('no-referrer');
+  });
   it('validates a supplied GitHub issuer, rejects duplicate issuer parameters, and accepts legacy callbacks without one', async () => {
     const start = async () => {
       const browser = new Browser();
