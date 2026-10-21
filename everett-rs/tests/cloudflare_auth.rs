@@ -568,9 +568,9 @@ fn native_profile_and_convex_account_never_fall_back_to_each_other() {
     f.write(".everett/auth.json", "synthetic-existing-oidc");
     assert!(f.run(&["login"]).status.success());
     let out = f.run(&["relay", "whoami"]);
-    assert!(!out.status.success());
-    assert!(String::from_utf8_lossy(&out.stderr)
-        .contains("Cloudflare relay transport is not connected"));
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    assert_eq!(serde_json::from_slice::<Value>(&out.stdout).unwrap()["deviceId"], "immutable-agent");
+    assert!(fake.requests().last().unwrap().1.contains(TOKEN));
     assert!(!f.home().join(".everett/relay/keys.json").exists());
     f.write(".everett/config.toml", "[auth]\nprovider = 'oidc'\nissuer = 'https://old-oidc.example/realm'\nclient_id = 'old-client'\n");
     let out = f.run(&["login", "--provider", "cloudflare", "--json"]);

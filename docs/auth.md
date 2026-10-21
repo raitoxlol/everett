@@ -44,10 +44,13 @@ Native credentials expire after 30 days; there is no refresh endpoint.
 `logout --provider cloudflare --revoke-device` requests server revocation and removes
 the local credential only after confirmation. This requires registered relay keys;
 revoke a never-registered credential through the owner approval page. Local sign-out
-and remote revocation are distinct. The existing relay/notification transport still
-uses Convex and its independently configured OIDC identity; this adapter does not yet
-migrate encrypted peers or imply cloud-agent OAuth is connected. Dots/Grok client OAuth
-has its own consent/grant; Hark/Muse compatibility remains unverified.
+and remote revocation are distinct. The selected Cloudflare provider now supports
+encrypted native relay operations and outbound inbox polling. Its private relay state
+is isolated under `.everett/relay-cloudflare`; existing OIDC/Convex keys and pins stay
+under `.everett/relay`. Peers are pinned explicitly for each provider. See
+[connect two computers through Cloudflare](cloudflare-native.md) for exact commands and
+verification boundaries. Dots/Grok client OAuth has its own consent/grant;
+Hark/Muse compatibility remains unverified.
 
 ## Existing OIDC sign-in
 
