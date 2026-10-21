@@ -44,7 +44,7 @@ class Browser {
     const github = new URL(start.headers.get('Location')!);
     expect(github.origin).toBe('https://github.com');
     expect(github.searchParams.get('code_challenge_method')).toBe('S256');
-    return this.request('/auth/callback/github?' + new URLSearchParams({ state: github.searchParams.get('state')!, code: 'synthetic-code' }));
+    return this.request('/auth/callback/github?' + new URLSearchParams({ state: github.searchParams.get('state')!, code: 'synthetic-code', iss: 'https://github.com/login/oauth' }));
   }
   async csrf(path = '/enroll') {
     const response = await this.request(path);
@@ -191,6 +191,28 @@ describe('Hosted device login through real Worker routes', () => {
     expect((await fetchWorker('/auth/callback/github?' + new URLSearchParams({ state, code: 'synthetic-code' }))).status).toBe(400);
     expect((await new Browser().login('/enroll', 1)).status).toBe(403);
     expect((await new Browser().login('/enroll', 282002453, 'imposter')).status).toBe(403);
+    expect(await memberCount()).toBe(0);
+  });
+  it('validates a supplied GitHub issuer, rejects duplicate issuer parameters, and accepts legacy callbacks without one', async () => {
+    const start = async () => {
+      const browser = new Browser();
+      const response = await browser.request('/auth/github');
+      const state = new URL(response.headers.get('Location')!).searchParams.get('state')!;
+      return { browser, state };
+    };
+
+    const valid = await new Browser().login();
+    expect(valid.status).toBe(303);
+
+    const legacy = await start();
+    expect((await legacy.browser.request('/auth/callback/github?' + new URLSearchParams({ state: legacy.state, code: 'synthetic-code' }))).status).toBe(303);
+
+    const mismatch = await start();
+    expect((await mismatch.browser.request('/auth/callback/github?' + new URLSearchParams({ state: mismatch.state, code: 'synthetic-code', iss: 'https://github.com' }))).status).toBe(400);
+
+    const duplicate = await start();
+    const query = new URLSearchParams({ state: duplicate.state, code: 'synthetic-code', iss: 'https://github.com/login/oauth' });
+    expect((await duplicate.browser.request('/auth/callback/github?' + query + '&iss=https%3A%2F%2Fattacker.example')).status).toBe(400);
     expect(await memberCount()).toBe(0);
   });
   it('delivers one credential once, rejects browser-session bearer tokens, persists and revokes independently', async () => {
