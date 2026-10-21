@@ -94,6 +94,10 @@ pub struct Args {
     pub open: bool,
     pub force: bool,
     pub revoke_device: bool,
+    pub auth_provider: Option<String>,
+    pub auth_issuer: Option<String>,
+    pub auth_cancel: bool,
+    pub auth_no_wait: bool,
 }
 
 fn ago(ts: f64) -> String {
@@ -1205,7 +1209,22 @@ pub fn cmd_doctor(args: &Args) -> i32 {
     crate::doctor::run(args.hours)
 }
 
+fn auth_provider(args: &Args) -> std::result::Result<bool, String> {
+    let provider = args.auth_provider.clone().unwrap_or_else(|| crate::config::get("auth.provider", Some("EVERETT_AUTH_PROVIDER"), "oidc"));
+    match provider.as_str() {
+        "cloudflare" => Ok(true),
+        "oidc" if args.auth_cancel || args.auth_no_wait || args.auth_issuer.is_some() => Err("--cancel, --no-wait and --issuer require --provider cloudflare".into()),
+        "oidc" => Ok(false),
+        _ => Err("auth.provider must be oidc or cloudflare".into()),
+    }
+}
+
 pub fn cmd_login(args: &Args) -> i32 {
+    match auth_provider(args) {
+        Ok(true) => return crate::cloudflare_auth::cmd_login(args),
+        Ok(false) => {},
+        Err(e) => { eprintln!("everett login: {e}"); return 2; },
+    }
     use crate::auth;
     if !auth::configured() {
         eprintln!(
@@ -1305,6 +1324,11 @@ pub fn cmd_login(args: &Args) -> i32 {
 }
 
 pub fn cmd_whoami(args: &Args) -> i32 {
+    match auth_provider(args) {
+        Ok(true) => return crate::cloudflare_auth::cmd_whoami(args),
+        Ok(false) => {},
+        Err(e) => { eprintln!("everett whoami: {e}"); return 2; },
+    }
     use crate::auth;
     let Some(stored) = auth::load() else {
         if args.json {
@@ -1332,6 +1356,11 @@ pub fn cmd_whoami(args: &Args) -> i32 {
 }
 
 pub fn cmd_logout(args: &Args) -> i32 {
+    match auth_provider(args) {
+        Ok(true) => return crate::cloudflare_auth::cmd_logout(args),
+        Ok(false) => {},
+        Err(e) => { eprintln!("everett logout: {e}"); return 2; },
+    }
     use crate::auth;
     let Some(stored) = auth::load() else {
         if args.json {
