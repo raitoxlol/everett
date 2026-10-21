@@ -88,6 +88,10 @@ function expectAuthShell(page: string) {
 function expectAuthState(page: string, state: 'pending' | 'connected' | 'denied' | 'cancelled' | 'expired' | 'revoked') {
   expect(page).toContain(`<section class="auth-state" data-state="${state}"`);
 }
+function expectNestedAuthStateLayout(page: string, state: 'pending' | 'connected') {
+  expect(page).toMatch(new RegExp(`<div class="auth-action">[\\s\\S]*?<section class="auth-state" data-state="${state}"`));
+  expect(page).toContain('<style>.auth-action>.auth-state{grid-column:1/-1}</style>');
+}
 async function enroll(browser: Browser, name = 'mac-mini-test') {
   const pending = await begin(name);
   const csrf = await browser.csrf('/enroll?code=' + pending.user_code);
@@ -220,6 +224,7 @@ describe('Hosted device login through real Worker routes', () => {
     const before = await (await browser.request(pagePath)).text();
     expectAuthShell(before);
     expectAuthState(before, 'pending');
+    expectNestedAuthStateLayout(before, 'pending');
     expect(before.includes('Waiting for approval')).toBe(true);
     expect(before.includes('You can close this tab')).toBe(false);
     expect(before.includes(pending.device_code)).toBe(false);
@@ -228,6 +233,7 @@ describe('Hosted device login through real Worker routes', () => {
     const approved = await (await browser.request(pagePath)).text();
     expectAuthShell(approved);
     expectAuthState(approved, 'connected');
+    expectNestedAuthStateLayout(approved, 'connected');
     expect(approved).toContain('<h2 class="auth-state__title">Connected</h2>');
     expect(approved.includes('Approval complete')).toBe(true);
     expect(approved.includes('You can close this tab')).toBe(true);
