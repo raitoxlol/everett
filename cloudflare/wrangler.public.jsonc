@@ -1,0 +1,54 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "everett",
+  "main": "src/index.ts",
+  "account_id": "17bafde311907d7c3d81a3fcbfd31990",
+  "compatibility_date": "2026-10-21",
+  "workers_dev": false,
+  "preview_urls": false,
+  "send_metrics": false,
+  "logpush": false,
+  "tail_consumers": [],
+  "observability": {
+    "enabled": false,
+    "redact_query_string": true,
+    "logs": {
+      "enabled": false,
+      "invocation_logs": false,
+      "persist": false,
+      "destinations": []
+    },
+    "traces": {
+      "enabled": false,
+      "persist": false,
+      "destinations": []
+    }
+  },
+  "routes": [
+    {
+      "pattern": "everett.raitox.tech",
+      "custom_domain": true,
+      "enabled": true,
+      "previews_enabled": false
+    }
+  ],
+  "vars": {
+    "AUTH_GITHUB_ID": "Ov23liS4NbTt3HxvwHji",
+    "EVERETT_ISSUER": "https://everett.raitox.tech",
+    "EVERETT_OAUTH_CLIENT_IDS": "https://chatgpt.com/oauth/client.json",
+    "EVERETT_OAUTH_REDIRECT_URIS": "https://chatgpt.com/connector_platform_oauth_redirect",
+    "EVERETT_OAUTH_RESOURCES": "https://tunnel-service.gateway.unified-0.internal.api.openai.org/v1/mcp/tunnel_6ad61d5e26b481918aaeb35a57e1a673",
+    "EVERETT_OWNER_GITHUB_ID": "282002453",
+    "EVERETT_OWNER_GITHUB_LOGIN": "raitoxlol"
+  },
+  "durable_objects": {
+    "bindings": [
+      { "name": "OWNERS", "class_name": "OwnerRelay" },
+      { "name": "AUTH_STATE", "class_name": "HostedAuth" }
+    ]
+  },
+  "migrations": [
+    { "tag": "v1", "new_sqlite_classes": ["OwnerRelay"] },
+    { "tag": "v2", "new_sqlite_classes": ["HostedAuth"] }
+  ]
+}
