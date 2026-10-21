@@ -15,6 +15,8 @@ struct Fake {
     issuer: String,
     requests: Arc<Mutex<Vec<(String, String, Value)>>>,
     polls: Arc<Mutex<VecDeque<(u16, Value)>>>,
+    drop_polls: Arc<Mutex<usize>>,
+    poll_delay: Arc<Mutex<Duration>>,
     identity_status: Arc<Mutex<u16>>,
     identity: Arc<Mutex<Value>>,
     cancel_state: Arc<Mutex<&'static str>>,
@@ -29,6 +31,8 @@ impl Fake {
         let issuer = format!("http://{}", listener.local_addr().unwrap());
         let requests = Arc::new(Mutex::new(Vec::new()));
         let polls = Arc::new(Mutex::new(VecDeque::new()));
+        let drop_polls = Arc::new(Mutex::new(0usize));
+        let poll_delay = Arc::new(Mutex::new(Duration::ZERO));
         let identity_status = Arc::new(Mutex::new(200));
         let identity = Arc::new(Mutex::new(
             json!({"result":{"owner":"owner-synthetic","deviceId":"immutable-agent","role":"member"}}),
@@ -39,6 +43,7 @@ impl Fake {
         let fail_save = Arc::new(Mutex::new(None::<std::path::PathBuf>));
         let revoke_status = Arc::new(Mutex::new(200));
         let (save_failure, revoke) = (fail_save.clone(), revoke_status.clone());
+        let (drops, delay) = (drop_polls.clone(), poll_delay.clone());
         let (r, p, s, i, c, n, e, origin) = (
             requests.clone(),
             polls.clone(),
@@ -54,6 +59,15 @@ impl Fake {
                 let Ok(mut stream) = stream else { break };
                 let (path, headers, body) = read_request(&mut stream);
                 r.lock().unwrap().push((path.clone(), headers, body));
+                if path == "/v2/auth/poll" {
+                    let mut remaining = drops.lock().unwrap();
+                    if *remaining > 0 {
+                        *remaining -= 1;
+                        continue;
+                    }
+                    drop(remaining);
+                    std::thread::sleep(*delay.lock().unwrap());
+                }
                 let (status, body) = match path.as_str() {
                     "/v2/auth/device" => (
                         200,
@@ -81,6 +95,8 @@ impl Fake {
             issuer,
             requests,
             polls,
+            drop_polls,
+            poll_delay,
             identity_status,
             identity,
             cancel_state,
@@ -322,6 +338,129 @@ fn transient_poll_error_keeps_pending_and_existing_oidc_file() {
     );
     fake.approved();
     assert!(f.run(&["login"]).status.success());
+}
+
+#[test]
+fn dropped_poll_connection_resumes_the_same_approval() {
+    let f = fixture();
+    let fake = Fake::new();
+    fake.configure(&f);
+    *fake.drop_polls.lock().unwrap() = 1;
+    fake.approved();
+    let before = Instant::now();
+    let out = f.run(&["login", "--json"]);
+    redact(&out);
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let identity: Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(identity["verified"], true);
+    assert_eq!(identity["agent_id"], "immutable-agent");
+    assert!(before.elapsed() >= Duration::from_secs(3));
+    assert!(!f.home().join(".everett/cloudflare-pending.json").exists());
+    let requests = fake.requests();
+    assert_eq!(requests.iter().filter(|r| r.0 == "/v2/auth/device").count(), 1);
+    assert_eq!(requests.iter().filter(|r| r.0 == "/v2/auth/poll").count(), 2);
+}
+
+#[test]
+fn dropped_poll_connections_stop_at_the_approval_deadline() {
+    let f = fixture();
+    let fake = Fake::new();
+    fake.configure(&f);
+    *fake.drop_polls.lock().unwrap() = usize::MAX;
+    *fake.expires.lock().unwrap() = 4;
+    let before = Instant::now();
+    let out = f.run(&["login", "--json"]);
+    redact(&out);
+    assert_eq!(out.status.code(), Some(5));
+    assert!(String::from_utf8_lossy(&out.stderr).contains("approval code expired"));
+    assert!(before.elapsed() >= Duration::from_secs(4));
+    assert!(before.elapsed() < Duration::from_secs(7));
+    assert!(!f.home().join(".everett/cloudflare-pending.json").exists());
+    assert!(!f.home().join(".everett/cloudflare-auth.json").exists());
+    let requests = fake.requests();
+    assert_eq!(requests.iter().filter(|r| r.0 == "/v2/auth/device").count(), 1);
+    assert_eq!(requests.iter().filter(|r| r.0 == "/v2/auth/poll").count(), 2);
+}
+
+#[test]
+fn stalled_poll_timeout_is_bounded_by_the_approval_deadline() {
+    let f = fixture();
+    let fake = Fake::new();
+    fake.configure(&f);
+    *fake.expires.lock().unwrap() = 2;
+    *fake.poll_delay.lock().unwrap() = Duration::from_secs(4);
+    let before = Instant::now();
+    let out = f.run(&["login", "--json"]);
+    redact(&out);
+    assert_eq!(out.status.code(), Some(5));
+    assert!(String::from_utf8_lossy(&out.stderr).contains("approval code expired"));
+    assert!(before.elapsed() < Duration::from_millis(3500));
+    assert!(!f.home().join(".everett/cloudflare-pending.json").exists());
+    assert!(!f.home().join(".everett/cloudflare-auth.json").exists());
+}
+
+#[test]
+fn ctrl_c_cancels_during_poll_transport_backoff() {
+    let f = fixture();
+    let fake = Fake::new();
+    fake.configure(&f);
+    *fake.drop_polls.lock().unwrap() = usize::MAX;
+    let child = Command::new(env!("CARGO_BIN_EXE_everett"))
+        .args(["login", "--json"])
+        .env_clear()
+        .env("EVERETT_HOME", f.home())
+        .env("HOME", f.home())
+        .env("PATH", "/usr/bin:/bin")
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while !fake.requests().iter().any(|r| r.0 == "/v2/auth/poll") {
+        assert!(Instant::now() < deadline);
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    std::thread::sleep(Duration::from_millis(200));
+    let before = Instant::now();
+    unsafe { libc::kill(child.id() as i32, libc::SIGINT); }
+    let out = child.wait_with_output().unwrap();
+    redact(&out);
+    assert_eq!(out.status.code(), Some(130));
+    assert!(before.elapsed() < Duration::from_secs(2));
+    assert!(!f.home().join(".everett/cloudflare-pending.json").exists());
+    assert!(!f.home().join(".everett/cloudflare-auth.json").exists());
+    let requests = fake.requests();
+    assert_eq!(requests.iter().filter(|r| r.0 == "/v2/auth/device").count(), 1);
+    assert_eq!(requests.last().unwrap().0, "/v2/auth/cancel");
+}
+
+#[test]
+fn poll_retry_preserves_authoritative_and_invalid_response_errors() {
+    for (status, body, exit) in [
+        (401, json!({"error":"unauthorized"}), 1),
+        (403, json!({"error":"forbidden"}), 1),
+        (503, json!({"error":"unconfigured"}), 6),
+        (200, json!({"state":"consumed"}), 5),
+        (200, json!({"state":"invalid"}), 6),
+    ] {
+        let f = fixture();
+        let fake = Fake::new();
+        fake.configure(&f);
+        *fake.drop_polls.lock().unwrap() = 1;
+        fake.polls.lock().unwrap().push_back((status, body));
+        fake.approved();
+        let out = f.run(&["login", "--json"]);
+        redact(&out);
+        assert_eq!(out.status.code(), Some(exit));
+        assert!(!f.home().join(".everett/cloudflare-auth.json").exists());
+        if exit == 5 {
+            assert!(String::from_utf8_lossy(&out.stderr).contains("already collected"));
+            assert!(!f.home().join(".everett/cloudflare-pending.json").exists());
+        }
+        let requests = fake.requests();
+        assert_eq!(requests.iter().filter(|r| r.0 == "/v2/auth/device").count(), 1);
+        assert_eq!(requests.iter().filter(|r| r.0 == "/v2/auth/poll").count(), 2);
+    }
 }
 #[test]
 fn slow_down_backs_off_before_collecting_approval() {
