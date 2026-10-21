@@ -237,6 +237,9 @@ pub(crate) fn account() -> Result<(auth::Stored, String)> {
 }
 
 fn account_refresh(force: bool) -> Result<(auth::Stored, String)> {
+    if crate::config::get("auth.provider", Some("EVERETT_AUTH_PROVIDER"), "oidc") != "oidc" {
+        return Err(bad("Cloudflare relay transport is not connected by native sign-in yet; the existing Convex relay requires explicit auth.provider = oidc"));
+    }
     initialize()?;
     let _guard = peer::lock(&root().join("auth.lock"))?;
     let stored = auth::load().ok_or_else(|| bad("run everett login first"))?;

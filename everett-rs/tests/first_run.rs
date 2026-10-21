@@ -31,7 +31,7 @@ fn first_terminal_run_onboards_and_cancellation_keeps_it_pending() {
         session.expect("paste a Jev key now?").unwrap();
         session.send_line("q").unwrap();
         session
-            .expect("Cancelled -- no changes were made.")
+            .expect("Setup stopped. Applied changes, if any, are kept.")
             .unwrap();
         session.expect(expectrl::Eof).unwrap();
     }
@@ -59,7 +59,7 @@ fn completed_setup_stops_auto_onboarding_but_explicit_onboard_runs_again() {
     session.expect("paste a Jev key now?").unwrap();
     session.send_line("q").unwrap();
     session
-        .expect("Cancelled -- no changes were made.")
+        .expect("Setup stopped. Applied changes, if any, are kept.")
         .unwrap();
     session.expect(expectrl::Eof).unwrap();
 

@@ -1,4 +1,4 @@
-//! Human onboarding. Configuration is only written after the final apply action.
+//! Human onboarding. Account approval is separate from reviewed local configuration.
 
 use std::io;
 use std::time::{Duration, Instant};
@@ -18,7 +18,14 @@ use ratatui::{Frame, Terminal};
 
 use crate::onboard::{self, OnboardConfig};
 
-const STEP_TITLES: &[&str] = &["Welcome", "Explore", "Agents", "Connect", "Review"];
+const STEP_TITLES: &[&str] = &[
+    "Welcome",
+    "Account",
+    "Agents",
+    "Setup",
+    "Review",
+    "Instructions",
+];
 const MIN_COLS: u16 = 54;
 const MIN_ROWS: u16 = 14;
 
@@ -430,9 +437,9 @@ fn screen_welcome(t: &mut Terminal<CrosstermBackend<io::Stdout>>, p: &Palette) -
                     f,
                     p,
                     Rect::new(36, top + 7, area.width - 38, 3),
-                    "See what Everett can do",
+                    "Sign in and get started",
                 );
-                put(f, area.height - 4, 4, "Understand. Choose. Connect.", p.dim);
+                put(f, area.height - 4, 4, "Sign in. Choose. Connect.", p.dim);
             } else {
                 put(f, y, 2, "Your agents, connected.", p.cyan);
                 put(f, y + 2, 2, "Here and beyond this computer.", p.violet);
@@ -444,15 +451,96 @@ fn screen_welcome(t: &mut Terminal<CrosstermBackend<io::Stdout>>, p: &Palette) -
                     f,
                     p,
                     Rect::new(2, area.height - 4, area.width - 4, 3),
-                    "See what Everett can do",
+                    "Sign in and get started",
                 );
             }
-            footer(f, p, "q quit");
+            footer(f, p, "d explore Everett   q quit");
         })
         .map_err(|_| Quit)?;
         match motion.read(6.0)? {
             k if is_quit(&k) => return Err(Quit),
             KeyCode::Enter => return Ok(Dir::Forward),
+            KeyCode::Char('d') => {
+                screen_explanation(t, p)?;
+            }
+            _ => {}
+        }
+    }
+}
+
+fn screen_account(t: &mut Terminal<CrosstermBackend<io::Stdout>>, p: &Palette) -> TResult<Dir> {
+    let configured = crate::cloudflare_auth::available();
+    let mut attempt = configured;
+    let mut verified = false;
+    let mut status = if configured {
+        "Opening browser sign-in…".to_string()
+    } else {
+        "Account sign-in is not available in this build yet.".to_string()
+    };
+    loop {
+        t.draw(|f| {
+            if let Some(y) = draw_frame(f, p, 2, "Sign in to Everett") {
+                let area = f.area();
+                f.render_widget(
+                    Paragraph::new(status.as_str())
+                        .style(if verified { p.green } else { p.amber })
+                        .wrap(Wrap { trim: false }),
+                    Rect::new(2, y, area.width - 4, area.height - y - 6),
+                );
+                primary_action(
+                    f,
+                    p,
+                    Rect::new(2, area.height - 4, area.width - 4, 3),
+                    if verified {
+                        "Choose your agents"
+                    } else if configured {
+                        "Retry browser sign-in"
+                    } else {
+                        "Continue on this computer"
+                    },
+                );
+                footer(
+                    f,
+                    p,
+                    if verified {
+                        "enter continue   b back   q quit"
+                    } else {
+                        "l continue locally   b back   q quit"
+                    },
+                );
+            }
+        })
+        .map_err(|_| Quit)?;
+        if attempt {
+            attempt = false;
+            disable_raw_mode().map_err(|_| Quit)?;
+            execute!(t.backend_mut(), LeaveAlternateScreen, cursor::Show).map_err(|_| Quit)?;
+            let result = crate::cloudflare_auth::sign_in(&crate::cli::Args {
+                open: std::env::var_os("SSH_CONNECTION").is_none()
+                    && std::env::var_os("SSH_TTY").is_none(),
+                auth_provider: Some("cloudflare".into()),
+                ..Default::default()
+            });
+            enable_raw_mode().map_err(|_| Quit)?;
+            execute!(t.backend_mut(), EnterAlternateScreen, cursor::Hide).map_err(|_| Quit)?;
+            t.clear().map_err(|_| Quit)?;
+            status = match result {
+                Ok(identity) => {
+                    verified = identity["verified"] == true;
+                    format!("Signed in. Identity verified for {}.\nBrowser approval complete; you can close that page.", identity["device_name"].as_str().unwrap_or("this computer"))
+                }
+                Err(error) => format!("Sign-in did not complete: {error}"),
+            };
+            continue;
+        }
+        match read_key()? {
+            k if is_quit(&k) => return Err(Quit),
+            KeyCode::Char('b') => return Ok(Dir::Back),
+            KeyCode::Char('l') if !verified => return Ok(Dir::Forward),
+            KeyCode::Enter if verified || !configured => return Ok(Dir::Forward),
+            KeyCode::Enter => {
+                attempt = true;
+            }
             _ => {}
         }
     }
@@ -744,7 +832,7 @@ impl RemoteConnection {
             .chain([
                 String::new(),
                 "This wizard cannot finish that connection yet.".into(),
-                "It stays pending; no account or grant is added.".into(),
+                "It stays pending; no client grant is added.".into(),
             ])
             .collect()
     }
@@ -1003,18 +1091,73 @@ fn connection_guide(
 fn screen_connections(
     t: &mut Terminal<CrosstermBackend<io::Stdout>>,
     p: &Palette,
+    cfg: &OnboardConfig,
     remote: &[RemoteConnection],
     index: &mut usize,
 ) -> TResult<Dir> {
-    if remote.is_empty() {
+    let mut guides = Vec::new();
+    for agent in AgentChoice::choices(cfg, true)
+        .iter()
+        .filter(|a| a.selected(cfg) > 0)
+    {
+        let mut lines = vec![
+            format!("Set up {} on this computer", agent.name()),
+            String::new(),
+            "1. Keep your existing agent account/provider sign-in.".into(),
+            "2. Review the selected hooks and Everett tools next.".into(),
+            "   Applying will back up and update only selected settings.".into(),
+        ];
+        if agent.mcp && cfg.mcp.iter().any(|(h, on)| *h == agent.harness && *on) {
+            lines.push(format!(
+                "   Tools file: {}",
+                crate::install::mcp_path(&agent.harness).display()
+            ));
+        }
+        if agent.events.iter().any(|event| {
+            cfg.hooks
+                .iter()
+                .any(|(h, events)| *h == agent.harness && events.get(event) == Some(&true))
+        }) {
+            lines.push(format!(
+                "   Hooks file: {}",
+                crate::install::settings_path(&agent.harness).display()
+            ));
+        }
+        lines.extend([
+            String::new(),
+            "3. After applying, restart this agent so it loads Everett.".into(),
+            "4. Ask it to list Everett tools and verify a real result.".into(),
+            "5. Copy the final prompt to review an instruction-file addition.".into(),
+            String::new(),
+            "Nothing on this page signs into the agent's provider.".into(),
+            "Instruction Markdown is never edited by this wizard.".into(),
+        ]);
+        guides.push((format!("{} / setup guide", agent.name()), lines));
+    }
+    guides.extend(remote.iter().map(|choice| {
+        (
+            format!("{} / {}", choice.name(), choice.status()),
+            choice.guide(),
+        )
+    }));
+    if guides.is_empty() {
         return Ok(Dir::Forward);
     }
-    *index = (*index).min(remote.len() - 1);
+    *index = (*index).min(guides.len() - 1);
     loop {
-        match connection_guide(t, p, remote[*index])? {
+        let (title, lines) = &guides[*index];
+        match pause(
+            t,
+            p,
+            4,
+            title,
+            lines,
+            true,
+            Some("j/k scroll   enter continue   b back   q quit"),
+        )? {
             Dir::Back if *index == 0 => return Ok(Dir::Back),
             Dir::Back => *index -= 1,
-            _ if *index + 1 == remote.len() => return Ok(Dir::Forward),
+            _ if *index + 1 == guides.len() => return Ok(Dir::Forward),
             _ => *index += 1,
         }
     }
@@ -1906,7 +2049,7 @@ fn screen_summary(
     cfg: &OnboardConfig,
     result: &onboard::ApplyResult,
     remote: &[RemoteConnection],
-) -> TResult<()> {
+) -> TResult<bool> {
     let local_changes = cfg
         .hooks
         .iter()
@@ -1940,7 +2083,7 @@ fn screen_summary(
                     } else if local_changes {
                         "Settings saved. Agent tools are not verified yet."
                     } else {
-                        "No account, grant or connection was added."
+                        "No cloud client or VM connection was added."
                     },
                     if result.errors.is_empty() {
                         p.green
@@ -1974,9 +2117,13 @@ fn screen_summary(
                     f,
                     p,
                     Rect::new(2, area.height - 4, area.width - 4, 3),
-                    "Finish",
+                    if result.errors.is_empty() {
+                        "Get your agent instruction prompt"
+                    } else {
+                        "Finish"
+                    },
                 );
-                footer(f, p, "d results   enter/q exit");
+                footer(f, p, "d results   enter continue   q exit");
             }
         })
         .map_err(|_| Quit)?;
@@ -1991,10 +2138,7 @@ fn screen_summary(
                     lines.truncate(index);
                 }
                 for choice in remote {
-                    lines.push(format!(
-                        "{}: pending; no account or grant added",
-                        choice.name()
-                    ));
+                    lines.push(format!("{}: pending; no client grant added", choice.name()));
                     lines.extend(choice.guide());
                 }
                 if pause(
@@ -2008,11 +2152,69 @@ fn screen_summary(
                 )
                 .is_err()
                 {
-                    return Ok(());
+                    return Ok(false);
                 }
             }
-            key if is_quit(&key) => return Ok(()),
-            KeyCode::Enter => return Ok(()),
+            key if is_quit(&key) => return Ok(false),
+            KeyCode::Enter => return Ok(true),
+            _ => {}
+        }
+    }
+}
+
+fn screen_instructions(
+    t: &mut Terminal<CrosstermBackend<io::Stdout>>,
+    p: &Palette,
+    prompt: &str,
+) -> TResult<()> {
+    let mut scroll = 0u16;
+    let mut max_scroll = 0u16;
+    loop {
+        t.draw(|f| {
+            if let Some(y) = draw_frame(f, p, 6, "Teach your agents about Everett") {
+                let area = f.area();
+                put(
+                    f,
+                    y,
+                    2,
+                    "Copy this prompt into each selected agent.",
+                    p.cyan,
+                );
+                let width = area.width.saturating_sub(6).max(1) as usize;
+                let chars: Vec<char> = prompt.chars().collect();
+                let rows: Vec<Line> = chars
+                    .chunks(width)
+                    .map(|part| Line::from(part.iter().collect::<String>()))
+                    .collect();
+                max_scroll = rows
+                    .len()
+                    .saturating_sub(area.height.saturating_sub(y + 8) as usize)
+                    as u16;
+                scroll = scroll.min(max_scroll);
+                f.render_widget(
+                    Paragraph::new(rows).scroll((scroll, 0)).block(
+                        Block::default()
+                            .borders(Borders::ALL)
+                            .title(" Prompt / review before applying "),
+                    ),
+                    Rect::new(2, y + 2, area.width - 4, area.height - y - 6),
+                );
+                primary_action(
+                    f,
+                    p,
+                    Rect::new(2, area.height - 4, area.width - 4, 3),
+                    "Print prompt and finish",
+                );
+                footer(f, p, "j/k scroll   enter/q finish");
+            }
+        })
+        .map_err(|_| Quit)?;
+        match read_key()? {
+            KeyCode::Enter | KeyCode::Esc | KeyCode::Char('q') => return Ok(()),
+            KeyCode::Down | KeyCode::Char('j') => scroll = scroll.saturating_add(1).min(max_scroll),
+            KeyCode::Up | KeyCode::Char('k') => scroll = scroll.saturating_sub(1),
+            KeyCode::Home => scroll = 0,
+            KeyCode::End => scroll = max_scroll,
             _ => {}
         }
     }
@@ -2067,27 +2269,36 @@ pub fn run(
     }
 
     let mut i = 0usize;
-    while i < STEP_TITLES.len() {
+    while i < 5 {
         let dir = match i {
             0 => screen_welcome(&mut term, &p),
-            1 => screen_explanation(&mut term, &p),
+            1 => screen_account(&mut term, &p),
             2 => screen_agents(&mut term, &p, &mut cfg, !args.no_mcp, &mut remote),
-            3 => screen_connections(&mut term, &p, &remote, &mut connection_index),
+            3 => screen_connections(&mut term, &p, &cfg, &remote, &mut connection_index),
             _ => screen_confirm(&mut term, &p, &mut cfg, &remote),
         };
         match dir {
             Err(Quit) => return Ok(None),
             Ok(Dir::Back) => {
-                i = if i == 4 && remote.is_empty() {
-                    2
-                } else {
-                    i.saturating_sub(1)
-                }
+                i = i.saturating_sub(1);
             }
             Ok(Dir::Apply) => match screen_apply(&mut term, &p, &cfg) {
                 Err(Quit) => return Ok(None),
-                Ok(result) => {
-                    let _ = screen_summary(&mut term, &p, &cfg, &result, &remote);
+                Ok(mut result) => {
+                    let show_prompt =
+                        screen_summary(&mut term, &p, &cfg, &result, &remote).unwrap_or(false);
+                    if result.errors.is_empty() {
+                        let mut agents: Vec<String> = AgentChoice::choices(&cfg, true)
+                            .iter()
+                            .filter(|agent| agent.selected(&cfg) > 0)
+                            .map(|agent| agent.name().to_string())
+                            .collect();
+                        agents.extend(remote.iter().map(|choice| choice.name().to_string()));
+                        result.instruction_prompt = onboard::instruction_prompt(&agents);
+                        if show_prompt {
+                            let _ = screen_instructions(&mut term, &p, &result.instruction_prompt);
+                        }
+                    }
                     return Ok(Some(result));
                 }
             },

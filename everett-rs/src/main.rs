@@ -277,6 +277,18 @@ enum Cmd {
     },
     /// sign in to your Everett account (device-code flow)
     Login {
+        /// native Cloudflare enrollment or existing OIDC (config: auth.provider)
+        #[arg(long, value_parser = ["oidc", "cloudflare"])]
+        provider: Option<String>,
+        /// Cloudflare HTTPS origin (otherwise auth.issuer or stored issuer)
+        #[arg(long)]
+        issuer: Option<String>,
+        /// cancel the pending Cloudflare approval request
+        #[arg(long, conflicts_with_all = ["force", "open", "no_wait", "issuer", "device"])]
+        cancel: bool,
+        /// start or show a pending Cloudflare approval without waiting
+        #[arg(long)]
+        no_wait: bool,
         /// name this device in the account (default: hostname)
         #[arg(long)]
         device: Option<String>,
@@ -292,11 +304,15 @@ enum Cmd {
     },
     /// print the signed-in account
     Whoami {
+        #[arg(long, value_parser = ["oidc", "cloudflare"])]
+        provider: Option<String>,
         #[arg(long)]
         json: bool,
     },
     /// revoke this device's sign-in and delete the local token
     Logout {
+        #[arg(long, value_parser = ["oidc", "cloudflare"])]
+        provider: Option<String>,
         /// best effort registry revocation before signing out
         #[arg(long)]
         revoke_device: bool,
@@ -898,26 +914,34 @@ fn main() {
             cli::cmd_install_mcp(&a)
         }
         Cmd::Login {
+            provider, issuer, cancel, no_wait,
             device,
             open,
             force,
             json,
         } => {
+            a.auth_provider = provider;
+            a.auth_issuer = issuer;
+            a.auth_cancel = cancel;
+            a.auth_no_wait = no_wait;
             a.device = device;
             a.open = open;
             a.force = force;
             a.json = json;
             cli::cmd_login(&a)
         }
-        Cmd::Whoami { json } => {
+        Cmd::Whoami { json, provider } => {
+            a.auth_provider = provider;
             a.json = json;
             cli::cmd_whoami(&a)
         }
         Cmd::Logout {
+            provider,
             json,
             revoke_device,
         } => {
             a.json = json;
+            a.auth_provider = provider;
             a.revoke_device = revoke_device;
             cli::cmd_logout(&a)
         }
