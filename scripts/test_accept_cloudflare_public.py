@@ -4,6 +4,7 @@ import json
 from pathlib import Path
 import shlex
 import sys
+import tempfile
 import unittest
 from unittest.mock import patch
 
@@ -84,10 +85,62 @@ class PublicAcceptanceTests(unittest.TestCase):
             with self.subTest(invalid=invalid), self.assertRaises(acceptance.AcceptanceError):
                 acceptance.parse_bundle(invalid)
 
+    def test_bundle_pair_requires_same_owner_and_distinct_ids_and_fingerprints(self):
+        local = acceptance.Bundle("owner", "mac-device", "a" * 64)
+        remote = acceptance.Bundle("owner", "nuc-device", "b" * 64)
+        self.assertIsNone(acceptance.validate_bundle_pair(local, remote))
+        for invalid in (
+            acceptance.Bundle("other-owner", "nuc-device", "b" * 64),
+            acceptance.Bundle("owner", "mac-device", "b" * 64),
+            acceptance.Bundle("owner", "nuc-device", "a" * 64),
+        ):
+            with self.subTest(invalid=invalid), self.assertRaises(acceptance.AcceptanceError):
+                acceptance.validate_bundle_pair(local, invalid)
+
+    def test_existing_alias_is_rejected_and_peer_pin_match_checks_device_and_fingerprint(self):
+        peers = {"public-012345abcdef": {"device_id": "nuc-device", "fingerprint": "b" * 64}}
+        with self.assertRaises(acceptance.AcceptanceError):
+            acceptance.ensure_alias_available(peers, "public-012345abcdef")
+        self.assertTrue(acceptance.peer_matches(peers, "public-012345abcdef", "nuc-device", "b" * 64))
+        self.assertFalse(acceptance.peer_matches(peers, "public-012345abcdef", "other-device", "b" * 64))
+        self.assertFalse(acceptance.peer_matches(peers, "public-012345abcdef", "nuc-device", "c" * 64))
+        with self.assertRaises(acceptance.AcceptanceError):
+            acceptance.parse_peers(["not", "a", "peer map"])
+
+    def test_manifest_records_only_harness_owned_public_peer_metadata_without_overwrite(self):
+        manifest = {
+            "run_id": "012345abcdef",
+            "ssh_host": "nuc",
+            "local_device_id": "mac-device",
+            "remote_device_id": "nuc-device",
+            "local_fingerprint": "a" * 64,
+            "remote_fingerprint": "b" * 64,
+        }
+        with tempfile.TemporaryDirectory() as home, patch.dict(acceptance.os.environ, {"EVERETT_HOME": home}):
+            path = acceptance.manifest_path(manifest["run_id"])
+            acceptance.save_manifest(path, manifest)
+            self.assertEqual(acceptance.load_manifest(path, manifest["run_id"], "nuc"), manifest)
+            with self.assertRaises(FileExistsError):
+                acceptance.save_manifest(path, manifest)
+            with self.assertRaises(acceptance.AcceptanceError):
+                acceptance.load_manifest(path, manifest["run_id"], "another-nuc")
+            saved = json.loads(path.read_text(encoding="utf-8"))
+            self.assertNotIn("token", saved)
+            self.assertNotIn("private_key", saved)
+
+    def test_manifest_loader_rejects_symlinks(self):
+        with tempfile.TemporaryDirectory() as home:
+            target = Path(home) / "unrelated.json"
+            target.write_text('{"token":"must-not-be-read"}', encoding="utf-8")
+            linked = Path(home) / "manifest.json"
+            linked.symlink_to(target)
+            with self.assertRaises(acceptance.AcceptanceError):
+                acceptance.load_manifest(linked, "012345abcdef", "nuc")
+
     def test_ssh_command_quotes_remote_arguments_and_rejects_host_options(self):
         arguments = ["reply", "message id", "reply; touch /tmp/nope", "$(id)", "'quoted'"]
-        command = acceptance.ssh_command("nucbox", "everett", arguments)
-        self.assertEqual(command[:3], ["ssh", "-T", "nucbox"])
+        command = acceptance.ssh_command("nuc", "everett", arguments)
+        self.assertEqual(command[:3], ["ssh", "-T", "nuc"])
         self.assertEqual(shlex.split(command[3]), ["everett", *arguments])
         with self.assertRaises(acceptance.AcceptanceError):
             acceptance.ssh_command("-oProxyCommand=bad", "everett", ["whoami"])

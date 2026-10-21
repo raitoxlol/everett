@@ -7,6 +7,7 @@ import argparse
 from dataclasses import dataclass
 import json
 import os
+from pathlib import Path
 import re
 import shlex
 import shutil
@@ -90,6 +91,79 @@ def parse_bundle(value: object) -> Bundle:
     if not isinstance(fingerprint, str) or not re.fullmatch(r"[a-f0-9]{64}", fingerprint):
         raise AcceptanceError("relay register omitted a valid public fingerprint")
     return Bundle(owner=owner, device_id=device_id, fingerprint=fingerprint)
+
+
+def validate_bundle_pair(local: Bundle, remote: Bundle) -> None:
+    if local.owner != remote.owner:
+        raise AcceptanceError("registered devices are not on the same account")
+    if local.device_id == remote.device_id:
+        raise AcceptanceError("registered devices report the same device identity")
+    if local.fingerprint == remote.fingerprint:
+        raise AcceptanceError("registered devices report the same public fingerprint")
+
+
+def parse_peers(value: object) -> dict[str, dict[str, object]]:
+    if not isinstance(value, dict) or any(
+        not isinstance(name, str) or not isinstance(peer, dict) for name, peer in value.items()
+    ):
+        raise AcceptanceError("peer list did not return a JSON object of peer records")
+    return value
+
+
+def ensure_alias_available(peers: dict[str, dict[str, object]], alias: str) -> None:
+    if alias in peers:
+        raise AcceptanceError(f"temporary peer alias {alias} already exists; choose a new run id")
+
+
+def peer_matches(peers: dict[str, dict[str, object]], alias: str, device_id: str, fingerprint: str) -> bool:
+    peer = peers.get(alias)
+    return isinstance(peer, dict) and peer.get("device_id") == device_id and peer.get("fingerprint") == fingerprint
+
+
+def manifest_path(run_id: str) -> Path:
+    home = Path(os.environ.get("EVERETT_HOME") or os.environ.get("HOME") or Path.home())
+    return home / ".everett" / "public-acceptance" / f"{run_id}.json"
+
+
+def save_manifest(path: Path, manifest: dict[str, str]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+    descriptor = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+    with os.fdopen(descriptor, "w", encoding="utf-8") as output:
+        json.dump(manifest, output, sort_keys=True)
+        output.write("\n")
+
+
+def load_manifest(path: Path, run_id: str, ssh_host: str) -> dict[str, str]:
+    try:
+        descriptor = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+        with os.fdopen(descriptor, "r", encoding="utf-8") as source:
+            value = json.load(source)
+    except (OSError, json.JSONDecodeError, UnicodeDecodeError) as error:
+        raise AcceptanceError("no valid local harness ownership record exists for this run") from error
+    fields = (
+        "run_id", "ssh_host", "local_device_id", "remote_device_id",
+        "local_fingerprint", "remote_fingerprint",
+    )
+    if not isinstance(value, dict) or any(not isinstance(value.get(field), str) for field in fields):
+        raise AcceptanceError("local harness ownership record is incomplete")
+    if value["run_id"] != run_id or value["ssh_host"] != ssh_host:
+        raise AcceptanceError("run id or NUC SSH host does not match its local ownership record")
+    if value["local_device_id"] == value["remote_device_id"]:
+        raise AcceptanceError("local ownership record has duplicate device identities")
+    if value["local_fingerprint"] == value["remote_fingerprint"]:
+        raise AcceptanceError("local ownership record has duplicate device fingerprints")
+    return value
+
+
+def verify_run_pins(binary: str, host: str, remote_binary: str, run: TestRun) -> tuple[dict[str, str], dict[str, dict[str, object]], dict[str, dict[str, object]]]:
+    manifest = load_manifest(manifest_path(run.run_id), run.run_id, host)
+    local_peers = parse_peers(local_json(binary, "peer", "list"))
+    remote_peers = parse_peers(remote_json(host, remote_binary, "peer", "list"))
+    if not peer_matches(local_peers, run.peer_name, manifest["remote_device_id"], manifest["remote_fingerprint"]):
+        raise AcceptanceError("Mac temporary alias is missing or no longer matches its harness-owned NUC pin")
+    if not peer_matches(remote_peers, run.peer_name, manifest["local_device_id"], manifest["local_fingerprint"]):
+        raise AcceptanceError("NUC temporary alias is missing or no longer matches its harness-owned Mac pin")
+    return manifest, local_peers, remote_peers
 
 
 def ssh_command(host: str, remote_binary: str, argv: list[str]) -> list[str]:
@@ -209,7 +283,7 @@ def plan() -> int:
 
 
 def common_parser(parser: argparse.ArgumentParser) -> None:
-    parser.add_argument("--ssh-host", required=True, help="SSH alias for the NUC, such as nucbox")
+    parser.add_argument("--ssh-host", required=True, help="SSH alias for the NUC, such as nuc")
     parser.add_argument("--remote-everett", default="everett", help="Everett executable on the NUC")
     parser.add_argument("--everett", default=shutil.which("everett") or "everett", help="local Everett executable")
 
@@ -252,6 +326,13 @@ def run(args: argparse.Namespace) -> int:
 
         if args.command == "prepare":
             local_identity, remote_identity = identities(args.everett, args.ssh_host, args.remote_everett)
+            state_path = manifest_path(test.run_id)
+            if state_path.exists():
+                raise AcceptanceError("a local ownership record already exists; choose a new run id")
+            local_peers = parse_peers(local_json(args.everett, "peer", "list"))
+            remote_peers = parse_peers(remote_json(args.ssh_host, args.remote_everett, "peer", "list"))
+            ensure_alias_available(local_peers, test.peer_name)
+            ensure_alias_available(remote_peers, test.peer_name)
             require_confirmation(
                 "This registers the current public keys and writes one temporary peer pin on each device. It does not enroll or revoke a device.",
                 args.ssh_host,
@@ -261,21 +342,45 @@ def run(args: argparse.Namespace) -> int:
                 raise AcceptanceError("Mac relay registration does not match its verified account identity")
             if remote_bundle.owner != remote_identity.owner or remote_bundle.device_id != remote_identity.device_id:
                 raise AcceptanceError("NUC relay registration does not match its verified account identity")
-            if local_bundle.owner != remote_bundle.owner or local_bundle.device_id == remote_bundle.device_id:
-                raise AcceptanceError("registered devices are not distinct devices on the same account")
+            validate_bundle_pair(local_bundle, remote_bundle)
             local_json(
                 args.everett, "peer", "add-relay", test.peer_name,
                 "--device", remote_bundle.device_id, "--fingerprint", remote_bundle.fingerprint,
             )
-            remote_json(
-                args.ssh_host, args.remote_everett, "peer", "add-relay", test.peer_name,
-                "--device", local_bundle.device_id, "--fingerprint", local_bundle.fingerprint,
-            )
+            try:
+                remote_json(
+                    args.ssh_host, args.remote_everett, "peer", "add-relay", test.peer_name,
+                    "--device", local_bundle.device_id, "--fingerprint", local_bundle.fingerprint,
+                )
+            except AcceptanceError:
+                current_local = parse_peers(local_json(args.everett, "peer", "list"))
+                if peer_matches(current_local, test.peer_name, remote_bundle.device_id, remote_bundle.fingerprint):
+                    local_json(args.everett, "peer", "remove", test.peer_name)
+                raise
+            try:
+                save_manifest(state_path, {
+                    "run_id": test.run_id,
+                    "ssh_host": args.ssh_host,
+                    "local_device_id": local_bundle.device_id,
+                    "remote_device_id": remote_bundle.device_id,
+                    "local_fingerprint": local_bundle.fingerprint,
+                    "remote_fingerprint": remote_bundle.fingerprint,
+                })
+            except OSError as error:
+                current_local = parse_peers(local_json(args.everett, "peer", "list"))
+                current_remote = parse_peers(remote_json(args.ssh_host, args.remote_everett, "peer", "list"))
+                if peer_matches(current_local, test.peer_name, remote_bundle.device_id, remote_bundle.fingerprint):
+                    local_json(args.everett, "peer", "remove", test.peer_name)
+                if peer_matches(current_remote, test.peer_name, local_bundle.device_id, local_bundle.fingerprint):
+                    remote_json(args.ssh_host, args.remote_everett, "peer", "remove", test.peer_name)
+                raise AcceptanceError("could not record harness ownership; matching new pins were rolled back") from error
             print(f"PASS: temporary pins added. Run id: {test.run_id}; peer alias: {test.peer_name}.")
+            print("The local ownership record contains public device IDs and fingerprints only.")
             print("No login, enrollment, or revocation command was run.")
             return 0
 
         if args.command == "queue":
+            verify_run_pins(args.everett, args.ssh_host, args.remote_everett, test)
             require_confirmation(
                 f"Stop the NUC's everett relay listener for run {test.run_id}. This sends the same test message twice.",
                 f"QUEUE {test.run_id}",
@@ -304,6 +409,7 @@ def run(args: argparse.Namespace) -> int:
             return 0
 
         if args.command == "deliver":
+            verify_run_pins(args.everett, args.ssh_host, args.remote_everett, test)
             require_confirmation(
                 f"Start the test relay listeners on both devices for run {test.run_id}. The driver will read one inbox message and reply.",
                 f"DELIVER {test.run_id}",
@@ -354,14 +460,28 @@ def run(args: argparse.Namespace) -> int:
             raise AcceptanceError("timed out waiting for one reply and signed replied status on the Mac")
 
         if args.command == "cleanup":
+            manifest = load_manifest(manifest_path(test.run_id), test.run_id, args.ssh_host)
+            local_peers = parse_peers(local_json(args.everett, "peer", "list"))
+            remote_peers = parse_peers(remote_json(args.ssh_host, args.remote_everett, "peer", "list"))
+            if test.peer_name in local_peers and not peer_matches(
+                local_peers, test.peer_name, manifest["remote_device_id"], manifest["remote_fingerprint"]
+            ):
+                raise AcceptanceError("Mac alias differs from the recorded harness pin; nothing was removed")
+            if test.peer_name in remote_peers and not peer_matches(
+                remote_peers, test.peer_name, manifest["local_device_id"], manifest["local_fingerprint"]
+            ):
+                raise AcceptanceError("NUC alias differs from the recorded harness pin; nothing was removed")
             require_confirmation(
-                f"Remove only the temporary peer alias {test.peer_name} from Mac and NUC. Device credentials and server records remain.",
+                f"Remove only the peer aliases created by this harness run ({test.peer_name}). Device credentials and server records remain.",
                 f"REMOVE {test.peer_name}",
             )
-            local_json(args.everett, "peer", "remove", test.peer_name)
-            remote_json(args.ssh_host, args.remote_everett, "peer", "remove", test.peer_name)
+            if test.peer_name in local_peers:
+                local_json(args.everett, "peer", "remove", test.peer_name)
+            if test.peer_name in remote_peers:
+                remote_json(args.ssh_host, args.remote_everett, "peer", "remove", test.peer_name)
+            manifest_path(test.run_id).unlink()
             print(f"PASS: removed temporary peer pins for run {test.run_id}.")
-            print("The run's local inbox and expired relay record remain as evidence; no credential data was opened or deleted.")
+            print("The run inbox and expired relay record remain as evidence. The local ownership record was removed; credentials were not accessed.")
             return 0
 
         raise AcceptanceError("unknown command")

@@ -14,11 +14,11 @@ From the repository root, inspect the plan. This command does not run Everett or
 python3 scripts/accept_cloudflare_public.py plan
 ```
 
-Replace `nucbox` with the NUC's SSH alias. Then run the read-only account check:
+Run the read-only account check with the NUC's SSH alias (here `nuc`):
 
 ```sh
 python3 scripts/accept_cloudflare_public.py preflight \
-  --ssh-host nucbox \
+  --ssh-host nuc \
   --everett /absolute/path/to/everett-v2 \
   --remote-everett /absolute/path/to/everett-v2
 ```
@@ -27,11 +27,11 @@ The driver checks the issuer, account match, and distinct device identities. It 
 
 ## Add temporary peer pins
 
-Choose a test run ID with 12 lowercase hexadecimal characters, or let the driver generate one. The `prepare` command checks both existing identities, registers their current public relay keys, and adds one uniquely named local peer pin on each device. It never calls `login`.
+Choose a test run ID with 12 lowercase hexadecimal characters, or let the driver generate one. The `prepare` command checks both existing identities and verifies the generated alias is unused on both devices before registering their current public relay keys and adding one peer pin on each device. It rejects repeated device IDs or fingerprints. After both pins are added, it saves a mode-restricted local ownership record containing only the run ID, SSH alias, device IDs, and public fingerprints. It never calls `login`.
 
 ```sh
 python3 scripts/accept_cloudflare_public.py prepare \
-  --ssh-host nucbox \
+  --ssh-host nuc \
   --everett /absolute/path/to/everett-v2 \
   --remote-everett /absolute/path/to/everett-v2
 ```
@@ -40,11 +40,11 @@ Type the NUC SSH alias when prompted. Record the run ID printed by the command. 
 
 ## Queue one message while the NUC is offline
 
-Stop the NUC's `everett relay` listener for the test. Do not stop an unrelated service. Run `queue` with the recorded run ID:
+Stop the NUC's `everett relay` listener for the test. Do not stop an unrelated service. Run `queue` with the recorded run ID. Before sending, the driver checks the ownership record and confirms both aliases still pin the recorded device IDs and fingerprints:
 
 ```sh
 python3 scripts/accept_cloudflare_public.py queue \
-  --ssh-host nucbox \
+  --ssh-host nuc \
   --run-id 012345abcdef \
   --everett /absolute/path/to/everett-v2 \
   --remote-everett /absolute/path/to/everett-v2
@@ -58,7 +58,7 @@ Start `everett relay` on the Mac and NUC in terminals you control. Leave those p
 
 ```sh
 python3 scripts/accept_cloudflare_public.py deliver \
-  --ssh-host nucbox \
+  --ssh-host nuc \
   --run-id 012345abcdef \
   --everett /absolute/path/to/everett-v2 \
   --remote-everett /absolute/path/to/everett-v2
@@ -78,7 +78,7 @@ python3 scripts/accept_cloudflare_public.py cleanup \
   --remote-everett /absolute/path/to/everett-v2
 ```
 
-Type `REMOVE public-012345abcdef` when prompted. Cleanup leaves device credentials, the run-specific inbox, and relay records intact. The inbox and server records expire under the existing retention rules.
+Type `REMOVE public-012345abcdef` when prompted. Cleanup requires the local ownership record and verifies every remaining peer pin against it before removing anything. If either alias points to a different device or fingerprint, it stops without removing a pin. It then removes the ownership record and leaves device credentials, the run-specific inbox, and relay records intact. The inbox and server records expire under the existing retention rules.
 
 ## Device revocation remains a separate check
 
