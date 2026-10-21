@@ -1,4 +1,4 @@
-use clap::{Parser, Subcommand};
+use clap::{CommandFactory, Parser, Subcommand};
 
 use everett::cli::{self, Args};
 
@@ -27,7 +27,7 @@ struct Cli {
     #[arg(long, global = true, default_value_t = 72.0)]
     hours: f64,
     #[command(subcommand)]
-    cmd: Cmd,
+    cmd: Option<Cmd>,
 }
 
 #[derive(Subcommand)]
@@ -565,7 +565,26 @@ fn main() {
         hours: cli.hours,
         ..Default::default()
     };
-    let code = match cli.cmd {
+    let cmd = match cli.cmd {
+        Some(cmd) => cmd,
+        None => {
+            use std::io::IsTerminal;
+            if !everett::onboard::completed()
+                && std::io::stdin().is_terminal()
+                && std::io::stdout().is_terminal()
+            {
+                a.span_days = 3;
+                std::process::exit(cli::cmd_onboard(&a));
+            }
+            Cli::command().print_long_help().unwrap_or_else(|e| {
+                eprintln!("everett: {e}");
+                std::process::exit(1);
+            });
+            println!();
+            return;
+        }
+    };
+    let code = match cmd {
         Cmd::Devices {
             action: Some(Devices::Revoke { device_id }),
             ..
