@@ -13,7 +13,7 @@ Everett is one native binary for macOS and Linux. Have at least one harness CLI 
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/raitoxlol/everett/main/install.sh | sh   # ~/.local/bin
-everett onboard --yes --no-backfill
+everett              # first interactive run opens setup
 everett doctor
 ```
 
@@ -45,9 +45,36 @@ the native binary. Then `pipx uninstall everett-sessions`.
 
 ### Setup options
 
-`everett onboard` opens a seven-step wizard: welcome, detect, hooks, MCP, optional Jev/merge schedule,
-backfill, and final confirmation. `q` or EOF cancels without applying defaults. Non-TTY terminals
-use plain prompts. `--yes` explicitly applies defaults without prompting:
+Run `everett` in a terminal to start onboarding on first use. Successful setup records that the
+wizard was applied, not that an agent has loaded its tools. Cancellation or an apply error leaves
+first-run setup pending. Later bare runs show help. Run `everett onboard` to repeat setup. Explicit
+commands and noninteractive bare runs do not prompt.
+
+The terminal flow is welcome, explore, choose, selected connection guidance, then review and apply.
+Local choices use detected sessions. Cloud and VM tabs include Dots, Grok Bot, Hark, Muse, and
+another computer. Remote choices open setup guidance and remain pending. They do not add an account,
+grant, registration, or live connection. Muse and Hark compatibility is unverified.
+
+Space selects a local agent's supported integrations together. Press `d` for individual controls and
+file paths. At review, `d` shows exact changes and `v` opens Advanced. Routing keys, nightly merges,
+and older session cards live there. Cards and nightly merges start off in the interactive wizard.
+`--schedule-merge` explicitly enables the schedule. Plain prompts and `--yes` retain their defaults.
+
+The summary distinguishes apply errors from settings saved, and gives one next action. Loading and
+using Everett tools in the chosen agent still needs verification. Results and errors are scrollable
+with `j` and `k`. `q`, Escape, or Ctrl-C cancels before apply. The explanation has Overview, Local,
+Cloud, and VM tabs on keys `1`-`4`; the chooser uses `1`-`3`. A usable terminal starts at 54 columns
+and 14 rows. Smaller terminals ask you to resize. Without a usable terminal, Everett uses plain
+prompts. While entering a key, use Escape or Ctrl-C to cancel.
+
+The welcome has an animated balloon and multiple colors. Set `EVERETT_NO_ANIM=1` to disable motion
+or `NO_COLOR=1` to disable color. Input stays available during animation. To review with synthetic
+sessions in a disposable home, build the debug binary and run `sh scripts/demo-onboarding.sh`.
+
+[Captured terminal journey](docs/assets/onboarding/onboarding-motion.gif) uses actual PTY cells
+from synthetic sessions, rendered with Menlo on a dark canvas. It is not a Termius screenshot.
+
+`--yes` explicitly applies defaults without prompting:
 
 ```bash
 everett onboard --yes                       # apply every default, non-interactively
