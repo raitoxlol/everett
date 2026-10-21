@@ -231,7 +231,8 @@ export class HostedAuth extends DurableObject<HostedAuthEnv> {
   }
   async #githubCallback(request: Request, url: URL, c: HostedConfig) {
     this.#rate('github-callback', 30);
-    const p = fields(url.searchParams, ['state', 'code', 'error', 'error_description', 'error_uri']);
+    const p = fields(url.searchParams, ['state', 'code', 'error', 'error_description', 'error_uri', 'iss']);
+    if (p.iss !== undefined && p.iss !== 'https://github.com/login/oauth') throw new RelayError('invalid_github_issuer', 400);
     if (!secretPattern.test(p.state ?? '')) throw new RelayError('invalid_github_state', 400);
     const row = this.#row<{ state_hash: string; binding_hash: string; return_to: string; expires_at: number }>('SELECT * FROM gh_states WHERE state_hash=?', hash(p.state));
     const binding = cookies(request)[cookieName(c, 'github')] ?? '', parts = binding.split('.');
