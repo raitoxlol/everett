@@ -16,6 +16,7 @@ use axum::{
     http::{Method, StatusCode},
     middleware::{self, Next},
     response::{IntoResponse, Response},
+    routing::get,
     Router,
 };
 use rmcp::{
@@ -51,7 +52,22 @@ const SECURITY_HEADERS: &[&str] = &[
 const BACKEND_ERROR: &str = "backend unavailable, incompatible, or request timed out";
 const INSTRUCTIONS: &str = "This connection is bound to one logical agent. Read its inbox for handoffs; reply using reply_to. Send only to authorized full IDs. No spawn/resume, automatic routing, or automatic bot wake-up. Shared core, when enabled, includes the owner's global core.";
 
-#[derive(Deserialize)]
+#[derive(Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct OAuth {
+    issuer: String,
+    resource: String,
+    #[serde(default = "default_scope")]
+    scope: String,
+    #[serde(default)]
+    introspection_endpoint: Option<String>,
+}
+
+fn default_scope() -> String {
+    "everett".into()
+}
+
+#[derive(Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Binding {
     agent_id: String,
@@ -72,6 +88,8 @@ struct Binding {
     allowed_hosts: Vec<String>,
     #[serde(default)]
     allowed_origins: Vec<String>,
+    #[serde(default)]
+    oauth: Option<OAuth>,
 }
 
 fn default_workers() -> usize {
@@ -123,6 +141,26 @@ fn valid_authority(authority: &str) -> bool {
     }
     authority.parse::<axum::http::uri::Authority>().is_ok()
         && url::Url::parse(&format!("https://{authority}")).is_ok()
+}
+
+/// https, or plain http only to a loopback host (local tests and tunnels).
+fn valid_oauth_url(raw: &str) -> bool {
+    url::Url::parse(raw).is_ok_and(|u| {
+        let loopback = matches!(u.host_str(), Some("127.0.0.1" | "localhost" | "[::1]"));
+        (u.scheme() == "https" || (u.scheme() == "http" && loopback))
+            && u.host_str().is_some()
+            && u.fragment().is_none()
+            && u.username().is_empty()
+            && u.password().is_none()
+    })
+}
+
+fn strong_secret(secret: &str) -> bool {
+    (32..=512).contains(&secret.len())
+        && secret.is_ascii()
+        && !secret
+            .bytes()
+            .any(|b| b.is_ascii_whitespace() || b.is_ascii_control())
 }
 
 fn valid_origin(origin: &str) -> bool {
@@ -191,6 +229,16 @@ impl Binding {
             || !binding.allowed_origins.iter().all(|s| valid_origin(s))
         {
             return Err("HTTP hosts and origins must be exact authorities and http(s) origins without wildcards".into());
+        }
+        if binding.oauth.as_ref().is_some_and(|o| {
+            !valid_oauth_url(&o.issuer)
+                || !valid_oauth_url(&o.resource)
+                || o.introspection_endpoint.as_deref().is_some_and(|e| !valid_oauth_url(e))
+                || o.scope.is_empty()
+                || o.scope.len() > 64
+                || !o.scope.bytes().all(|b| b.is_ascii_graphic() && b != b'"' && b != b'\\')
+        }) {
+            return Err("oauth needs https issuer, resource and introspection_endpoint URLs (http only on loopback) and one scope token".into());
         }
         Ok(binding)
     }
@@ -364,20 +412,50 @@ impl<R: AsyncRead + Unpin> AsyncRead for BoundedRead<R> {
     }
 }
 
+/// The dot identity an OAuth access token was issued to, attached to the HTTP request.
+#[derive(Clone)]
+struct OAuthAgent {
+    agent_id: String,
+    name: String,
+    client_id: String,
+}
+
 #[derive(Clone)]
 struct Gateway {
     binding: Arc<Binding>,
     workers: Arc<Semaphore>,
+    oauth: bool,
 }
 
 impl Gateway {
-    async fn call(&self, name: &str, arguments: Map<String, Value>) -> Result<Value, String> {
-        let args = self.binding.authorize(name, arguments)?;
+    /// In OAuth mode the token's agent replaces the fixed `agent_id` from dot.json.
+    fn bound(&self, ctx: &RequestContext<RoleServer>) -> Result<(Arc<Binding>, Option<OAuthAgent>), String> {
+        if !self.oauth {
+            return Ok((self.binding.clone(), None));
+        }
+        let agent = ctx
+            .extensions
+            .get::<axum::http::request::Parts>()
+            .and_then(|parts| parts.extensions.get::<OAuthAgent>())
+            .cloned()
+            .ok_or("OAuth identity missing from request; reconnect and authorize again")?;
+        let mut binding = (*self.binding).clone();
+        binding.agent_id = agent.agent_id.clone();
+        Ok((Arc::new(binding), Some(agent)))
+    }
+
+    async fn call(
+        &self,
+        binding: &Binding,
+        agent: Option<&OAuthAgent>,
+        name: &str,
+        arguments: Map<String, Value>,
+    ) -> Result<Value, String> {
+        let args = binding.authorize(name, arguments)?;
         let _permit = self
             .workers
             .try_acquire()
             .map_err(|_| "gateway workers busy; retry later")?;
-        let binding = &self.binding;
         let mut command = Command::new(&binding.backend_command[0]);
         command
             .args(&binding.backend_command[1..])
@@ -435,6 +513,11 @@ impl Gateway {
                 if serde_json::to_vec(&result).map_err(|_| BACKEND_ERROR)?.len() > MAX_RESULT { return Err("backend result exceeds 256 KiB".into()); }
                 let data = result.structured_content.filter(Value::is_object).ok_or("backend must return structured tool results")?;
                 if name == "everett_whoami" && (data["session_id"] != binding.agent_id || data["harness"] != binding.harness) { return Err("backend identity differs from binding".into()); }
+                if let (true, Some(agent)) = (name == "everett_whoami", agent) {
+                    let mut data = data;
+                    data["gateway_auth"] = json!({"mode": "oauth", "agent_name": agent.name, "client_id": agent.client_id});
+                    return Ok(data);
+                }
                 if name == "everett_core" {
                     return Ok(json!({"core":data["core"].as_str().ok_or("backend must return shared core text")?}));
                 }
@@ -464,19 +547,24 @@ impl ServerHandler for Gateway {
     async fn list_tools(
         &self,
         _: Option<PaginatedRequestParams>,
-        _: RequestContext<RoleServer>,
+        ctx: RequestContext<RoleServer>,
     ) -> Result<ListToolsResult, ErrorData> {
-        Ok(ListToolsResult::with_all_items(self.binding.tools()))
+        let (binding, _) = self.bound(&ctx).map_err(|e| ErrorData::invalid_request(e, None))?;
+        Ok(ListToolsResult::with_all_items(binding.tools()))
     }
     async fn call_tool(
         &self,
         request: CallToolRequestParams,
-        _: RequestContext<RoleServer>,
+        ctx: RequestContext<RoleServer>,
     ) -> Result<CallToolResponse, ErrorData> {
-        let mut result = match self
-            .call(&request.name, request.arguments.unwrap_or_default())
-            .await
-        {
+        let outcome = match self.bound(&ctx) {
+            Ok((binding, agent)) => {
+                self.call(&binding, agent.as_ref(), &request.name, request.arguments.unwrap_or_default())
+                    .await
+            }
+            Err(error) => Err(error),
+        };
+        let mut result = match outcome {
             Ok(data) => CallToolResult::structured(data),
             Err(error) => CallToolResult::error(vec![ContentBlock::text(error)]),
         };
@@ -493,10 +581,161 @@ impl ServerHandler for Gateway {
 }
 
 #[derive(Clone)]
+enum HttpAuth {
+    Bearer([u8; 32]),
+    OAuth(Arc<OAuthVerifier>),
+}
+
+#[derive(Clone)]
 struct HttpBoundary {
     gateway: Gateway,
-    digest: [u8; 32],
+    auth: HttpAuth,
     requests: Arc<Semaphore>,
+}
+
+const PROTECTED_RESOURCE: &str = "/.well-known/oauth-protected-resource";
+
+struct OAuthVerifier {
+    config: OAuth,
+    endpoint: String,
+    secret: String,
+    metadata_url: String,
+    agent: ureq::Agent,
+}
+
+type Rejection = (StatusCode, &'static str);
+
+impl OAuthVerifier {
+    fn new(config: OAuth, secret: String) -> Result<Self, String> {
+        let resource = url::Url::parse(&config.resource).map_err(|_| "invalid oauth resource")?;
+        let path = resource.path().trim_end_matches('/');
+        let metadata_url = format!("{}{PROTECTED_RESOURCE}{path}", resource.origin().ascii_serialization());
+        let endpoint = config.introspection_endpoint.clone().unwrap_or_else(|| {
+            format!("{}/oauth/introspect", config.issuer.trim_end_matches('/'))
+        });
+        let agent = ureq::Agent::config_builder()
+            .timeout_global(Some(Duration::from_secs(5)))
+            .max_redirects(0)
+            .http_status_as_error(false)
+            .build()
+            .into();
+        Ok(Self { config, endpoint, secret, metadata_url, agent })
+    }
+
+    /// RFC 9728 protected resource metadata.
+    fn metadata(&self, harness: &str) -> Response {
+        let body = json!({
+            "resource": self.config.resource,
+            "authorization_servers": [self.config.issuer],
+            "scopes_supported": [self.config.scope],
+            "bearer_methods_supported": ["header"],
+            "resource_name": format!("Everett gateway ({harness})"),
+        });
+        (
+            [("content-type", "application/json"), ("cache-control", "max-age=300")],
+            body.to_string(),
+        )
+            .into_response()
+    }
+
+    fn challenge(&self, error: Option<&str>) -> Response {
+        let mut value = format!(
+            "Bearer resource_metadata=\"{}\", scope=\"{}\"",
+            self.metadata_url, self.config.scope
+        );
+        if let Some(description) = error {
+            value += &format!(", error=\"invalid_token\", error_description=\"{description}\"");
+        }
+        let body = format!("OAuth access token required: {}", error.unwrap_or("missing bearer token"));
+        (StatusCode::UNAUTHORIZED, [("www-authenticate", value)], body).into_response()
+    }
+
+    /// Validates on every request so owner revocation applies to tokens already issued.
+    async fn verify(self: &Arc<Self>, token: String) -> Result<OAuthAgent, Rejection> {
+        let malformed = (StatusCode::UNAUTHORIZED, "malformed access token");
+        if token.len() != 68 || !token.starts_with("eva_") || !token[4..].bytes().all(|b| b.is_ascii_hexdigit()) {
+            return Err(malformed);
+        }
+        let verifier = self.clone();
+        let data = tokio::task::spawn_blocking(move || verifier.introspect(&token))
+            .await
+            .map_err(|_| (StatusCode::SERVICE_UNAVAILABLE, "authorization server unavailable"))??;
+        let denied = |reason| Err((StatusCode::UNAUTHORIZED, reason));
+        if data["active"] != true {
+            return denied("token inactive, expired or revoked");
+        }
+        if data["iss"] != self.config.issuer.as_str() {
+            return denied("token issuer mismatch");
+        }
+        let audience = match &data["aud"] {
+            Value::String(aud) => aud == &self.config.resource,
+            Value::Array(auds) => auds.iter().any(|a| a == self.config.resource.as_str()),
+            _ => false,
+        };
+        if !audience {
+            return denied("token audience is not this gateway");
+        }
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(u64::MAX, |d| d.as_secs());
+        if data["exp"].as_u64().is_none_or(|exp| exp <= now) {
+            return denied("token expired");
+        }
+        if !data["scope"]
+            .as_str()
+            .is_some_and(|scope| scope.split_whitespace().any(|s| s == self.config.scope))
+        {
+            return denied("token lacks the required scope");
+        }
+        match (data["sub"].as_str(), data["everett_agent"].as_str(), data["client_id"].as_str()) {
+            (Some(sub), Some(agent), Some(client)) if sub == agent && crate::adapters::external::valid_id(agent) => Ok(OAuthAgent {
+                agent_id: agent.to_owned(),
+                name: data["everett_agent_name"].as_str().unwrap_or_default().chars().take(100).collect(),
+                client_id: client.chars().take(512).collect(),
+            }),
+            _ => denied("token carries no valid Everett agent identity"),
+        }
+    }
+
+    fn introspect(&self, token: &str) -> Result<Value, Rejection> {
+        let unavailable = (StatusCode::SERVICE_UNAVAILABLE, "authorization server unavailable");
+        let mut response = self
+            .agent
+            .post(&self.endpoint)
+            .header("Authorization", &format!("Bearer {}", self.secret))
+            .send_form([("token", token)])
+            .map_err(|_| unavailable)?;
+        if response.status() != 200 {
+            return Err(unavailable);
+        }
+        response
+            .body_mut()
+            .with_config()
+            .limit(16 * 1024)
+            .read_json()
+            .map_err(|_| unavailable)
+    }
+}
+
+fn host_and_origin(headers: &axum::http::HeaderMap, binding: &Binding) -> Option<Response> {
+    if !headers
+        .get("host")
+        .and_then(|h| h.to_str().ok())
+        .is_some_and(|h| binding.allowed_hosts.iter().any(|allowed| allowed == h))
+    {
+        return Some((StatusCode::MISDIRECTED_REQUEST, "Invalid Host").into_response());
+    }
+    if headers.get("origin").is_some_and(|h| {
+        !h.to_str().ok().is_some_and(|origin| {
+            binding
+                .allowed_origins
+                .iter()
+                .any(|allowed| allowed == origin)
+        })
+    }) {
+        return Some((StatusCode::FORBIDDEN, "Invalid Origin").into_response());
+    }
+    None
 }
 
 async fn http_boundary(
@@ -510,36 +749,45 @@ async fn http_boundary(
             return (StatusCode::BAD_REQUEST, "Duplicate security header").into_response();
         }
     }
-    let Some((scheme, token)) = headers
+    let binding = &state.gateway.binding;
+    let bearer = headers
         .get("authorization")
         .and_then(|h| h.to_str().ok())
         .and_then(|h| h.split_once(' '))
-    else {
-        return StatusCode::UNAUTHORIZED.into_response();
+        .filter(|(scheme, token)| scheme.eq_ignore_ascii_case("bearer") && token.len() <= 512)
+        .map(|(_, token)| token.to_owned());
+    let agent = match &state.auth {
+        HttpAuth::Bearer(digest) => {
+            if !bearer.is_some_and(|token| bool::from(digest.ct_eq(&Sha256::digest(token.as_bytes())))) {
+                return StatusCode::UNAUTHORIZED.into_response();
+            }
+            None
+        }
+        HttpAuth::OAuth(verifier) => {
+            if let Some(rejected) = host_and_origin(headers, binding) {
+                return rejected;
+            }
+            if request.uri().path().starts_with(PROTECTED_RESOURCE) {
+                return if request.method() == Method::GET {
+                    verifier.metadata(&binding.harness)
+                } else {
+                    StatusCode::METHOD_NOT_ALLOWED.into_response()
+                };
+            }
+            let Some(token) = bearer else {
+                return verifier.challenge(None);
+            };
+            match verifier.verify(token).await {
+                Ok(agent) if !binding.destinations.contains(&agent.agent_id) => Some(agent),
+                Ok(_) => return verifier.challenge(Some("token agent is also a configured destination")),
+                Err((StatusCode::UNAUTHORIZED, reason)) => return verifier.challenge(Some(reason)),
+                Err((status, reason)) => return (status, reason).into_response(),
+            }
+        }
     };
-    if !scheme.eq_ignore_ascii_case("bearer")
-        || token.len() > 512
-        || !bool::from(state.digest.ct_eq(&Sha256::digest(token.as_bytes())))
-    {
-        return StatusCode::UNAUTHORIZED.into_response();
-    }
-    let binding = &state.gateway.binding;
-    if !headers
-        .get("host")
-        .and_then(|h| h.to_str().ok())
-        .is_some_and(|h| binding.allowed_hosts.iter().any(|allowed| allowed == h))
-    {
-        return (StatusCode::MISDIRECTED_REQUEST, "Invalid Host").into_response();
-    }
-    if headers.get("origin").is_some_and(|h| {
-        !h.to_str().ok().is_some_and(|origin| {
-            binding
-                .allowed_origins
-                .iter()
-                .any(|allowed| allowed == origin)
-        })
-    }) {
-        return (StatusCode::FORBIDDEN, "Invalid Origin").into_response();
+    let headers = request.headers();
+    if let Some(rejected) = host_and_origin(headers, binding) {
+        return rejected;
     }
     if !matches!(
         *request.method(),
@@ -565,6 +813,9 @@ async fn http_boundary(
         Err(_) => return StatusCode::GATEWAY_TIMEOUT.into_response(),
     };
     *request.body_mut() = Body::from(bytes);
+    if let Some(agent) = agent {
+        request.extensions_mut().insert(agent);
+    }
     match timeout(
         Duration::from_secs_f64(binding.timeout + 5.0),
         next.run(request),
@@ -577,9 +828,10 @@ async fn http_boundary(
 }
 
 async fn serve(binding: Binding, transport: &str, port: u16) -> Result<(), String> {
-    let gateway = Gateway {
+    let mut gateway = Gateway {
         workers: Arc::new(Semaphore::new(binding.max_workers)),
         binding: Arc::new(binding),
+        oauth: false,
     };
     if transport == "stdio" {
         gateway
@@ -598,22 +850,30 @@ async fn serve(binding: Binding, transport: &str, port: u16) -> Result<(), Strin
             .map_err(|_| "gateway stdio transport failed")?;
         return Ok(());
     }
-    let token = std::env::var("EVERETT_GATEWAY_TOKEN")
-        .map_err(|_| "HTTP requires EVERETT_GATEWAY_TOKEN")?;
-    if !(32..=512).contains(&token.len())
-        || !token.is_ascii()
-        || token
-            .bytes()
-            .any(|b| b.is_ascii_whitespace() || b.is_ascii_control())
-    {
-        return Err(
-            "HTTP requires a bearer token of 32..512 printable ASCII characters without whitespace"
-                .into(),
-        );
-    }
+    let auth = if let Some(oauth) = gateway.binding.oauth.clone() {
+        if std::env::var_os("EVERETT_GATEWAY_TOKEN").is_some() {
+            return Err("oauth in dot.json replaces EVERETT_GATEWAY_TOKEN; unset one of them".into());
+        }
+        let secret = std::env::var("EVERETT_OAUTH_INTROSPECTION_SECRET")
+            .ok()
+            .filter(|s| strong_secret(s))
+            .ok_or("OAuth HTTP requires EVERETT_OAUTH_INTROSPECTION_SECRET of 32..512 printable ASCII characters")?;
+        gateway.oauth = true;
+        HttpAuth::OAuth(Arc::new(OAuthVerifier::new(oauth, secret)?))
+    } else {
+        let token = std::env::var("EVERETT_GATEWAY_TOKEN")
+            .map_err(|_| "HTTP requires EVERETT_GATEWAY_TOKEN, or oauth in dot.json")?;
+        if !strong_secret(&token) {
+            return Err(
+                "HTTP requires a bearer token of 32..512 printable ASCII characters without whitespace"
+                    .into(),
+            );
+        }
+        HttpAuth::Bearer(Sha256::digest(token.as_bytes()).into())
+    };
     let connection_limit = gateway.binding.max_workers * 2;
     let state = HttpBoundary {
-        digest: Sha256::digest(token.as_bytes()).into(),
+        auth,
         requests: Arc::new(Semaphore::new(gateway.binding.max_workers * 2)),
         gateway: gateway.clone(),
     };
@@ -629,7 +889,10 @@ async fn serve(binding: Binding, transport: &str, port: u16) -> Result<(), Strin
         Arc::new(LocalSessionManager::default()),
         config,
     );
+    let metadata = || async { StatusCode::NOT_FOUND };
     let app = Router::new()
+        .route(PROTECTED_RESOURCE, get(metadata))
+        .route(&format!("{PROTECTED_RESOURCE}/{{*path}}"), get(metadata))
         .nest_service("/mcp", service)
         .layer(middleware::from_fn_with_state(state, http_boundary));
     let listener = tokio::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, port))
@@ -818,6 +1081,7 @@ mod tests {
             timeout: 1.0,
             allowed_hosts: default_hosts(),
             allowed_origins: vec![],
+            oauth: None,
         }
     }
 
