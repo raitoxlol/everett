@@ -1,6 +1,6 @@
 # Everett Cloudflare backend
 
-**Status: isolated development backend deployed; live sign-in not configured.** Base PR #29 `bd70fbf`. Existing Convex, native transport, MCP tools and live OAuth are unchanged. See [CLI-CONTRACT.md](CLI-CONTRACT.md) for the implemented native enrollment and gateway OAuth contract. Development health: `https://everett-dev.raitox-everett-dev.workers.dev/health` returned HTTPS 200 on 2026-10-21.
+**Status: isolated development backend deployed; live sign-in awaits its private GitHub secret.** Draft PR #43 targets `main`; implementation began from PR #29 `bd70fbf`. Existing Convex, native transport, MCP tools and live OAuth are unchanged by this package. See [CLI-CONTRACT.md](CLI-CONTRACT.md) for the implemented native enrollment and gateway OAuth contract. Development health: `https://everett-dev.raitox-everett-dev.workers.dev/health` returned HTTPS 200 on 2026-10-21. The new app's public `AUTH_GITHUB_ID` was configured and read back successfully; private GitHub and gateway introspection bindings remain absent.
 
 The Worker HTTP adapter uses one SQLite-backed `OwnerRelay` Durable Object per owner namespace. Membership, credentials, permanent revocation/replay records, device keys, counters and ciphertext queues share one authoritative transaction boundary. No D1 permission mirror is needed for this slice.
 
@@ -83,3 +83,25 @@ Official references checked: [SQLite transactions and alarms](https://developers
 2026-10-21: final typecheck and **37 Workers runtime checks passed** (18 relay, 19 hosted auth). Independent review found anonymous body reads could hold the issuer state gate; the body is now bounded before entering that gate, with a responsiveness regression check. The regression verifies agent validation and owner revocation complete within one second while an anonymous body remains open; timeout and 413 limits pass. Simultaneous code exchanges and refresh replay tests also pass. Tests are synthetic provider evidence, not live browser proof. Development Worker upload and public HTTPS health are verified; auth is deliberately unconfigured until private credentials are supplied.
 
 The root Convex test runner uses Node; Workers test filenames end in `.worker.ts` and are included explicitly only by their package configs. Root typecheck and all46 Convex tests also pass after this isolation fix. Native browser approval now displays explicit waiting/approved/denied/cancelled/expired/revoked guidance; close-page success requires authoritative approval plus active credential. Runtime tests confirm no native token is rendered. Live provider/browser proof remains pending.
+
+## Native CLI acceptance fixture
+
+`test/native-fixture.mjs` runs the actual production Worker, HostedAuth and SQLite OwnerRelay locally. It mocks only outbound GitHub token/identity responses, including expiring-token fields. There is no injected principal verifier, special enrollment HTTP route or deployed authentication bypass. Every other outbound request is denied. This is synthetic account evidence; it cannot prove real GitHub, a hosted gateway, physical-device delivery or OpenAI wakeups.
+
+From the repository root, start a disposable loopback issuer:
+
+```sh
+node cloudflare/test/native-fixture.mjs serve 18790
+```
+
+Use `http://127.0.0.1:18790` as the explicit Cloudflare issuer with a separate `EVERETT_HOME` for each native installation. A test browser-launch stub can call the following helper with the verification URL received from the actual CLI:
+
+```sh
+node cloudflare/test/native-fixture.mjs approve 'http://127.0.0.1:18790/enroll?code=CODE_FROM_CLI'
+node cloudflare/test/native-fixture.mjs deny 'http://127.0.0.1:18790/enroll?code=CODE_FROM_CLI'
+node cloudflare/test/native-fixture.mjs revoke 'http://127.0.0.1:18790/' 'agent-ID_FROM_CLI'
+```
+
+The helper performs the local browser-bound GitHub state/callback and CSRF-protected owner decision. It does not visit GitHub or display a credential. Any process on this machine can approve these synthetic requests, so keep the fixture on loopback and use isolated homes. Ctrl-C disposes the runtime and temporary state; never use the fixture issuer or its credentials for a hosted deployment. Miniflare is resolved from pinned Wrangler dependencies; no additional install is needed.
+
+Latest local verification: typecheck and **38 Workers checks pass** (18 relay +20 hosted auth). The integrated hosted-auth test exercises two actual approvals, independently signed device registrations, encrypted send/read/reply, storage eviction/reload, signed delivery/reply observations and revocation through the production HTTP entrypoint. Local fixture smoke also verified two approvals, native identity, denial and revocation with the other agent remaining active. Native Rust execution against this fixture remains the CLI owner's acceptance step.

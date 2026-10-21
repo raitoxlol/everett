@@ -2,8 +2,10 @@ import { env as bindings, exports as workerExports } from 'cloudflare:workers';
 import { evictDurableObject, listDurableObjectIds, reset, runInDurableObject } from 'cloudflare:test';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { sha256 } from '@noble/hashes/sha256';
+import { hkdf } from '@noble/hashes/hkdf';
 import { ed25519, x25519 } from '@noble/curves/ed25519';
-import { deviceBytes, hexString } from '../src/protocol';
+import { chacha20poly1305 } from '@noble/ciphers/chacha';
+import { aadBytes, bytes, deviceBytes, encode, envelopeBytes, fingerprint, hexString, observationBytes, type Device, type Envelope, type Observation } from '../src/protocol';
 import type { Env } from '../src/index';
 
 const issuer = 'https://everett.test';
@@ -233,6 +235,80 @@ describe('Hosted device login through real Worker routes', () => {
     expect((await nativeCall(first.token, 'revokeAgent', { deviceId: second.agent_id })).status).toBe(403);
     expect((await nativeCall(first.token, 'revokeMember', { subject: 'github:282002453' })).status).toBe(403);
     expect((await nativeWhoami(second.token)).status).toBe(200);
+  });
+  it('carries approved credentials through signed HTTP registration, encrypted send/read/reply and independent revocation', async () => {
+    // Exercise the production Worker entrypoint throughout; only GitHub is synthetic.
+    // Expiring provider-token fields are accepted without retaining provider tokens.
+    vi.mocked(globalThis.fetch).mockImplementationOnce(async () => Response.json({
+      access_token: 'synthetic-short-lived-provider-only', token_type: 'bearer', expires_in: 28800,
+      refresh_token: 'synthetic-provider-refresh-only', refresh_token_expires_in: 15811200,
+    }));
+    const browser = new Browser(); expect((await browser.login()).status).toBe(303);
+    const first = await enroll(browser, 'mac-synthetic'), second = await enroll(browser, 'nuc-synthetic');
+    async function relay<T>(token: string, operation: string, args: unknown = {}): Promise<T> {
+      const response = await nativeCall(token, operation, args);
+      expect(response.status).toBe(200);
+      return (await response.json() as { result: T }).result;
+    }
+    async function register(credential: typeof first, seed: number) {
+      const identity = await relay<{ owner: string; deviceId: string; role: string }>(credential.token, 'whoami');
+      expect(identity.deviceId).toBe(credential.agent_id); expect(identity.role).toBe('member');
+      const signing = new Uint8Array(32).fill(seed), encryption = new Uint8Array(32).fill(seed + 1);
+      const device: Device = { owner: identity.owner, deviceId: identity.deviceId, signingKey: hexString(ed25519.getPublicKey(signing)), encryptionKey: hexString(x25519.getPublicKey(encryption)), signature: '' };
+      device.signature = hexString(ed25519.sign(deviceBytes(device), signing));
+      await relay(credential.token, 'register', { device });
+      return { ...credential, device, signing, encryption };
+    }
+    const mac = await register(first, 31), nuc = await register(second, 33);
+    expect(await relay(mac.token, 'device', { deviceId: nuc.agent_id })).toEqual(nuc.device);
+    const encoder = new TextEncoder();
+    function encrypt(from: typeof mac, to: typeof mac, text: string, parent: Envelope | null = null): Envelope {
+      const ephemeral = new Uint8Array(32).fill(parent ? 42 : 41), now = Date.now();
+      const envelope: Envelope = {
+        owner: from.device.owner, recipientOwner: to.device.owner, grantId: null,
+        fromDevice: from.agent_id, toDevice: to.agent_id, messageId: crypto.randomUUID(), idempotencyKey: crypto.randomUUID(),
+        parent: parent ? { owner: parent.owner, messageId: parent.messageId } : null, hop: parent ? parent.hop + 1 : 1,
+        createdAt: now, expiresAt: now + 60000, senderFingerprint: fingerprint(from.device), recipientFingerprint: fingerprint(to.device),
+        ephemeralKey: hexString(x25519.getPublicKey(ephemeral)), nonce: '12'.repeat(12), ciphertext: '', signature: '',
+      };
+      const shared = x25519.getSharedSecret(ephemeral, bytes(to.device.encryptionKey));
+      const key = hkdf(sha256, shared, encoder.encode('everett-relay-v2'), aadBytes(envelope), 32);
+      envelope.ciphertext = hexString(chacha20poly1305(key, bytes(envelope.nonce), aadBytes(envelope)).encrypt(encode({ text })));
+      envelope.signature = hexString(ed25519.sign(envelopeBytes(envelope), from.signing));
+      return envelope;
+    }
+    function decrypt(recipient: typeof mac, envelope: Envelope) {
+      const shared = x25519.getSharedSecret(recipient.encryption, bytes(envelope.ephemeralKey));
+      const key = hkdf(sha256, shared, encoder.encode('everett-relay-v2'), aadBytes(envelope), 32);
+      return JSON.parse(new TextDecoder().decode(chacha20poly1305(key, bytes(envelope.nonce), aadBytes(envelope)).decrypt(bytes(envelope.ciphertext))));
+    }
+    async function observe(recipient: typeof mac, envelope: Envelope, state: Observation['state']) {
+      const observation: Observation = { deviceId: recipient.agent_id, senderOwner: envelope.owner, messageId: envelope.messageId, state, at: Date.now(), signature: '' };
+      observation.signature = hexString(ed25519.sign(observationBytes(recipient.device.owner, observation), recipient.signing));
+      await relay(recipient.token, 'observe', observation);
+    }
+    const sent = encrypt(mac, nuc, 'synthetic Mac to NUC');
+    expect(await relay(mac.token, 'enqueue', { envelope: sent })).toEqual({ messageId: sent.messageId, state: 'queued' });
+    await evictDurableObject(env.AUTH_STATE!.get(env.AUTH_STATE!.idFromName(issuer)));
+    for (const id of await listDurableObjectIds(env.OWNERS)) await evictDurableObject(env.OWNERS.get(id));
+    const pending = await relay<{ envelopes: { envelope: Envelope }[] }>(nuc.token, 'pending', { deviceId: nuc.agent_id });
+    expect(pending.envelopes).toHaveLength(1);
+    expect(decrypt(nuc, pending.envelopes[0].envelope)).toEqual({ text: 'synthetic Mac to NUC' });
+    await observe(nuc, sent, 'delivered');
+    const reply = encrypt(nuc, mac, 'synthetic NUC reply', sent);
+    await relay(nuc.token, 'enqueue', { envelope: reply });
+    await observe(nuc, sent, 'replied');
+    const replies = await relay<{ envelopes: { envelope: Envelope }[] }>(mac.token, 'pending', { deviceId: mac.agent_id });
+    expect(replies.envelopes).toHaveLength(1);
+    expect(decrypt(mac, replies.envelopes[0].envelope)).toEqual({ text: 'synthetic NUC reply' });
+    await observe(mac, reply, 'delivered');
+    expect(await relay(mac.token, 'status', { fromDevice: mac.agent_id, messageId: sent.messageId })).toEqual({ state: 'replied' });
+    expect((await browser.request('/enroll/revoke', form({ csrf: await browser.csrf(), agent_id: nuc.agent_id }))).status).toBe(303);
+    expect((await nativeWhoami(nuc.token)).status).toBe(401);
+    expect((await nativeCall(nuc.token, 'pending', { deviceId: nuc.agent_id })).status).toBe(401);
+    expect((await nativeWhoami(mac.token)).status).toBe(200);
+    expect((await nativeCall(mac.token, 'enqueue', { envelope: encrypt(mac, nuc, 'must be refused') })).status).toBe(403);
+    expect(vi.mocked(globalThis.fetch)).toHaveBeenCalledTimes(2);
   });
 });
 
