@@ -181,7 +181,7 @@ Done. MAX_RETRIES is now 5 and the backoff test covers the cap.
 | `everett peer add <name> [--ssh user@host] [--port N] --binary /absolute/everett --host-key SHA256:... --device-key SHA256:...` | Resolve the address by registry name or use an explicit address; reject conflicts and require both confirmed fingerprints before pairing. |
 | `everett peer serve [--address user@host[:port]] --client ID` | Restricted sshd endpoint; signed-in devices attempt to publish their declared address, also configurable with `[peer] address`. |
 | `everett peer status <name> <message-id>` | SSH polls/imports replies; relay queries queued/delivered/claimed/replied/expired state from signed observations (not task completion). |
-| `everett relay` | Listen through the selected relay: Convex WebSocket or Cloudflare outbound polling; never wake sessions. |
+| `everett relay` | Listen through the selected relay: Convex WebSocket or Cloudflare outbound polling; session wake is disabled unless an exact local receiver policy enables it. |
 | `everett relay register / devices / whoami` | Register this provisioned agent's keys and publish its display name/declared SSH address, list active key bundles (maximum 256), or verify agent/org authorization. |
 | `everett relay revoke-agent ID / revoke-member SUBJECT / rotate` | Revoke this or an admin-selected agent, remove org membership (admin), or rotate this agent's relay keys using its old signing key. |
 | `everett relay grant invite / accept / reconfirm / revoke / get / list` | Bilateral org-admin consent for named cross-org agents; [exact flags and journey](docs/cross-device.md#convex-relay-two-org-trial). |
@@ -262,8 +262,10 @@ With `[auth] provider = "cloudflare"`, native account approval and encrypted rel
 the same separately approved device identity. Register both computers, compare their
 public fingerprints, pin them with `peer add-relay`, and run `everett relay` on both.
 The listener polls outbound HTTPS, stages ciphertext durably, reauthorizes before inbox
-publication and retries temporary failures. It never wakes a session. Read, reply and
-revocation need their own verification. See [the native relay guide](docs/cloudflare-native.md).
+publication and retries temporary failures. Receiver-side Claude wake is disabled by
+default. An owner can opt in through the provider-local `receiver-wake.json` policy described
+in [the native relay guide](docs/cloudflare-native.md). Read, reply and revocation need their
+own verification.
 
 The actual native CLI passed local production-Worker acceptance and a physical Mac/NUC
 send/read/reply/reconnect/revoke journey, with synthetic GitHub and private SSH forwarding
