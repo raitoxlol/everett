@@ -1,6 +1,7 @@
 pub mod adapters;
 pub mod auth;
 pub mod cards;
+pub mod claude_wake;
 pub mod cli;
 pub mod cloudflare_auth;
 pub mod config;
