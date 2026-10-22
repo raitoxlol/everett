@@ -16,8 +16,9 @@ everett doctor
 ```
 
 This applies default hooks and MCP registrations for detected agents, with backups.
-It skips browser approval and older session cards. To preview the changes first, run
-`everett install-hooks` and `everett install-mcp` without `--apply`.
+It skips browser approval and older session cards. To inspect registration examples, run
+`everett install-hooks` and `everett install-mcp` without `--apply`. These commands do not
+change files, but can show agents that onboarding has not detected.
 Restart the configured agents and run `everett ls`. An empty list means no sessions were
 found in the look-back window. In an MCP client, use `everett_whoami` to check caller identity.
 A successful registration does not prove that a running agent has loaded the tools.

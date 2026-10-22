@@ -30,8 +30,10 @@ cargo install --git https://github.com/raitoxlol/everett everett   # from source
 
 `onboard --yes --no-backfill` backs up and applies the default hook and MCP registrations
 for detected agents without an interactive review. It skips older session cards and does
-not sign in, require a routing key, or schedule nightly merges. For a preview before you
-apply changes, run `everett install-hooks` and `everett install-mcp` first.
+not sign in, require a routing key, or schedule nightly merges. To inspect registration
+examples without changing files, run `everett install-hooks` and `everett install-mcp`.
+Those commands can include agents that onboarding has not detected; they are not an
+exact preview of its selected changes.
 
 Onboarding detects installed CLIs even before their first session. It backs up and registers
 hooks and MCP for detected Claude Code, Codex, OMP, and Grok installations. Restart those clients,
