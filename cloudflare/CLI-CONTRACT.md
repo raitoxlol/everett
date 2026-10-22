@@ -1,10 +1,18 @@
 # Cloudflare native login and OAuth contract
 
-Status: implemented in the isolated Cloudflare backend; the native Rust adapter is still required. This does not change the released CLI. Backend/auth and native CLI integration are separate implementation responsibilities.
+The Cloudflare backend and native Rust adapter are implemented in Everett 2.0.0.
+The CLI supports native device approval and encrypted relay through outbound polling.
+Hosted enrollment accepts only the configured GitHub owner. Public-issuer cross-device
+delivery and live ChatGPT OAuth remain unverified.
 
 ## Development endpoint
 
-Issuer: `https://everett-dev.raitox-everett-dev.workers.dev` (exact origin, no trailing slash). Development account Raitox tech, Worker `everett-dev`. HTTPS health returned 200 on 2026-10-21; real GitHub credentials have not been configured. Health configuration presence does not prove auth readiness. No native client default should point here until the adapter and live flow pass.
+The development issuer is `https://everett-dev.raitox-everett-dev.workers.dev`, an exact
+origin without a trailing slash. The Worker is `everett-dev` in the Raitox tech account.
+The recorded 2026-10-21 checkpoint reported HTTPS health 200 with GitHub credentials
+unconfigured. That checkpoint does not establish current auth readiness.
+Fresh interactive onboarding defaults to `https://everett.raitox.tech`, not this development
+issuer. Use explicit issuer configuration to test a development deployment.
 
 ## Native enrollment
 
