@@ -25,7 +25,8 @@ file, relay keys or an existing device identity to another computer.
    Each device has independent Ed25519 and X25519 keys. A changed fingerprint requires explicit removal and repinning.
 3. Keep `everett relay` running on both computers. Cloudflare polls every five seconds while idle.
    Temporary failures retain encrypted staging and retry with backoff up to 30 seconds.
-   The CLI does not install a background service or wake agent sessions.
+   The CLI does not install a background service. Receiver-side Claude wake is disabled
+   unless the receiving owner writes the exact local policy described below.
 4. Send with `everett send "test request" --to other/codex/EXACT_SESSION_ID --mode inbox --idempotency-key first-test --json`.
    Read on the recipient with `everett inbox --session EXACT_SESSION_ID --json`, then run
    `everett reply LOCAL_MESSAGE_ID "test reply"`. Check on the sender with
@@ -42,6 +43,40 @@ private durable staging and the three-hop bound are shared with the existing rel
 Cloudflare keys, pins and retry records live under `.everett/relay-cloudflare` beneath
 `EVERETT_HOME` or `HOME`. Existing OIDC/Convex state is separate. Selecting an unsupported
 registry or cross-owner operation returns an error rather than using a different account.
+
+## Optional receiver-side Claude wake
+
+Wake is off by default. To allow a narrowly scoped Mac-to-NUC wake, create
+`$EVERETT_HOME/.everett/relay-cloudflare/receiver-wake.json` on the receiving NUC
+(use `.everett/relay/receiver-wake.json` for Convex). Keep `HOME` and
+`CLAUDE_CONFIG_DIR` pointed at the normal Claude account. The policy is local to that
+Everett profile and must name one canonical project directory, one full Claude session
+UUID, and one same-owner paired sender device ID:
+
+Create the file with owner-only permissions (`chmod 600 receiver-wake.json`).
+
+```json
+{
+  "version": 1,
+  "enabled": true,
+  "allow": [
+    {
+      "session_id": "38cab978-79c0-4f42-9aee-5c30d8aa6e4c",
+      "cwd": "/home/nuc/Projects/example",
+      "sender_device_id": "DEVICE_ID_FROM_PEER_LIST"
+    }
+  ]
+}
+```
+
+Use the actual session UUID and cwd reported by `claude agents --json`, and the pinned
+same-owner sender device ID. Wildcards, cross-owner grants, external content, T3 sessions,
+replies and SSH inboxes cannot enable wake. Import and durable inbox write happen first.
+An active, missing or blocked Claude session remains deferred until message expiry.
+After an attach may have sent the nudge, restart does not retry that import automatically.
+Prompt receipt still does not prove a model reply. The Mac-to-NUC acceptance boundary is
+the correlated reply arriving in the Mac sender session's inbox; the physical acceptance
+commands remain a separate device check.
 
 ## Reproduce isolated local acceptance
 
