@@ -2,8 +2,11 @@
 
 The development native adapter uses the configured Cloudflare issuer and the existing
 custom device approval protocol. Fresh interactive onboarding uses `https://everett.raitox.tech`.
-Existing account/custom issuer configuration is preserved. Real hosted GitHub approval
-and public-issuer delivery remain pending. Acceptance passed with the production Worker
+Existing account/custom issuer configuration is preserved. The default hosted service accepts
+only its configured GitHub owner; public self-service signup is not available. For local
+agents without an account, use the [account-free setup](auth.md#set-up-local-agents-without-an-account).
+The [2.0.0 release notes](https://github.com/raitoxlol/everett/releases/tag/v2.0.0) record successful hosted first-run approval. Public-issuer delivery
+remains unverified. Acceptance passed with the production Worker
 and native CLI on a physical Mac and NUC, with outbound GitHub mocked and private SSH
 forwarding to the local Worker. This includes send/read/reply, reconnect and independent revoke.
 

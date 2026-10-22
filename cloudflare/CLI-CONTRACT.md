@@ -41,9 +41,17 @@ Codes expire in five minutes; access tokens in 15 minutes; refresh families have
 
 Required native auth names: EVERETT_ISSUER, AUTH_GITHUB_ID, AUTH_GITHUB_SECRET, EVERETT_OWNER_GITHUB_ID, EVERETT_OWNER_GITHUB_LOGIN. OAuth adds EVERETT_OAUTH_CLIENT_IDS, EVERETT_OAUTH_REDIRECT_URIS, EVERETT_OAUTH_RESOURCES, EVERETT_OAUTH_INTROSPECTION_SECRET (32+ chars).
 
-New GitHub app callback: `https://everett-dev.raitox-everett-dev.workers.dev/auth/callback/github`. Existing Convex app/deployment and existing gateway remain unchanged. Do not copy credentials into source, reports, chat or vault. Configure secret values privately through Cloudflare secret input. No production DNS or paid plan has been changed.
+Set the GitHub app callback to `<EVERETT_ISSUER>/auth/callback/github` for the selected deployment. Existing Convex app/deployment and existing gateway remain unchanged. Do not copy credentials into source, reports, chat or vault. Configure secret values privately through Cloudflare secret input.
 
-Remaining: native HTTP adapter and notification transport; live GitHub/ChatGPT acceptance; two physical machine encrypted send/read/reply, reconnect and revocation; explicit re-enrollment/migration plan; cross-owner grants; deployed CPU/free-plan capacity measurement. This backend is currently owner-only.
+The native HTTP adapter and outbound polling are implemented. A physical Mac/NUC
+send/read/reply, reconnect, and revocation journey passed with synthetic GitHub and a
+locally forwarded production Worker. The [2.0.0 release notes](https://github.com/raitoxlol/everett/releases/tag/v2.0.0) record successful hosted
+first-run GitHub approval. See the [native relay guide](../docs/cloudflare-native.md).
+
+Remaining work includes public-issuer cross-device delivery acceptance, live ChatGPT OAuth,
+an explicit re-enrollment/migration plan, cross-owner grants, and deployed capacity
+measurement. Hosted enrollment still accepts only the configured GitHub owner. Allowing
+other people to create accounts requires a separate authorization and account-isolation design.
 
 ## Remote-device standards assessment
 
