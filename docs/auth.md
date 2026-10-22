@@ -6,7 +6,28 @@ The existing Convex relay needs an OIDC provider **and deployment-side enrollmen
 Everett's public native approval site; OIDC remains separately configured. See [deployment and journeys](cross-device.md)
 and the [relay threat model](relay-threat-model.md).
 
+## Set up local agents without an account
+
+Install a supported harness CLI, then run:
+
+```sh
+everett onboard --yes --no-backfill
+everett doctor
+```
+
+This applies default hooks and MCP registrations for detected agents, with backups.
+It skips browser approval and older session cards. To preview the changes first, run
+`everett install-hooks` and `everett install-mcp` without `--apply`.
+Restart the configured agents and run `everett ls`. An empty list means no sessions were
+found in the look-back window. In an MCP client, use `everett_whoami` to check caller identity.
+A successful registration does not prove that a running agent has loaded the tools.
+
 ## Hosted Cloudflare native sign-in (development adapter)
+
+The service at `https://everett.raitox.tech` accepts only its configured GitHub owner.
+Other GitHub accounts receive `owner_only`. Use local setup above, SSH peers, or a
+[custom deployment](../cloudflare/CLI-CONTRACT.md#configuration-and-rollout-boundary)
+configured for your GitHub identity. These approval steps require access to the selected issuer.
 
 Cloudflare enrollment uses its own native API and credential, separate from OIDC ID
 and refresh tokens. On a new installation, run `everett` normally: onboarding opens
@@ -17,8 +38,8 @@ Existing explicit account configuration is preserved, and authenticated normal l
 skip automatic onboarding. Use `everett onboard` to repeat setup. Cancelled approval can
 be retried or followed by explicit local setup; headless bare runs print help.
 
-The public Worker is currently owner-only. Real hosted approval and public delivery
-acceptance are in progress. For a custom deployment or an explicit repair:
+The [2.0.0 release notes](https://github.com/raitoxlol/everett/releases/tag/v2.0.0) record a successful hosted first-run account flow. Public
+cross-device delivery remains unverified. For a custom deployment or an explicit repair:
 
 ```sh
 everett login --provider cloudflare --issuer https://YOUR-EVERETT-ISSUER --device laptop --open
