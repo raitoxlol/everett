@@ -470,10 +470,10 @@ fn screen_welcome(t: &mut Terminal<CrosstermBackend<io::Stdout>>, p: &Palette) -
 
 fn screen_account(t: &mut Terminal<CrosstermBackend<io::Stdout>>, p: &Palette) -> TResult<Dir> {
     let configured = crate::cloudflare_auth::onboarding_issuer().is_some();
-    let mut attempt = configured;
+    let mut attempt = false;
     let mut verified = false;
     let mut status = if configured {
-        "Opening browser sign-in…".to_string()
+        "Set up local agents without an account, or sign in to enable hosted\ncross-device delivery. Browser sign-in only opens after you confirm.".to_string()
     } else {
         "Account sign-in is not available in this build yet.".to_string()
     };
@@ -494,7 +494,7 @@ fn screen_account(t: &mut Terminal<CrosstermBackend<io::Stdout>>, p: &Palette) -
                     if verified {
                         "Choose your agents"
                     } else if configured {
-                        "Retry browser sign-in"
+                        "Sign in with GitHub"
                     } else {
                         "Continue on this computer"
                     },
@@ -504,6 +504,8 @@ fn screen_account(t: &mut Terminal<CrosstermBackend<io::Stdout>>, p: &Palette) -
                     p,
                     if verified {
                         "enter continue   b back   q quit"
+                    } else if configured {
+                        "enter sign in   l continue locally   b back   q quit"
                     } else {
                         "l continue locally   b back   q quit"
                     },
