@@ -2,8 +2,9 @@
 
 The Cloudflare backend and native Rust adapter are implemented in Everett 2.0.0.
 The CLI supports native device approval and encrypted relay through outbound polling.
-Hosted enrollment accepts only the configured GitHub owner. Public-issuer cross-device
-delivery and live ChatGPT OAuth remain unverified.
+The checked deployment restricts enrollment to the configured GitHub owner. Public-issuer
+cross-device delivery and a real idle Claude wake/reply passed on physical Mac/NUC hosts
+on 2026-10-24. Live ChatGPT OAuth and second-account enrollment remain unverified.
 
 ## Development endpoint
 
@@ -58,10 +59,11 @@ send/read/reply, reconnect, and revocation journey passed with synthetic GitHub 
 locally forwarded production Worker. The [2.0.0 release notes](https://github.com/raitoxlol/everett/releases/tag/v2.0.0) record successful hosted
 first-run GitHub approval. See the [native relay guide](../docs/cloudflare-native.md).
 
-Remaining work includes public-issuer cross-device delivery acceptance, live ChatGPT OAuth,
-an explicit re-enrollment/migration plan, cross-owner grants, and deployed capacity
-measurement. Hosted enrollment still accepts only the configured GitHub owner. Allowing
-other people to create accounts requires a separate authorization and account-isolation design.
+Remaining work includes live second-account enrollment and isolation acceptance, live
+ChatGPT OAuth, an explicit re-enrollment/migration plan, cross-owner grants, and deployed
+capacity measurement. Multi-account isolation is implemented behind the public flag and
+covered by runtime tests with synthetic GitHub responses. The deployed flag remains
+restricted until the live acceptance gate passes.
 
 ## Remote-device standards assessment
 
