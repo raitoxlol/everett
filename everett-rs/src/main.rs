@@ -144,6 +144,9 @@ enum Cmd {
         /// inbox mode: wait up to S seconds for the reply
         #[arg(long, value_name = "S", default_value_t = 0.0)]
         wait: f64,
+        /// also wake one exact local Claude background session after queueing
+        #[arg(long)]
+        wake: bool,
     },
     /// record what this session is doing: done, blocked, needs-input, info
     Event {
@@ -191,6 +194,9 @@ enum Cmd {
         /// do not mark them delivered
         #[arg(long)]
         peek: bool,
+        /// only show and mark delivered this message id
+        #[arg(long)]
+        message: Option<String>,
         #[arg(long)]
         json: bool,
     },
@@ -796,6 +802,7 @@ fn main() {
             harness,
             mode,
             wait,
+            wake,
             idempotency_key,
         } => {
             a.idempotency_key = idempotency_key;
@@ -810,6 +817,7 @@ fn main() {
             a.spawn_harness = harness;
             a.mode = mode;
             a.wait = wait;
+            a.wake = wake;
             cli::cmd_send(&a)
         }
         Cmd::Event {
@@ -854,10 +862,12 @@ fn main() {
         Cmd::Inbox {
             session,
             peek,
+            message,
             json,
         } => {
             a.session = session;
             a.peek = peek;
+            a.message = message;
             a.json = json;
             cli::cmd_inbox(&a)
         }

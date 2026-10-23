@@ -148,6 +148,34 @@ fn inbox_empty_for_human() {
 }
 
 #[test]
+fn inbox_message_acks_only_that_message() {
+    let fx = fixture_with_session();
+    let mut ids = Vec::new();
+    for text in ["first task", "second task", "third task"] {
+        let out = fx.run(&["send", text, "--to", "c-1", "--mode", "inbox", "--json"]);
+        assert_eq!(out.status.code(), Some(0), "{}", String::from_utf8_lossy(&out.stderr));
+        ids.push(parse(&out)["message_id"].as_str().unwrap().to_string());
+    }
+    let out = fx.run(&["inbox", "--session", "c-1", "--message", &ids[1]]);
+    assert_eq!(out.status.code(), Some(0), "{}", String::from_utf8_lossy(&out.stderr));
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(stdout.contains("second task"), "{stdout}");
+    assert!(!stdout.contains("first task") && !stdout.contains("third task"), "{stdout}");
+    let pending = |fx: &common::Fixture| -> Vec<String> {
+        parse(&fx.run(&["inbox", "--session", "c-1", "--peek", "--json"]))["messages"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|m| m["id"].as_str().map(String::from))
+            .collect()
+    };
+    assert_eq!(pending(&fx), vec![ids[0].clone(), ids[2].clone()]);
+    let out = fx.run(&["inbox", "--session", "c-1", "--message", "m-unknown"]);
+    assert_eq!(out.status.code(), Some(0), "{}", String::from_utf8_lossy(&out.stderr));
+    assert_eq!(pending(&fx), vec![ids[0].clone(), ids[2].clone()]);
+}
+
+#[test]
 fn cards_reports_coverage() {
     let fx = fixture_with_session();
     let out = fx.run(&["cards"]);

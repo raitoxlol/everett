@@ -2,6 +2,7 @@
 //! (text, json, exit code) happens here; the modules it calls stay pure of stdout.
 
 use std::collections::HashMap;
+use std::io::IsTerminal;
 use std::path::{Path, PathBuf};
 
 use serde_json::{json, Map, Value};
@@ -57,6 +58,7 @@ pub struct Args {
     pub spawn: bool,
     pub dir: Option<String>,
     pub spawn_harness: Option<String>,
+    pub wake: bool,
     pub mode: String,
     pub wait: f64,
     pub kind: Option<String>,
@@ -485,7 +487,30 @@ fn cmd_remote_send(args: &Args, to: &str) -> i32 {
 }
 
 pub fn cmd_send(args: &Args) -> i32 {
+    if args.wake {
+        if args.to.is_none() || args.spawn || args.mode == "resume" {
+            eprintln!("everett: --wake requires one exact --to Claude session and cannot be combined with --spawn or --mode resume.");
+            return 2;
+        }
+        if !std::io::stdin().is_terminal() {
+            eprintln!("everett: --wake is available only from a local interactive terminal.");
+            return 2;
+        }
+        let caller = crate::send::caller_session_id();
+        if !caller.is_empty() || crate::send::current_hops() > 0 {
+            eprintln!("everett: Claude wake is restricted to direct local human sends.");
+            return 2;
+        }
+        if let Err(e) = crate::send::require_local_prompt(None) {
+            eprintln!("everett: {}", e.message);
+            return e.code;
+        }
+    }
     if let Some(to) = args.to.as_deref().filter(|to| crate::peer::target(to).is_ok()) {
+        if args.wake {
+            eprintln!("everett: --wake cannot target a remote peer session.");
+            return 2;
+        }
         return cmd_remote_send(args, to);
     }
     if !args.timeout.is_finite() || args.timeout <= 0.0 {
@@ -515,6 +540,10 @@ pub fn cmd_send(args: &Args) -> i32 {
                 return 2;
             }
         };
+        if args.wake && session.id != to.as_str() {
+            eprintln!("everett: --wake requires the full exact session ID; prefixes and names are not allowed.");
+            return 2;
+        }
         r.insert("input".into(), json!(args.text.clone().unwrap_or_default()));
         r.insert("decision".into(), json!("SESSION"));
         r.insert("choice".into(), json!("to"));
@@ -586,14 +615,17 @@ pub fn cmd_send(args: &Args) -> i32 {
         eprintln!("everett: {}", e.message);
         return e.code;
     }
-    let mode = match crate::send::delivery_mode(&session, &args.mode, None) {
+    let mode = if args.wake { "inbox".to_string() } else { match crate::send::delivery_mode(&session, &args.mode, None) {
         Ok(m) => m,
         Err(e) => {
             eprintln!("everett: {}", e.message);
             return e.code;
         }
-    };
+    }};
     if mode == "inbox" {
+        if args.wake {
+            return send_wake_cmd(args, &r, &session, &label, routed_line);
+        }
         return send_inbox_cmd(args, &r, &session, &label, routed_line);
     }
     let command = match crate::send::command_for(&session, args.text.as_deref().unwrap_or("")) {
@@ -652,6 +684,126 @@ pub fn cmd_send(args: &Args) -> i32 {
             eprintln!("everett: {}", e.message);
             e.code
         }
+    }
+}
+
+fn send_wake_cmd(args: &Args, r: &Map<String, Value>, session: &Session, label: &str, routed_line: Option<String>) -> i32 {
+    if let Err(e) = crate::claude_wake::validate_target(session) {
+        eprintln!("everett: {}", e.message);
+        return e.code;
+    }
+    if args.dry_run {
+        let mut payload = r.clone();
+        payload.insert("dry_run".into(), json!(true));
+        payload.insert("queued".into(), json!(false));
+        payload.insert("mode".into(), json!("inbox"));
+        payload.insert("wake".into(), json!("claude-background"));
+        emit(args.json, &payload, vec![
+            routed_line,
+            Some(format!("DRY RUN  {}", label)),
+            Some("  would queue the request, then attach through a PTY with a fixed inbox nudge".into()),
+        ]);
+        return 0;
+    }
+    if !args.wait.is_finite() || args.wait < 0.0 {
+        eprintln!("everett: --wait must be a finite number of seconds, 0 or more.");
+        return 2;
+    }
+    let prepared = match crate::claude_wake::prepare(session) {
+        Ok(prepared) => prepared,
+        Err(error) => {
+            eprintln!("everett: {}", error.message);
+            return error.code;
+        }
+    };
+    let queued = match crate::send::send_inbox(session, args.text.as_deref().unwrap_or(""), 0.0, None, 1.0) {
+        Ok(result) => result,
+        Err(error) => {
+            eprintln!("everett: {}", error.message);
+            return error.code;
+        }
+    };
+    let message_id = queued.get("message_id").and_then(Value::as_str).unwrap_or("").to_string();
+    let wake = crate::claude_wake::wake(&prepared, &message_id);
+    let (reply, reply_error) = if matches!(&wake, crate::claude_wake::WakeOutcome::Cancelled { .. }) {
+        (None, None)
+    } else if args.wait > 0.0 && !message_id.is_empty() {
+        match wait_target_reply(crate::inbox::HUMAN, &message_id, &session.id, args.wait, 1.0) {
+            Ok(reply) => (reply, None),
+            Err(error) => (None, Some(error)),
+        }
+    } else {
+        (None, None)
+    };
+    let reply_text = reply.as_ref().map(crate::inbox::consumption_text);
+    let mut payload = r.clone();
+    payload.insert("mode".into(), json!("inbox"));
+    payload.insert("queued".into(), json!(true));
+    payload.insert("message_id".into(), json!(message_id));
+    payload.insert("reply_inbox".into(), json!(crate::inbox::HUMAN));
+    payload.insert("wake".into(), wake_json(&wake));
+    payload.insert("reply".into(), json!(reply_text));
+    payload.insert("reply_received".into(), json!(reply.is_some()));
+    payload.insert("reply_id".into(), reply.as_ref().and_then(|m| m.get("id")).cloned().unwrap_or(Value::Null));
+    payload.insert("reply_to".into(), reply.as_ref().and_then(|m| m.get("reply_to")).cloned().unwrap_or(Value::Null));
+    if let Some(error) = &reply_error { payload.insert("reply_error".into(), json!(error)); }
+    let wake_line = match &wake {
+        crate::claude_wake::WakeOutcome::PromptSent { client_pid, target_pid } => Some(format!("WAKE PROMPT SENT  client {} / background {}", client_pid, target_pid)),
+        crate::claude_wake::WakeOutcome::TimedOut { client_pid, target_pid } => Some(format!("WAKE TIMED OUT  client {} / background {}", client_pid, target_pid)),
+        crate::claude_wake::WakeOutcome::Cancelled { client_pid, target_pid } => Some(format!("WAKE CANCELLED  client {} / background {}; queued message remains in inbox", client_pid, target_pid)),
+        crate::claude_wake::WakeOutcome::Failed { detail } => Some(format!("WAKE FAILED  {}", detail)),
+    };
+    let mut lines = vec![routed_line, Some(format!("QUEUED  {}", label)), Some(format!("  Everett message {}", message_id)), wake_line];
+    if let Some(reply) = reply_text {
+        lines.push(Some(reply));
+    } else if let Some(error) = &reply_error {
+        lines.push(Some(format!("  reply wait failed: {}; message {} remains queued", error, message_id)));
+    } else if args.wait > 0.0 {
+        lines.push(Some(format!("  no linked reply within {}s; the queued message remains in inbox {}", crate::fmt::g(args.wait), crate::inbox::HUMAN)));
+    }
+    emit(args.json, &payload, lines);
+    if reply.is_some() || (args.wait == 0.0 && matches!(&wake, crate::claude_wake::WakeOutcome::PromptSent { .. })) {
+        0
+    } else if matches!(&wake, crate::claude_wake::WakeOutcome::Cancelled { .. }) {
+        130
+    } else if reply_error.is_some()
+        || matches!(&wake, crate::claude_wake::WakeOutcome::Failed { .. })
+    {
+        5
+    } else {
+        4
+    }
+}
+
+fn wait_target_reply(sender: &str, message_id: &str, target_id: &str, wait: f64, poll: f64) -> std::result::Result<Option<Map<String, Value>>, String> {
+    let deadline = crate::session::now() + wait.max(0.0);
+    loop {
+        for item in crate::inbox::pending(sender, None) {
+            if is_target_reply(&item, message_id, target_id) {
+                if let Some(id) = item.get("id").and_then(Value::as_str) {
+                    crate::inbox::persist_relay_context(sender, &[id]).map_err(|error| error.message)?;
+                    crate::inbox::mark_done(sender, &[id]);
+                }
+                return Ok(Some(item));
+            }
+        }
+        let now = crate::session::now();
+        if now >= deadline { return Ok(None); }
+        std::thread::sleep(std::time::Duration::from_secs_f64(poll.min(deadline - now).max(0.001)));
+    }
+}
+
+fn is_target_reply(item: &Map<String, Value>, message_id: &str, target_id: &str) -> bool {
+    item.get("reply_to").and_then(Value::as_str) == Some(message_id)
+        && item.get("from").and_then(Value::as_str) == Some(target_id)
+}
+
+fn wake_json(outcome: &crate::claude_wake::WakeOutcome) -> Value {
+    match outcome {
+        crate::claude_wake::WakeOutcome::PromptSent { client_pid, target_pid } => json!({"state":"prompt_sent","client_pid":client_pid,"target_pid":target_pid}),
+        crate::claude_wake::WakeOutcome::TimedOut { client_pid, target_pid } => json!({"state":"timed_out","client_pid":client_pid,"target_pid":target_pid}),
+        crate::claude_wake::WakeOutcome::Cancelled { client_pid, target_pid } => json!({"state":"cancelled","client_pid":client_pid,"target_pid":target_pid}),
+        crate::claude_wake::WakeOutcome::Failed { detail } => json!({"state":"failed","detail":detail}),
     }
 }
 
@@ -753,7 +905,10 @@ pub fn cmd_inbox(args: &Args) -> i32 {
         .session
         .clone()
         .unwrap_or(if caller.is_empty() { crate::inbox::HUMAN.to_string() } else { caller });
-    let items = crate::inbox::pending(&sid, None);
+    let mut items = crate::inbox::pending(&sid, None);
+    if let Some(mid) = args.message.as_deref() {
+        items.retain(|m| m.get("id").and_then(Value::as_str) == Some(mid));
+    }
     let viewed_ids: Vec<&str> = items
         .iter()
         .filter_map(|m| m.get("id").and_then(Value::as_str))
@@ -1416,4 +1571,51 @@ pub fn cmd_onboard(args: &Args) -> i32 {
 
 pub fn cmd_hook(stem: &str, rest: &[String]) -> i32 {
     crate::hooks_common::hook_main(stem, rest)
+}
+
+#[cfg(test)]
+mod wake_reply_tests {
+    use super::*;
+
+    #[test]
+    fn wake_reply_must_match_both_message_and_target_session() {
+        let correct = serde_json::from_value::<Map<String, Value>>(json!({
+            "id":"mreply00001", "reply_to":"mrequest0001", "from":"target-session"
+        }))
+        .unwrap();
+        let wrong_target = serde_json::from_value::<Map<String, Value>>(json!({
+            "id":"mreply00002", "reply_to":"mrequest0001", "from":"other-session"
+        }))
+        .unwrap();
+        let wrong_message = serde_json::from_value::<Map<String, Value>>(json!({
+            "id":"mreply00003", "reply_to":"other-message", "from":"target-session"
+        }))
+        .unwrap();
+        assert!(is_target_reply(
+            &correct,
+            "mrequest0001",
+            "target-session"
+        ));
+        assert!(!is_target_reply(
+            &wrong_target,
+            "mrequest0001",
+            "target-session"
+        ));
+        assert!(!is_target_reply(
+            &wrong_message,
+            "mrequest0001",
+            "target-session"
+        ));
+    }
+
+    #[test]
+    fn wake_cli_rejects_noninteractive_invocation_before_session_lookup() {
+        let args = Args {
+            wake: true,
+            to: Some("1f57ab77-c669-4bb6-9ac8-f9a9073de8ea".into()),
+            text: Some("request".into()),
+            ..Args::default()
+        };
+        assert_eq!(cmd_send(&args), 2);
+    }
 }
