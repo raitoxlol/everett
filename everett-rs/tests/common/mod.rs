@@ -25,7 +25,9 @@ impl Fixture {
             .env("EVERETT_NOTIFY", "none")
             .env("PATH", HERMETIC_PATH)
             .env_remove("TYPESAFE_API_KEY")
-            .env_remove("EVERETT_SEND");
+            .env_remove("EVERETT_SEND")
+            .env_remove("EVERETT_HOPS")
+            .env_remove("EVERETT_SESSION_ID");
         cmd.output().unwrap()
     }
 
@@ -40,6 +42,8 @@ impl Fixture {
             .env("PATH", HERMETIC_PATH)
             .env_remove("TYPESAFE_API_KEY")
             .env_remove("EVERETT_SEND")
+            .env_remove("EVERETT_HOPS")
+            .env_remove("EVERETT_SESSION_ID")
             .stdin(std::process::Stdio::piped())
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::piped());
