@@ -749,17 +749,18 @@ fn send_wake_cmd(args: &Args, r: &Map<String, Value>, session: &Session, label: 
     if let Some(error) = &reply_error { payload.insert("reply_error".into(), json!(error)); }
     let wake_line = match &wake {
         crate::claude_wake::WakeOutcome::PromptSent { client_pid, target_pid } => Some(format!("WAKE PROMPT SENT  client {} / background {}", client_pid, target_pid)),
+        crate::claude_wake::WakeOutcome::NotAttached { detail } => Some(format!("WAKE DEFERRED  {}", detail)),
         crate::claude_wake::WakeOutcome::TimedOut { client_pid, target_pid } => Some(format!("WAKE TIMED OUT  client {} / background {}", client_pid, target_pid)),
-        crate::claude_wake::WakeOutcome::Cancelled { client_pid, target_pid } => Some(format!("WAKE CANCELLED  client {} / background {}; queued message remains in inbox", client_pid, target_pid)),
+        crate::claude_wake::WakeOutcome::Cancelled { client_pid, target_pid } => Some(format!("WAKE CANCELLED  client {} / background {}; request remains recorded; it may already be read", client_pid, target_pid)),
         crate::claude_wake::WakeOutcome::Failed { detail } => Some(format!("WAKE FAILED  {}", detail)),
     };
     let mut lines = vec![routed_line, Some(format!("QUEUED  {}", label)), Some(format!("  Everett message {}", message_id)), wake_line];
     if let Some(reply) = reply_text {
         lines.push(Some(reply));
     } else if let Some(error) = &reply_error {
-        lines.push(Some(format!("  reply wait failed: {}; message {} remains queued", error, message_id)));
+        lines.push(Some(format!("  reply wait failed: {}; message {} remains recorded; it may already be read", error, message_id)));
     } else if args.wait > 0.0 {
-        lines.push(Some(format!("  no linked reply within {}s; the queued message remains in inbox {}", crate::fmt::g(args.wait), crate::inbox::HUMAN)));
+        lines.push(Some(format!("  no linked reply within {}s; the request remains recorded; it may already be read", crate::fmt::g(args.wait))));
     }
     emit(args.json, &payload, lines);
     if reply.is_some() || (args.wait == 0.0 && matches!(&wake, crate::claude_wake::WakeOutcome::PromptSent { .. })) {
@@ -801,6 +802,7 @@ fn is_target_reply(item: &Map<String, Value>, message_id: &str, target_id: &str)
 fn wake_json(outcome: &crate::claude_wake::WakeOutcome) -> Value {
     match outcome {
         crate::claude_wake::WakeOutcome::PromptSent { client_pid, target_pid } => json!({"state":"prompt_sent","client_pid":client_pid,"target_pid":target_pid}),
+        crate::claude_wake::WakeOutcome::NotAttached { detail } => json!({"state":"not_attached","detail":detail}),
         crate::claude_wake::WakeOutcome::TimedOut { client_pid, target_pid } => json!({"state":"timed_out","client_pid":client_pid,"target_pid":target_pid}),
         crate::claude_wake::WakeOutcome::Cancelled { client_pid, target_pid } => json!({"state":"cancelled","client_pid":client_pid,"target_pid":target_pid}),
         crate::claude_wake::WakeOutcome::Failed { detail } => json!({"state":"failed","detail":detail}),
