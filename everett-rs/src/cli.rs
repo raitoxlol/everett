@@ -751,16 +751,16 @@ fn send_wake_cmd(args: &Args, r: &Map<String, Value>, session: &Session, label: 
         crate::claude_wake::WakeOutcome::PromptSent { client_pid, target_pid } => Some(format!("WAKE PROMPT SENT  client {} / background {}", client_pid, target_pid)),
         crate::claude_wake::WakeOutcome::NotAttached { detail } => Some(format!("WAKE DEFERRED  {}", detail)),
         crate::claude_wake::WakeOutcome::TimedOut { client_pid, target_pid } => Some(format!("WAKE TIMED OUT  client {} / background {}", client_pid, target_pid)),
-        crate::claude_wake::WakeOutcome::Cancelled { client_pid, target_pid } => Some(format!("WAKE CANCELLED  client {} / background {}; queued message remains in inbox", client_pid, target_pid)),
+        crate::claude_wake::WakeOutcome::Cancelled { client_pid, target_pid } => Some(format!("WAKE CANCELLED  client {} / background {}; request remains recorded; it may already be read", client_pid, target_pid)),
         crate::claude_wake::WakeOutcome::Failed { detail } => Some(format!("WAKE FAILED  {}", detail)),
     };
     let mut lines = vec![routed_line, Some(format!("QUEUED  {}", label)), Some(format!("  Everett message {}", message_id)), wake_line];
     if let Some(reply) = reply_text {
         lines.push(Some(reply));
     } else if let Some(error) = &reply_error {
-        lines.push(Some(format!("  reply wait failed: {}; message {} remains queued", error, message_id)));
+        lines.push(Some(format!("  reply wait failed: {}; message {} remains recorded; it may already be read", error, message_id)));
     } else if args.wait > 0.0 {
-        lines.push(Some(format!("  no linked reply within {}s; the queued message remains in inbox {}", crate::fmt::g(args.wait), crate::inbox::HUMAN)));
+        lines.push(Some(format!("  no linked reply within {}s; the request remains recorded; it may already be read", crate::fmt::g(args.wait))));
     }
     emit(args.json, &payload, lines);
     if reply.is_some() || (args.wait == 0.0 && matches!(&wake, crate::claude_wake::WakeOutcome::PromptSent { .. })) {
