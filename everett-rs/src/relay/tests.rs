@@ -1,4 +1,8 @@
 use super::*;
+use crate::receiver_wake;
+use std::sync::Mutex;
+
+static RECEIVER_ENV_LOCK: Mutex<()> = Mutex::new(());
 
 thread_local! {
     pub(super) static FAIL_STAGE_DELETE_SYNC: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
@@ -535,7 +539,9 @@ impl ConvexClient {
         value.live = Some(super::transport::Client::native(stored));
         value
     }
-    pub fn is_native(&self) -> bool { self.live.as_ref().is_some_and(|client| client.is_native()) }
+    pub fn is_native(&self) -> bool {
+        self.live.as_ref().is_some_and(|client| client.is_native())
+    }
     pub async fn native_call(&self, name: &str, value: Value) -> Result<Value> {
         self.live.as_ref().unwrap().native_call(name, value).await
     }
@@ -707,6 +713,7 @@ impl ConvexClient {
 fn sdk_transport_denied_row_does_not_block_allowed_and_own_revocation_stops() {
     // Only this test writes unit-test HOME; other relay units are pure crypto or
     // use explicit temporary paths. All envelopes and credentials are synthetic.
+    let _env = RECEIVER_ENV_LOCK.lock().unwrap();
     let home = tempfile::tempdir().unwrap();
     std::env::set_var("HOME", home.path());
     std::env::set_var("EVERETT_HOME", home.path());
@@ -919,4 +926,207 @@ fn sdk_transport_denied_row_does_not_block_allowed_and_own_revocation_stops() {
     assert!(read::<Outgoing>(&path).unwrap().reply_pending.is_none());
     rt.block_on(reconcile(&mut recovered, &b)).unwrap();
     assert_eq!(recovered.calls.len(), 1);
+}
+
+#[test]
+fn signed_import_schedules_exact_receiver_job_and_fake_claude_attaches_once() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let _env = RECEIVER_ENV_LOCK.lock().unwrap();
+    let home = tempfile::tempdir().unwrap();
+    std::env::set_var("HOME", home.path());
+    std::env::set_var("EVERETT_HOME", home.path());
+    std::env::set_var("EVERETT_CONVEX_URL", "https://test.convex.cloud");
+    std::env::set_var("EVERETT_NOTIFY", "none");
+    let (a, b) = devices();
+    peer::private_dir(&root().join("peers")).unwrap();
+    write(
+        &peer_path("mac").unwrap(),
+        &Paired {
+            device: a.device.clone(),
+            deployment: "https://test.convex.cloud".into(),
+            grant_id: None,
+        },
+    )
+    .unwrap();
+    let project = home.path().join("real-project");
+    fs::create_dir_all(&project).unwrap();
+    let cwd = fs::canonicalize(project)
+        .unwrap()
+        .to_string_lossy()
+        .to_string();
+    let session_id = "38cab978-79c0-4f42-9aee-5c30d8aa6e4c";
+    let policy_path = root().join("receiver-wake.json");
+    write(
+        &policy_path,
+        &json!({"version":1,"enabled":false,"allow":[{"session_id":session_id,"cwd":cwd,"sender_device_id":a.device.device_id}]}),
+    )
+    .unwrap();
+    assert_eq!(
+        fs::metadata(&policy_path).unwrap().permissions().mode() & 0o777,
+        0o600
+    );
+    let now = milliseconds();
+    let envelope = a
+        .seal(
+            &b.device,
+            "receiver-test",
+            &Payload::Inbox {
+                session: session_id.into(),
+                harness: "claude".into(),
+                text: "synthetic trusted fixture request".into(),
+                from: "mac-session".into(),
+                from_harness: "claude".into(),
+                from_card: String::new(),
+                reply_to: String::new(),
+                hops: 1,
+                external_untrusted: false,
+            },
+            now,
+            TTL,
+            None,
+            None,
+        )
+        .unwrap();
+
+    assert!(import_inner(&b, &envelope, now, true).is_err());
+    assert!(inbox::pending(session_id, None).is_empty());
+    write(
+        &policy_path,
+        &json!({"version":1,"enabled":true,"allow":[{"session_id":session_id,"cwd":cwd,"sender_device_id":a.device.device_id}]}),
+    )
+    .unwrap();
+    import_inner(&b, &envelope, now, true).unwrap();
+    let local_id = local_message_id(&envelope);
+    let jobs = receiver_wake::pending(&root(), now).unwrap();
+    assert_eq!(jobs.len(), 1);
+    assert_eq!(jobs[0].imported.local_id, local_id);
+    assert_eq!(
+        jobs[0].imported.digest,
+        format!("{:x}", Sha256::digest(envelope.signed_bytes()))
+    );
+    assert_eq!(jobs[0].imported.sender_session, "mac-session");
+    assert_eq!(jobs[0].imported.hops, 1);
+    assert_eq!(jobs[0].imported.expires_at, envelope.expires_at);
+
+    let mut attaches = 0;
+    let result = receiver_wake::attempt(
+        &root(),
+        &local_id,
+        now,
+        || Ok(()),
+        |(), message_id| {
+            attaches += 1;
+            assert_eq!(message_id, local_id);
+            receiver_wake::AttemptOutcome::PromptSent {
+                client_pid: 20,
+                target_pid: 10,
+            }
+        },
+    )
+    .unwrap();
+    assert_eq!(
+        result,
+        Some(receiver_wake::AttemptOutcome::PromptSent {
+            client_pid: 20,
+            target_pid: 10
+        })
+    );
+    assert_eq!(attaches, 1);
+    import_inner(&b, &envelope, now, true).unwrap();
+    assert!(receiver_wake::pending(&root(), now).unwrap().is_empty());
+    assert_eq!(attaches, 1);
+}
+
+#[test]
+fn receiver_skips_consumed_or_digest_changed_inbox_rows() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let _env = RECEIVER_ENV_LOCK.lock().unwrap();
+    let home = tempfile::tempdir().unwrap();
+    std::env::set_var("HOME", home.path());
+    std::env::set_var("EVERETT_HOME", home.path());
+    peer::private_dir(&root()).unwrap();
+    let session_id = "38cab978-79c0-4f42-9aee-5c30d8aa6e4c";
+    let local_id = format!("relay-{}", "c".repeat(64));
+    let digest = "d".repeat(64);
+    let cwd = fs::canonicalize(home.path())
+        .unwrap()
+        .to_string_lossy()
+        .to_string();
+    let policy_path = root().join("receiver-wake.json");
+    write(&policy_path, &json!({"version":1,"enabled":true,"allow":[{"session_id":session_id,"cwd":cwd,"sender_device_id":"mac-device"}]})).unwrap();
+    assert_eq!(
+        fs::metadata(&policy_path).unwrap().permissions().mode() & 0o777,
+        0o600
+    );
+    let imported = receiver_wake::Imported {
+        local_id: local_id.clone(),
+        digest: digest.clone(),
+        relay_message_id: "mOriginal123".into(),
+        reply_to: None,
+        sender_session: "mac-session".into(),
+        sender_harness: "claude".into(),
+        relay_parent_owner: None,
+        relay_parent_message_id: None,
+        owner: "owner".into(),
+        sender_owner: "owner".into(),
+        recipient_owner: "owner".into(),
+        sender_device_id: "mac-device".into(),
+        recipient_device_id: "nuc-device".into(),
+        grant_id: None,
+        session_id: session_id.into(),
+        harness: "claude".into(),
+        cwd,
+        expires_at: milliseconds() + TTL,
+        hops: 1,
+        external: false,
+    };
+    receiver_wake::schedule(&root(), imported.clone(), milliseconds()).unwrap();
+    inbox::post(
+        session_id,
+        "verified fixture body",
+        "mac-device/claude/mac-session",
+        "message",
+        "",
+        1,
+        "claude",
+        "",
+        Some(serde_json::from_value(json!({"id":local_id,"relay_digest":digest})).unwrap()),
+    )
+    .unwrap();
+    let job = receiver_wake::pending(&root(), milliseconds())
+        .unwrap()
+        .remove(0);
+    assert!(receiver_inbox_pending(&job));
+    let mut changed_digest = job.clone();
+    changed_digest.imported.digest = "e".repeat(64);
+    assert!(!receiver_inbox_pending(&changed_digest));
+    inbox::take(session_id);
+    assert!(!receiver_inbox_pending(&job));
+    receiver_wake::skip(
+        &root(),
+        &local_id,
+        "inbox row already consumed",
+        milliseconds(),
+    )
+    .unwrap();
+    assert!(receiver_wake::pending(&root(), milliseconds())
+        .unwrap()
+        .is_empty());
+    let attaches = std::cell::Cell::new(0);
+    for pending in receiver_wake::pending(&root(), milliseconds()).unwrap() {
+        let _: Option<receiver_wake::AttemptOutcome> = receiver_wake::attempt(
+            &root(),
+            &pending.imported.local_id,
+            milliseconds(),
+            || Ok(()),
+            |(), _| {
+                attaches.set(attaches.get() + 1);
+                receiver_wake::AttemptOutcome::Cancelled
+            },
+        )
+        .unwrap();
+    }
+    assert_eq!(attaches.get(), 0);
 }

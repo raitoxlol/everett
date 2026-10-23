@@ -232,7 +232,13 @@ fn relay_account() -> Result<RelayAccount> {
 }
 
 fn root() -> PathBuf {
-    session::home().join(if matches!(Provider::selected(), Ok(Provider::Cloudflare)) { ".everett/relay-cloudflare" } else { ".everett/relay" })
+    session::home().join(
+        if matches!(Provider::selected(), Ok(Provider::Cloudflare)) {
+            ".everett/relay-cloudflare"
+        } else {
+            ".everett/relay"
+        },
+    )
 }
 fn milliseconds() -> i64 {
     (session::now() * 1000.0) as i64
@@ -271,7 +277,9 @@ pub fn configured(name: &str) -> bool {
 }
 
 fn deployment() -> Result<String> {
-    if Provider::selected()? == Provider::Cloudflare { return native_credential()?.relay_origin(); }
+    if Provider::selected()? == Provider::Cloudflare {
+        return native_credential()?.relay_origin();
+    }
     let value = crate::config::get("relay.url", Some("EVERETT_CONVEX_URL"), "");
     let url = url::Url::parse(&value).map_err(|_| {
         bad("set EVERETT_CONVEX_URL or [relay] url to your HTTPS Convex deployment")
@@ -394,7 +402,9 @@ fn verified_keys(owner: &str) -> Result<Keys> {
     let owner = owner.to_string();
     runtime(async move {
         let identity = relay_account()?;
-        if identity.owner != owner { return Err(bad("owner changed")); }
+        if identity.owner != owner {
+            return Err(bad("owner changed"));
+        }
         let expected_agent = identity.agent;
         client(&owner).await?;
         let keys = keys(&owner)?;
@@ -415,7 +425,9 @@ fn key_path(owner: &str, agent: &str) -> PathBuf {
 fn keys(owner: &str) -> Result<Keys> {
     initialize()?;
     let identity = relay_account()?;
-    if identity.owner != owner { return Err(bad("owner changed")); }
+    if identity.owner != owner {
+        return Err(bad("owner changed"));
+    }
     let agent = identity.agent.as_str();
     valid(agent)?;
     let _guard = peer::lock(&root().join("keys.lock"))?;
@@ -540,12 +552,17 @@ fn result(value: FunctionResult) -> Result<Value> {
 async fn client(owner: &str) -> Result<RelayClient> {
     if Provider::selected()? == Provider::Cloudflare {
         let stored = native_credential()?;
-        if stored.owner != owner { return Err(bad("signed-in owner changed; restart the relay")); }
+        if stored.owner != owner {
+            return Err(bad("signed-in owner changed; restart the relay"));
+        }
         let agent = stored.agent_id.clone();
         let client = RelayClient::native(stored);
         let identity = client.native_call("relay:whoami", json!({})).await?;
         if identity["owner"] != owner || identity["deviceId"] != agent {
-            return Err(EverettError::new(1, "Cloudflare relay denied: verified identity changed"));
+            return Err(EverettError::new(
+                1,
+                "Cloudflare relay denied: verified identity changed",
+            ));
         }
         return Ok(client);
     }
@@ -596,7 +613,9 @@ fn anyhow_error() -> anyhow::Error {
 }
 
 async fn mutation(client: &mut RelayClient, name: &str, value: Value) -> Result<Value> {
-    if client.is_native() { return client.native_call(name, value).await; }
+    if client.is_native() {
+        return client.native_call(name, value).await;
+    }
     let response = tokio::time::timeout(DEADLINE, client.mutation(name, args(value)?))
         .await
         .map_err(|_| bad("Convex mutation timed out; delivery unconfirmed"))?
@@ -614,7 +633,9 @@ async fn mutation(client: &mut RelayClient, name: &str, value: Value) -> Result<
 }
 
 async fn query(client: &mut RelayClient, name: &str, value: Value) -> Result<Value> {
-    if client.is_native() { return client.native_call(name, value).await; }
+    if client.is_native() {
+        return client.native_call(name, value).await;
+    }
     result(
         tokio::time::timeout(DEADLINE, client.query(name, args(value)?))
             .await
@@ -685,8 +706,12 @@ pub fn admin_call(name: &str, value: Value, is_query: bool) -> Result<Value> {
 }
 
 /// The owner namespace of the stored sign-in, without refreshing or contacting the backend.
-pub fn signed_in_owner() -> Result<String> { Ok(relay_account()?.owner) }
-pub fn signed_in_device_id() -> Result<String> { Ok(relay_account()?.agent) }
+pub fn signed_in_owner() -> Result<String> {
+    Ok(relay_account()?.owner)
+}
+pub fn signed_in_device_id() -> Result<String> {
+    Ok(relay_account()?.agent)
+}
 
 pub fn revoke_device(device_id: &str) -> Result<Value> {
     let owner = relay_account()?.owner;
@@ -799,7 +824,9 @@ pub fn verified_ssh_binding<'a>(
 const MAX_REVOKED_PAGES: usize = 64;
 
 pub fn revoked_devices() -> Result<Vec<RevokedDevice>> {
-    revoked_devices_with(|cursor| admin_call("relay:revokedDevices", json!({"cursor": cursor}), true))
+    revoked_devices_with(|cursor| {
+        admin_call("relay:revokedDevices", json!({"cursor": cursor}), true)
+    })
 }
 
 /// Follow the query's cursor until the backend reports the last page.
@@ -817,7 +844,9 @@ pub fn revoked_devices_with(
             _ => return Err(bad("invalid revocation cursor")),
         };
     }
-    Err(bad(format!("revocation list exceeds {MAX_REVOKED_PAGES} pages")))
+    Err(bad(format!(
+        "revocation list exceeds {MAX_REVOKED_PAGES} pages"
+    )))
 }
 
 pub fn parse_revoked_devices(value: Value) -> Result<Vec<RevokedDevice>> {
@@ -897,7 +926,9 @@ pub fn rotate() -> Result<Value> {
 /// Register args carry this machine's SSH peer id and key, signed by that key, so a later
 /// revocation can prune exactly this device's SSH authorization.
 fn register_args(device: &Device) -> Result<Value> {
-    if Provider::selected()? == Provider::Cloudflare { return Ok(json!({"device":device})); }
+    if Provider::selected()? == Provider::Cloudflare {
+        return Ok(json!({"device":device}));
+    }
     let mut args = json!({"device": device});
     if let Some(ssh) = ssh_binding(device)? {
         args["ssh"] = ssh;
@@ -943,7 +974,11 @@ pub fn register_with_address(address: Option<&str>) -> Result<Value> {
     runtime(async move {
         let mut client = client(&owner).await?;
         mutation(&mut client, "relay:register", args).await?;
-        if client.is_native() { return Ok(json!({"device":device,"fingerprint":device.fingerprint(),"transport":"cloudflare"})); }
+        if client.is_native() {
+            return Ok(
+                json!({"device":device,"fingerprint":device.fingerprint(),"transport":"cloudflare"}),
+            );
+        }
         let signature = key.sign(&crate::device_registry::metadata_bytes(
             &owner,
             &device.device_id,
@@ -957,7 +992,10 @@ pub fn register_with_address(address: Option<&str>) -> Result<Value> {
 
 pub fn devices() -> Result<Value> {
     let owner = relay_account()?.owner;
-    runtime(async move { let mut client = client(&owner).await?; query(&mut client, "relay:devices", json!({})).await })
+    runtime(async move {
+        let mut client = client(&owner).await?;
+        query(&mut client, "relay:devices", json!({})).await
+    })
 }
 
 pub fn add(
@@ -1407,6 +1445,7 @@ fn import_inner(keys: &Keys, envelope: &Envelope, now: i64, publish: bool) -> Re
             } else if !crate::registry::scan(24.0 * 365.0, true, None, &harness)
                 .iter()
                 .any(|s| s.id == session && s.harness == harness)
+                && !receiver_policy_allows(envelope, keys, &session, &harness, external_untrusted)
             {
                 return Err(bad(
                     "recipient session not found; row remains queued until TTL",
@@ -1456,12 +1495,216 @@ fn import_inner(keys: &Keys, envelope: &Envelope, now: i64, publish: bool) -> Re
             fs::File::open(inbox::inbox_dir())
                 .and_then(|f| f.sync_all())
                 .map_err(bad)?;
+            if reply_to.is_empty() {
+                record_receiver_import(
+                    keys,
+                    envelope,
+                    ImportedReceiverContext {
+                        session_id: &session,
+                        harness: &harness,
+                        sender_session: &from,
+                        sender_harness: &from_harness,
+                        local_id: &local_id,
+                        digest: &digest,
+                        external_untrusted,
+                        hops,
+                    },
+                )?;
+            }
             if !reply_to.is_empty() {
                 observe(&keys.device.owner, envelope, &reply_to, State::Replied)?;
             }
         }
     }
     Ok(())
+}
+
+fn receiver_policy_allows(
+    envelope: &Envelope,
+    keys: &Keys,
+    session_id: &str,
+    harness: &str,
+    external_untrusted: bool,
+) -> bool {
+    if harness != "claude"
+        || external_untrusted
+        || envelope.owner != keys.device.owner
+        || envelope.recipient_owner != keys.device.owner
+        || envelope.grant_id.is_some()
+    {
+        return false;
+    }
+    crate::receiver_wake::load_policy(&root()).is_ok_and(|policy| {
+        policy.enabled
+            && policy.allow.iter().any(|rule| {
+                rule.session_id == session_id && rule.sender_device_id == envelope.from_device
+            })
+    })
+}
+
+struct ImportedReceiverContext<'a> {
+    session_id: &'a str,
+    harness: &'a str,
+    sender_session: &'a str,
+    sender_harness: &'a str,
+    local_id: &'a str,
+    digest: &'a str,
+    external_untrusted: bool,
+    hops: i64,
+}
+
+fn record_receiver_import(keys: &Keys, envelope: &Envelope, context: ImportedReceiverContext<'_>) -> Result<()> {
+    let receiver_root = root();
+    if let Ok(policy) = crate::receiver_wake::load_policy(&receiver_root) {
+        if let Some(rule) = policy.allow.iter().find(|rule| {
+            rule.session_id == context.session_id
+                && rule.sender_device_id == envelope.from_device
+                && context.harness == "claude"
+        }) {
+            let imported = crate::receiver_wake::Imported {
+                local_id: context.local_id.into(),
+                digest: context.digest.into(),
+                relay_message_id: envelope.message_id.clone(),
+                reply_to: None,
+                sender_session: context.sender_session.into(),
+                sender_harness: context.sender_harness.into(),
+                relay_parent_owner: envelope.parent.as_ref().map(|parent| parent.owner.clone()),
+                relay_parent_message_id: envelope
+                    .parent
+                    .as_ref()
+                    .map(|parent| parent.message_id.clone()),
+                owner: keys.device.owner.clone(),
+                sender_owner: envelope.owner.clone(),
+                recipient_owner: envelope.recipient_owner.clone(),
+                sender_device_id: envelope.from_device.clone(),
+                recipient_device_id: keys.device.device_id.clone(),
+                grant_id: envelope.grant_id.clone(),
+                session_id: context.session_id.into(),
+                harness: context.harness.into(),
+                cwd: rule.cwd.clone(),
+                expires_at: envelope.expires_at,
+                hops: context.hops,
+                external: envelope.owner != envelope.recipient_owner || context.external_untrusted,
+            };
+            crate::receiver_wake::schedule(&receiver_root, imported, milliseconds())?;
+        }
+    }
+    Ok(())
+}
+
+fn drain_receiver_wakes(keys: &Keys) -> Result<()> {
+    let identity = match relay_account() {
+        Ok(identity) if identity.owner == keys.device.owner && identity.agent == keys.device.device_id => identity,
+        _ => return Ok(()),
+    };
+    let owner = identity.owner;
+    let receiver_root = root();
+    let policy = match crate::receiver_wake::load_policy(&receiver_root) {
+        Ok(policy) if policy.enabled => policy,
+        _ => return Ok(()),
+    };
+    let now = milliseconds();
+    for job in crate::receiver_wake::pending(&receiver_root, now)?
+        .into_iter()
+        .take(32)
+    {
+        let imported = &job.imported;
+        if imported.owner != owner
+            || imported.recipient_device_id != keys.device.device_id
+            || imported.sender_owner != owner
+            || imported.recipient_owner != owner
+            || imported.grant_id.is_some()
+            || imported.external
+            || imported.harness != "claude"
+        {
+            continue;
+        }
+        if !policy.allow.iter().any(|rule| {
+            rule.session_id == imported.session_id
+                && rule.cwd == imported.cwd
+                && rule.sender_device_id == imported.sender_device_id
+        }) {
+            continue;
+        }
+        if !receiver_inbox_pending(&job) {
+            crate::receiver_wake::skip(
+                &receiver_root,
+                &imported.local_id,
+                "verified inbox row was already consumed or its digest changed",
+                now,
+            )?;
+            continue;
+        }
+        if trusted(&imported.sender_device_id, &imported.sender_owner, None).is_err() {
+            continue;
+        }
+        let session = session::Session::new("claude", &imported.session_id, &imported.cwd, "", "", 0.0);
+        let prepared = match crate::claude_wake::prepare(&session) {
+            Ok(prepared) => prepared,
+            Err(error) => {
+                crate::receiver_wake::defer(&receiver_root, &imported.local_id, &error.message, now)?;
+                continue;
+            }
+        };
+        let current_owner = match relay_account() {
+            Ok(account) if account.owner == owner && account.agent == keys.device.device_id => account.owner,
+            _ => continue,
+        };
+        if current_owner != imported.owner || keys.device.device_id != imported.recipient_device_id { continue; }
+        let current_policy = match crate::receiver_wake::load_policy(&receiver_root) {
+            Ok(policy) if policy.enabled => policy,
+            _ => continue,
+        };
+        if !current_policy.allow.iter().any(|rule| {
+            rule.session_id == imported.session_id
+                && rule.cwd == imported.cwd
+                && rule.sender_device_id == imported.sender_device_id
+        }) || trusted(&imported.sender_device_id, &imported.sender_owner, None).is_err()
+            || keys.device.owner != owner
+        {
+            continue;
+        }
+        if !receiver_inbox_pending(&job) {
+            crate::receiver_wake::skip(
+                &receiver_root,
+                &imported.local_id,
+                "verified inbox row was already consumed or its digest changed",
+                milliseconds(),
+            )?;
+            continue;
+        }
+        let outcome = crate::receiver_wake::attempt(
+            &receiver_root,
+            &imported.local_id,
+            milliseconds(),
+            || Ok(prepared),
+            |prepared, local_id| match crate::claude_wake::wake(&prepared, local_id) {
+                crate::claude_wake::WakeOutcome::PromptSent { client_pid, target_pid } => crate::receiver_wake::AttemptOutcome::PromptSent { client_pid, target_pid },
+                crate::claude_wake::WakeOutcome::NotAttached { detail } => crate::receiver_wake::AttemptOutcome::Deferred(detail),
+                crate::claude_wake::WakeOutcome::Cancelled { .. } => crate::receiver_wake::AttemptOutcome::Cancelled,
+                crate::claude_wake::WakeOutcome::TimedOut { .. } => crate::receiver_wake::AttemptOutcome::Uncertain("Claude attach timed out after it may have received the nudge".into()),
+                crate::claude_wake::WakeOutcome::Failed { detail } => crate::receiver_wake::AttemptOutcome::Uncertain(detail),
+            },
+        )?;
+        match outcome {
+            Some(crate::receiver_wake::AttemptOutcome::Cancelled) => {
+                return Err(EverettError::new(130, "relay receiver wake cancelled; stopping relay"));
+            }
+            Some(crate::receiver_wake::AttemptOutcome::PromptSent { .. } | crate::receiver_wake::AttemptOutcome::Uncertain(_)) => break,
+            Some(crate::receiver_wake::AttemptOutcome::Deferred(_)) | None => continue,
+        }
+    }
+    Ok(())
+}
+
+fn receiver_inbox_pending(job: &crate::receiver_wake::Job) -> bool {
+    crate::inbox::pending(&job.imported.session_id, None)
+        .iter()
+        .any(|message| {
+            message.get("id").and_then(Value::as_str) == Some(&job.imported.local_id)
+                && message.get("relay_digest").and_then(Value::as_str)
+                    == Some(&job.imported.digest)
+        })
 }
 
 fn local_message_id(envelope: &Envelope) -> String {
@@ -1675,7 +1918,8 @@ fn remove_stage(path: &Path, envelope: &Envelope) -> Result<()> {
     Ok(())
 }
 fn denied(error: &EverettError) -> bool {
-    error.message.contains("Convex rejected the request") || error.message.starts_with("Cloudflare relay denied")
+    error.message.contains("Convex rejected the request")
+        || error.message.starts_with("Cloudflare relay denied")
 }
 
 fn finish_staged(
@@ -1763,6 +2007,7 @@ async fn receive(
         cursor = Some(page.continue_cursor);
     }
     reconcile(client, keys).await?;
+    drain_receiver_wakes(keys)?;
     Ok(cursor)
 }
 
@@ -1772,7 +2017,9 @@ async fn run_native(
     ingress: &Path,
     register: &Value,
 ) -> Result<Value> {
-    eprintln!("everett relay: Cloudflare outbound polling; inbox-only, no session wake-up");
+    eprintln!(
+        "everett relay: Cloudflare outbound polling; receiver wake follows the local owner policy"
+    );
     let mut rejected = RejectedCache::new();
     let mut delay = 5;
     loop {
@@ -1808,7 +2055,7 @@ pub fn run() -> Result<Value> {
         mutation(&mut client,"relay:register",register.clone()).await?;
         let mut final_cursor: Option<String> = None;
         let mut subscription = client.subscribe("relay:pending",args(json!({"deviceId":keys.device.device_id,"cursor":final_cursor}))?).await.map_err(|_| bad("Convex subscription failed"))?;
-        eprintln!("everett relay: subscribed; inbox-only, no session wake-up");
+        eprintln!("everett relay: subscribed; receiver wake follows the local owner policy");
         let mut tick = tokio::time::interval(Duration::from_secs(1));
         let mut rejected = RejectedCache::new();
         loop {

@@ -13,7 +13,7 @@ use serde_json::Value;
 
 use crate::error::{EverettError, Result};
 use crate::proc::{run_capture, which, RunOutput};
-use crate::session::{home, Session};
+use crate::session::Session;
 
 pub const MIN_VERSION: (u64, u64, u64) = (2, 1, 285);
 pub const ATTACH_TIMEOUT: f64 = 30.0;
@@ -21,6 +21,7 @@ pub const ATTACH_TIMEOUT: f64 = 30.0;
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum WakeOutcome {
     PromptSent { client_pid: u32, target_pid: u32 },
+    NotAttached { detail: String },
     Failed { detail: String },
     TimedOut { client_pid: u32, target_pid: u32 },
     Cancelled { client_pid: u32, target_pid: u32 },
@@ -163,20 +164,7 @@ pub fn prepare(session: &Session) -> Result<PreparedWake> {
 
 pub fn prepare_with(session: &Session, runner: &dyn WakeRunner) -> Result<PreparedWake> {
     validate_target(session)?;
-    let lock_dir = home().join(".everett").join("wake-locks");
-    fs::create_dir_all(&lock_dir).map_err(|e| reject(format!("cannot prepare wake lock: {e}")))?;
-    let _ = fs::set_permissions(&lock_dir, fs::Permissions::from_mode(0o700));
-    let lock_path = lock_dir.join(format!("{}.lock", session.id));
-    let lock = OpenOptions::new()
-        .create(true)
-        .truncate(false)
-        .write(true)
-        .mode(0o600)
-        .open(lock_path)
-        .map_err(|e| reject(format!("cannot prepare wake lock: {e}")))?;
-    lock.try_lock_exclusive()
-        .map_err(|_| reject("a wake is already in progress for this Claude session."))?;
-
+    let lock = wake_lock(&session.id)?;
     let path = std::env::var("PATH").unwrap_or_default();
     let binary = which("claude", &path).ok_or_else(|| reject("Claude Code is not on PATH."))?;
     let cwd = fs::canonicalize(&session.cwd)
@@ -218,6 +206,32 @@ pub fn prepare_with(session: &Session, runner: &dyn WakeRunner) -> Result<Prepar
     })
 }
 
+fn wake_lock(session_id: &str) -> Result<File> {
+    let home = std::env::var_os("HOME")
+        .filter(|path| !path.is_empty())
+        .map(std::path::PathBuf::from)
+        .ok_or_else(|| reject("Claude HOME is unavailable; cannot lock this session safely."))?;
+    wake_lock_at(&home, session_id)
+}
+
+fn wake_lock_at(home: &Path, session_id: &str) -> Result<File> {
+    let lock_dir = home.join(".everett").join("wake-locks");
+    fs::create_dir_all(&lock_dir).map_err(|e| reject(format!("cannot prepare wake lock: {e}")))?;
+    fs::set_permissions(&lock_dir, fs::Permissions::from_mode(0o700))
+        .map_err(|e| reject(format!("cannot secure Claude wake lock directory: {e}")))?;
+    let lock_path = lock_dir.join(format!("{session_id}.lock"));
+    let lock = OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .write(true)
+        .mode(0o600)
+        .open(lock_path)
+        .map_err(|e| reject(format!("cannot prepare wake lock: {e}")))?;
+    lock.try_lock_exclusive()
+        .map_err(|_| reject("a wake is already in progress for this Claude session."))?;
+    Ok(lock)
+}
+
 pub fn wake(prepared: &PreparedWake, message_id: &str) -> WakeOutcome {
     wake_with(prepared, message_id, &SystemWakeRunner)
 }
@@ -228,7 +242,7 @@ pub fn wake_with(
     runner: &dyn WakeRunner,
 ) -> WakeOutcome {
     if !valid_message_id(message_id) {
-        return WakeOutcome::Failed {
+        return WakeOutcome::NotAttached {
             detail: "the queued Everett message has an invalid ID.".into(),
         };
     }
@@ -245,7 +259,7 @@ pub fn wake_with(
     ) {
         Ok(output) if output.code == 0 => output.stdout,
         _ => {
-            return WakeOutcome::Failed {
+            return WakeOutcome::NotAttached {
                 detail: "could not recheck Claude background session state before attach.".into(),
             }
         }
@@ -253,7 +267,7 @@ pub fn wake_with(
     let expected_cwd = match fs::canonicalize(&prepared.cwd) {
         Ok(path) => path,
         Err(error) => {
-            return WakeOutcome::Failed {
+            return WakeOutcome::NotAttached {
                 detail: format!("trusted Claude cwd disappeared: {error}"),
             }
         }
@@ -261,18 +275,18 @@ pub fn wake_with(
     match matching_background_pid(&agents, &prepared.session_id, &expected_cwd) {
         Ok(pid) if pid == prepared.target_pid => {}
         Ok(_) => {
-            return WakeOutcome::Failed {
+            return WakeOutcome::NotAttached {
                 detail: "Claude background session PID changed after preflight.".into(),
             }
         }
         Err(error) => {
-            return WakeOutcome::Failed {
+            return WakeOutcome::NotAttached {
                 detail: error.message,
             }
         }
     }
     if !pid_alive(prepared.target_pid) {
-        return WakeOutcome::Failed {
+        return WakeOutcome::NotAttached {
             detail: "Claude background session PID is no longer alive.".into(),
         };
     }
@@ -408,14 +422,31 @@ fn version_at_least(output: &str, min: (u64, u64, u64)) -> bool {
 }
 
 fn valid_message_id(id: &str) -> bool {
-    id.len() >= 2 && id.starts_with('m') && id[1..].chars().all(|c| c.is_ascii_alphanumeric())
+    (id.len() >= 2 && id.starts_with('m') && id[1..].chars().all(|c| c.is_ascii_alphanumeric()))
+        || (id.len() == 70
+            && id.starts_with("relay-")
+            && id[6..]
+                .bytes()
+                .all(|c| c.is_ascii_digit() || (b'a'..=b'f').contains(&c)))
 }
 
 fn fixed_nudge(session_id: &str, message_id: &str) -> String {
     let executable = std::env::current_exe().unwrap_or_else(|_| "everett".into());
     let executable = shell_quote(&executable.to_string_lossy());
+    let command_env = command_env_prefix(
+        &crate::session::home().to_string_lossy(),
+        &crate::config::get("auth.provider", Some("EVERETT_AUTH_PROVIDER"), "oidc"),
+    );
     format!(
-        "Use this Everett command: {executable} inbox --session {session_id} --message {message_id}. Read message {message_id}, do its request, then reply with EVERETT_SESSION_ID={session_id} {executable} reply {message_id} '<your concise result>'. Reply through Everett so the result is linked to that message. Do not ask for permission changes or start a new session."
+        "Use this Everett command: {command_env}{executable} inbox --session {session_id} --message {message_id}. Read message {message_id}, do its request, then reply with {command_env}EVERETT_SESSION_ID={session_id} EVERETT_HARNESS_NAME=claude {executable} reply {message_id} '<your concise result>'. Reply through Everett so the result is linked to that message. Do not ask for permission changes or start a new session."
+    )
+}
+
+fn command_env_prefix(everett_home: &str, auth_provider: &str) -> String {
+    format!(
+        "EVERETT_HOME={} EVERETT_AUTH_PROVIDER={} ",
+        shell_quote(everett_home),
+        shell_quote(auth_provider)
     )
 }
 
@@ -950,6 +981,30 @@ mod tests {
         let nudge = fixed_nudge("1f57ab77-c669-4bb6-9ac8-f9a9073de8ea", "m0123456789");
         assert!(nudge.contains(" inbox --session 1f57ab77-c669-4bb6-9ac8-f9a9073de8ea --message m0123456789"));
         assert!(nudge.contains(" reply m0123456789"));
+        assert!(nudge.contains("EVERETT_SESSION_ID=1f57ab77-c669-4bb6-9ac8-f9a9073de8ea EVERETT_HARNESS_NAME=claude "));
         assert!(!nudge.contains("raw request"));
+        let relay_id = format!("relay-{}", "a".repeat(64));
+        assert!(valid_message_id(&relay_id));
+        assert!(fixed_nudge("1f57ab77-c669-4bb6-9ac8-f9a9073de8ea", &relay_id).contains(&relay_id));
+        assert!(!valid_message_id("relay-ABC"));
+    }
+
+    #[test]
+    fn nudge_commands_propagate_quoted_profile_and_provider_without_changing_home() {
+        let prefix = command_env_prefix("/tmp/Everett profile/'quoted'", "custom 'provider'");
+        assert_eq!(
+            prefix,
+            "EVERETT_HOME='/tmp/Everett profile/'\\''quoted'\\''' EVERETT_AUTH_PROVIDER='custom '\\''provider'\\''' "
+        );
+        assert!(!prefix.contains(" HOME="));
+        assert!(!prefix.contains("TOKEN"));
+    }
+
+    #[test]
+    fn real_claude_home_lock_is_shared_across_everett_profiles() {
+        let home = tempfile::tempdir().unwrap();
+        let first = wake_lock_at(home.path(), "1f57ab77-c669-4bb6-9ac8-f9a9073de8ea").unwrap();
+        assert!(wake_lock_at(home.path(), "1f57ab77-c669-4bb6-9ac8-f9a9073de8ea").is_err());
+        drop(first);
     }
 }
