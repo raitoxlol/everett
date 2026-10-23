@@ -763,6 +763,8 @@ fn browser_approval_resumes_onboarding_then_guides_and_prints_review_prompt() {
         }
         see(&mut session, &mut vt, "Welcome to Everett");
         session.send("\r").unwrap();
+        see(&mut session, &mut vt, "Sign in with GitHub");
+        session.send("\r").unwrap();
         see(&mut session, &mut vt, "Choose your agents");
         let url = std::fs::read_to_string(f.home().join("browser-url")).unwrap();
         assert_eq!(url, format!("{}/enroll?code=ABCDEF123456", fake.issuer));
