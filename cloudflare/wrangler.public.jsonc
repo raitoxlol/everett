@@ -34,7 +34,7 @@
   ],
   "vars": {
     "AUTH_GITHUB_ID": "Ov23liS4NbTt3HxvwHji",
-    "EVERETT_ENROLLMENT": "public",
+    "EVERETT_ENROLLMENT": "owner",
     "EVERETT_ISSUER": "https://everett.raitox.tech",
     "EVERETT_OAUTH_CLIENT_IDS": "https://chatgpt.com/oauth/client.json",
     "EVERETT_OAUTH_REDIRECT_URIS": "https://chatgpt.com/connector_platform_oauth_redirect",
