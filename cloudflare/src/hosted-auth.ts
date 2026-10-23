@@ -369,21 +369,22 @@ export class HostedAuth extends DurableObject<HostedAuthEnv> {
     if (row.state === 'pending') this.ctx.storage.sql.exec("UPDATE device_requests SET state='cancelled' WHERE poll_hash=?", row.poll_hash);
     return json({ state: row.state === 'pending' ? 'cancelled' : row.state });
   }
+  /// Enforced before a fresh claim only. The claim already bounded the
+  /// enrollment, so a crashed resume replays the idempotent relay event and
+  /// inserts without re-checking — it can never wedge at a cap it passed.
+  #credentialQuota(c: HostedConfig, account: Account) {
+    if (c.enrollment === 'public') {
+      if (this.#row<{ n: number }>('SELECT count(*) n FROM hosted_agents WHERE account=?', account.subject)!.n >= 128) throw new RelayError('credential_limit', 429);
+      if (this.#row<{ n: number }>('SELECT count(*) n FROM hosted_agents WHERE account=? AND revoked=0', account.subject)!.n >= 64) throw new RelayError('credential_limit', 429);
+      if (this.#count('hosted_agents') >= 8192) throw new RelayError('credential_limit', 429);
+    } else if (this.#count('hosted_agents') >= 2048) {
+      throw new RelayError('credential_limit', 429);
+    }
+  }
   async #enroll(c: HostedConfig, account: Account, eventId: string, name: string, kind: string) {
     const result = await this.#relayFor(account.identity).enroll(account.identity, 'admin', eventId);
     if (!result.ok) throw new RelayError('enrollment_denied', 403);
-    // Quota checks come after the idempotent relay call: a resume replaying an
-    // existing credential must not wedge at a cap it already counted against.
-    if (!this.#row('SELECT agent_id FROM hosted_agents WHERE agent_id=?', result.value.deviceId)) {
-      if (c.enrollment === 'public') {
-        if (this.#row<{ n: number }>('SELECT count(*) n FROM hosted_agents WHERE account=?', account.subject)!.n >= 128) throw new RelayError('credential_limit', 429);
-        if (this.#row<{ n: number }>('SELECT count(*) n FROM hosted_agents WHERE account=? AND revoked=0', account.subject)!.n >= 64) throw new RelayError('credential_limit', 429);
-        if (this.#count('hosted_agents') >= 8192) throw new RelayError('credential_limit', 429);
-      } else if (this.#count('hosted_agents') >= 2048) {
-        throw new RelayError('credential_limit', 429);
-      }
-      this.ctx.storage.sql.exec('INSERT OR IGNORE INTO hosted_agents(agent_id,name,kind,created_at,revoked,account) VALUES(?,?,?,?,?,?)', result.value.deviceId, name, kind, Date.now(), 0, account.subject);
-    }
+    this.ctx.storage.sql.exec('INSERT OR IGNORE INTO hosted_agents(agent_id,name,kind,created_at,revoked,account) VALUES(?,?,?,?,?,?)', result.value.deviceId, name, kind, Date.now(), 0, account.subject);
     return result.value.deviceId;
   }
   async #deviceDecision(request: Request, c: HostedConfig) {
@@ -403,6 +404,7 @@ export class HostedAuth extends DurableObject<HostedAuthEnv> {
       if (!wrote) throw new RelayError('request_expired_or_decided', 409);
     } else {
       if (row.state === 'pending') {
+        this.#credentialQuota(c, account);
         const wrote = this.ctx.storage.sql.exec("UPDATE device_requests SET state='approving',account=? WHERE poll_hash=? AND state='pending' AND (account IS NULL OR account=?)", account.subject, row.poll_hash, account.subject).rowsWritten;
         if (!wrote) throw new RelayError('request_expired_or_decided', 409);
       } else if (row.account !== account.subject) {
@@ -525,6 +527,7 @@ export class HostedAuth extends DurableObject<HostedAuthEnv> {
     const name = cleanName.parse(p.name);
     if (this.#count('auth_codes') >= 200) throw new RelayError('code_limit', 429);
     if (row.phase === 'pending') {
+      this.#credentialQuota(c, account);
       const wrote = this.ctx.storage.sql.exec("UPDATE auth_requests SET phase='approving',account=? WHERE id=? AND phase='pending' AND (account IS NULL OR account=?)", account.subject, id, account.subject).rowsWritten;
       if (!wrote) throw new RelayError('request_expired_or_browser_mismatch', 403);
     } else if (row.account !== account.subject) {
@@ -550,10 +553,10 @@ export class HostedAuth extends DurableObject<HostedAuthEnv> {
   #tokenQuota(c: HostedConfig, agentId: string) {
     if (c.enrollment !== 'public') return;
     const account = this.#row<{ account: string }>('SELECT account FROM hosted_agents WHERE agent_id=?', agentId)?.account;
-    if (!account) return;
+    if (!account) throw new RelayError('invalid_grant', 400);
     this.#rate(`oauth-token:${account}`, 40);
     const retained = this.#row<{ n: number }>('SELECT count(*) n FROM oauth_tokens t JOIN token_families f ON t.family_id=f.id JOIN hosted_agents a ON a.agent_id=f.agent_id WHERE a.account=?', account)!.n;
-    if (retained >= 2048) throw new RelayError('token_limit', 429);
+    if (retained > 2046) throw new RelayError('token_limit', 429);
   }
   #issueTokens(family: Family) {
     if (this.#count('oauth_tokens') >= 32766) throw new RelayError('token_limit', 429);
@@ -598,9 +601,9 @@ export class HostedAuth extends DurableObject<HostedAuthEnv> {
       if (!token || token.kind !== 'refresh' || !family || family.client_id !== p.client_id) throw new RelayError('invalid_grant', 400);
       if (token.used) { this.#revokeFamily(family.id); throw new RelayError('invalid_grant', 400); }
       if (token.expires_at <= Date.now() || !await this.#familyLive(c, family)) { this.#revokeFamily(family.id); throw new RelayError('invalid_grant', 400); }
-      this.#tokenQuota(c, family.agent_id);
       if (p.resource !== undefined && p.resource !== family.resource) throw new RelayError('invalid_target', 400);
       if (p.scope !== undefined && p.scope !== 'everett') throw new RelayError('invalid_scope', 400);
+      this.#tokenQuota(c, family.agent_id);
       const result = this.ctx.storage.transactionSync(() => {
         this.ctx.storage.sql.exec('UPDATE oauth_tokens SET used=1 WHERE token_hash=?', token.token_hash);
         return this.#issueTokens(family);
