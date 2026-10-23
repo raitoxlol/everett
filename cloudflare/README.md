@@ -1,6 +1,6 @@
 # Everett Cloudflare backend
 
-**Status: development and public backend Workers are deployed; live sign-in awaits its private GitHub secret.** Draft PR #43 targets `main`; implementation began from PR #29 `bd70fbf`. Existing Convex, native transport, MCP tools and live OAuth are unchanged by this package. See [CLI-CONTRACT.md](CLI-CONTRACT.md) for the implemented native enrollment and gateway OAuth contract. Development health: `https://everett-dev.raitox-everett-dev.workers.dev/health` returned HTTPS 200 on 2026-10-21. The new app's public `AUTH_GITHUB_ID` was configured and read back successfully; private GitHub and gateway introspection bindings remain absent.
+**Status: native GitHub approval and encrypted cross-device relay are deployed and verified on the public issuer.** The native Rust adapter supports outbound polling. On 2026-10-24, a real NUC sender woke a dedicated idle Claude session on a Mac through `https://everett.raitox.tech` and received its correlated reply. The Mac reused its existing Claude login; Everett enrollment and agent-provider authentication are separate. Public multi-account enrollment is implemented and tested with synthetic GitHub responses, but remains restricted to the configured owner pending a live second-account acceptance check. Live ChatGPT OAuth and deployed capacity remain unverified.
 
 The Worker HTTP adapter uses one SQLite-backed `OwnerRelay` Durable Object per owner namespace. Membership, credentials, permanent revocation/replay records, device keys, counters and ciphertext queues share one authoritative transaction boundary. No D1 permission mirror is needed for this slice.
 
@@ -37,7 +37,7 @@ That service must verify cryptographic credential validity, exact issuer, audien
 
 After verified owner consent, a trusted enrollment Worker selects `OWNERS.idFromName(namespace(identity))` and calls binding-only `stub.enroll(identity, role, serverGeneratedEventId)`. Identity is `{issuer,subject,org}`. The result is `{ok:true,value:{owner,deviceId}}` or `{ok:false,error,status}`. The DO generates immutable device IDs. Bind the returned ID into issued credentials. Event retries cannot rebind identity/role or reactivate a revoked credential. New agent approval requires a new event/ID; revoked memberships remain terminal. Role changes are not implemented.
 
-The namespace binding is privileged; only trusted relay/enrollment Workers may hold it. No public caller can select a principal or invoke enrollment. `PrincipalVerifier` injection exists for synthetic tests; the production default export never supplies an override. Browser login, approval and OAuth issuance/refresh are implemented in HostedAuth; the native Rust transport remains separate work.
+The namespace binding is privileged; only trusted relay/enrollment Workers may hold it. No public caller can select a principal or invoke enrollment. `PrincipalVerifier` injection exists for synthetic tests; the production default export never supplies an override. Browser login, approval and OAuth issuance/refresh are implemented in HostedAuth; the native Rust HTTP polling transport is implemented.
 
 ## Port and parity map
 
@@ -54,8 +54,8 @@ The namespace binding is privileged; only trusted relay/enrollment Workers may h
 | `expire` | Bounded DO alarm | 64 ciphertext rows per alarm, rescheduled; alarm and queue writes transact together. |
 | `provisionIdentity` | Internal `enroll` RPC | Generates immutable ID instead of accepting issuer-selected ID. |
 | `grants:*` | Not implemented | All external routes fail closed. |
-| Browser auth, native enrollment, OAuth | Implemented in HostedAuth | Real GitHub/ChatGPT acceptance remains; see CLI-CONTRACT.md. |
-| Native Convex SDK/subscriptions | Unchanged | Rust HTTP/WebSocket adapter still needed; endpoint swap alone cannot work. |
+| Browser auth, native enrollment, OAuth | Implemented in HostedAuth | Native GitHub approval verified; live ChatGPT OAuth remains unverified. See CLI-CONTRACT.md. |
+| Native Convex SDK/subscriptions | Unchanged | Native Cloudflare uses a separate HTTP polling adapter; no WebSocket invalidation channel. |
 
 Canonical v2 device/envelope/observation arrays and fingerprints follow `../convex/CONTRACT.md`. Strict RFC8032 Ed25519 verification uses `zip215:false`. The fixture is copied unchanged from the existing **public test-only** vector; deterministic seeds are test material. Tests decrypt its ciphertext plus a synthetic queued X25519/HKDF-SHA256/ChaCha20Poly1305 round trip. Server stores ciphertext and cannot verify plaintext/AEAD tags; client validation remains mandatory.
 
@@ -63,13 +63,13 @@ New envelopes require current endpoint fingerprints and permissions, valid signa
 
 New-message limits: 120/minute per credential, 120/minute shared by issuer/subject, 600/minute per owner; fixed UTC-minute windows. Recipient capacity is 256 unexpired ciphertext rows; body cap is 64 KiB plus the AEAD tag. Counters and queue writes roll back together. Reads do not consume messages. Signed delivery deletes ciphertext; signed claim/reply requires delivery and never regresses state. Empty blocked pages can still have `isDone:false`; clients must follow cursors. Expired ciphertext is excluded immediately by server time; deletion depends on scheduled alarm execution. Downloaded plaintext cannot be recalled.
 
-## Remaining work before cutover
+## Remaining acceptance and capabilities
 
-1. Configure development secrets privately and prove the real GitHub owner approval and ChatGPT OAuth flow. Local runtime tests mock only outbound provider responses.
-2. Add native HTTP/WebSocket transport. Prefer hibernatable WebSockets with payload-free invalidations and authorization rechecks; none exist here yet. Keep existing local MCP and direct SSH transport.
-3. Port bilateral cross-owner grants, pinned bundles, reconfirmation, revocation and caps. Multiple owner DOs need an explicit consistency design; never trust unchecked permission mirrors.
-4. Decide namespace and data migration. Owner strings are signed into bundles and envelope AAD. A new issuer changes them; migrate authoritatively or explicitly re-enroll/re-pair. Preserve permanent membership/credential/replay tombstones and pending state. This slice imports/deletes nothing.
-5. Measure deployed CPU/storage limits and prove two physical machines send/read/reply, reconnect and revoke before replacing the service. SQLite DOs are Free-supported, but local correctness tests do not establish Free CPU fit or user capacity.
+1. Verify public enrollment with a second real GitHub account before enabling it broadly. Account-isolation runtime tests use mocked provider responses.
+2. Prove live ChatGPT OAuth with the intended gateway and client. Native device approval is a separate flow.
+3. Implement bilateral cross-account grants if cross-account messaging is needed. Current public-mode accounts can communicate only among their own devices.
+4. Review any namespace migration explicitly. Owner strings are signed into envelopes; there is no automatic credential or data import between issuers.
+5. Measure deployed CPU/storage and account capacity. Current anonymous request and credential quotas are bounded; passing local tests does not establish public scale.
 
 ## Original relay checkpoint
 
