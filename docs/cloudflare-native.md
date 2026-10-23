@@ -78,6 +78,64 @@ Prompt receipt still does not prove a model reply. The Mac-to-NUC acceptance bou
 the correlated reply arriving in the Mac sender session's inbox; the physical acceptance
 commands remain a separate device check.
 
+### Real public-relay receiver acceptance
+
+`scripts/accept_receiver_wake.py` runs the actual Mac-to-NUC acceptance journey against
+the public Cloudflare relay. It expects the already released Mac CLI and existing isolated
+Mac public profile, the candidate NUC CLI and its isolated public profile, pre-enrolled
+same-owner device identities with reciprocal exact fingerprint pins, and two real idle
+Claude background sessions on the NUC: one allowed session and one separate session for
+the deny-path probe. The caller supplies the full UUIDs, canonical cwd, pinned IDs and
+fingerprints, and an existing SSH alias. The script does not enroll devices, install
+binaries, or read/copy credentials. A blocked, missing, busy, or unobservable Claude
+session is a preflight failure before policy installation or listener startup.
+Pass the exact existing Claude CLI path; the runner uses it for `claude agents --json`,
+records its resolved path without querying a provider, and prepends its directory to the
+owned NUC relay listener's `PATH` while retaining the system path.
+
+Run from the repository on the Mac with a new path under an owner-only directory:
+
+```sh
+python3 scripts/accept_receiver_wake.py \
+  --nuc-ssh nucbox \
+  --mac-binary /ABS/PATH/TO/released-mac-everett \
+  --nuc-binary /ABS/PATH/TO/candidate-nuc-everett \
+  --nuc-claude-binary /home/nuc/.local/bin/claude \
+  --nuc-sha256 EXPECTED_CANDIDATE_SHA256 \
+  --source-commit FULL_CANDIDATE_SOURCE_COMMIT \
+  --mac-device-id MAC_DEVICE_ID --mac-fingerprint MAC_FINGERPRINT \
+  --nuc-device-id NUC_DEVICE_ID --nuc-fingerprint NUC_FINGERPRINT \
+  --session-id ALLOWED_CLAUDE_UUID --denied-session-id DENY_PROBE_CLAUDE_UUID \
+  --cwd /home/nuc/Projects/example \
+  --manifest /path/in/owner-only-directory/receiver-wake-run.json
+```
+
+The runner checks profile ownership, both live Claude fixtures, exact peer pins and the
+disabled default policy. It then installs one exact temporary rule, starts only its own
+relay listeners, sends one unique public inbox request without sender-side wake, retries
+the same idempotency key before and after an owned NUC listener restart, and verifies one
+unchanged receiver job plus the exact real Claude reply in the Mac `human` inbox. A
+separate unique request targets the real deny-probe session and must reach the NUC inbox
+without creating a wake job, changing that session, or returning a reply. This second
+request is required to prove denial; a missing deny fixture cannot pass acceptance.
+
+The owner-only manifest records phases, exact IDs, message correlation, listener PIDs,
+cleanup outcomes, the declared candidate source commit, and SHA-256 hashes of both binaries.
+It also compares the NUC project tree before and after the probes and fails if tracked or
+untracked project state changes. The candidate NUC hash must match the explicit
+`--nuc-sha256` value before any mutation.
+Pass explicit binary paths because
+candidate build directories can change even when their names do not. The runner stops only
+listeners it started and restores the policy only while its installed file identity and
+bytes remain unchanged. SIGINT, SIGTERM, and Ctrl-C run cleanup and cannot produce `passed`.
+Positive/negative relay checks alone leave the run `incomplete`: full v2 readiness also
+requires independently verified evidence that an existing draft in the native Claude
+composer survives the wake journey. This runner does not synthesize that evidence or accept
+a boolean assertion in its place. A failed or uncertain cleanup also returns `incomplete`;
+inspect the manifest before manual recovery. Offline coverage is
+`python3 -m unittest -v scripts.test_accept_receiver_wake`; that suite does not exercise
+the public relay or replace the real-device acceptance result.
+
 ## Reproduce isolated local acceptance
 
 The backend PR provides `cloudflare/test/native-fixture.mjs`. Install its pinned dependencies

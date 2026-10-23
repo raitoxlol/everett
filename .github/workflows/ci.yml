@@ -17,6 +17,9 @@ jobs:
         working-directory: everett-rs
     steps:
       - uses: actions/checkout@v7
+      - name: Check receiver acceptance automation over isolated fixtures
+        working-directory: .
+        run: python3 -m unittest discover -s scripts -p test_accept_receiver_wake.py -v
       - uses: dtolnay/rust-toolchain@stable
       - name: Build the release binary
         run: cargo build --release --locked
