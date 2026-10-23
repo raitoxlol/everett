@@ -205,6 +205,19 @@ describe('Public enrollment: shared-cap isolation', () => {
     expect(body.owner).toBe(namespace({ issuer, subject: `github:${ALICE.id}`, org: null }));
   });
 
+  it('counts stranded approving claims against the account credential cap', async () => {
+    const alice = await loginAs(ALICE), bob = await loginAs(BOB);
+    const stub = env.AUTH_STATE!.get(env.AUTH_STATE!.idFromName(issuer));
+    await runInDurableObject(stub, (_i, state) => {
+      for (let i = 0; i < 63; i++) state.storage.sql.exec("INSERT INTO hosted_agents(agent_id,name,kind,created_at,revoked,account) VALUES(?,?,?,?,0,?)", `agent-${i}`, 'n', 'device', Date.now(), `github:${ALICE.id}`);
+      state.storage.sql.exec("INSERT INTO device_requests(poll_hash,user_code,name,state,agent_id,event_id,expires_at,last_poll,account,requester_hash) VALUES('stranded-poll','STRANDEDCODE','stranded','approving',NULL,'stranded-event',?,0,?,NULL)", Date.now() + 600000, `github:${ALICE.id}`);
+    });
+    const blocked = await begin('cap-check-alice');
+    expect((await approve(alice, blocked.user_code)).status).toBe(429);
+    const bobs = await begin('cap-check-bob');
+    expect((await approve(bob, bobs.user_code)).status).toBe(303);
+  });
+
   it('shows no request details when a foreign account opens a claimed OAuth consent page', async () => {
     const alice = await loginAs(ALICE), bob = await loginAs(BOB);
     const location = await authorize(alice);

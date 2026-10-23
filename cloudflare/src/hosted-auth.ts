@@ -369,15 +369,28 @@ export class HostedAuth extends DurableObject<HostedAuthEnv> {
     if (row.state === 'pending') this.ctx.storage.sql.exec("UPDATE device_requests SET state='cancelled' WHERE poll_hash=?", row.poll_hash);
     return json({ state: row.state === 'pending' ? 'cancelled' : row.state });
   }
+  /// Unexpired approving requests reserve a credential slot even before their
+  /// hosted_agents row exists, so a claim cannot overshoot the cap it passed.
+  #inflightClaims(account?: string) {
+    const now = Date.now();
+    const d = account
+      ? this.#row<{ n: number }>("SELECT count(*) n FROM device_requests WHERE state='approving' AND expires_at>? AND account=?", now, account)!.n
+      : this.#row<{ n: number }>("SELECT count(*) n FROM device_requests WHERE state='approving' AND expires_at>?", now)!.n;
+    const o = account
+      ? this.#row<{ n: number }>("SELECT count(*) n FROM auth_requests WHERE phase='approving' AND expires_at>? AND account=?", now, account)!.n
+      : this.#row<{ n: number }>("SELECT count(*) n FROM auth_requests WHERE phase='approving' AND expires_at>?", now)!.n;
+    return d + o;
+  }
   /// Enforced before a fresh claim only. The claim already bounded the
   /// enrollment, so a crashed resume replays the idempotent relay event and
   /// inserts without re-checking — it can never wedge at a cap it passed.
   #credentialQuota(c: HostedConfig, account: Account) {
     if (c.enrollment === 'public') {
-      if (this.#row<{ n: number }>('SELECT count(*) n FROM hosted_agents WHERE account=?', account.subject)!.n >= 128) throw new RelayError('credential_limit', 429);
-      if (this.#row<{ n: number }>('SELECT count(*) n FROM hosted_agents WHERE account=? AND revoked=0', account.subject)!.n >= 64) throw new RelayError('credential_limit', 429);
-      if (this.#count('hosted_agents') >= 8192) throw new RelayError('credential_limit', 429);
-    } else if (this.#count('hosted_agents') >= 2048) {
+      const inflight = this.#inflightClaims(account.subject);
+      if (this.#row<{ n: number }>('SELECT count(*) n FROM hosted_agents WHERE account=?', account.subject)!.n + inflight >= 128) throw new RelayError('credential_limit', 429);
+      if (this.#row<{ n: number }>('SELECT count(*) n FROM hosted_agents WHERE account=? AND revoked=0', account.subject)!.n + inflight >= 64) throw new RelayError('credential_limit', 429);
+      if (this.#count('hosted_agents') + this.#inflightClaims() >= 8192) throw new RelayError('credential_limit', 429);
+    } else if (this.#count('hosted_agents') + this.#inflightClaims() >= 2048) {
       throw new RelayError('credential_limit', 429);
     }
   }
