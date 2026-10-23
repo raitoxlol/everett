@@ -80,12 +80,16 @@ function setCookie(response: Response, c: HostedConfig, suffix: string, value: s
 const csrfField = (csrf: string) => `<input type="hidden" name="csrf" value="${esc(csrf)}">`;
 
 type Session = { session_hash: string; csrf_hash: string; github_id: string; login: string; expires_at: number };
-type DeviceRequest = { poll_hash: string; user_code: string; name: string; state: string; agent_id: string | null; event_id: string; expires_at: number; last_poll: number };
-type AuthRequest = { id: string; client_id: string; client_name: string; redirect_uri: string; resource: string; challenge: string; state: string | null; binding_hash: string; phase: string; event_id: string; agent_id: string | null; expires_at: number };
+type DeviceRequest = { poll_hash: string; user_code: string; name: string; state: string; agent_id: string | null; event_id: string; expires_at: number; last_poll: number; account: string | null; requester_hash: string | null };
+type AuthRequest = { id: string; client_id: string; client_name: string; redirect_uri: string; resource: string; challenge: string; state: string | null; binding_hash: string; phase: string; event_id: string; agent_id: string | null; expires_at: number; account: string | null };
 type Family = { id: string; agent_id: string; name: string; client_id: string; resource: string; expires_at: number; revoked: number };
 type OAuthToken = { token_hash: string; kind: string; family_id: string; expires_at: number; used: number };
 type AuthCode = { code_hash: string; request_id: string; agent_id: string; client_id: string; redirect_uri: string; resource: string; challenge: string; expires_at: number; used: number };
-type Agent = { agent_id: string; name: string; kind: string; created_at: number; revoked: number };
+type Agent = { agent_id: string; name: string; kind: string; created_at: number; revoked: number; account: string };
+type Subject = `github:${string}`;
+/// A GitHub-verified account. Built only from a validated session row or the
+/// provider /user response at callback time, never from request parameters.
+type Account = { subject: Subject; login: string; identity: Identity };
 
 export class HostedAuth extends DurableObject<HostedAuthEnv> {
   constructor(ctx: DurableObjectState, env: HostedAuthEnv) {
@@ -93,21 +97,68 @@ export class HostedAuth extends DurableObject<HostedAuthEnv> {
     ctx.storage.sql.exec(`
       CREATE TABLE IF NOT EXISTS gh_states(state_hash TEXT PRIMARY KEY,binding_hash TEXT NOT NULL,return_to TEXT NOT NULL,expires_at INTEGER NOT NULL);
       CREATE TABLE IF NOT EXISTS owner_sessions(session_hash TEXT PRIMARY KEY,csrf_hash TEXT NOT NULL,github_id TEXT NOT NULL,login TEXT NOT NULL,expires_at INTEGER NOT NULL);
-      CREATE TABLE IF NOT EXISTS device_requests(poll_hash TEXT PRIMARY KEY,user_code TEXT NOT NULL UNIQUE,name TEXT NOT NULL,state TEXT NOT NULL,agent_id TEXT,event_id TEXT NOT NULL UNIQUE,expires_at INTEGER NOT NULL,last_poll INTEGER NOT NULL);
+      CREATE TABLE IF NOT EXISTS device_requests(poll_hash TEXT PRIMARY KEY,user_code TEXT NOT NULL UNIQUE,name TEXT NOT NULL,state TEXT NOT NULL,agent_id TEXT,event_id TEXT NOT NULL UNIQUE,expires_at INTEGER NOT NULL,last_poll INTEGER NOT NULL,account TEXT,requester_hash TEXT);
       CREATE TABLE IF NOT EXISTS native_tokens(token_hash TEXT PRIMARY KEY,agent_id TEXT NOT NULL UNIQUE,expires_at INTEGER NOT NULL,revoked INTEGER NOT NULL);
-      CREATE TABLE IF NOT EXISTS hosted_agents(agent_id TEXT PRIMARY KEY,name TEXT NOT NULL,kind TEXT NOT NULL,created_at INTEGER NOT NULL,revoked INTEGER NOT NULL);
-      CREATE TABLE IF NOT EXISTS auth_requests(id TEXT PRIMARY KEY,client_id TEXT NOT NULL,client_name TEXT NOT NULL,redirect_uri TEXT NOT NULL,resource TEXT NOT NULL,challenge TEXT NOT NULL,state TEXT,binding_hash TEXT NOT NULL,phase TEXT NOT NULL,event_id TEXT NOT NULL UNIQUE,agent_id TEXT,expires_at INTEGER NOT NULL);
+      CREATE TABLE IF NOT EXISTS hosted_agents(agent_id TEXT PRIMARY KEY,name TEXT NOT NULL,kind TEXT NOT NULL,created_at INTEGER NOT NULL,revoked INTEGER NOT NULL,account TEXT);
+      CREATE TABLE IF NOT EXISTS auth_requests(id TEXT PRIMARY KEY,client_id TEXT NOT NULL,client_name TEXT NOT NULL,redirect_uri TEXT NOT NULL,resource TEXT NOT NULL,challenge TEXT NOT NULL,state TEXT,binding_hash TEXT NOT NULL,phase TEXT NOT NULL,event_id TEXT NOT NULL UNIQUE,agent_id TEXT,expires_at INTEGER NOT NULL,account TEXT);
       CREATE TABLE IF NOT EXISTS auth_codes(code_hash TEXT PRIMARY KEY,request_id TEXT NOT NULL UNIQUE,agent_id TEXT NOT NULL,client_id TEXT NOT NULL,redirect_uri TEXT NOT NULL,resource TEXT NOT NULL,challenge TEXT NOT NULL,expires_at INTEGER NOT NULL,used INTEGER NOT NULL);
       CREATE TABLE IF NOT EXISTS token_families(id TEXT PRIMARY KEY,agent_id TEXT NOT NULL,name TEXT NOT NULL,client_id TEXT NOT NULL,resource TEXT NOT NULL,expires_at INTEGER NOT NULL,revoked INTEGER NOT NULL);
       CREATE TABLE IF NOT EXISTS oauth_tokens(token_hash TEXT PRIMARY KEY,kind TEXT NOT NULL,family_id TEXT NOT NULL,expires_at INTEGER NOT NULL,used INTEGER NOT NULL);
       CREATE INDEX IF NOT EXISTS oauth_family ON oauth_tokens(family_id);
       CREATE TABLE IF NOT EXISTS auth_rates(scope TEXT PRIMARY KEY,window INTEGER NOT NULL,count INTEGER NOT NULL);
+      CREATE TABLE IF NOT EXISTS meta(key TEXT PRIMARY KEY,value TEXT NOT NULL);
     `);
+    this.#migrate();
+  }
+  /// v0 → v1: account columns. Fresh databases reach v1 through the CREATE
+  /// TABLE text; legacy databases gain the same columns here, then decided
+  /// rows are backfilled to the configured owner (every pre-upgrade row was
+  /// theirs) while live pending/cancelled rows stay unclaimed. Tombstones,
+  /// used codes, and replay records are never rewritten or dropped. DO SQLite
+  /// denies PRAGMA writes, so the schema version lives in `meta`.
+  #migrate() {
+    if (this.#row<{ value: string }>("SELECT value FROM meta WHERE key='schema_version'")?.value === '1') return;
+    const has = (table: string, column: string) => {
+      try { this.ctx.storage.sql.exec(`SELECT ${column} FROM ${table} LIMIT 0`); return true; } catch { return false; }
+    };
+    if (!has('device_requests', 'account')) {
+      this.ctx.storage.sql.exec('ALTER TABLE device_requests ADD COLUMN account TEXT');
+      this.ctx.storage.sql.exec('ALTER TABLE device_requests ADD COLUMN requester_hash TEXT');
+    }
+    if (!has('hosted_agents', 'account')) this.ctx.storage.sql.exec('ALTER TABLE hosted_agents ADD COLUMN account TEXT');
+    if (!has('auth_requests', 'account')) this.ctx.storage.sql.exec('ALTER TABLE auth_requests ADD COLUMN account TEXT');
+    const owner = this.env.EVERETT_OWNER_GITHUB_ID ? `github:${this.env.EVERETT_OWNER_GITHUB_ID}` : null;
+    if (owner) {
+      this.ctx.storage.sql.exec('UPDATE hosted_agents SET account=? WHERE account IS NULL', owner);
+      this.ctx.storage.sql.exec("UPDATE device_requests SET account=? WHERE account IS NULL AND state NOT IN ('pending','cancelled')", owner);
+      this.ctx.storage.sql.exec("UPDATE auth_requests SET account=? WHERE account IS NULL AND phase NOT IN ('pending')", owner);
+    }
+    this.ctx.storage.sql.exec('CREATE INDEX IF NOT EXISTS agents_account ON hosted_agents(account)');
+    this.ctx.storage.sql.exec('CREATE INDEX IF NOT EXISTS device_account ON device_requests(account)');
+    this.ctx.storage.sql.exec("INSERT OR REPLACE INTO meta VALUES('schema_version','1')");
   }
   #row<T extends Record<string, SqlStorageValue>>(query: string, ...args: SqlStorageValue[]) { return this.ctx.storage.sql.exec<T>(query, ...args).toArray()[0]; }
   #count(table: string) { return this.#row<{ n: number }>(`SELECT count(*) n FROM ${table}`)!.n; }
-  #identity(c: HostedConfig): Identity { return { issuer: c.issuer, subject: `github:${c.ownerId}`, org: null }; }
-  #owner(c: HostedConfig) { const identity = this.#identity(c); return this.env.OWNERS.get(this.env.OWNERS.idFromName(namespace(identity))); }
+  #identityFor(subject: Subject, c: HostedConfig): Identity { return { issuer: c.issuer, subject, org: null }; }
+  #relayFor(identity: Identity) { return this.env.OWNERS.get(this.env.OWNERS.idFromName(namespace(identity))); }
+  /// The enrollment flag admits or denies an account at every entry/liveness
+  /// point. Owner mode is a one-account allowlist; public mode accepts any
+  /// well-formed GitHub subject. Flipping back to owner disables non-owner
+  /// sessions, tokens, and OAuth liveness without touching stored state.
+  #accountAllowed(c: HostedConfig, subject: string): subject is Subject {
+    if (!/^github:[1-9][0-9]{0,19}$/.test(subject)) return false;
+    return c.enrollment === 'public' || subject === `github:${c.ownerId}`;
+  }
+  #accountFor(githubId: string, login: string, c: HostedConfig): Account {
+    const subject = `github:${githubId}` as Subject;
+    return { subject, login, identity: this.#identityFor(subject, c) };
+  }
+  /// Abuse-bucket key for pre-auth callers: keyed, domain-separated hash of the
+  /// edge-supplied client IP. Never an identity or authorization input.
+  #requester(request: Request, c: HostedConfig): string {
+    const ip = request.headers.get('CF-Connecting-IP') ?? 'unknown';
+    return hash(`everett-requester-v1:${c.githubSecret}:${ip}`);
+  }
   #rate(scope: string, limit: number, windowMs = MINUTE) {
     const window = Math.floor(Date.now() / windowMs), row = this.#row<{ window: number; count: number }>('SELECT * FROM auth_rates WHERE scope=?', scope);
     const count = row?.window === window ? row.count : 0;
@@ -120,12 +171,14 @@ export class HostedAuth extends DurableObject<HostedAuthEnv> {
     this.ctx.storage.sql.exec('DELETE FROM oauth_tokens WHERE rowid IN(SELECT rowid FROM oauth_tokens WHERE expires_at<=? LIMIT 256)', now);
     this.ctx.storage.sql.exec('DELETE FROM auth_rates WHERE window<?', Math.floor(now / MINUTE) - 2);
   }
-  #session(request: Request, c: HostedConfig): { row: Session; csrf: string } | null {
+  #session(request: Request, c: HostedConfig): { row: Session; csrf: string; account: Account } | null {
     const raw = cookies(request)[cookieName(c, 'session')] ?? '', parts = raw.split('.');
     if (parts.length !== 2 || !parts.every(v => secretPattern.test(v))) return null;
     const row = this.#row<Session>('SELECT * FROM owner_sessions WHERE session_hash=?', hash(parts[0]));
-    if (!row || row.expires_at <= Date.now() || row.github_id !== c.ownerId || row.login.toLowerCase() !== c.ownerLogin.toLowerCase() || !equal(row.csrf_hash, hash(parts[1]))) return null;
-    return { row, csrf: parts[1] };
+    if (!row || row.expires_at <= Date.now() || !equal(row.csrf_hash, hash(parts[1]))) return null;
+    if (c.enrollment === 'owner' && (row.github_id !== c.ownerId || row.login.toLowerCase() !== c.ownerLogin.toLowerCase())) return null;
+    if (!this.#accountAllowed(c, `github:${row.github_id}`)) return null;
+    return { row, csrf: parts[1], account: this.#accountFor(row.github_id, row.login, c) };
   }
   #mutation(request: Request, c: HostedConfig, p: Record<string, string>) {
     if (request.headers.get('Origin') !== c.issuer) throw new RelayError('origin_denied', 403);
@@ -172,9 +225,12 @@ export class HostedAuth extends DurableObject<HostedAuthEnv> {
     try {
       const c = hostedConfig(this.env);
       if (!/^evt_[a-f0-9]{64}$/.test(token)) return null;
-      const row = this.#row<{ token_hash: string; agent_id: string; expires_at: number; revoked: number }>('SELECT * FROM native_tokens WHERE token_hash=?', hash(token));
-      if (!row || row.revoked || row.expires_at <= Date.now() || !await this.#owner(c).credentialActive(this.#identity(c), row.agent_id)) return null;
-      return { ...this.#identity(c), agentId: row.agent_id, role: 'member', expiresAt: row.expires_at };
+      const row = this.#row<{ token_hash: string; agent_id: string; expires_at: number; revoked: number; account: string | null }>(
+        'SELECT t.token_hash,t.agent_id,t.expires_at,t.revoked,a.account FROM native_tokens t LEFT JOIN hosted_agents a ON a.agent_id=t.agent_id WHERE t.token_hash=?', hash(token));
+      if (!row || row.revoked || row.expires_at <= Date.now() || !row.account || !this.#accountAllowed(c, row.account)) return null;
+      const identity = this.#identityFor(row.account, c);
+      if (!await this.#relayFor(identity).credentialActive(identity, row.agent_id)) return null;
+      return { ...identity, agentId: row.agent_id, role: 'member', expiresAt: row.expires_at };
     } catch { return null; }
   }
 
@@ -216,6 +272,7 @@ export class HostedAuth extends DurableObject<HostedAuthEnv> {
 
   #githubStart(request: Request, url: URL, c: HostedConfig) {
     this.#rate('github-start', 20);
+    if (c.enrollment === 'public') this.#rate(`requester:${this.#requester(request, c)}:github-start`, 10);
     const p = fields(url.searchParams, ['return_to']);
     const returnTo = p.return_to ?? '/enroll';
     const target = new URL(returnTo, c.issuer);
@@ -226,7 +283,8 @@ export class HostedAuth extends DurableObject<HostedAuthEnv> {
     const github = new URL('https://github.com/login/oauth/authorize');
     github.searchParams.set('client_id', c.githubId); github.searchParams.set('redirect_uri', `${c.issuer}/auth/callback/github`);
     github.searchParams.set('state', state); github.searchParams.set('code_challenge', s256(verifier)); github.searchParams.set('code_challenge_method', 'S256');
-    github.searchParams.set('scope', 'read:user'); github.searchParams.set('login', c.ownerLogin);
+    github.searchParams.set('scope', 'read:user');
+    if (c.enrollment === 'owner') github.searchParams.set('login', c.ownerLogin);
     const response = redirect(github.href, 302); setCookie(response, c, 'github', binding, 600); return response;
   }
   async #githubCallback(request: Request, url: URL, c: HostedConfig) {
@@ -246,10 +304,18 @@ export class HostedAuth extends DurableObject<HostedAuthEnv> {
     if (typeof token.access_token !== 'string' || !token.access_token || token.access_token.length > 4096 || (token.token_type !== undefined && String(token.token_type).toLowerCase() !== 'bearer')) throw new RelayError('github_login_denied', 403);
     const user = await this.#externalJSON('https://api.github.com/user', { headers: { Authorization: `Bearer ${token.access_token}`, Accept: 'application/vnd.github+json', 'User-Agent': 'Everett', 'X-GitHub-Api-Version': '2022-11-28' } });
     const id = typeof user.id === 'number' && Number.isSafeInteger(user.id) ? String(user.id) : typeof user.id === 'string' ? user.id : '';
-    if (id !== c.ownerId || typeof user.login !== 'string' || user.login.toLowerCase() !== c.ownerLogin.toLowerCase()) throw new RelayError('owner_only', 403);
-    if (this.#count('owner_sessions') >= 32) this.ctx.storage.sql.exec('DELETE FROM owner_sessions WHERE session_hash IN(SELECT session_hash FROM owner_sessions ORDER BY expires_at LIMIT 1)');
+    const login = typeof user.login === 'string' ? user.login : '';
+    if (c.enrollment === 'owner' && (id !== c.ownerId || login.toLowerCase() !== c.ownerLogin.toLowerCase())) throw new RelayError('owner_only', 403);
+    if (c.enrollment === 'public' && (!/^[1-9][0-9]{0,19}$/.test(id) || !/^[A-Za-z0-9-]{1,39}$/.test(login))) throw new RelayError('github_login_denied', 403);
+    if (c.enrollment === 'public') {
+      if (this.#row<{ n: number }>('SELECT count(*) n FROM owner_sessions WHERE github_id=?', id)!.n >= 8)
+        this.ctx.storage.sql.exec('DELETE FROM owner_sessions WHERE session_hash IN(SELECT session_hash FROM owner_sessions WHERE github_id=? ORDER BY expires_at LIMIT 1)', id);
+      if (this.#count('owner_sessions') >= 4096) throw new RelayError('session_limit', 429);
+    } else if (this.#count('owner_sessions') >= 32) {
+      this.ctx.storage.sql.exec('DELETE FROM owner_sessions WHERE session_hash IN(SELECT session_hash FROM owner_sessions ORDER BY expires_at LIMIT 1)');
+    }
     const sid = random(), csrf = random();
-    this.ctx.storage.sql.exec('INSERT INTO owner_sessions VALUES(?,?,?,?,?)', hash(sid), hash(csrf), c.ownerId, user.login, Date.now() + SESSION_MS);
+    this.ctx.storage.sql.exec('INSERT INTO owner_sessions VALUES(?,?,?,?,?)', hash(sid), hash(csrf), id, login, Date.now() + SESSION_MS);
     const response = redirect(`${c.issuer}${row.return_to}`); setCookie(response, c, 'session', `${sid}.${csrf}`, SESSION_MS / 1000); setCookie(response, c, 'github', '', 0);
     return response;
   }
@@ -258,8 +324,14 @@ export class HostedAuth extends DurableObject<HostedAuthEnv> {
     this.#rate('device-start', 30);
     const { name } = z.strictObject({ name: cleanName }).parse(await body(request));
     if (this.#count('device_requests') >= 100) throw new RelayError('pending_limit', 429);
+    let requester: string | null = null;
+    if (c.enrollment === 'public') {
+      requester = this.#requester(request, c);
+      this.#rate(`requester:${requester}:device-start`, 10);
+      if (this.#row<{ n: number }>("SELECT count(*) n FROM device_requests WHERE requester_hash=? AND state='pending'", requester)!.n >= 8) throw new RelayError('pending_limit', 429);
+    }
     const poll = random(), code = random().slice(0, 12).toUpperCase();
-    this.ctx.storage.sql.exec('INSERT INTO device_requests VALUES(?,?,?,?,?,?,?,?)', hash(poll), code, name, 'pending', null, crypto.randomUUID(), Date.now() + DEVICE_MS, 0);
+    this.ctx.storage.sql.exec('INSERT INTO device_requests VALUES(?,?,?,?,?,?,?,?,?,?)', hash(poll), code, name, 'pending', null, crypto.randomUUID(), Date.now() + DEVICE_MS, 0, null, requester);
     return json({ device_code: poll, user_code: code, verification_uri: `${c.issuer}/enroll`, verification_uri_complete: `${c.issuer}/enroll?code=${code}`, expires_in: 600, interval: 5 });
   }
   async #devicePoll(request: Request, c: HostedConfig) {
@@ -272,13 +344,15 @@ export class HostedAuth extends DurableObject<HostedAuthEnv> {
       this.ctx.storage.sql.exec('UPDATE device_requests SET last_poll=? WHERE poll_hash=?', Date.now(), row.poll_hash);
       return json({ state: row.state === 'approving' ? 'pending' : row.state, interval: 5 });
     }
-    if (!row.agent_id || !await this.#owner(c).credentialActive(this.#identity(c), row.agent_id)) return json({ state: 'denied', interval: 5 });
+    if (!row.agent_id || !row.account || !this.#accountAllowed(c, row.account)) return json({ state: 'denied', interval: 5 });
+    const identity = this.#identityFor(row.account, c);
+    if (!await this.#relayFor(identity).credentialActive(identity, row.agent_id)) return json({ state: 'denied', interval: 5 });
     const token = `evt_${random()}`, expires = Date.now() + REFRESH_MS;
     this.ctx.storage.transactionSync(() => {
       this.ctx.storage.sql.exec('INSERT INTO native_tokens VALUES(?,?,?,?)', hash(token), row.agent_id, expires, 0);
       this.ctx.storage.sql.exec("UPDATE device_requests SET state='consumed' WHERE poll_hash=?", row.poll_hash);
     });
-    return json({ state: 'approved', token, agent_id: row.agent_id, owner: namespace(this.#identity(c)), expires_at: expires });
+    return json({ state: 'approved', token, agent_id: row.agent_id, owner: namespace(identity), expires_at: expires });
   }
   async #deviceCancel(request: Request) {
     this.#rate('device-cancel', 100);
@@ -288,33 +362,51 @@ export class HostedAuth extends DurableObject<HostedAuthEnv> {
     if (row.state === 'pending') this.ctx.storage.sql.exec("UPDATE device_requests SET state='cancelled' WHERE poll_hash=?", row.poll_hash);
     return json({ state: row.state === 'pending' ? 'cancelled' : row.state });
   }
-  async #enroll(c: HostedConfig, eventId: string, name: string, kind: string) {
-    if (this.#count('hosted_agents') >= 2048) throw new RelayError('credential_limit', 429);
-    const result = await this.#owner(c).enroll(this.#identity(c), 'admin', eventId);
+  async #enroll(c: HostedConfig, account: Account, eventId: string, name: string, kind: string) {
+    if (c.enrollment === 'public') {
+      if (this.#row<{ n: number }>('SELECT count(*) n FROM hosted_agents WHERE account=?', account.subject)!.n >= 128) throw new RelayError('credential_limit', 429);
+      if (this.#row<{ n: number }>('SELECT count(*) n FROM hosted_agents WHERE account=? AND revoked=0', account.subject)!.n >= 64) throw new RelayError('credential_limit', 429);
+      if (this.#count('hosted_agents') >= 8192) throw new RelayError('credential_limit', 429);
+    } else if (this.#count('hosted_agents') >= 2048) {
+      throw new RelayError('credential_limit', 429);
+    }
+    const result = await this.#relayFor(account.identity).enroll(account.identity, 'admin', eventId);
     if (!result.ok) throw new RelayError('enrollment_denied', 403);
-    this.ctx.storage.sql.exec('INSERT OR IGNORE INTO hosted_agents VALUES(?,?,?,?,?)', result.value.deviceId, name, kind, Date.now(), 0);
+    this.ctx.storage.sql.exec('INSERT OR IGNORE INTO hosted_agents VALUES(?,?,?,?,?,?)', result.value.deviceId, name, kind, Date.now(), 0, account.subject);
     return result.value.deviceId;
   }
   async #deviceDecision(request: Request, c: HostedConfig) {
-    this.#rate('browser-mutation', 60);
-    const p = await form(request, ['csrf', 'user_code', 'decision']); this.#mutation(request, c, p);
+    const p = await form(request, ['csrf', 'user_code', 'decision']); const session = this.#mutation(request, c, p);
+    const account = session.account;
+    this.#rate(c.enrollment === 'public' ? `browser-mutation:${account.subject}` : 'browser-mutation', 60);
     if (!/^[A-F0-9]{12}$/.test(p.user_code ?? '') || !['approve', 'deny'].includes(p.decision)) throw new RelayError('invalid_request', 400);
     const row = this.#row<DeviceRequest>('SELECT * FROM device_requests WHERE user_code=?', p.user_code);
     if (!row || row.expires_at <= Date.now() || !['pending', 'approving'].includes(row.state)) throw new RelayError('request_expired_or_decided', 409);
+    // The claim is stamped in the same statement as the pending transition so a
+    // crash mid-approval cannot wedge the request or let a second account retry
+    // the relay's immutable enrollment event under its own namespace.
     if (p.decision === 'deny') {
       if (row.state !== 'pending') throw new RelayError('approval_in_progress', 409);
-      this.ctx.storage.sql.exec("UPDATE device_requests SET state='denied' WHERE poll_hash=?", row.poll_hash);
+      const wrote = this.ctx.storage.sql.exec("UPDATE device_requests SET state='denied',account=? WHERE poll_hash=? AND state='pending' AND (account IS NULL OR account=?)", account.subject, row.poll_hash, account.subject).rowsWritten;
+      if (!wrote) throw new RelayError('request_expired_or_decided', 409);
     } else {
-      this.ctx.storage.sql.exec("UPDATE device_requests SET state='approving' WHERE poll_hash=?", row.poll_hash);
-      const agent = await this.#enroll(c, row.event_id, row.name, 'device');
-      this.ctx.storage.sql.exec("UPDATE device_requests SET state='approved',agent_id=? WHERE poll_hash=?", agent, row.poll_hash);
+      if (row.state === 'pending') {
+        const wrote = this.ctx.storage.sql.exec("UPDATE device_requests SET state='approving',account=? WHERE poll_hash=? AND state='pending' AND (account IS NULL OR account=?)", account.subject, row.poll_hash, account.subject).rowsWritten;
+        if (!wrote) throw new RelayError('request_expired_or_decided', 409);
+      } else if (row.account !== account.subject) {
+        throw new RelayError('request_expired_or_decided', 409);
+      }
+      const agent = await this.#enroll(c, account, row.event_id, row.name, 'device');
+      this.ctx.storage.sql.exec("UPDATE device_requests SET state='approved',agent_id=? WHERE poll_hash=? AND account=?", agent, row.poll_hash, account.subject);
     }
     return redirect(`${c.issuer}/enroll?code=${p.user_code}`);
   }
 
   async #live(c: HostedConfig, agentId: string) {
     const row = this.#row<Agent>('SELECT * FROM hosted_agents WHERE agent_id=?', agentId);
-    return !!row && !row.revoked && await this.#owner(c).credentialActive(this.#identity(c), agentId);
+    if (!row || row.revoked || !row.account || !this.#accountAllowed(c, row.account)) return false;
+    const identity = this.#identityFor(row.account, c);
+    return await this.#relayFor(identity).credentialActive(identity, agentId);
   }
   async #enrollPage(request: Request, url: URL, c: HostedConfig) {
     const p = fields(url.searchParams, ['code', 'request']);
@@ -325,7 +417,7 @@ export class HostedAuth extends DurableObject<HostedAuthEnv> {
       return html(signIn);
     }
     let callbackOrigin: string | undefined;
-    let content = `<div class="auth-account"><span>Signed in as <strong>${esc(c.ownerLogin)}</strong></span><form method="post" action="/auth/logout">${csrfField(session.csrf)}<button class="auth-signout">Sign out</button></form></div>`;
+    let content = `<div class="auth-account"><span>Signed in as <strong>${esc(session.account.login)}</strong></span><form method="post" action="/auth/logout">${csrfField(session.csrf)}<button class="auth-signout">Sign out</button></form></div>`;
     if (p.request) {
       const row = this.#row<AuthRequest>('SELECT * FROM auth_requests WHERE id=?', identifier.parse(p.request));
       const binding = cookies(request)[cookieName(c, 'oauth')] ?? '';
@@ -340,7 +432,8 @@ export class HostedAuth extends DurableObject<HostedAuthEnv> {
       if (p.code) {
         if (!/^[A-F0-9]{12}$/.test(p.code)) throw new RelayError('invalid_user_code', 400);
         const row = this.#row<DeviceRequest>('SELECT * FROM device_requests WHERE user_code=?', p.code);
-        if (!row || row.expires_at <= Date.now()) content += '<section class="auth-state" data-state="expired"><h2 class="auth-state__title">Request expired</h2><p>Start sign-in again in your CLI to get a new code.</p></section>';
+        const foreign = !!row && row.account !== null && row.account !== session.account.subject;
+        if (!row || row.expires_at <= Date.now() || foreign) content += '<section class="auth-state" data-state="expired"><h2 class="auth-state__title">Request expired</h2><p>Start sign-in again in your CLI to get a new code.</p></section>';
         else {
           content += `<dl class="auth-details auth-details--device"><div><dt>Device</dt><dd><strong>${esc(row.name)}</strong></dd></div><div><dt>Full code</dt><dd><span class="auth-code">${esc(row.user_code)}</span></dd></div><div><dt>Request state</dt><dd>${esc(row.state)}</dd></div>${row.agent_id ? `<div><dt>Agent ID</dt><dd>${esc(row.agent_id)}</dd></div>` : ''}</dl>`;
           if ((row.state === 'approved' || row.state === 'consumed') && row.agent_id) {
@@ -355,7 +448,7 @@ export class HostedAuth extends DurableObject<HostedAuthEnv> {
       content += '</div>';
     }
     content += '<section class="auth-credentials"><h2>Agent credentials</h2><ul class="auth-agent-list">';
-    const agents = this.ctx.storage.sql.exec<Agent>('SELECT * FROM hosted_agents ORDER BY created_at DESC LIMIT 257').toArray();
+    const agents = this.ctx.storage.sql.exec<Agent>('SELECT * FROM hosted_agents WHERE account=? ORDER BY created_at DESC LIMIT 257', session.account.subject).toArray();
     for (const agent of agents.slice(0, 256)) {
       const live = await this.#live(c, agent.agent_id);
       content += `<li>${esc(agent.name)} · ${esc(agent.agent_id)} · ${esc(agent.kind)} · ${live ? 'active' : 'revoked'}${live ? `<form method="post" action="/enroll/revoke">${csrfField(session.csrf)}<input type="hidden" name="agent_id" value="${esc(agent.agent_id)}"><button>Revoke</button></form>` : ''}</li>`;
@@ -363,10 +456,10 @@ export class HostedAuth extends DurableObject<HostedAuthEnv> {
     return html(`${content}</ul>${agents.length > 256 ? '<p>Only the newest 256 credentials are displayed.</p>' : ''}</section>`, 200, callbackOrigin);
   }
   async #browserRevoke(request: Request, c: HostedConfig) {
-    this.#rate('browser-mutation', 60);
-    const p = await form(request, ['csrf', 'agent_id']); this.#mutation(request, c, p); identifier.parse(p.agent_id);
-    if (!this.#row('SELECT agent_id FROM hosted_agents WHERE agent_id=?', p.agent_id)) throw new RelayError('unknown_agent', 404);
-    if (!await this.#owner(c).revokeCredential(this.#identity(c), p.agent_id)) throw new RelayError('revocation_denied', 403);
+    const p = await form(request, ['csrf', 'agent_id']); const session = this.#mutation(request, c, p); identifier.parse(p.agent_id);
+    this.#rate(c.enrollment === 'public' ? `browser-mutation:${session.account.subject}` : 'browser-mutation', 60);
+    if (!this.#row('SELECT agent_id FROM hosted_agents WHERE agent_id=? AND account=?', p.agent_id, session.account.subject)) throw new RelayError('unknown_agent', 404);
+    if (!await this.#relayFor(session.account.identity).revokeCredential(session.account.identity, p.agent_id)) throw new RelayError('revocation_denied', 403);
     this.ctx.storage.transactionSync(() => {
       this.ctx.storage.sql.exec('UPDATE hosted_agents SET revoked=1 WHERE agent_id=?', p.agent_id);
       this.ctx.storage.sql.exec('UPDATE native_tokens SET revoked=1 WHERE agent_id=?', p.agent_id);
@@ -377,6 +470,7 @@ export class HostedAuth extends DurableObject<HostedAuthEnv> {
 
   async #authorize(request: Request, url: URL, c: HostedConfig) {
     this.#rate('oauth-authorize', 30);
+    if (c.enrollment === 'public') this.#rate(`requester:${this.#requester(request, c)}:oauth-authorize`, 10);
     const p = fields(url.searchParams, ['client_id', 'redirect_uri', 'response_type', 'scope', 'state', 'resource', 'code_challenge', 'code_challenge_method']);
     if (p.response_type !== 'code' || p.scope !== 'everett' || p.code_challenge_method !== 'S256' || !/^[A-Za-z0-9_-]{43}$/.test(p.code_challenge ?? '')) throw new RelayError('invalid_request', 400);
     if (!c.clients.includes(p.client_id)) throw new RelayError('invalid_client', 400);
@@ -392,12 +486,13 @@ export class HostedAuth extends DurableObject<HostedAuthEnv> {
     if (doc.response_types !== undefined && (!Array.isArray(doc.response_types) || !doc.response_types.includes('code'))) throw new RelayError('invalid_client', 400);
     const name = cleanName.safeParse(doc.client_name), clientName = name.success ? name.data : new URL(p.client_id).host;
     const binding = random(), id = crypto.randomUUID();
-    this.ctx.storage.sql.exec('INSERT INTO auth_requests VALUES(?,?,?,?,?,?,?,?,?,?,?,?)', id, p.client_id, clientName, p.redirect_uri, p.resource, p.code_challenge, p.state ?? null, hash(binding), 'pending', crypto.randomUUID(), null, Date.now() + DEVICE_MS);
+    this.ctx.storage.sql.exec('INSERT INTO auth_requests VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)', id, p.client_id, clientName, p.redirect_uri, p.resource, p.code_challenge, p.state ?? null, hash(binding), 'pending', crypto.randomUUID(), null, Date.now() + DEVICE_MS, null);
     const response = redirect(`${c.issuer}/enroll?request=${id}`, 302); setCookie(response, c, 'oauth', binding, 600); return response;
   }
   async #consent(request: Request, c: HostedConfig) {
-    this.#rate('browser-mutation', 60);
-    const p = await form(request, ['csrf', 'request_id', 'decision', 'name']); this.#mutation(request, c, p);
+    const p = await form(request, ['csrf', 'request_id', 'decision', 'name']); const session = this.#mutation(request, c, p);
+    const account = session.account;
+    this.#rate(c.enrollment === 'public' ? `browser-mutation:${account.subject}` : 'browser-mutation', 60);
     const id = identifier.parse(p.request_id);
     if (!['approve', 'deny'].includes(p.decision)) throw new RelayError('invalid_request', 400);
     const row = this.#row<AuthRequest>('SELECT * FROM auth_requests WHERE id=?', id);
@@ -408,16 +503,22 @@ export class HostedAuth extends DurableObject<HostedAuthEnv> {
     if (row.state !== null) callback.searchParams.set('state', row.state); callback.searchParams.set('iss', c.issuer);
     if (p.decision === 'deny') {
       if (row.phase !== 'pending') throw new RelayError('approval_in_progress', 409);
-      this.ctx.storage.sql.exec("UPDATE auth_requests SET phase='denied' WHERE id=?", id);
+      const wrote = this.ctx.storage.sql.exec("UPDATE auth_requests SET phase='denied',account=? WHERE id=? AND phase='pending' AND (account IS NULL OR account=?)", account.subject, id, account.subject).rowsWritten;
+      if (!wrote) throw new RelayError('request_expired_or_browser_mismatch', 403);
       callback.searchParams.set('error', 'access_denied'); return redirect(callback.href);
     }
     const name = cleanName.parse(p.name);
     if (this.#count('auth_codes') >= 200) throw new RelayError('code_limit', 429);
-    this.ctx.storage.sql.exec("UPDATE auth_requests SET phase='approving' WHERE id=?", id);
-    const agentId = await this.#enroll(c, row.event_id, name, 'oauth'), code = random();
+    if (row.phase === 'pending') {
+      const wrote = this.ctx.storage.sql.exec("UPDATE auth_requests SET phase='approving',account=? WHERE id=? AND phase='pending' AND (account IS NULL OR account=?)", account.subject, id, account.subject).rowsWritten;
+      if (!wrote) throw new RelayError('request_expired_or_browser_mismatch', 403);
+    } else if (row.account !== account.subject) {
+      throw new RelayError('request_expired_or_browser_mismatch', 403);
+    }
+    const agentId = await this.#enroll(c, account, row.event_id, name, 'oauth'), code = random();
     this.ctx.storage.transactionSync(() => {
       this.ctx.storage.sql.exec('INSERT INTO auth_codes VALUES(?,?,?,?,?,?,?,?,?)', hash(code), id, agentId, row.client_id, row.redirect_uri, row.resource, row.challenge, Date.now() + CODE_MS, 0);
-      this.ctx.storage.sql.exec("UPDATE auth_requests SET phase='approved',agent_id=? WHERE id=?", agentId, id);
+      this.ctx.storage.sql.exec("UPDATE auth_requests SET phase='approved',agent_id=? WHERE id=? AND account=?", agentId, id, account.subject);
     });
     callback.searchParams.set('code', code); return redirect(callback.href);
   }

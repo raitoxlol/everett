@@ -45,8 +45,11 @@ Existing explicit account configuration is preserved, and authenticated normal l
 skip automatic onboarding. Use `everett onboard` to repeat setup. Cancelled approval can
 be retried or followed by explicit local setup; headless bare runs print help.
 
-The [2.0.0 release notes](https://github.com/raitoxlol/everett/releases/tag/v2.0.0) record a successful hosted first-run account flow. Public
-cross-device delivery remains unverified. For a custom deployment or an explicit repair:
+The [2.0.0 release notes](https://github.com/raitoxlol/everett/releases/tag/v2.0.0) record a successful hosted first-run account flow. The
+public Worker currently runs owner-only enrollment; deployments can opt into
+`EVERETT_ENROLLMENT=public` for per-account hosted enrollment (see
+[the rollout contract](../cloudflare/CLI-CONTRACT.md#configuration-and-rollout-boundary)).
+Public cross-device delivery remains unverified. For a custom deployment or an explicit repair:
 
 ```sh
 everett login --provider cloudflare --issuer https://YOUR-EVERETT-ISSUER --device laptop --open
