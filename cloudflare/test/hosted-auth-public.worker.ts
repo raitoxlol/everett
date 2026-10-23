@@ -1,6 +1,7 @@
 import { env as bindings, exports as workerExports } from 'cloudflare:workers';
 import { evictDurableObject, reset, runInDurableObject } from 'cloudflare:test';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { sha256 } from '@noble/hashes/sha256';
 import { namespace } from '../src/protocol';
 import type { Env } from '../src/index';
 
@@ -73,6 +74,17 @@ async function nativeCall(token: string, operation: string, args: unknown = {}) 
   return fetchWorker('/v2/relay/' + operation, { ...init, headers });
 }
 const whoami = async (token: string) => (await (await nativeCall(token, 'whoami')).json() as { result: { owner: string; deviceId: string; role: string } }).result;
+
+const oauthClient = 'https://chatgpt.com/oauth/client.json';
+const oauthRedirect = 'https://chatgpt.com/connector_platform_oauth_redirect';
+const oauthResource = 'https://gateway.example/mcp';
+const challenge = (verifier: string) => btoa(String.fromCharCode(...sha256(new TextEncoder().encode(verifier)))).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+async function authorize(browser: Browser, verifier = 'v'.repeat(64)) {
+  const params = new URLSearchParams({ client_id: oauthClient, redirect_uri: oauthRedirect, resource: oauthResource, response_type: 'code', scope: 'everett', code_challenge_method: 'S256', code_challenge: challenge(verifier), state: 'synthetic-client-state' });
+  const response = await browser.request('/oauth/authorize?' + params);
+  expect([302, 303]).includes(response.status);
+  return new URL(response.headers.get('Location')!, issuer);
+}
 
 describe('Public enrollment: account isolation', () => {
   it('lets two GitHub users approve their own devices into separate relay namespaces', async () => {
@@ -157,5 +169,55 @@ describe('Public enrollment: account isolation', () => {
       expect(live.account).toBeNull();
       expect(state.storage.sql.exec<{ value: string }>("SELECT value FROM meta WHERE key='schema_version'").one().value).toBe('1');
     });
+  });
+});
+
+describe('Public enrollment: shared-cap isolation', () => {
+  it('counts cancelled device requests against the per-requester live-row cap', async () => {
+    for (let i = 0; i < 8; i++) {
+      const device = await begin('flood-' + i);
+      const cancelled = await fetchWorker('/v2/auth/cancel', json({ device_code: device.device_code }));
+      expect(cancelled.status).toBe(200);
+    }
+    const ninth = await fetchWorker('/v2/auth/device', json({ name: 'one-too-many' }));
+    expect(ninth.status).toBe(429);
+  });
+
+  it('caps anonymous GitHub sign-in starts per requester below the global queue', async () => {
+    for (let i = 0; i < 5; i++) {
+      const start = await new Browser().request('/auth/github?return_to=' + encodeURIComponent('/enroll'));
+      expect([302, 303]).includes(start.status);
+    }
+    const sixth = await new Browser().request('/auth/github?return_to=' + encodeURIComponent('/enroll'));
+    expect(sixth.status).toBe(429);
+  });
+
+  it('lets a stamped approving request finish enrollment without re-running quota', async () => {
+    const alice = await loginAs(ALICE);
+    const device = await begin('resume-device');
+    const stub = env.AUTH_STATE!.get(env.AUTH_STATE!.idFromName(issuer));
+    await runInDurableObject(stub, (_i, state) => {
+      state.storage.sql.exec("UPDATE device_requests SET state='approving',account=? WHERE user_code=?", `github:${ALICE.id}`, device.user_code);
+    });
+    expect((await approve(alice, device.user_code)).status).toBe(303);
+    const { body } = await poll(device.device_code);
+    expect(body.state).toBe('approved');
+    expect(body.owner).toBe(namespace({ issuer, subject: `github:${ALICE.id}`, org: null }));
+  });
+
+  it('shows no request details when a foreign account opens a claimed OAuth consent page', async () => {
+    const alice = await loginAs(ALICE), bob = await loginAs(BOB);
+    const location = await authorize(alice);
+    const csrf = await alice.csrf(location.pathname + location.search);
+    const approved = await alice.request('/oauth/consent', form({ csrf, request_id: location.searchParams.get('request')!, decision: 'approve', name: 'alice-agent' }));
+    expect(approved.status).toBe(303);
+
+    const foreignPage = await bob.request(location.pathname + location.search);
+    expect(foreignPage.status).toBe(403);
+    const foreignHtml = await foreignPage.text();
+    expect(foreignHtml).not.toContain('alice-agent');
+    expect(foreignHtml).not.toContain('/oauth/consent');
+    const foreignConsent = await bob.request('/oauth/consent', form({ csrf: await bob.csrf('/enroll'), request_id: location.searchParams.get('request')!, decision: 'approve', name: 'stolen' }));
+    expect(foreignConsent.status).toBeGreaterThanOrEqual(400);
   });
 });
