@@ -23,7 +23,7 @@ fn concurrent_saves_are_atomic_and_private_before_writing() {
         let observations = observations.clone();
         let parent = parent.clone();
         thread::spawn(move || {
-            while running.load(Ordering::Relaxed) {
+            loop {
                 for entry in std::fs::read_dir(&parent).unwrap().flatten() {
                     if let Ok(meta) = entry.metadata() {
                         assert_eq!(
@@ -33,6 +33,9 @@ fn concurrent_saves_are_atomic_and_private_before_writing() {
                         );
                         observations.fetch_add(1, Ordering::Relaxed);
                     }
+                }
+                if !running.load(Ordering::Relaxed) {
+                    break;
                 }
                 thread::yield_now();
             }
