@@ -194,6 +194,9 @@ enum Cmd {
         /// do not mark them delivered
         #[arg(long)]
         peek: bool,
+        /// only show and mark delivered this message id
+        #[arg(long)]
+        message: Option<String>,
         #[arg(long)]
         json: bool,
     },
@@ -859,10 +862,12 @@ fn main() {
         Cmd::Inbox {
             session,
             peek,
+            message,
             json,
         } => {
             a.session = session;
             a.peek = peek;
+            a.message = message;
             a.json = json;
             cli::cmd_inbox(&a)
         }

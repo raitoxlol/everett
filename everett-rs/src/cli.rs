@@ -905,7 +905,10 @@ pub fn cmd_inbox(args: &Args) -> i32 {
         .session
         .clone()
         .unwrap_or(if caller.is_empty() { crate::inbox::HUMAN.to_string() } else { caller });
-    let items = crate::inbox::pending(&sid, None);
+    let mut items = crate::inbox::pending(&sid, None);
+    if let Some(mid) = args.message.as_deref() {
+        items.retain(|m| m.get("id").and_then(Value::as_str) == Some(mid));
+    }
     let viewed_ids: Vec<&str> = items
         .iter()
         .filter_map(|m| m.get("id").and_then(Value::as_str))
