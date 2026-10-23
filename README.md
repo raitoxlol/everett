@@ -2,18 +2,22 @@
 
 Route requests, messages, and shared memory across your coding-agent sessions—from a CLI or MCP client.
 
-> **Demo GIF/video placeholder:** the launch clip is being planned.
-
 **Works with:** Claude Code · Codex · OMP · Pi · Hermes Agent · Grok CLI · Devin CLI.
 T3 Code threads are recognized through their underlying harness sessions.
 
 ## Quickstart
 
 Everett is one native binary for macOS and Linux. Have at least one harness CLI on your PATH.
+Local sessions, routing, inboxes, hooks, MCP, and SSH peers work without an Everett account.
+The hosted service at `https://everett.raitox.tech` currently accepts only its configured
+GitHub owner. Public self-service account signup is not available.
+
+To install and configure local agents without browser sign-in:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/raitoxlol/everett/main/install.sh | sh   # ~/.local/bin
-everett              # first interactive run opens setup
+export PATH="$HOME/.local/bin:$PATH"
+everett onboard --yes --no-backfill
 everett doctor
 ```
 
@@ -23,6 +27,13 @@ Or via Homebrew or Cargo:
 brew tap raitoxlol/tap && brew install everett
 cargo install --git https://github.com/raitoxlol/everett everett   # from source
 ```
+
+`onboard --yes --no-backfill` backs up and applies the default hook and MCP registrations
+for detected agents without an interactive review. It skips older session cards and does
+not sign in, require a routing key, or schedule nightly merges. To inspect registration
+examples without changing files, run `everett install-hooks` and `everett install-mcp`.
+Those commands can include agents that onboarding has not detected; they are not an
+exact preview of its selected changes.
 
 Onboarding detects installed CLIs even before their first session. It backs up and registers
 hooks and MCP for detected Claude Code, Codex, OMP, and Grok installations. Restart those clients,
@@ -54,8 +65,11 @@ The terminal flow is welcome, browser account sign-in, choose agents, per-agent 
 review/apply, then a copyable instruction prompt. With a configured hosted Cloudflare issuer, the
 CLI opens the approval page locally, prints a URL and code usable on another device, waits for
 approval, saves its private credential, and verifies its identity with the server before continuing.
-SSH sessions keep the URL/code path. There is no hosted default in this development build;
-unconfigured or cancelled sign-in offers an explicit local-only path. See [account setup](docs/auth.md).
+SSH sessions keep the URL/code path. Fresh interactive setup defaults to
+`https://everett.raitox.tech`, which currently accepts only its configured GitHub owner.
+Explicit account configuration is preserved. After a failed or cancelled sign-in, press
+`l` in the terminal wizard to continue locally. To skip browser sign-in entirely, use the
+account-free quickstart above. See [account setup](docs/auth.md).
 
 Local choices use detected sessions and installed CLIs. Cloud and VM tabs include Dots, Grok Bot,
 Hark, Muse and another computer. Each selected local agent gets a guide for its actual settings,
@@ -269,9 +283,11 @@ own verification.
 
 The actual native CLI passed local production-Worker acceptance and a physical Mac/NUC
 send/read/reply/reconnect/revoke journey, with synthetic GitHub and private SSH forwarding
-to the local Worker. Real hosted GitHub approval and public-issuer delivery remain pending.
-Fresh interactive onboarding opens `https://everett.raitox.tech` for account approval;
-existing account configuration is preserved. Cloudflare's device protocol is custom, not RFC8628.
+to the local Worker. The [2.0.0 release notes](https://github.com/raitoxlol/everett/releases/tag/v2.0.0) record successful hosted
+first-run GitHub approval. Public-issuer cross-device delivery remains unverified.
+Fresh interactive onboarding opens `https://everett.raitox.tech` for account approval.
+That service currently accepts only its configured GitHub owner. Existing account configuration
+is preserved. Cloudflare's device protocol is custom, not RFC8628.
 Cross-owner grants, Convex registry/SSH-address publication and cloud-agent OAuth are separate.
 
 ## Cross-device peers (SSH or encrypted Convex)
