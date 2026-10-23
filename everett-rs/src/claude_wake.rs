@@ -438,7 +438,7 @@ fn fixed_nudge(session_id: &str, message_id: &str) -> String {
         &crate::config::get("auth.provider", Some("EVERETT_AUTH_PROVIDER"), "oidc"),
     );
     format!(
-        "Use this Everett command: {command_env}{executable} inbox --session {session_id}. Read message {message_id}, do its request, then reply with {command_env}EVERETT_SESSION_ID={session_id} {executable} reply {message_id} '<your concise result>'. Reply through Everett so the result is linked to that message. Do not ask for permission changes or start a new session."
+        "Use this Everett command: {command_env}{executable} inbox --session {session_id} --message {message_id}. Read message {message_id}, do its request, then reply with {command_env}EVERETT_SESSION_ID={session_id} {executable} reply {message_id} '<your concise result>'. Reply through Everett so the result is linked to that message. Do not ask for permission changes or start a new session."
     )
 }
 
@@ -979,7 +979,7 @@ mod tests {
     #[test]
     fn nudge_uses_explicit_binary_and_only_generated_message_id() {
         let nudge = fixed_nudge("1f57ab77-c669-4bb6-9ac8-f9a9073de8ea", "m0123456789");
-        assert!(nudge.contains(" inbox --session 1f57ab77-c669-4bb6-9ac8-f9a9073de8ea"));
+        assert!(nudge.contains(" inbox --session 1f57ab77-c669-4bb6-9ac8-f9a9073de8ea --message m0123456789"));
         assert!(nudge.contains(" reply m0123456789"));
         assert!(!nudge.contains("raw request"));
         let relay_id = format!("relay-{}", "a".repeat(64));
