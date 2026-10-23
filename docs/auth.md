@@ -19,6 +19,12 @@ This applies default hooks and MCP registrations for detected agents, with backu
 It skips browser approval and older session cards. To inspect registration examples, run
 `everett install-hooks` and `everett install-mcp` without `--apply`. These commands do not
 change files, but can show agents that onboarding has not detected.
+
+Onboarding does not cover every listed harness. `everett install-hooks --pi --apply`
+installs the Pi extension, which registers the MCP server per session.
+`everett install-hooks --devin --apply` adds Devin's session-binding hooks. For Hermes,
+add the `mcp_servers` block printed by `everett install-mcp --hermes` to
+`~/.hermes/config.yaml` yourself.
 Restart the configured agents and run `everett ls`. An empty list means no sessions were
 found in the look-back window. In an MCP client, use `everett_whoami` to check caller identity.
 A successful registration does not prove that a running agent has loaded the tools.
