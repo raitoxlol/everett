@@ -23,6 +23,12 @@ pub struct Credential {
     expires_at: u64,
 }
 
+impl Credential {
+    pub(crate) fn expired(&self) -> bool {
+        self.expires_at <= (session::now() * 1000.0) as u64
+    }
+}
+
 #[derive(Serialize, Deserialize)]
 struct Pending {
     issuer: String,
