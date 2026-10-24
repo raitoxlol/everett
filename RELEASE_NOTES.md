@@ -13,7 +13,7 @@ The installer verifies archive checksums. Set `EVERETT_VERSION=v2.1.0` to pin th
 
 ## What changed
 
-- Local setup works without an Everett account. Remote enrollment is an explicit choice after local agent setup.
+- Local setup works without an Everett account. Browser sign-in opens only after explicit confirmation; local setup is available without it.
 - `send --wake` can wake an idle Claude background session. Automatic receiver wake requires a local policy allowing the exact session, directory and paired sender device. It is disabled by default.
 - Replies retain their request correlation, signed remote provenance and Claude harness identity. Targeted inbox reads preserve unrelated pending messages. A delivered prompt is distinct from a model reply.
 - Hosted multi-account enrollment is implemented behind a deployment flag. Each GitHub account owns a separate relay namespace; cross-account messaging remains denied. Public enrollment is enabled after live second-account acceptance.

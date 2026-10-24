@@ -29,15 +29,15 @@ Restart the configured agents and run `everett ls`. An empty list means no sessi
 found in the look-back window. In an MCP client, use `everett_whoami` to check caller identity.
 A successful registration does not prove that a running agent has loaded the tools.
 
-## Hosted Cloudflare native sign-in (development adapter)
+## Hosted Cloudflare native sign-in
 
-The service at `https://everett.raitox.tech` accepts only its configured GitHub owner.
-Other GitHub accounts receive `owner_only`. Use local setup above, SSH peers, or a
-[custom deployment](../cloudflare/CLI-CONTRACT.md#configuration-and-rollout-boundary)
-configured for your GitHub identity. These approval steps require access to the selected issuer.
+The service at `https://everett.raitox.tech` accepts GitHub accounts into isolated relay
+namespaces. Devices communicate only within their account. Local setup and SSH peers
+remain account-free; [custom deployments](../cloudflare/CLI-CONTRACT.md#configuration-and-rollout-boundary)
+can restrict enrollment to an owner.
 
 Cloudflare enrollment uses its own native API and credential, separate from OIDC ID
-and refresh tokens. On a new installation, run `everett` normally: onboarding opens
+and refresh tokens. On a new installation, run `everett` normally: choose sign-in to open
 `https://everett.raitox.tech/enroll` with this device's approval code. Continue with GitHub,
 compare and approve the named device, and return to the terminal; verified approval
 automatically opens agent selection. No separate login command or issuer setup is needed.
@@ -45,11 +45,11 @@ Existing explicit account configuration is preserved, and authenticated normal l
 skip automatic onboarding. Use `everett onboard` to repeat setup. Cancelled approval can
 be retried or followed by explicit local setup; headless bare runs print help.
 
-The [2.0.0 release notes](https://github.com/raitoxlol/everett/releases/tag/v2.0.0) record a successful hosted first-run account flow. The
-public Worker currently runs owner-only enrollment; deployments can opt into
-`EVERETT_ENROLLMENT=public` for per-account hosted enrollment (see
-[the rollout contract](../cloudflare/CLI-CONTRACT.md#configuration-and-rollout-boundary)).
-Public cross-device delivery remains unverified. For a custom deployment or an explicit repair:
+The [2.1.0 release notes](https://github.com/raitoxlol/everett/releases/tag/v2.1.0)
+record real public delivery and second-account isolation/revocation acceptance.
+Production uses `EVERETT_ENROLLMENT=public`; self-hosted deployments can retain `owner`
+(see [the rollout contract](../cloudflare/CLI-CONTRACT.md#configuration-and-rollout-boundary)).
+For a custom deployment or an explicit repair:
 
 ```sh
 everett login --provider cloudflare --issuer https://YOUR-EVERETT-ISSUER --device laptop --open

@@ -2,7 +2,7 @@
 
 ## 2.1.0 — 2026-10-24
 
-- Make local setup account-free, with remote enrollment as an explicit choice. Complete local agent setup before opening remote enrollment.
+- Make local setup account-free, with remote enrollment as an explicit choice. Open browser sign-in only after explicit confirmation.
 - Add explicit `send --wake` for idle Claude background sessions and opt-in automatic relay receiver wake. Local policy restricts the exact session, working directory and paired sender device; remote content cannot enable wake.
 - Preserve correlated replies, durable at-most-once wake attempts, signed provenance and harness identity. Targeted inbox reads avoid consuming unrelated backlog.
 - Enable public multi-account enrollment after live GitHub account isolation and independent revocation acceptance. Each verified GitHub account has an isolated relay namespace; cross-account messaging remains denied.
