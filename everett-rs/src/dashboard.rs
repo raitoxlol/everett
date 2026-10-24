@@ -6,7 +6,7 @@ use std::process::Command;
 use std::time::Duration;
 
 use crate::registry;
-use crate::session::{now, Session};
+use crate::session::{now, project_label, Session};
 
 const MAX_HEADER_BYTES: usize = 16 * 1024;
 const READ_TIMEOUT: Duration = Duration::from_secs(5);
@@ -326,7 +326,7 @@ pub fn render(sessions: &[Session], hours: f64, at: f64) -> String {
 
 fn session_row(session: &Session, index: usize, at: f64) -> String {
     let state = state_class(session);
-    let project = project_name(&session.cwd);
+    let project = project_label(&session.cwd);
     let label = harness_label(session);
     let summary = if !session.card.is_empty() {
         session.card.as_str()
@@ -472,15 +472,6 @@ fn status_label(session: &Session) -> &str {
 
 fn attention_state(session: &Session) -> bool {
     matches!(session.state_kind.as_str(), "blocked" | "needs-input")
-}
-
-fn project_name(cwd: &str) -> String {
-    cwd.trim_end_matches('/')
-        .rsplit('/')
-        .next()
-        .filter(|part| !part.is_empty())
-        .unwrap_or("Unknown project")
-        .to_string()
 }
 
 fn ago(ts: f64, at: f64) -> String {
