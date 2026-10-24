@@ -1,18 +1,19 @@
 # Connect two computers through Cloudflare
 
-The development native adapter uses the configured Cloudflare issuer and the existing
-custom device approval protocol. Fresh interactive onboarding uses `https://everett.raitox.tech`.
-Existing account/custom issuer configuration is preserved. The default hosted service accepts
-only its configured GitHub owner; public self-service signup is not available. For local
+The native adapter uses the configured Cloudflare issuer and a custom device approval
+protocol. Interactive setup offers account-free local agents or explicit sign-in to
+`https://everett.raitox.tech`. Existing custom issuer configuration is preserved.
+The public service accepts GitHub accounts into separate relay namespaces. For local
 agents without an account, use the [account-free setup](auth.md#set-up-local-agents-without-an-account).
-The [2.0.0 release notes](https://github.com/raitoxlol/everett/releases/tag/v2.0.0) record successful hosted first-run approval. Public-issuer delivery
-remains unverified. Acceptance passed with the production Worker
-and native CLI on a physical Mac and NUC, with outbound GitHub mocked and private SSH
-forwarding to the local Worker. This includes send/read/reply, reconnect and independent revoke.
+
+The [2.1.0 release notes](https://github.com/raitoxlol/everett/releases/tag/v2.1.0)
+record physical public Mac/NUC delivery, real idle Claude wake/reply, second-account
+namespace isolation, foreign native pairing/revocation denial and independent revocation.
+Hostile browser request replay remains covered by synthetic-provider runtime tests.
 
 ## Approve and connect each computer
 
-Run `everett` normally on each new computer and follow browser approval; no separate login
+Run `everett` normally on each new computer and choose sign-in for hosted delivery; no separate login
 command is required. For a custom deployment, set `EVERETT_AUTH_PROVIDER=cloudflare`
 and `EVERETT_AUTH_ISSUER` to that deployment's HTTPS origin, or the equivalent `[auth]`
 provider and issuer settings. These are public configuration values. Do not copy a credential

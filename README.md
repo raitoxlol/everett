@@ -61,12 +61,12 @@ wizard was applied, not that an agent has loaded its tools. Cancellation or an a
 first-run setup pending. Later bare runs show help. Run `everett onboard` to repeat setup. Explicit
 commands and noninteractive bare runs do not prompt.
 
-The terminal flow is welcome, browser account sign-in, choose agents, per-agent setup guides,
+The terminal flow is welcome, choose local setup or account sign-in, choose agents, per-agent setup guides,
 review/apply, then a copyable instruction prompt. With a configured hosted Cloudflare issuer, the
 CLI opens the approval page locally, prints a URL and code usable on another device, waits for
 approval, saves its private credential, and verifies its identity with the server before continuing.
 SSH sessions keep the URL/code path. Fresh interactive setup defaults to
-`https://everett.raitox.tech`, which currently accepts only its configured GitHub owner.
+`https://everett.raitox.tech`, which accepts GitHub accounts into separate relay namespaces.
 Explicit account configuration is preserved. After a failed or cancelled sign-in, press
 `l` in the terminal wizard to continue locally. To skip browser sign-in entirely, use the
 account-free quickstart above. See [account setup](docs/auth.md).
@@ -284,9 +284,9 @@ own verification.
 The actual native CLI passed local production-Worker acceptance and a physical Mac/NUC
 send/read/reply/reconnect/revoke journey, with synthetic GitHub and private SSH forwarding
 to the local Worker. The [2.0.0 release notes](https://github.com/raitoxlol/everett/releases/tag/v2.0.0) record successful hosted
-first-run GitHub approval. Public-issuer cross-device delivery remains unverified.
-Fresh interactive onboarding opens `https://everett.raitox.tech` for account approval.
-That service currently accepts only its configured GitHub owner. Existing account configuration
+first-run GitHub approval. Real public Mac/NUC delivery, idle Claude wake/reply and second-account isolation/revocation passed for 2.1.0.
+Choosing sign-in during fresh interactive onboarding opens `https://everett.raitox.tech` for account approval.
+That service supports public enrollment; messaging stays within each account. Existing account configuration
 is preserved. Cloudflare's device protocol is custom, not RFC8628.
 Cross-owner grants, Convex registry/SSH-address publication and cloud-agent OAuth are separate.
 
