@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 
 use serde_json::{json, Map, Value};
 
-use crate::session::{home, now, Session};
+use crate::session::{now, project_label, Session};
 
 pub fn cmd_external_add(id: &str, harness: &str, title: &str, cwd: &str, replace: bool) -> i32 {
     match crate::adapters::external::register(id, harness, title, cwd, replace) {
@@ -111,18 +111,6 @@ fn ago(ts: f64) -> String {
     }
 }
 
-fn where_(cwd: &str) -> String {
-    let home = home().to_string_lossy().to_string();
-    if cwd.is_empty() || cwd == "/" {
-        return "-".to_string();
-    }
-    if let Some(rest) = cwd.strip_prefix(&home) {
-        format!("~{}", rest)
-    } else {
-        cwd.to_string()
-    }
-}
-
 fn width() -> usize {
     terminal_size::terminal_size()
         .map(|(w, _)| w.0 as usize)
@@ -155,13 +143,13 @@ pub fn cmd_ls(args: &Args) -> i32 {
         println!("no sessions");
         return 0;
     }
-    let wide = sessions.iter().map(|s| where_(&s.cwd).chars().count()).max().unwrap_or(0).min(28);
+    let wide = sessions.iter().map(|s| project_label(&s.cwd).chars().count()).max().unwrap_or(0).min(20);
+    let harness_wide = sessions.iter().map(|s| s.harness.chars().count()).max().unwrap_or(0).max(6);
     for s in &sessions {
         let dot = if s.running { "●" } else { "○" };
-        let mut where_ = where_(&s.cwd);
-        if where_.chars().count() > wide {
-            let tail: String = where_.chars().rev().take(wide - 1).collect::<String>().chars().rev().collect();
-            where_ = format!("…{}", tail);
+        let mut project = project_label(&s.cwd);
+        if project.chars().count() > wide {
+            project = format!("{}…", project.chars().take(wide.saturating_sub(1)).collect::<String>());
         }
         let mut work = if !s.card.is_empty() {
             s.card.clone()
@@ -178,7 +166,10 @@ pub fn cmd_ls(args: &Args) -> i32 {
         if ["blocked", "needs-input"].contains(&s.state_kind.as_str()) {
             work = format!("⚠ {} · {}", s.state, work);
         }
-        let line = format!("{} {:<6} {:>3}  {:<width$}  {}", dot, s.harness, ago(s.last_active), where_, work, width = wide);
+        let line = format!(
+            "{} {:<hw$} {:>4}  {:<width$}  {}",
+            dot, s.harness, ago(s.last_active), project, work, hw = harness_wide, width = wide
+        );
         let line: String = line.chars().take(width()).collect();
         println!("{}", line);
     }
