@@ -245,3 +245,12 @@ fn devin_onboarding_discovers_config_only_and_installs_mcp_not_hooks() {
     assert!(config(&fx)["mcpServers"]["everett"].is_object());
     assert!(!fx.home().join("session-data").exists());
 }
+
+#[test]
+fn doctor_finds_devin_sessions_in_the_fallback_data_dir() {
+    let fx = fixture();
+    std::fs::create_dir_all(fx.home().join(".local/share/devin/cli")).unwrap();
+    let out = fx.run_stdin(&["doctor"], "", &[("DEVIN_HOME", "")]);
+    let text = fx.stdout(&out);
+    assert!(text.contains(".local/share/devin/cli (found)"), "{text}");
+}
