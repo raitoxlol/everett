@@ -1,6 +1,6 @@
 # Everett Cloudflare backend
 
-**Status: native GitHub approval and encrypted cross-device relay are deployed and verified on the public issuer.** The native Rust adapter supports outbound polling. On 2026-10-24, a real NUC sender woke a dedicated idle Claude session on a Mac through `https://everett.raitox.tech` and received its correlated reply. The Mac reused its existing Claude login; Everett enrollment and agent-provider authentication are separate. Public multi-account enrollment is implemented and tested with synthetic GitHub responses, but remains restricted to the configured owner pending a live second-account acceptance check. Live ChatGPT OAuth and deployed capacity remain unverified.
+**Status: native GitHub approval and encrypted cross-device relay are deployed and verified on the public issuer.** The native Rust adapter supports outbound polling. On 2026-10-24, a real NUC sender woke a dedicated idle Claude session on a Mac through `https://everett.raitox.tech` and received its correlated reply. The Mac reused its existing Claude login; Everett enrollment and agent-provider authentication are separate. Public multi-account enrollment is enabled. Two real GitHub accounts passed separate device-list and namespace checks; foreign pairing/revocation were denied, same-account Mac/NUC messaging passed, and revoking one test credential left its sibling and the original account active. Live ChatGPT OAuth and deployed capacity remain unverified.
 
 The Worker HTTP adapter uses one SQLite-backed `OwnerRelay` Durable Object per owner namespace. Membership, credentials, permanent revocation/replay records, device keys, counters and ciphertext queues share one authoritative transaction boundary. No D1 permission mirror is needed for this slice.
 
@@ -65,7 +65,7 @@ New-message limits: 120/minute per credential, 120/minute shared by issuer/subje
 
 ## Remaining acceptance and capabilities
 
-1. Verify public enrollment with a second real GitHub account before enabling it broadly. Account-isolation runtime tests use mocked provider responses.
+1. Extend live acceptance to hostile browser request replay. Runtime tests cover claimed-request hiding and foreign browser revocation with mocked provider responses; live acceptance covers real enrollment, device-list isolation, foreign native pairing/revocation denial and independent revocation.
 2. Prove live ChatGPT OAuth with the intended gateway and client. Native device approval is a separate flow.
 3. Implement bilateral cross-account grants if cross-account messaging is needed. Current public-mode accounts can communicate only among their own devices.
 4. Review any namespace migration explicitly. Owner strings are signed into envelopes; there is no automatic credential or data import between issuers.
