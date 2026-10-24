@@ -6,6 +6,17 @@ use std::process::Command;
 
 const ISSUER: &str = "https://everett.example";
 
+struct AuthProviderEnv(Option<std::ffi::OsString>);
+
+impl Drop for AuthProviderEnv {
+    fn drop(&mut self) {
+        match &self.0 {
+            Some(value) => std::env::set_var("EVERETT_AUTH_PROVIDER", value),
+            None => std::env::remove_var("EVERETT_AUTH_PROVIDER"),
+        }
+    }
+}
+
 fn cloudflare(f: &Fixture, expires_at: u64) {
     f.write(
         ".everett/cloudflare-auth.json",
@@ -106,6 +117,8 @@ fn doctor_does_not_treat_an_unknown_provider_as_oidc() {
 #[test]
 fn cloudflare_diagnostics_do_not_fetch_oidc_revocations_or_modify_ssh() {
     let home = common::lib_home();
+    let _provider = AuthProviderEnv(std::env::var_os("EVERETT_AUTH_PROVIDER"));
+    std::env::remove_var("EVERETT_AUTH_PROVIDER");
     let f = fixture();
     oidc(&f);
     std::fs::create_dir_all(home.path().join(".everett")).unwrap();

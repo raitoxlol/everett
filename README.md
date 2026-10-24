@@ -290,6 +290,12 @@ That service supports public enrollment; messaging stays within each account. Ex
 is preserved. Cloudflare's device protocol is custom, not RFC8628.
 Cross-owner grants, Convex registry/SSH-address publication and cloud-agent OAuth are separate.
 
+Local harnesses that launch Everett with the same `HOME` and `EVERETT_HOME` use that
+home's account configuration and device credential. They do not each need a separate
+GitHub sign-in. `everett doctor` reports the selected provider's stored account without
+verifying it online. With Cloudflare selected, `everett whoami --json` checks the account
+with the provider.
+
 ## Cross-device peers (SSH or encrypted Convex)
 
 For devices behind NAT, deploy the TypeScript backend in `convex/` (Convex cloud or
@@ -578,6 +584,8 @@ limitations: [relay threat model](docs/relay-threat-model.md).
 | `everett: command not found` | Add the install directory (default `~/.local/bin`; `~/.cargo/bin` for cargo) to `PATH`, open a new terminal, then `everett --version`. |
 | `No module named everett` / hooks call `python3` | A registration still points at the retired Python package. Run `everett install-hooks --apply` and `everett install-mcp --apply`. |
 | MCP client shows zero tools | Run `everett doctor`. It must list **14 tools over stdio**. For a stale/disabled launcher, run `everett install-mcp --claude --repair --apply` (replace `--claude` with `--codex`, `--omp`, `--grok` or `--devin`), then restart/enable the server in the client. Fix malformed config before repair. |
+| OMP or Devin has an old `everett mcp` registration | Run `everett install-mcp --omp --devin --repair --apply` to back up and restore the harness-specific arguments. Restart the affected MCP clients, then run `everett doctor`. |
+| Hermes points to a missing Everett binary | Run `everett install-mcp --hermes` and merge its printed entry into `mcp_servers.everett` in `~/.hermes/config.yaml`, preserving other entries. Use the printed executable path and `mcp --harness hermes` arguments, then restart Hermes. This command does not edit Hermes configuration automatically. |
 | Session not found / no live reply | Start a harness session or run `everett --hours 168 ls` for older ones; send to its exact id or title. In MCP, pass `hours: 168` to listing and sending. Hook injection needs enabled/trusted hooks; Pi/Hermes poll `everett_inbox`. A queued message is not a read receipt. |
 | Codex reports `Interrupted system call (os error 4)` | Delivery is unconfirmed. Check the target session before retrying; for an open session with Everett hooks, use `--mode inbox` (MCP: `mode: "inbox"`). Failed resumes are not retried automatically. |
 | Shared fact missing / scheduling unavailable | Run `everett trunk merge --llm none`, then `everett core`. Automatic launchd scheduling and default desktop notifications require macOS; manual merging works on Linux. |
