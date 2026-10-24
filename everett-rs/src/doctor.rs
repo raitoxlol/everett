@@ -133,6 +133,17 @@ fn line(warnings: &mut Vec<String>, ok: Option<bool>, text: &str) {
 pub fn device_revocation_checks(
     fetch: impl FnOnce() -> crate::error::Result<Vec<crate::relay::RevokedDevice>>,
 ) -> Vec<(Option<bool>, String)> {
+    match crate::config::get("auth.provider", Some("EVERETT_AUTH_PROVIDER"), "oidc").as_str() {
+        "cloudflare" => return vec![(
+            None,
+            "device revocations: Cloudflare SSH revocation check unavailable; SSH authorizations unchanged".into(),
+        )],
+        "oidc" => (),
+        _ => return vec![(
+            None,
+            "device revocations: unsupported auth provider; SSH authorizations unchanged".into(),
+        )],
+    }
     if crate::auth::load().is_none() {
         return vec![(
             None,
@@ -209,6 +220,33 @@ pub fn device_revocation_checks(
         ));
     }
     checks
+}
+
+fn account_check() -> (Option<bool>, String) {
+    match crate::config::get("auth.provider", Some("EVERETT_AUTH_PROVIDER"), "oidc").as_str() {
+        "cloudflare" => match crate::cloudflare_auth::load() {
+            Ok(Some(stored)) if stored.expired() => (
+                Some(false),
+                "account: Cloudflare credential expired; run `everett login`".into(),
+            ),
+            Ok(Some(stored)) => (
+                None,
+                format!(
+                    "account: Cloudflare {} via {} ({}; stored credential, not verified online)",
+                    stored.owner, stored.issuer, stored.device_name
+                ),
+            ),
+            Ok(None) => (None, "account: not signed in to Cloudflare (optional)".into()),
+            Err(e) => (Some(false), format!("account: {e}")),
+        },
+        "oidc" => (
+            None,
+            crate::auth::load()
+                .map(|s| format!("account: {} via {} ({})", s.email, s.issuer, s.device_name))
+                .unwrap_or_else(|| "account: not signed in (optional)".to_string()),
+        ),
+        _ => (Some(false), "account: auth.provider must be oidc or cloudflare".into()),
+    }
 }
 
 pub fn run(hours: f64) -> i32 {
@@ -472,14 +510,8 @@ pub fn run(hours: f64) -> i32 {
             "trunk schedule: automatic scheduling requires macOS; run `everett trunk merge --llm none` manually",
         );
     }
-    let account = crate::auth::load();
-    line(
-        &mut warnings,
-        None,
-        &account
-            .map(|s| format!("account: {} via {} ({})", s.email, s.issuer, s.device_name))
-            .unwrap_or_else(|| "account: not signed in (optional)".to_string()),
-    );
+    let (ok, detail) = account_check();
+    line(&mut warnings, ok, &detail);
     for (ok, detail) in device_revocation_checks(crate::relay::revoked_devices) {
         line(&mut warnings, ok, &detail);
     }
