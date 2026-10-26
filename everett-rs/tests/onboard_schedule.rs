@@ -177,6 +177,17 @@ fn trunk_schedule_install_remove_use_sandboxed_paths_and_launchctl() {
 }
 
 #[test]
+fn native_launchd_activation_failure_is_an_error_with_a_retained_preview() {
+    let h = lib_home();
+    fake_launchctl(&h);
+    std::fs::write(h.path().join("bin/launchctl"), "#!/bin/sh\necho 'Synthetic activation failure' >&2\nexit 1\n").unwrap();
+    let error = trunk_schedule::Scheduler::Launchd.install("04:00", "none").unwrap_err();
+    assert_eq!(error.code, 5);
+    assert!(error.message.contains("launchctl bootstrap failed"));
+    assert!(trunk_schedule::plist_path().is_file());
+}
+
+#[test]
 fn trunk_schedule_cli_previews_and_rejects_bad_time() {
     let fx = fixture();
     let out = fx.run(&["trunk", "schedule"]);
@@ -187,7 +198,7 @@ fn trunk_schedule_cli_previews_and_rejects_bad_time() {
     assert_eq!(out.status.code(), Some(0));
     assert!(fx.stdout(&out).contains("would remove"));
     assert_eq!(fx.run(&["trunk", "schedule", "--at", "bogus"]).status.code(), Some(2));
-    if !cfg!(target_os = "macos") {
+    if trunk_schedule::Scheduler::current().is_none() {
         assert_ne!(fx.run(&["trunk", "schedule", "--apply"]).status.code(), Some(0));
         assert_eq!(fx.run(&["onboard", "--yes", "--schedule-merge"]).status.code(), Some(2));
     }
