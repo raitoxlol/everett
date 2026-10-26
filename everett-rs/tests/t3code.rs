@@ -165,6 +165,107 @@ fn t3_filters_old_deleted_archived_unknown_missing_and_mismatched_native_referen
 }
 
 #[test]
+fn hidden_t3_threads_do_not_reappear_through_provider_transcripts() {
+    let fx = fixture();
+    let con = v2(&fx);
+    for id in ["active", "archived", "deleted", "deleted-project"] {
+        add(&con, id, Some(id), "codex");
+    }
+    con.execute("UPDATE orchestration_v2_projection_threads SET archived_at=updated_at WHERE thread_id='archived'", []).unwrap();
+    con.execute("UPDATE orchestration_v2_projection_threads SET deleted_at=updated_at,active_provider_thread_id=NULL WHERE thread_id='deleted'", []).unwrap();
+    con.execute("INSERT INTO projection_projects SELECT 'gone',title,workspace_root,default_model,scripts_json,created_at,updated_at,updated_at FROM projection_projects WHERE project_id='p'", []).unwrap();
+    con.execute("UPDATE orchestration_v2_projection_threads SET project_id='gone' WHERE thread_id='deleted-project'", []).unwrap();
+    for id in ["archived", "deleted", "deleted-project"] {
+        con.execute("INSERT INTO orchestration_v2_projection_provider_threads
+            (provider_thread_id,thread_id,provider,driver,status,updated_at,payload_json)
+            VALUES (?1,?2,'codex','codex','idle',?3,?4)",
+            [format!("old-provider-{id}"), id.to_string(), Utc::now().to_rfc3339(),
+             json!({"nativeThreadRef":{"driver":"codex","nativeId":format!("old-{id}")}}).to_string()]).unwrap();
+    }
+    for id in ["active", "archived", "deleted", "deleted-project", "standalone", "old-archived", "old-deleted", "old-deleted-project"] {
+        fx.write(&format!(".codex/sessions/2026/10/09/rollout-{id}.jsonl"), &jsonl(&[
+            json!({"type":"session_meta","payload":{"id":id,"cwd":"/work/provider","timestamp":Utc::now().to_rfc3339()}}),
+            json!({"type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":format!("review {id}")}]}}),
+        ]));
+    }
+    let before = std::fs::read(fx.home().join(".t3/userdata/statev2.sqlite")).unwrap();
+    let mut ids: Vec<String> = list(&fx, "codex").iter()
+        .map(|s| s["id"].as_str().unwrap().to_string()).collect();
+    ids.sort();
+    assert_eq!(ids, ["active", "standalone"]);
+    let active = tool(&fx, "everett_send", json!({"to":"active","text":"inspect","mode":"inbox"}), "sender");
+    assert_eq!(active["isError"], false, "{active}");
+    for id in ["archived", "deleted", "deleted-project", "old-archived", "old-deleted", "old-deleted-project"] {
+        let hidden = tool(&fx, "everett_send", json!({"to":id,"text":"inspect","mode":"inbox"}), "sender");
+        assert_eq!(hidden["isError"], true, "{hidden}");
+        assert!(hidden["content"][0]["text"].as_str().unwrap().contains("no session matches"), "{hidden}");
+    }
+    assert_eq!(std::fs::read(fx.home().join(".t3/userdata/statev2.sqlite")).unwrap(), before);
+}
+
+#[test]
+fn active_t3_link_keeps_a_native_session_shared_with_an_archived_link() {
+    let fx = fixture();
+    let con = v2(&fx);
+    add(&con, "active", Some("shared-native"), "codex");
+    add(&con, "archived", Some("archived-current"), "codex");
+    con.execute("UPDATE orchestration_v2_projection_threads SET archived_at=updated_at WHERE thread_id='archived'", []).unwrap();
+    con.execute("INSERT INTO orchestration_v2_projection_provider_threads
+        (provider_thread_id,thread_id,provider,driver,status,updated_at,payload_json)
+        VALUES ('archived-older','archived','codex','codex','idle',?1,?2)",
+        [Utc::now().to_rfc3339(), json!({"nativeThreadRef":{"driver":"codex","nativeId":"shared-native"}}).to_string()]).unwrap();
+    fx.write(".codex/sessions/2026/10/09/rollout-shared-native.jsonl", &jsonl(&[
+        json!({"type":"session_meta","payload":{"id":"shared-native","cwd":"/work/provider","timestamp":Utc::now().to_rfc3339()}}),
+        json!({"type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"shared session"}]}}),
+    ]));
+    let sessions = list(&fx, "codex");
+    assert_eq!(sessions.len(), 1);
+    assert_eq!(sessions[0]["id"], "shared-native");
+    assert_eq!(sessions[0]["source"], "t3code");
+}
+
+#[test]
+fn read_only_acceptance_check_observes_real_cli_filtering_with_synthetic_t3_state() {
+    let fx = fixture();
+    let con = v2(&fx);
+    add(&con, "app-1", Some("native-1"), "codex");
+    let script = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../scripts/check_t3_filter.py");
+    let check = |expected: &str| {
+        Command::new("python3").arg(&script)
+            .arg("--binary").arg(env!("CARGO_BIN_EXE_everett"))
+            .arg("--home").arg(fx.home())
+            .args(["--native-id", "native-1", "--expect", expected])
+            .env_clear().env("PATH", "/usr/bin:/bin")
+            .output().unwrap()
+    };
+    for (sql, expected, state) in [
+        ("SELECT 1", "visible", "active"),
+        ("UPDATE orchestration_v2_projection_threads SET archived_at=updated_at", "hidden", "archived"),
+        ("UPDATE orchestration_v2_projection_threads SET archived_at=NULL,deleted_at=updated_at,active_provider_thread_id=NULL", "hidden", "deleted"),
+    ] {
+        con.execute_batch(sql).unwrap();
+        let path = fx.home().join(".t3/userdata/statev2.sqlite");
+        let before = std::fs::read(&path).unwrap();
+        let out = check(expected);
+        assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+        let receipt: Value = serde_json::from_slice(&out.stdout).unwrap();
+        assert_eq!(receipt["passed"], true);
+        assert_eq!(receipt["links"][0]["state"], state);
+        assert_eq!(receipt["resolved"], expected == "visible");
+        assert_eq!(receipt["native_client_mcp_binding"], "not_checked");
+        assert!(!String::from_utf8_lossy(&out.stdout).contains("real request"));
+        assert!(!String::from_utf8_lossy(&out.stdout).contains("app-1"));
+        assert_eq!(std::fs::read(&path).unwrap(), before);
+        assert!(!fx.home().join(".everett/inbox").exists());
+    }
+    let mismatch = check("visible");
+    assert_eq!(mismatch.status.code(), Some(1));
+    let receipt: Value = serde_json::from_slice(&mismatch.stdout).unwrap();
+    assert_eq!(receipt["passed"], false);
+}
+
+#[test]
 fn provider_transcript_is_preserved_and_current_store_does_not_revive_legacy_rows() {
     let fx = fixture();
     let con = v2(&fx);
