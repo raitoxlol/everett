@@ -430,6 +430,12 @@ Parallel sessions each build their own context and drift apart. The shared core 
 2. **Merge (slow path).** `everett trunk merge` distills the inbox into `~/.everett/core/core.md` (global) and `~/.everett/core/projects/<project>.md`, at most 300 words each. With `--llm claude` or `--llm codex`, a headless harness run is prompted to deduplicate and resolve contradictions; invalid or secret-bearing output changes nothing. `--llm none` appends and removes normalized duplicates with no LLM. Previous core files and the processed inbox are archived under `~/.everett/core/history/<time>/`. Facts learned during a merge stay pending for the next one; a second simultaneous merge is refused. A configured vault gets a generated `Core.md` mirror.
 3. **Pull.** The SessionStart hooks (Claude Code, Codex, OMP) add the global core plus the current project's core (at most 350 words in total) to each new session's context, with one line telling the agent to run `everett learn` when it finds something other sessions should know. The hooks read local files only, take about 40 ms, and stay silent on any error.
 
+During an active session, call `everett_core` again to pull the latest merged facts. Every call reads the local files. Pending learnings still need a merge.
+
+Local MCP sessions can update memory immediately with `everett_core(action="forget", fact="Atlas deploys on Fridays")` or `everett_core(action="correct", fact="Atlas deploys on Fridays", replacement="Atlas deploys on Mondays")`. Copy the whole fact without its bullet marker. Matching ignores case, punctuation, and repeated whitespace. Both actions remove matching active bullets and pending learnings so a later merge cannot restore those pending copies. Corrections use the same 500-character limit and secret filter as `everett_learn`, and stay within the 300-word core cap. `changed=false` means no match was found.
+
+Changes default to global scope. Pass `project="atlas"` for project scope, or `scope="project"` for the current project. A running merge makes either action fail with a retry message. Generated vault mirrors update with the change. History backups stay intact and are never merge inputs. Gateway connections remain read-only for shared core and reject mutation arguments.
+
 The project is the enclosing git repository's folder name, else the folder name. Your home folder is not a project. Default merge engine: `merge_llm` in the config, else `claude`.
 
 ### Nightly auto-merge
@@ -457,7 +463,7 @@ Everett is mostly used by agents. `everett mcp` is a stdio MCP server (JSON-RPC 
 | `everett_route` | `text`, `router?`, `hours?` | `SESSION` / `NEW` / `ASK`, confidence, router used, candidates. Never sends; excludes the caller when known. |
 | `everett_send` | `text`, `to?`, `hours?`, `spawn?`, `dir?`, `harness?`, `timeout?`, `mode?`, `wait?`, `reply_to?` | Without `to`, routes then delivers, reporting the route decision (router, session, confidence; `candidates` on `ASK`, nothing sent). The reply of a resumed session, or the queued message id for a live one (plus its reply when `wait` is set). `reply_to` answers a message you received. |
 | `everett_learn` | `fact`, `project?`, `scope?` | Queues a fact for the shared core (secret-filtered). |
-| `everett_core` | `project?` | The shared core this session's project sees. |
+| `everett_core` | `action?`, `project?`, `fact?`, `replacement?`, `scope?` | Reads the latest core by default. Local `forget` and `correct` actions update exact facts in active core and pending learnings. |
 | `everett_card` | `what`, `state`, `next` | Writes the calling session's card. |
 | `everett_whoami` | none | The caller's session id, harness, hop count, and how they were detected. |
 | `everett_inbox` | `peek?` | The Everett messages (requests, replies, events) waiting for you; marks them delivered. |
