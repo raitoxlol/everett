@@ -598,7 +598,8 @@ fn native_stdio_journey_for_both_external_harnesses() {
         }
         let owned = messages[0]["id"].as_str().unwrap().to_string();
         let forward = success(&recipient.call("everett_send", json!({"to":"dot-one","text":"Derived external data","mode":"inbox"})));
-        assert_eq!(forward["delivered"], true);
+        assert_eq!(forward["delivered"], false);
+        assert_eq!(forward["queued"], true);
         let reply = success(&recipient.call("everett_send", json!({"reply_to":owned,"text":"Synthetic answer"})));
         assert_eq!(reply["to"], "dot-one");
         let derived = success(&peer.call("everett_inbox", json!({})));

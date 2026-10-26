@@ -28,10 +28,12 @@ replaced with potentially stale legacy state.
 ## Polling and replying
 
 T3 owns its provider's resume point. Everett refuses direct provider CLI resume,
-and its route output tells you to continue in T3. Automatic delivery selects the
-Everett inbox even when no provider process is visible.
+and its route output tells you to continue in T3. Automatic delivery fails without
+queueing because Everett cannot ping or wake the receiving T3 thread.
+Use explicit `mode: "inbox"` when you accept polling for pickup.
 
-Inbox enqueue is **not proof of pickup**. A T3 result reports `pickup=poll`,
+Inbox enqueue is **not proof of pickup**. An unread T3 send reports `queued=true`,
+`delivered=false`, `wake=false`, `pickup=poll`,
 `poll_session_id`, and `hooked=false` conservatively; Everett does not verify that
 T3's SDK executes native hooks or inherits a user-installed Everett MCP server.
 The receiver must have access to Everett's MCP tools and the same local Everett
@@ -41,7 +43,7 @@ inside a T3-created provider session.
 1. List the thread with `everett_ls`. Use the returned provider session `id`.
 2. Bind each participant's exact provider ID as `EVERETT_SESSION_ID` in that
    T3 thread's MCP launch environment.
-3. From another agent, call `everett_send(to=<provider id>, text=...)`.
+3. From another agent, call `everett_send(to=<provider id>, text=..., mode="inbox")`.
 4. In the receiving T3 session, call `everett_inbox()`.
    This marks returned messages consumed; use `peek=true` to inspect without consuming.
 5. Reply with `everett_send(reply_to=<message id>, text=...)`.

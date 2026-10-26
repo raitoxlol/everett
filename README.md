@@ -203,8 +203,8 @@ Done. MAX_RETRIES is now 5 and the backoff test covers the cap.
 | `everett peer identity / list / remove <name> / revoke <client-id>` | Inspect device keys/peers; remove a remote authorization or revoke a local tagged client key. |
 | `everett dashboard [--port 7347] [--no-open]` | Native Rust binary only: read-only local browser dashboard with session cards, filters, activity state, and copyable CLI actions. |
 | `everett route "<text>" [--router local\|jev] [--json]` | Picks the session a request continues: `SESSION`, `NEW`, or `ASK`, with a confidence and the resume command. It never sends. |
-| `everett send "<text>" [--dry-run] [--timeout S] [--router …]` | Routes the request (jev when a key is configured, else local) and delivers it, printing `routed by jev → [claude] ~/src/api — … (0.87)` before sending. A session with a live harness process gets it in its inbox, injected at its next turn or tool call (see [Live delivery](#live-delivery)). An idle one is resumed headless after it goes quiet (up to 2 min), and the reply is printed. `NEW` and `ASK` send nothing (`ASK` prints its candidates; resend with `--to`). |
-| `everett send … [--mode auto\|resume\|inbox] [--wait S]` | `--mode` forces headless resume or inbox delivery (default `auto`). `--wait S` waits up to S seconds for an inbox reply; without it the reply arrives in your inbox later. |
+| `everett send "<text>" [--dry-run] [--timeout S] [--router …]` | Routes the request (jev when a key is configured, else local). An idle local session is resumed headless after it goes quiet (up to 2 min), and the reply is printed. Automatic delivery refuses passive inbox targets without queueing. `NEW` and `ASK` send nothing (`ASK` prints its candidates; resend with `--to`). See [Live delivery](#live-delivery). |
+| `everett send … [--mode auto\|resume\|inbox] [--wait S]` | Default `auto` resumes when safe or fails without queueing. `--mode inbox` explicitly queues for hooks or polling and sends no ping or wake. `--wait S` waits for an inbox reply; a timeout leaves the explicit queue intact. |
 | `everett send --to <full-Claude-session-UUID> --wake [--wait S] "<request>"` | Queues the request, then explicitly wakes an existing local Claude Code background session through a PTY and waits for a reply linked to that inbox message. Requires an interactive local terminal and Claude Code 2.1.285 or newer. Default `auto`, MCP, gateway, relay, remote, and T3 Code sends do not wake sessions. |
 | `everett reply <message-id> "<text>"` | Answers an Everett message; the reply goes to the sender's inbox. |
 | `everett inbox [--session S] [--peek] [--message ID] [--json]` | Shows the messages waiting for this session (or the human inbox when run outside a session) and marks them delivered; `--message` shows and marks only that message. |
@@ -252,7 +252,8 @@ matching session with source `t3code` (`[t3code]` in `ls`) and uses the thread t
 Active projections with a real provider ID also supply sessions when the local provider
 transcript is absent. Current v2 and legacy stores are supported; see the
 [T3 discovery and polling guide](docs/t3code.md).
-Automatic sends queue work in the inbox. Hooks can inject it only if T3's provider runtime
+T3 sends require explicit `--mode inbox` (MCP `mode: "inbox"`). Automatic sends fail without queueing.
+Hooks can inject a queued message only if T3's provider runtime
 actually loads and runs them; queuing alone does not prove pickup. Otherwise the receiving
 thread must have `EVERETT_SESSION_ID=<underlying-provider-session-id>` in that thread's MCP
 launch environment, then calls `everett_inbox()` and answers with
@@ -268,7 +269,7 @@ Safety rails for agents that call `send`:
 - **No self-send.** When the caller's session id is known (`EVERETT_SESSION_ID`, or the harness's own session variable), Everett refuses to send to that session.
 - **Spawning is explicit.** `NEW` starts a session only with `--spawn`.
 
-Exit codes: 2 bad input, 3 no Jev key with `--router jev`, 4 session stayed busy, 5 harness did not start or timed out, 6 harness failed, 7 hop limit reached.
+Exit codes: 2 bad input, 3 no Jev key with `--router jev`, 4 session stayed busy or automatic delivery has no safe ping/wake path, 5 harness did not start or timed out, 6 harness failed, 7 hop limit reached.
 
 ## Cloudflare native relay
 
@@ -354,9 +355,12 @@ SSH needs no registry, account sign-in, Convex relay, or Everett listener. See
 
 ## Live delivery
 
-Headless resume only works on a session nobody has open. When a session is running, Everett delivers into it instead: the request goes to the session's inbox, and the session's own hooks inject it at its next turn or, if it is busy, right after its next tool call.
+Default sends must run the recipient or fail without leaving a queued request.
+Headless resume is used for an idle local session. Everett has no general wake mechanism
+for an attached, T3 Code, or registered external session, so `auto` refuses those targets.
+See the [delivery policy and explicit queue exceptions](docs/message-delivery.md).
 
-1. **Which path.** `send --mode auto` (the default) uses the inbox when a harness process is attached to the target: Everett's hooks recorded a live process for it (`~/.everett/inbox/live/<id>.json`), or its id is on a running harness command line. T3 Code sessions always use the inbox, because a CLI resume would fork the thread. Everything else is resumed headless, as before. `--mode inbox` forces inbox delivery; `--mode resume` forces headless resume except for T3, where it is refused.
+1. **Which path.** `send --mode auto` (the default) resumes an idle local session and returns its reply. When the target requires passive inbox delivery, it fails before writing a message. `--mode inbox` explicitly accepts queueing for hooks or polling. It sends no ping or wake. `--mode resume` forces headless resume except where existing T3, external-agent, or remote-provenance rules refuse it.
 2. **Explicit Claude wake.** `send --to <full-session-UUID> --wake` is a separate local CLI opt-in. Everett verifies the Claude version and exact background-session state, queues the original request, then attaches to that same session in a PTY with a fixed nudge to read and answer the queued inbox item. It reports the native prompt receipt separately from a real Everett reply. `--wake` rejects prefixes, routed destinations, remote sessions, T3 Code, relay-derived callers, and non-Claude sessions. The request remains recorded if the attach or reply wait fails, but Claude may already have read it. A timeout does not mean the request is still pending. MCP, gateway, and ordinary `auto` sends cannot request wake.
 3. **Inbox.** `~/.everett/inbox/<session-id>.jsonl`, one message per line: `id`, `from` (the sender's session id, or `human` from a terminal), `from_harness`, `from_card`, `text`, `ts`, `reply_to`, `hops`, `kind` (`message`, `reply`, or `event`). Delivered ids go to `<session-id>.done`. Undelivered messages expire after 7 days.
 4. **Injection.** The hook adds at most 5 messages (2,000 characters each, 6,000 in total) as context, marked as coming from Everett with the sender's session and card, and marks exactly those delivered. The rest arrive at the next hook. The hook reads local files only, takes about 40 ms, and prints nothing on any error.
@@ -455,7 +459,7 @@ Everett is mostly used by agents. `everett mcp` is a stdio MCP server (JSON-RPC 
 |---|---|---|
 | `everett_ls` | `hours?`, `harness?` | Sessions with their cards (and `source`, such as `t3code`); your own session is marked `you`. Overview only -- not for picking a send target. |
 | `everett_route` | `text`, `router?`, `hours?` | `SESSION` / `NEW` / `ASK`, confidence, router used, candidates. Never sends; excludes the caller when known. |
-| `everett_send` | `text`, `to?`, `hours?`, `spawn?`, `dir?`, `harness?`, `timeout?`, `mode?`, `wait?`, `reply_to?` | Without `to`, routes then delivers, reporting the route decision (router, session, confidence; `candidates` on `ASK`, nothing sent). The reply of a resumed session, or the queued message id for a live one (plus its reply when `wait` is set). `reply_to` answers a message you received. |
+| `everett_send` | `text`, `to?`, `hours?`, `spawn?`, `dir?`, `harness?`, `timeout?`, `mode?`, `wait?`, `reply_to?` | Routes then resumes when safe. Automatic passive delivery fails without queueing. Explicit `mode: "inbox"` returns a message id and truthful `queued`/`delivered` pickup fields (plus a reply when `wait` observes one). `reply_to` durably queues an answer for the sender. |
 | `everett_learn` | `fact`, `project?`, `scope?` | Queues a fact for the shared core (secret-filtered). |
 | `everett_core` | `project?` | The shared core this session's project sees. |
 | `everett_card` | `what`, `state`, `next` | Writes the calling session's card. |

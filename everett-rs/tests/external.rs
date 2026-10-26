@@ -111,7 +111,8 @@ fn cloud_origin_provenance_survives_reply_without_tainting_unrelated_forward() {
         plant(&fx, "claude.jsonl", ".claude/projects/project/c-1.jsonl");
         registration(&fx, "ext-source", harness, everett::session::now());
         let sent = mcp(&fx, &[("everett_send", json!({"to":"x-1", "text":"Synthetic report", "mode":"inbox"}))], "ext-source", harness);
-        assert_eq!(data(&sent[0])["delivered"], true);
+        assert_eq!(data(&sent[0])["delivered"], false);
+        assert_eq!(data(&sent[0])["queued"], true);
         let received = mcp(&fx, &[("everett_inbox", json!({"peek":true})), ("everett_inbox", json!({}))], "x-1", "codex");
         for result in &received {
             let message = &data(result)["messages"][0];
@@ -125,7 +126,8 @@ fn cloud_origin_provenance_survives_reply_without_tainting_unrelated_forward() {
             .to_string();
         assert!(!fx.home().join(".everett/inbox/relay-context/x-1.json").exists());
         let forwarded = mcp(&fx, &[("everett_send", json!({"to":"c-1", "text":"Synthetic summary", "mode":"inbox"}))], "x-1", "codex");
-        assert_eq!(data(&forwarded[0])["delivered"], true);
+        assert_eq!(data(&forwarded[0])["delivered"], false);
+        assert_eq!(data(&forwarded[0])["queued"], true);
         let received = mcp(&fx, &[("everett_inbox", json!({}))], "c-1", "claude");
         assert_eq!(data(&received[0])["messages"][0]["trust"], Value::Null);
         let reply = mcp(
@@ -396,12 +398,8 @@ fn persistent_listing_and_routes_do_not_expose_transcript_or_resume_ids() {
 fn external_delivery_refuses_resume_and_spawn_even_with_live_process_evidence() {
     for harness in external::HARNESSES {
         let session = Session::new(harness, "ext-agent", "/work/backups", "", "", 0.0);
-        for mode in ["auto", "inbox"] {
-            assert_eq!(
-                send::delivery_mode(&session, mode, Some("")).unwrap(),
-                "inbox"
-            );
-        }
+        assert_eq!(send::delivery_mode(&session, "inbox", Some("")).unwrap(), "inbox");
+        assert_eq!(send::delivery_mode(&session, "auto", Some("")).unwrap_err().code, 4);
         assert!(
             send::delivery_mode(&session, "resume", Some("grok --resume ext-agent"))
                 .unwrap_err()
@@ -495,13 +493,22 @@ fn stdio_mcp_queues_polls_and_replies_for_both_external_harnesses() {
         let fx = fixture();
         let id = format!("ext-{harness}");
         registration(&fx, &id, harness, 0.0);
+        let refused = mcp(
+            &fx,
+            &[("everett_send", json!({"to":id,"text":"Do not silently queue"}))],
+            "fixture-owner",
+            "",
+        );
+        assert_eq!(refused[0]["isError"], true);
+        assert!(refused[0].to_string().contains("Nothing was queued"));
+        assert!(!fx.home().join(format!(".everett/inbox/{id}.jsonl")).exists());
         let results = mcp(
             &fx,
             &[
                 ("everett_ls", json!({"hours": 0, "harness": harness})),
                 (
                     "everett_send",
-                    json!({"to": id, "text": "Report backups", "mode": "auto"}),
+                    json!({"to": id, "text": "Report backups", "mode": "inbox"}),
                 ),
                 (
                     "everett_send",
