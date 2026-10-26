@@ -52,31 +52,18 @@ A pending count alone does not prove that the other client read the exact fact.
 
 ## Check archive and deletion from T3
 
-Run the read-only helper on the selected execution host. Use an absolute path to
-the candidate Everett binary and the full provider ID returned by the native call.
+Filter behavior for archived/deleted threads is covered by the unit regressions on
+the filter fix PR. For [issue #5](https://github.com/raitoxlol/everett/issues/5)'s
+live lifecycle checkbox, use a disposable T3 thread on the real client:
 
-```sh
-python3 scripts/check_t3_filter.py \
-  --binary /absolute/path/to/everett \
-  --home /absolute/path/to/execution-host-home \
-  --native-id <full-provider-id> --expect visible
-```
+1. Confirm the provider ID resolves with `everett send --mode inbox --dry-run --to <id>`
+   while the thread is active.
+2. Archive it in the T3 UI. Repeat the dry-run; resolution must fail with no session match.
+3. Restore, then with owner approval delete the disposable thread, and confirm dry-run
+   stays unresolved.
 
-1. Check a disposable active thread and save the JSON receipt.
-2. Archive it in the actual T3 UI. Run the same command with `--expect hidden`.
-   The receipt must show an archived link and `resolved=false`.
-3. Restore the thread in T3 and repeat `--expect visible`.
-4. With the owner's approval, delete a disposable thread in T3 and repeat
-   `--expect hidden`. The receipt must show a deleted link and `resolved=false`.
-
-The helper opens the current v2 SQLite store read-only and calls only
-`everett send --mode inbox --dry-run`. It does not send a message, start a provider,
-change T3 state, or write core. Its receipt omits prompts and marks native MCP,
-live messaging, and shared-core proof as `not_checked`.
-
-An active T3 link to the same native ID keeps that session visible. Choose a unique
-disposable provider session for the archive and deletion checks. If the store has
-no supported link for an ID, the helper reports an inconclusive check.
+Do not send a live message for this check. Keep the dry-run receipts with the rest of
+the evidence pack. There is no Python helper in-tree for this step.
 
 ## Record the result
 
