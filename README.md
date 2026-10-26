@@ -4,6 +4,12 @@ Route requests, messages, and shared memory across your coding-agent sessions—
 
 **Works with:** Claude Code · Codex · OMP · Pi · Hermes Agent · Grok CLI · Devin CLI.
 T3 Code threads are recognized through their underlying harness sessions.
+OpenAI dots and Grok Bot connect through registered external MCP inboxes.
+Hark and Muse compatibility is unverified.
+
+**Wake support:** Claude Code has native local wake and an optional relay receiver policy.
+Dots and Grok Bot can use owner-configured webhook nudges. Other harnesses use
+headless resume or inbox pickup. See [agent support and wake](docs/agent-support.md).
 
 ## Quickstart
 
@@ -161,7 +167,7 @@ Host headers and write methods, and sends no session data to a hosted service.
 Stop it with Ctrl-C.
 
 **Future direction:** a hosted dashboard could expose cross-device local activity.
-Optional account auth and inbox-only SSH/Convex peer transports exist, but dashboard
+Cloudflare account auth and inbox-only SSH peer transport exist, but dashboard
 hosting/session synchronization (including a custom-domain frontend on Vercel) do not.
 A Rust local-data service would still be required; a static website cannot read another
 device's session stores.
@@ -196,19 +202,19 @@ Done. MAX_RETRIES is now 5 and the backoff test covers the cap.
 | `everett peer add <name> [--ssh user@host] [--port N] --binary /absolute/everett --host-key SHA256:... --device-key SHA256:...` | Resolve the address by registry name or use an explicit address; reject conflicts and require both confirmed fingerprints before pairing. |
 | `everett peer serve [--address user@host[:port]] --client ID` | Restricted sshd endpoint; signed-in devices attempt to publish their declared address, also configurable with `[peer] address`. |
 | `everett peer status <name> <message-id>` | SSH polls/imports replies; relay queries queued/delivered/claimed/replied/expired state from signed observations (not task completion). |
-| `everett relay` | Listen through the selected relay: Convex WebSocket or Cloudflare outbound polling. Claude session wake and external webhook posts follow the local owner policy. |
+| `everett relay` | Listen through Cloudflare outbound polling. Claude session wake and external webhook posts follow the local owner policy. |
 | `everett relay register / devices / whoami` | Register this provisioned agent's keys and publish its display name/declared SSH address, list active key bundles (maximum 256), or verify agent/org authorization. |
 | `everett relay devices --names` | Hosted Cloudflare enrollment labels beside device IDs and fingerprints. Advisory only; the default JSON bundle list is unchanged. |
 | `everett relay rename NAME` | Update this Cloudflare device's hosted label. Device ID, keys, and pins stay the same. |
 | `everett relay revoke-agent ID / revoke-member SUBJECT / rotate` | Revoke this or an admin-selected agent, remove org membership (admin), or rotate this agent's relay keys using its old signing key. |
-| `everett relay grant invite / accept / reconfirm / revoke / get / list` | Bilateral org-admin consent for named cross-org agents; [exact flags and journey](docs/cross-device.md#convex-relay-two-org-trial). |
+| `everett relay grant invite / accept / reconfirm / revoke / get / list` | Legacy Convex compatibility only. Bilateral org-admin consent for named cross-org agents; [historical flags and journey](docs/cross-device.md#convex-relay-two-org-trial). |
 | `everett peer add-relay <name> --device ID --fingerprint HEX [--grant GRANT_ID]` | Pin a device on the selected relay after out-of-band bundle confirmation; fingerprint is raw 64-character lowercase hex, not the SSH `SHA256:` format. |
 | `everett peer identity / list / remove <name> / revoke <client-id>` | Inspect device keys/peers; remove a remote authorization or revoke a local tagged client key. |
 | `everett dashboard [--port 7347] [--no-open]` | Native Rust binary only: read-only local browser dashboard with session cards, filters, activity state, and copyable CLI actions. |
 | `everett route "<text>" [--router local\|jev] [--json]` | Picks the session a request continues: `SESSION`, `NEW`, or `ASK`, with a confidence and the resume command. It never sends. |
 | `everett send "<text>" [--dry-run] [--timeout S] [--router …]` | Routes the request (jev when a key is configured, else local). An idle local session is resumed headless after it goes quiet (up to 2 min), and the reply is printed. Automatic delivery refuses passive inbox targets without queueing. `NEW` and `ASK` send nothing (`ASK` prints its candidates; resend with `--to`). See [Live delivery](#live-delivery). |
 | `everett send … [--mode auto\|resume\|inbox] [--wait S]` | Default `auto` resumes when safe or fails without queueing. `--mode inbox` explicitly queues for hooks or polling. It does not send a Claude wake. A matching owner `receiver-webhook.json` rule can POST a nudge for `grok-bot` or `openai-dot`; `wake` stays false. `--wait S` waits for an inbox reply; a timeout leaves the explicit queue intact. |
-| `everett send --to <full-Claude-session-UUID> --wake [--wait S] "<request>"` | Queues the request, then explicitly wakes an existing local Claude Code background session through a PTY and waits for a reply linked to that inbox message. Requires an interactive local terminal and Claude Code 2.1.285 or newer. Default `auto`, MCP, gateway, relay, remote, and T3 Code sends do not wake sessions. |
+| `everett send --to <full-Claude-session-UUID> --wake [--wait S] "<request>"` | Queues the request, then explicitly wakes an existing local Claude Code background session through a PTY and waits for a reply linked to that inbox message. Requires an interactive local terminal and Claude Code 2.1.285 or newer. The sender cannot request this native wake through `auto`, MCP, gateway, remote, or T3 Code sends. A separately enabled receiver policy can wake Claude after a relay import. |
 | `everett reply <message-id> "<text>"` | Answers an Everett message; the reply goes to the sender's inbox. |
 | `everett inbox [--session S] [--peek] [--message ID] [--json]` | Shows the messages waiting for this session (or the human inbox when run outside a session) and marks them delivered; `--message` shows and marks only that message. |
 | `everett event done\|blocked\|needs-input\|info "<msg>" [--project P]` | Records what this session is doing (see [Events](#events)). |
@@ -248,7 +254,7 @@ Global option: `--hours N` sets the look-back window (default 72).
 | T3 Code | Inbox; hooks where supported, otherwise explicit MCP polling; no CLI resume | not supported |
 | OpenAI dots / Grok Bot | Registered external inbox via owner-authorized MCP; no provider resume. Optional owner webhook nudge: [Wake a Grok Bot](#wake-a-grok-bot). | not supported |
 
-The harness appends the request and the reply to that session's history. Hermes sessions that belong to a chat platform (Telegram, Discord, and so on) are listed and routable, but `send` refuses them, because a CLI resume would not reach that chat. Scripted Hermes runs (cron, oneshot, webhook) are hidden like other automated runs. Grok sessions are read from `~/.grok/sessions/<url-encoded cwd>/<id>/` (`summary.json` for id, folder, and title; `prompt_history.jsonl` for the typed requests). A Grok session counts as running while `~/.grok/active_sessions.json` names it with a live process id. Headless `grok -p` runs are hidden like other scripted runs. Devin CLI sessions are read from `sessions.db` under `$DEVIN_HOME`, else the platform data dir (`~/Library/Application Support/devin/cli` on macOS, `~/.local/share/devin/cli` on Linux): the `sessions` table gives id, folder, title, and activity; `message_nodes` gives the user asks when the CLI build has it, otherwise `transcripts/<id>.json` carries the listing. Hidden sessions are skipped. Devin has no Everett hooks, so delivery is a headless `devin --resume <id>` run.
+The harness appends the request and the reply to that session's history. Hermes sessions that belong to a chat platform (Telegram, Discord, and so on) are listed and routable, but `send` refuses them, because a CLI resume would not reach that chat. Scripted Hermes runs (cron, oneshot, webhook) are hidden like other automated runs. Grok sessions are read from `~/.grok/sessions/<url-encoded cwd>/<id>/` (`summary.json` for id, folder, and title; `prompt_history.jsonl` for the typed requests). A Grok session counts as running while `~/.grok/active_sessions.json` names it with a live process id. Headless `grok -p` runs are hidden like other scripted runs. Devin CLI sessions are read from `sessions.db` under `$DEVIN_HOME`, else the platform data dir (`~/Library/Application Support/devin/cli` on macOS, `~/.local/share/devin/cli` on Linux): the `sessions` table gives id, folder, title, and activity; `message_nodes` gives the user asks when the CLI build has it, otherwise `transcripts/<id>.json` carries the listing. Hidden sessions are skipped. Devin has session-binding hooks but no inbox-injection hooks. Idle sessions use headless `devin --resume <id>`; open sessions require explicit MCP inbox polling.
 
 T3 Code is a desktop GUI that runs Codex, Claude Code, and Grok underneath. Everett marks the
 matching session with source `t3code` (`[t3code]` in `ls`) and uses the thread title when needed.
@@ -314,7 +320,8 @@ first-run GitHub approval. Real public Mac/NUC delivery, idle Claude wake/reply 
 Choosing sign-in during fresh interactive onboarding opens `https://everett.raitox.tech` for account approval.
 That service supports public enrollment; messaging stays within each account. Existing account configuration
 is preserved. Cloudflare's device protocol is custom, not RFC8628.
-Cross-owner grants, Convex registry/SSH-address publication and cloud-agent OAuth are separate.
+Cloudflare messaging stays within one account. Legacy Convex cross-owner grants
+and cloud-agent OAuth are separate from same-owner trust.
 
 Local harnesses that launch Everett with the same `HOME` and `EVERETT_HOME` use that
 home's account configuration and device credential. They do not each need a separate
@@ -342,41 +349,16 @@ IDs, peer aliases, keys, pins, and signed bundles stay as they are. When the
 backend has no label metadata, `--names` prints `(unnamed)` and says names are
 unavailable.
 
-## Cross-device peers (SSH or encrypted Convex)
+## Cross-device peers
 
-For devices behind NAT, deploy the TypeScript backend in `convex/` (Convex cloud or
-self-hosted), configure a device-code OIDC provider with **issuer-controlled per-agent
-claims**, and provision authoritative memberships/credentials as deployment operator.
-`login` alone is not enrollment. Each machine uses its own agent-bound JWT/refresh
-credential and independent Ed25519/X25519 keys; an owner/admin JWT cannot act as every
-agent. Local/SSH commands need no sign-in. The client stays Rust-only.
+Cloudflare is the active hosted relay. Use [same-owner Cloudflare devices](#cloudflare-native-relay)
+and the [native receiver guide](docs/cloudflare-native.md) for account enrollment,
+device names, encrypted delivery, and optional receiver wake.
 
-Run `everett relay` on each device and confirm/pin bundles **out of band in both directions**.
-The same `send --to PEER/HARNESS/SESSION-ID` and `reply` commands exchange X25519 +
-HKDF-SHA256 + ChaCha20Poly1305 encrypted content, signed with Ed25519, over Convex live
-WebSockets. Same-owner/account or same-org peers need no cross-org grant. Cross-org chat
-requires an A-admin invite and B-admin acceptance naming exactly two agents, pinning
-both bundles, with optional expiry, either-side revocation, rate and serialized-body
-caps. Changed keys block traffic until both admins explicitly reconfirm and peers re-pin.
-
-Every public backend operation checks verified JWT, authoritative membership and its
-own revocable agent credential. Revocation also invalidates subscribed queries and
-blocks re-registration with a still-valid JWT; it cannot recall already local plaintext.
-External chat remains **external/untrusted agent data**, not owner instructions, across
-CLI, hooks, MCP, replies and local forwarding. No automatic resume/spawn/wake is allowed.
-SSH remains a separate per-peer transport, with no fallback for tainted external content.
-
-Convex stores ciphertext **plus observable metadata**. A signed delivery observation
-deletes the live ciphertext row; undelivered messages/replies have one-hour client TTL
-and bounded cron cleanup. Replay, revocation and grant metadata are retained permanently.
-`delivered` means authorized device ingress, `claimed` means observed inbox pickup,
-`replied` means acknowledged reply enqueue/observation—not sender pickup or task completion.
-There is no session sync, incoming agent port, Tailscale requirement or remote session listing.
-See [exact cloud/self-hosted deployment and two-machine steps](docs/cross-device.md#convex-relay-owner-deployment),
-[two-org invite/accept/revoke trial](docs/cross-device.md#convex-relay-two-org-trial),
-[OIDC/Keycloak setup](docs/auth.md) and [metadata, retention and crypto limits](docs/relay-threat-model.md).
-Real deployment/OIDC/WebSocket journeys are still operator verification gates, not implied
-by the offline tests. v1 relay deployments/pins require a reviewed v2 migration.
+Convex is retired. Its compatibility code and [historical deployment runbook](docs/cross-device.md#convex-relay-owner-deployment)
+remain in this repository. Convex tests and deployment are not v2.2 acceptance
+requirements. Cross-org grants in that legacy implementation do not imply that
+Cloudflare supports cross-account messaging.
 
 For **SSH**, pair once using the receiving machine's host/device fingerprints and absolute Everett path.
 Existing noninteractive SSH login access is required for setup. The dedicated peer key can
@@ -403,7 +385,8 @@ SSH needs no registry, account sign-in, Convex relay, or Everett listener. See
 Default sends must run the recipient or fail without leaving a queued request.
 Headless resume is used for an idle local session. Everett has no general wake mechanism
 for an attached, T3 Code, or registered external session, so `auto` refuses those targets.
-See the [delivery policy and explicit queue exceptions](docs/message-delivery.md).
+See [agent support and wake](docs/agent-support.md) and the
+[delivery policy and explicit queue exceptions](docs/message-delivery.md).
 
 1. **Which path.** `send --mode auto` (the default) resumes an idle local session and returns its reply. When the target requires passive inbox delivery, it fails before writing a message. `--mode inbox` explicitly accepts queueing for hooks or polling. It does not send a Claude wake. A matching owner webhook can nudge a registered Grok Bot or OpenAI dot; see [Wake a Grok Bot](#wake-a-grok-bot). `--mode resume` forces headless resume except where existing T3, external-agent, or remote-provenance rules refuse it.
 2. **Explicit Claude wake.** `send --to <full-session-UUID> --wake` is a separate local CLI opt-in. Everett verifies the Claude version and exact background-session state, queues the original request, then attaches to that same session in a PTY with a fixed nudge to read and answer the queued inbox item. It reports the native prompt receipt separately from a real Everett reply. `--wake` rejects prefixes, routed destinations, remote sessions, T3 Code, relay-derived callers, and non-Claude sessions. The request remains recorded if the attach or reply wait fails, but Claude may already have read it. A timeout does not mean the request is still pending. MCP, gateway, and ordinary `auto` sends cannot request wake.
@@ -418,7 +401,7 @@ See the [delivery policy and explicit queue exceptions](docs/message-delivery.md
 | Codex (0.155+) | `UserPromptSubmit` | `PostToolUse` | the same contract (checked against the hook schemas embedded in the 0.155.1 binary) |
 | Grok CLI | no | `PostToolUse` | Grok discards an allowing `UserPromptSubmit` hook's context, so messages wait for the next tool call. A Grok session that runs no tool before stopping reads them with `everett_inbox`, or at its next tool call. |
 | OMP | `before_agent_start` | `tool_result` (steered in with `pi.sendMessage(…, {deliverAs: "steer"})`) | the Everett extension |
-| Pi, Hermes, Devin | no hooks | no hooks | messages wait in the inbox; the agent reads them with `everett_inbox` |
+| Pi, Hermes, Devin | MCP polling | MCP polling | messages wait in the inbox; the agent reads them with `everett_inbox` |
 
 Grok also runs the hooks in `~/.claude/settings.json`. Everett's Claude delivery hook recognizes Grok's camelCase input and leaves a Grok session's messages alone on `UserPromptSubmit`, so nothing is marked delivered that Grok would drop.
 
@@ -538,14 +521,13 @@ Everett is mostly used by agents. `everett mcp` is a stdio MCP server (JSON-RPC 
 | `everett_event` | `kind`, `message`, `project?` | Records done / blocked / needs-input / info for your session. |
 | `everett_subscribe` | `target`, `unsubscribe?` | Follows a session's or project's events in your inbox. |
 | `everett_agent_relay` | `action`, `id?`, `name?`, `fingerprint?`, `grant_id?` | Verified identity, registration, directory/pins and scoped revocation controls. |
-| `everett_agent_grants` | `action`, `id?`, named endpoints/fingerprints/limits for invite | Bilateral named-agent grants, key reconfirmation, expiry, rate/body caps and revocation. |
-| `everett_agent_send` | `agent`, `session`, `harness`, `text`, `idempotency_key` | Device-side encrypted send to a pinned named agent. No wake-up or implicit routing. |
+| `everett_agent_grants` | `action`, `id?`, named endpoints/fingerprints/limits for invite | Retired Convex compatibility only. Bilateral named-agent grants, key reconfirmation, expiry, rate/body caps and revocation. |
+| `everett_agent_send` | `agent`, `session`, `harness`, `text`, `idempotency_key` | Device-side encrypted send to an explicit named agent. No sender-requested wake or implicit routing; receiver policies are separate. |
 | `everett_agent_status` | `message_id` | Sender-only status from signed delivery/pickup/reply observations. |
 
-For named agents in one or multiple organizations, see the [agent relay setup](docs/agent-relay.md)
-and [relay threat model](docs/relay-threat-model.md). OIDC controls org/agent identity;
-cross-org delivery is denied without bilateral admin approval. External inbox text
-is labeled untrusted. Existing Jev routing, SSH, OMP, and Pi integration is unchanged.
+For active Cloudflare setup, see [same-owner agent relay](docs/agent-relay.md#same-owner-cloudflare-devices).
+Cloudflare messaging stays within one account. Cross-org OIDC grants belong to
+retired Convex compatibility. External inbox text remains labeled untrusted.
 
 Listing, routing and sending default to a 72-hour window. Pass the same larger `hours` value
 to these MCP tools when continuing an older session. Resume/spawn children have closed stdin;
@@ -595,11 +577,11 @@ notify_command = "…"          # e.g. a push-notification command; gets the sum
 escalate_minutes = 30         # re-notify once when a session stays blocked this long (0 = never)
 
 [auth]
-issuer = "https://login.example.com/"   # OIDC issuer for `everett login` (EVERETT_AUTH_ISSUER)
-client_id = "…"                         # public client id (EVERETT_AUTH_CLIENT_ID)
+issuer = ""   # Legacy OIDC only; Cloudflare enrollment persists its own account config
+client_id = "" # Legacy OIDC public client id
 
 [relay]
-url = "https://YOUR-DEPLOYMENT.convex.cloud" # EVERETT_CONVEX_URL; optional encrypted inbox relay
+url = "" # Retired Convex compatibility; leave empty for Cloudflare
 # ca_file = "/absolute/path/to/private-ca.pem" # EVERETT_RELAY_CA_FILE; optional extra PEM roots
 ```
 
@@ -614,21 +596,17 @@ closed; TLS failures report their certificate error instead of a request timeout
 
 ## Accounts
 
-Sign-in is optional for local/SSH use. `everett login` runs the OAuth 2.0 device-code
-flow (RFC 8628): approve in a browser on any device, without opening an incoming CLI
-port or browser callback. Tokens live in `~/.everett/auth.json` (0600); `whoami` refreshes
-stale tokens and `logout` attempts provider refresh-token revocation before local deletion.
-There is no hosted default tenant. Configure your own public/native OIDC client.
+Sign-in is optional for local and SSH use. Cloudflare is the active hosted
+account and encrypted relay service. Use [native Cloudflare sign-in](docs/auth.md#hosted-cloudflare-native-sign-in)
+for browser approval, per-device credentials, verification, and revocation.
+Cloudflare's device protocol is custom, not RFC 8628. Account enrollment, relay
+key registration, and a cloud agent's OAuth connection are separate steps.
 
-Relay use additionally needs signed issuer-controlled `everett_agent`, optional
-`everett_org`, and administrative `everett_role`, **plus matching operator-provisioned
-membership/credential rows**. Use separate agent credentials, never client-editable roles
-or a shared owner token. Optional account fallback uses issuer+subject instead of org;
-the issuer must still bind each device to a distinct agent. `relay register` is key
-registration, not enrollment. Backend `revoke-agent`/`revoke-member` handles immediate
-server denial; provider logout alone cannot revoke an already issued ID token. See
-[auth and practical Keycloak setup](docs/auth.md). Sessions and shared core stay local;
-only explicit relay sends carry encrypted message/reply bodies to the backend.
+Sessions and shared core stay local. Explicit relay sends carry encrypted
+message and reply bodies to the backend. The retired Convex implementation's
+OIDC tokens, per-agent claims, and bilateral grants remain documented in the
+[historical auth guide](docs/auth.md#existing-oidc-sign-in). They are not needed for
+Cloudflare setup.
 
 ## Privacy
 
