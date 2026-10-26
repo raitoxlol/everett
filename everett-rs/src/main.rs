@@ -492,9 +492,18 @@ fn peer_output(result: everett::error::Result<serde_json::Value>) -> i32 {
 enum RelayCmd {
     /// register this device and print its public bundle and fingerprint
     Register,
-    /// list active registered credentials/devices in the verified namespace
+    /// list signed bundles; use --names for advisory hosted device labels
     #[command(alias = "credentials")]
-    Devices,
+    Devices {
+        /// readable labels with IDs/fingerprints; never changes pairing selectors
+        #[arg(long, conflicts_with = "json")]
+        names: bool,
+        /// original JSON bundle array (also the default)
+        #[arg(long)]
+        json: bool,
+    },
+    /// rename this Cloudflare device's advisory hosted label, not its ID or pins
+    Rename { name: String },
     /// verified namespace, agent credential ID and authoritative role
     Whoami,
     /// permanently revoke this or an admin-selected agent/device credential
@@ -716,7 +725,18 @@ fn main() {
         Cmd::Relay { action } => match action {
             None => peer_output(everett::relay::run()),
             Some(RelayCmd::Register) => peer_output(everett::relay::register()),
-            Some(RelayCmd::Devices) => peer_output(everett::relay::devices()),
+            Some(RelayCmd::Devices { names: true, .. }) => match everett::relay::device_names() {
+                Ok(text) => {
+                    print!("{text}");
+                    0
+                }
+                Err(e) => {
+                    eprintln!("everett: {e}");
+                    e.code
+                }
+            },
+            Some(RelayCmd::Devices { .. }) => peer_output(everett::relay::devices()),
+            Some(RelayCmd::Rename { name }) => peer_output(everett::relay::rename_device(&name)),
             Some(RelayCmd::Whoami) => peer_output(everett::relay::admin_call(
                 "relay:whoami",
                 serde_json::json!({}),

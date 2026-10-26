@@ -198,6 +198,8 @@ Done. MAX_RETRIES is now 5 and the backoff test covers the cap.
 | `everett peer status <name> <message-id>` | SSH polls/imports replies; relay queries queued/delivered/claimed/replied/expired state from signed observations (not task completion). |
 | `everett relay` | Listen through the selected relay: Convex WebSocket or Cloudflare outbound polling. Claude session wake and external webhook posts follow the local owner policy. |
 | `everett relay register / devices / whoami` | Register this provisioned agent's keys and publish its display name/declared SSH address, list active key bundles (maximum 256), or verify agent/org authorization. |
+| `everett relay devices --names` | Hosted Cloudflare enrollment labels beside device IDs and fingerprints. Advisory only; the default JSON bundle list is unchanged. |
+| `everett relay rename NAME` | Update this Cloudflare device's hosted label. Device ID, keys, and pins stay the same. |
 | `everett relay revoke-agent ID / revoke-member SUBJECT / rotate` | Revoke this or an admin-selected agent, remove org membership (admin), or rotate this agent's relay keys using its old signing key. |
 | `everett relay grant invite / accept / reconfirm / revoke / get / list` | Bilateral org-admin consent for named cross-org agents; [exact flags and journey](docs/cross-device.md#convex-relay-two-org-trial). |
 | `everett peer add-relay <name> --device ID --fingerprint HEX [--grant GRANT_ID]` | Pin a device on the selected relay after out-of-band bundle confirmation; fingerprint is raw 64-character lowercase hex, not the SSH `SHA256:` format. |
@@ -317,6 +319,21 @@ home's account configuration and device credential. They do not each need a sepa
 GitHub sign-in. `everett doctor` reports the selected provider's stored account without
 verifying it online. With Cloudflare selected, `everett whoami --json` checks the account
 with the provider.
+
+## Human-readable relay device names
+
+On the hosted Cloudflare provider, `everett relay devices --names` prints enrollment
+labels beside device IDs and verified fingerprints. `everett relay devices` and
+`everett relay devices --json` keep the signed JSON bundle array.
+
+Labels are advisory hosted metadata. They are unsigned, may duplicate, and are
+not send, revoke, or pairing selectors. Pair with the device ID and confirm the
+fingerprint out of band.
+
+`everett relay rename 'Office NUC'` updates this device's hosted label. Device
+IDs, peer aliases, keys, pins, and signed bundles stay as they are. When the
+backend has no label metadata, `--names` prints `(unnamed)` and says names are
+unavailable.
 
 ## Cross-device peers (SSH or encrypted Convex)
 

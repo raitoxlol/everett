@@ -239,6 +239,36 @@ export class HostedAuth extends DurableObject<HostedAuthEnv> {
     } catch { return null; }
   }
 
+  async relayDeviceLabels(principal: Principal, rename?: string): Promise<{ ok: true; value: { labels: Record<string, string> } } | { ok: false; error: string; status: number }> {
+    try { return { ok: true, value: { labels: await this.#deviceLabels(principal, rename) } }; }
+    catch (error) {
+      if (error instanceof RelayError) return { ok: false, error: error.code, status: error.status };
+      if (error instanceof ZodError) return { ok: false, error: 'invalid_request', status: 400 };
+      throw error;
+    }
+  }
+
+  async #deviceLabels(principal: Principal, rename?: string): Promise<Record<string, string>> {
+    const c = hostedConfig(this.env);
+    const caller = this.#row<Agent>('SELECT * FROM hosted_agents WHERE agent_id=?', principal.agentId);
+    if (!caller || !caller.account || !this.#accountAllowed(c, caller.account) || caller.revoked || principal.expiresAt <= Date.now() ||
+        namespace(this.#identityFor(caller.account, c)) !== namespace(principal) ||
+        this.#identityFor(caller.account, c).subject !== principal.subject) throw new RelayError('invalid_token', 401);
+    const active = await this.#relayFor(this.#identityFor(caller.account, c)).activeCredentialIds(principal);
+    if (!active.ok) throw new RelayError(active.error, active.status);
+    const activeIds = new Set(active.value);
+    if (rename !== undefined) {
+      const name = cleanName.parse(rename);
+      this.#rate(`device-rename:${caller.account}`, 30);
+      this.ctx.storage.sql.exec('UPDATE hosted_agents SET name=? WHERE agent_id=? AND account=?', name, principal.agentId, caller.account);
+    }
+    const labels: Record<string, string> = {};
+    for (const row of this.ctx.storage.sql.exec<Agent>('SELECT * FROM hosted_agents WHERE account=? AND revoked=0 ORDER BY agent_id LIMIT 256', caller.account)) {
+      if (activeIds.has(row.agent_id)) labels[row.agent_id] = row.name;
+    }
+    return labels;
+  }
+
   async #route(request: Request, url: URL, c: HostedConfig): Promise<Response> {
     const path = url.pathname;
     if (request.method === 'GET') {
