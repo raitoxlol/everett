@@ -1506,7 +1506,6 @@ fn find_outgoing(owner: &str, mid: &str) -> Result<(PathBuf, Outgoing)> {
 
 pub fn status(name: &str, mid: &str) -> Result<Value> {
     let owner = relay_account()?.owner;
-    paired(name, &owner)?;
     let (_, outgoing) = find_outgoing(&owner, mid)?;
     let keys = verified_keys(&owner)?;
     if outgoing.envelope.from_device != keys.device.device_id
@@ -1516,6 +1515,14 @@ pub fn status(name: &str, mid: &str) -> Result<Value> {
     }
     if outgoing.peer != name {
         return Err(bad("message is for another peer"));
+    }
+    if same_owner_enabled()
+        && outgoing.envelope.recipient_owner == owner
+        && outgoing.envelope.grant_id.is_none()
+    {
+        same_owner_device(&outgoing.envelope.to_device, &owner, false)?;
+    } else {
+        paired(name, &owner)?;
     }
     if !outgoing.posted {
         return Ok(
