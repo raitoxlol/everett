@@ -318,6 +318,41 @@ GitHub sign-in. `everett doctor` reports the selected provider's stored account 
 verifying it online. With Cloudflare selected, `everett whoami --json` checks the account
 with the provider.
 
+## Human-readable relay device names
+
+For the hosted Cloudflare provider, use `everett relay devices --names` to see
+approved enrollment labels beside full device IDs and verified bundle fingerprints.
+The original `everett relay devices` JSON output is unchanged; `--json` is an
+explicit synonym, so existing scripts do not need migration. `--names` is a
+human display mode, not a new machine identity format.
+
+Labels come from the hosted account metadata already written during browser
+approval. They are **not covered by the relay bundle signature** and do not
+establish ownership. Duplicate names remain separate rows with separate IDs;
+names are never resolved as send/revoke/pairing selectors. Continue to use the
+exact device ID and confirm the full fingerprint out of band for `peer add-relay`.
+No label lookup changes a pin or silently creates a peer.
+
+`everett relay rename 'Office NUC'` updates only the calling Cloudflare device's
+hosted label. It does not rename IDs, local peer aliases, keys, pins or the
+credential's locally stored enrollment-name snapshot. Other devices see the new
+label on their next `--names` query; no relay listener or recipient needs to be
+online. Duplicate labels are allowed. Revoked devices are filtered, and label
+metadata cannot disclose another GitHub account's devices. Offline is not revoked:
+the display reports registered bundles, not device presence or liveness.
+
+Rollout requires both an updated CLI and the updated Cloudflare Worker/HostedAuth
+code. No schema migration or enrollment replay is required: existing hosted names
+are reused. Old clients and the signed `device`/`devices` endpoints stay unchanged.
+On old backends, non-hosted bindings, missing legacy metadata or a failed optional
+metadata fetch, `--names` shows `(unnamed)` and an explicit availability warning,
+retaining IDs/fingerprints. Rename fails on unsupported backends; it never falls
+back to OIDC or reenrolls. OIDC/Convex registry names remain available through
+`everett devices`, a separate SSH-discovery contract.
+
+This is unreleased patch work for a future 2.1.x update. It does not modify the
+published2.1.0 archive or imply the hosted backend is already deployed.
+
 ## Cross-device peers (SSH or encrypted Convex)
 
 For devices behind NAT, deploy the TypeScript backend in `convex/` (Convex cloud or

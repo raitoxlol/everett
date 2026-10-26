@@ -14,6 +14,7 @@ struct Server {
     pending: Arc<AtomicUsize>,
     revoked: Arc<AtomicBool>,
     calls: Arc<Mutex<Vec<String>>>,
+    labels_missing: Arc<AtomicBool>,
 }
 impl Server {
     fn new() -> Self {
@@ -22,11 +23,13 @@ impl Server {
         let pending = Arc::new(AtomicUsize::new(0));
         let revoked = Arc::new(AtomicBool::new(false));
         let calls = Arc::new(Mutex::new(Vec::new()));
+        let labels_missing = Arc::new(AtomicBool::new(false));
+        let missing = labels_missing.clone();
         let (p, r, c) = (pending.clone(), revoked.clone(), calls.clone());
         std::thread::spawn(move || {
             for stream in listener.incoming() {
                 let mut stream = stream.unwrap();
-                let (path, _) = request(&mut stream);
+                let (path, args) = request(&mut stream);
                 c.lock().unwrap().push(path.clone());
                 let (status, result) = if r.load(Ordering::SeqCst) {
                     (401, json!({"error":"invalid_token"}))
@@ -37,6 +40,30 @@ impl Server {
                             json!({"result":{"owner":"synthetic-owner","deviceId":"synthetic-agent","role":"member"}}),
                         ),
                         "/v2/relay/register" => (200, json!({"result":null})),
+                        "/v2/relay/devices" => {
+                            let device = everett::relay::crypto::Keys::new(
+                                "synthetic-owner".into(),
+                                "synthetic-agent".into(),
+                                [1; 32],
+                                [2; 32],
+                            )
+                            .device;
+                            (200, json!({"result":[device]}))
+                        }
+                        "/v2/relay/deviceLabels" if missing.load(Ordering::SeqCst) => {
+                            (404, json!({"error":"not_found"}))
+                        }
+                        "/v2/relay/renameDevice" => {
+                            assert_eq!(args, json!({"name":"renamed-fixture"}));
+                            (
+                                200,
+                                json!({"result":{"labels":{"synthetic-agent":"renamed-fixture"}}}),
+                            )
+                        }
+                        "/v2/relay/deviceLabels" => (
+                            200,
+                            json!({"result":{"labels":{"synthetic-agent":"fixture-nuc"}}}),
+                        ),
                         "/v2/relay/pending" if p.fetch_add(1, Ordering::SeqCst) == 0 => {
                             (503, json!({"error":"service_unavailable"}))
                         }
@@ -56,6 +83,7 @@ impl Server {
             pending,
             revoked,
             calls,
+            labels_missing,
         }
     }
     fn configure(&self, f: &Fixture) {
@@ -218,6 +246,42 @@ fn same_owner_credential_replacement_stops_before_another_request() {
     );
     assert!(!f.home().join(".everett/relay").exists());
 }
+#[test]
+fn relay_device_listing_shows_advisory_names_and_preserves_json_bundles() {
+    let f = fixture();
+    let server = Server::new();
+    server.configure(&f);
+    let out = f.run(&["relay", "devices", "--names"]);
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let text = f.stdout(&out);
+    assert!(text.contains("fixture-nuc"), "{text}");
+    assert!(text.contains("synthetic-agent"));
+    assert!(text.contains("not signed"));
+    let raw = f.run(&["relay", "devices", "--json"]);
+    assert!(raw.status.success());
+    let bundles: Value = serde_json::from_slice(&raw.stdout).unwrap();
+    assert_eq!(bundles[0].as_object().unwrap().len(), 5);
+    assert!(bundles[0].get("name").is_none());
+    let legacy = f.run(&["relay", "devices"]);
+    assert_eq!(raw.stdout, legacy.stdout);
+    server.labels_missing.store(true, Ordering::SeqCst);
+    let fallback = f.run(&["relay", "devices", "--names"]);
+    assert!(fallback.status.success());
+    assert!(f.stdout(&fallback).contains("Names unavailable"));
+    assert!(f.stdout(&fallback).contains("(unnamed)"));
+    let renamed = f.run(&["relay", "rename", "renamed-fixture"]);
+    assert!(renamed.status.success());
+    assert!(f.stdout(&renamed).contains("renamed-fixture"));
+    let count = server.calls.lock().unwrap().len();
+    let invalid = f.run(&["relay", "rename", "\x1b[31m"]);
+    assert!(!invalid.status.success());
+    assert_eq!(server.calls.lock().unwrap().len(), count);
+}
+
 #[test]
 fn unsupported_registry_operation_never_falls_back_to_oidc() {
     let f = fixture();

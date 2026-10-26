@@ -68,6 +68,46 @@ fn payload(hops: i64) -> Payload {
 }
 
 #[test]
+fn device_labels_are_advisory_duplicate_safe_and_legacy_compatible() {
+    let (a, b) = devices();
+    let bundles = json!([a.device, b.device]);
+    let before = bundles.clone();
+    let labels = json!({"labels":{"agent-a":"same name","agent-b":"same name"}});
+    let text = format_device_names(bundles.clone(), Some(labels), &a.device.owner).unwrap();
+    assert_eq!(text.matches("\"same name\"").count(), 2);
+    assert!(text.contains("agent-a") && text.contains("agent-b"));
+    assert!(text.contains(&a.device.fingerprint()) && text.contains(&b.device.fingerprint()));
+    assert_eq!(before, bundles);
+    let legacy = format_device_names(bundles.clone(), None, &a.device.owner).unwrap();
+    assert!(legacy.contains("Names unavailable") && legacy.contains("(unnamed)"));
+    let malformed = format_device_names(
+        bundles.clone(),
+        Some(json!({"labels": false})),
+        &a.device.owner,
+    )
+    .unwrap();
+    assert!(malformed.contains("Names unavailable"));
+    let partial = format_device_names(
+        bundles.clone(),
+        Some(json!({"labels":{"agent-a":"new name"}})),
+        &a.device.owner,
+    )
+    .unwrap();
+    assert!(partial.contains("new name") && partial.contains("(unnamed)"));
+    let hostile = format_device_names(
+        bundles.clone(),
+        Some(json!({"labels":{"agent-a":"\x1b[31m"}})),
+        &a.device.owner,
+    )
+    .unwrap();
+    assert!(!hostile.contains('\x1b'));
+    assert!(format_device_names(bundles.clone(), None, "other owner").is_err());
+    let mut tampered = bundles;
+    tampered[0]["deviceId"] = json!("forged");
+    assert!(format_device_names(tampered, None, &a.device.owner).is_err());
+}
+
+#[test]
 fn encrypted_round_trip_and_ciphertext_only() {
     let (a, b) = devices();
     let p = payload(1);
