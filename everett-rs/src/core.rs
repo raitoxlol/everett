@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use std::fs::{self, OpenOptions};
 use std::io::Write;
-use std::os::unix::fs::PermissionsExt;
+use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 
@@ -211,8 +211,7 @@ pub fn detect_harness() -> String {
     String::new()
 }
 
-/// Validate and append one learning to the inbox.
-pub fn learn(text: &str, project: Option<&str>, scope: Option<&str>, cwd: Option<&str>) -> Result<Map<String, Value>> {
+fn validated_fact(text: &str) -> Result<String> {
     let text = text.split_whitespace().collect::<Vec<_>>().join(" ");
     if text.is_empty() {
         return Err(EverettError::new(2, "The learning is empty."));
@@ -234,6 +233,12 @@ pub fn learn(text: &str, project: Option<&str>, scope: Option<&str>, cwd: Option
             format!("Rejected: this looks like it contains {}. Secrets never go into the shared core.", kind),
         ));
     }
+    Ok(text)
+}
+
+/// Validate and append one learning to the inbox.
+pub fn learn(text: &str, project: Option<&str>, scope: Option<&str>, cwd: Option<&str>) -> Result<Map<String, Value>> {
+    let text = validated_fact(text)?;
     let cwd = cwd.map(|c| c.to_string()).unwrap_or_else(|| {
         std::env::current_dir().map(|p| p.to_string_lossy().to_string()).unwrap_or_default()
     });
@@ -290,6 +295,114 @@ fn parse_inbox(raw: &[u8]) -> Vec<Map<String, Value>> {
         }
     }
     items
+}
+
+pub enum CoreChange<'a> {
+    Forget { fact: &'a str },
+    Correct { fact: &'a str, replacement: &'a str },
+}
+
+enum CoreScope {
+    Global,
+    Project(String),
+}
+
+impl CoreScope {
+    fn resolve(project: Option<&str>, scope: Option<&str>) -> Result<Self> {
+        match scope.unwrap_or(if project.is_some() { "project" } else { "global" }) {
+            "global" => Ok(Self::Global),
+            "project" => {
+                let project = project.map(slug).unwrap_or_else(|| {
+                    project_for(&std::env::current_dir().map(|p| p.to_string_lossy().to_string()).unwrap_or_default())
+                });
+                if project.is_empty() {
+                    return Err(EverettError::new(2, "No project: pass project, or run from inside a project folder."));
+                }
+                Ok(Self::Project(project))
+            }
+            _ => Err(EverettError::new(2, "scope must be \"global\" or \"project\".")),
+        }
+    }
+
+    fn key(&self) -> &str {
+        match self {
+            Self::Global => "",
+            Self::Project(project) => project,
+        }
+    }
+
+    fn matches(&self, item: &Map<String, Value>) -> bool {
+        match self {
+            Self::Global => item.get("scope").and_then(Value::as_str) != Some("project"),
+            Self::Project(project) => item.get("scope").and_then(Value::as_str) == Some("project")
+                && item.get("project").and_then(Value::as_str) == Some(project.as_str()),
+        }
+    }
+}
+
+fn read_optional(path: &Path) -> Result<String> {
+    match fs::read_to_string(path) {
+        Ok(text) => Ok(text),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(String::new()),
+        Err(error) => Err(EverettError::new(2, error.to_string())),
+    }
+}
+
+pub fn change(change: CoreChange<'_>, project: Option<&str>, scope: Option<&str>) -> Result<Map<String, Value>> {
+    let (action, fact, replacement) = match change {
+        CoreChange::Forget { fact } => ("forget", fact, None),
+        CoreChange::Correct { fact, replacement } => ("correct", fact, Some(validated_fact(replacement)?)),
+    };
+    let scope = CoreScope::resolve(project, scope)?;
+    let target = norm(fact);
+    if target.is_empty() {
+        return Err(EverettError::new(2, "The fact to find is empty."));
+    }
+    let _merge_guard = locked(".merge.lock", false)?;
+    let _inbox_guard = locked(".inbox.lock", true)?;
+    let path = match &scope {
+        CoreScope::Global => global_path(),
+        CoreScope::Project(project) => project_path(project),
+    };
+    let current = read_optional(&path)?;
+    let mut active = bullets(&current);
+    let before = active.len();
+    active.retain(|bullet| norm(bullet) != target);
+    let removed_core = before - active.len();
+    let pending = read_optional(&inbox_path())?;
+    let mut retained = String::new();
+    let mut removed_pending = 0;
+    for line in pending.split_inclusive('\n') {
+        let matches = serde_json::from_str::<Map<String, Value>>(line).ok().is_some_and(|item| {
+            scope.matches(&item) && item.get("text").and_then(Value::as_str).is_some_and(|text| norm(text) == target)
+        });
+        if matches {
+            removed_pending += 1;
+        } else {
+            retained.push_str(line);
+        }
+    }
+    let changed = removed_core + removed_pending > 0;
+    if changed {
+        if let Some(replacement) = &replacement {
+            active.retain(|bullet| norm(bullet) != norm(replacement));
+            active.push(replacement.clone());
+        }
+        if removed_pending > 0 {
+            write_file(&inbox_path(), &retained).map_err(|e| EverettError::new(2, e.to_string()))?;
+        }
+        write_file(&path, &render(&title(scope.key()), &active, CORE_WORDS)).map_err(|e| EverettError::new(2, e.to_string()))?;
+    }
+    let mirror = if changed { write_vault_mirror(&current_core()) } else { None };
+    let mut result = Map::new();
+    result.insert("action".into(), json!(action));
+    result.insert("changed".into(), json!(changed));
+    result.insert("scope".into(), json!(if matches!(scope, CoreScope::Global) { "global" } else { "project" }));
+    result.insert("project".into(), json!(scope.key()));
+    result.insert("removed_core".into(), json!(removed_core));
+    result.insert("removed_pending".into(), json!(removed_pending));
+    result.insert("mirror".into(), mirror.map(|p| json!(p.to_string_lossy())).unwrap_or(Value::Null));
+    Ok(result)
 }
 
 // ---- merge ----
@@ -561,7 +674,9 @@ fn write_file(path: &Path, text: &str) -> std::io::Result<()> {
         fs::create_dir_all(parent)?;
     }
     let tmp = path.with_file_name(format!(".{}.tmp", path.file_name().unwrap_or_default().to_string_lossy()));
-    fs::write(&tmp, text)?;
+    let mut file = OpenOptions::new().create(true).truncate(true).write(true).mode(0o600).open(&tmp)?;
+    file.set_permissions(PermissionsExt::from_mode(0o600))?;
+    file.write_all(text.as_bytes())?;
     fs::rename(&tmp, path)
 }
 
