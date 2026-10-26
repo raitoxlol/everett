@@ -23,6 +23,7 @@ use crate::session::{home, now};
 use crate::timefmt::strftime_local;
 
 pub const MAX_LEARNING: usize = 500;
+pub const MAX_TTL_SECONDS: u64 = 31_536_000;
 pub const CORE_WORDS: usize = 300;
 pub const CONTEXT_WORDS: usize = 350;
 pub const LEARN_LINE: &str =
@@ -240,7 +241,14 @@ fn validated_fact(text: &str) -> Result<String> {
 
 /// Validate and append one learning to the inbox.
 pub fn learn(text: &str, project: Option<&str>, scope: Option<&str>, cwd: Option<&str>) -> Result<Map<String, Value>> {
+    learn_with_ttl(text, project, scope, cwd, None)
+}
+
+pub fn learn_with_ttl(text: &str, project: Option<&str>, scope: Option<&str>, cwd: Option<&str>, ttl_seconds: Option<u64>) -> Result<Map<String, Value>> {
     let text = validated_fact(text)?;
+    if ttl_seconds.is_some_and(|ttl| !(1..=MAX_TTL_SECONDS).contains(&ttl)) {
+        return Err(EverettError::new(2, "ttl_seconds must be an integer between 1 and 31536000 (one year)."));
+    }
     let cwd = cwd.map(|c| c.to_string()).unwrap_or_else(|| {
         std::env::current_dir().map(|p| p.to_string_lossy().to_string()).unwrap_or_default()
     });
@@ -261,8 +269,19 @@ pub fn learn(text: &str, project: Option<&str>, scope: Option<&str>, cwd: Option
         ));
     }
     let mut entry = learning_entry(&text, &project, &scope, &cwd);
+    let _merge_guard = ttl_seconds.map(|_| locked(".merge.lock", false)).transpose()?;
     let _guard = locked(".inbox.lock", true)?;
+    if let Some(ttl) = ttl_seconds {
+        let scope = CoreScope::resolve(Some(&project), Some(&scope))?;
+        if has_permanent_fact(&scope, &norm(&text))? {
+            return Err(EverettError::new(2, "This exact fact already has permanent memory. Forget it before learning a temporary copy."));
+        }
+        entry.insert("expires_at".into(), json!(now().ceil() as i64 + ttl as i64));
+    }
     store::FactStore::open(true)?.unwrap().remember(&mut entry, |entry| {
+        if ttl_seconds.is_some() {
+            return Ok(());
+        }
         let mut f = OpenOptions::new().create(true).append(true).open(inbox_path()).map_err(|e| {
             EverettError::new(2, e.to_string())
         })?;
@@ -364,6 +383,27 @@ fn read_optional(path: &Path) -> Result<String> {
     }
 }
 
+fn has_permanent_fact(scope: &CoreScope, target: &str) -> Result<bool> {
+    let path = match scope {
+        CoreScope::Global => global_path(),
+        CoreScope::Project(project) => project_path(project),
+    };
+    if bullets(&read_optional(&path)?).iter().any(|bullet| norm(bullet) == target) {
+        return Ok(true);
+    }
+    if read_optional(&inbox_path())?.lines().any(|line| {
+        serde_json::from_str::<Map<String, Value>>(line).ok().is_some_and(|item| {
+            scope.matches(&item) && item.get("text").and_then(Value::as_str).is_some_and(|text| norm(text) == target)
+        })
+    }) {
+        return Ok(true);
+    }
+    match store::FactStore::open(false)? {
+        Some(store) => Ok(store.expiry(scope, target)? == Some(None)),
+        None => Ok(false),
+    }
+}
+
 pub fn change(change: CoreChange<'_>, project: Option<&str>, scope: Option<&str>) -> Result<Map<String, Value>> {
     let (action, fact, replacement) = match change {
         CoreChange::Forget { fact } => ("forget", fact, None),
@@ -398,22 +438,39 @@ pub fn change(change: CoreChange<'_>, project: Option<&str>, scope: Option<&str>
             retained.push_str(line);
         }
     }
-    let mut store = store::FactStore::open(true)?;
-    let removed_store = store.as_ref().map(|store| store.count(&scope, &target)).transpose()?.unwrap_or(0);
+    let existing_store = store::FactStore::open(false)?;
+    let stored_expiry = existing_store.as_ref().map(|store| store.expiry(&scope, &target)).transpose()?.flatten();
+    let removed_store = usize::from(stored_expiry.is_some());
+    let expires_at = stored_expiry.flatten();
     let changed = removed_core + removed_pending + removed_store > 0;
+    if let Some(replacement) = replacement.as_ref().filter(|_| changed) {
+        let replacement_target = norm(replacement);
+        let replacement_expiry = existing_store.as_ref().map(|store| store.expiry(&scope, &replacement_target)).transpose()?.flatten();
+        if (replacement_expiry.is_some() && replacement_expiry.flatten() != expires_at)
+            || (expires_at.is_some() && has_permanent_fact(&scope, &replacement_target)?) {
+            return Err(EverettError::new(2, "The replacement fact already has a different lifetime. Forget that exact fact before replacing it."));
+        }
+    }
+    drop(existing_store);
+    let mut store = if changed { store::FactStore::open(true)? } else { None };
     if changed {
-        if let Some(replacement) = &replacement {
+        if let Some(replacement) = replacement.as_ref().filter(|_| expires_at.is_none()) {
             active.retain(|bullet| norm(bullet) != norm(replacement));
             active.push(replacement.clone());
         }
         let cwd = std::env::current_dir().map(|p| p.to_string_lossy().to_string()).unwrap_or_default();
         let mut entry = replacement.as_ref().map(|text| learning_entry(text, scope.key(), scope.name(), &cwd));
+        if let Some(entry) = &mut entry {
+            entry.insert("expires_at".into(), json!(expires_at));
+        }
         if removed_store == 0 && entry.is_some() {
             if let Some(store) = &mut store {
                 store.change(&scope, &target, entry.as_mut())?;
             }
         }
-        write_file(&path, &render(&title(scope.key()), &active, CORE_WORDS)).map_err(|e| EverettError::new(2, e.to_string()))?;
+        if expires_at.is_none() || removed_core > 0 {
+            write_file(&path, &render(&title(scope.key()), &active, CORE_WORDS)).map_err(|e| EverettError::new(2, e.to_string()))?;
+        }
         if removed_pending > 0 {
             write_file(&inbox_path(), &retained).map_err(|e| EverettError::new(2, e.to_string()))?;
         }
@@ -423,7 +480,7 @@ pub fn change(change: CoreChange<'_>, project: Option<&str>, scope: Option<&str>
             }
         }
     }
-    let mirror = if changed { write_vault_mirror(&current_core()) } else { None };
+    let mirror = if changed && (expires_at.is_none() || removed_core > 0) { write_vault_mirror(&current_core()) } else { None };
     let mut result = Map::new();
     result.insert("action".into(), json!(action));
     result.insert("changed".into(), json!(changed));
@@ -432,6 +489,7 @@ pub fn change(change: CoreChange<'_>, project: Option<&str>, scope: Option<&str>
     result.insert("removed_core".into(), json!(removed_core));
     result.insert("removed_pending".into(), json!(removed_pending));
     result.insert("removed_store".into(), json!(removed_store));
+    result.insert("expires_at".into(), json!(expires_at));
     result.insert("mirror".into(), mirror.map(|p| json!(p.to_string_lossy())).unwrap_or(Value::Null));
     Ok(result)
 }

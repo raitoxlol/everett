@@ -752,6 +752,128 @@ fn legacy_corrections_retry_after_a_core_file_write_failure() {
 }
 
 #[test]
+fn temporary_memory_expires_without_entering_merge_or_session_context() {
+    let fx = home_with_claude_session();
+    let mut s = Server::start(&fx, &[]);
+    let permanent = s.call("everett_learn", json!({"fact":"Keep the permanent release checklist"}));
+    let learned = s.call("everett_learn", json!({"fact":"Lumen preview uses port 4200", "ttl_seconds":3600}));
+    assert_eq!(learned["isError"], false, "{learned}");
+    assert_eq!(permanent["structuredContent"]["pending"], true, "{permanent}");
+    let receipt = &learned["structuredContent"];
+    assert_eq!(receipt["stored"], true);
+    assert_eq!(receipt["pending"], false);
+    let expiry = receipt["expires_at"].as_i64().unwrap();
+    assert!(expiry > everett::session::now() as i64);
+    let found = s.call("everett_core", json!({"action":"search", "query":"Lumen"}));
+    assert_eq!(found["structuredContent"]["facts"][0]["expires_at"], expiry, "{found}");
+    assert_eq!(s.call("everett_core", json!({}))["structuredContent"]["pending_learnings"], 1);
+    assert_eq!(fx.run(&["trunk", "merge", "--llm", "none"]).status.code(), Some(0));
+    let read = s.call("everett_core", json!({}));
+    let core = read["structuredContent"]["core"].as_str().unwrap();
+    assert!(core.contains("permanent release checklist"), "{read}");
+    assert!(!core.contains("Lumen"), "{read}");
+    let hook = fx.run_stdin(&["hook", "codex_session_start"], &json!({"session_id":"expiry-session", "cwd":fx.home()}).to_string(), &[]);
+    assert_eq!(hook.status.code(), Some(0));
+    assert!(fx.stdout(&hook).contains("permanent release checklist"));
+    assert!(!fx.stdout(&hook).contains("Lumen"));
+    let database = rusqlite::Connection::open(fx.home().join(".everett/core/facts.sqlite3")).unwrap();
+    let elapsed = everett::session::now() as i64 - 1;
+    database.execute("UPDATE facts SET expires_at = ?1, payload = json_set(payload, '$.expires_at', ?1) WHERE id = ?2", rusqlite::params![elapsed, receipt["id"].as_str().unwrap()]).unwrap();
+    let expired = s.call("everett_core", json!({"action":"search", "query":"Lumen"}));
+    assert_eq!(expired["structuredContent"]["facts"], json!([]), "{expired}");
+    let corrected = s.call("everett_core", json!({"action":"correct", "fact":"Lumen preview uses port 4200", "replacement":"Lumen preview uses port 4300"}));
+    assert_eq!(corrected["isError"], false, "{corrected}");
+    assert_eq!(corrected["structuredContent"]["expires_at"], elapsed, "{corrected}");
+    assert_eq!(s.call("everett_core", json!({"action":"search", "query":"Lumen"}))["structuredContent"]["facts"], json!([]));
+    assert_eq!(fx.run(&["trunk", "merge", "--llm", "none"]).status.code(), Some(0));
+    assert!(!std::fs::read_to_string(fx.home().join(".everett/core/core.md")).unwrap().contains("Lumen"));
+    let forgotten = s.call("everett_core", json!({"action":"forget", "fact":"Lumen preview uses port 4300"}));
+    assert_eq!(forgotten["structuredContent"]["removed_store"], 1, "{forgotten}");
+    s.close();
+}
+
+#[test]
+fn temporary_learning_rejects_permanent_duplicates_before_mutation() {
+    for location in ["core", "pending", "store"] {
+        let fx = home_with_claude_session();
+        let mut s = Server::start(&fx, &[]);
+        for ttl in [json!(-1), json!(0), json!(1.5), json!("60"), Value::Null, json!(31536001)] {
+            let rejected = s.request("tools/call", Some(json!({"name":"everett_learn", "arguments":{"fact":"A temporary convention", "ttl_seconds":ttl}})));
+            assert_eq!(rejected["error"]["code"], -32602, "{rejected}");
+        }
+        assert_eq!(s.call("everett_learn", json!({"fact":"the api_key = abcdef123456", "ttl_seconds":60}))["isError"], true);
+        assert!(!fx.home().join(".everett/core/facts.sqlite3").exists());
+        if location == "core" {
+            fx.write(".everett/core/core.md", "# Everett core\n\n- Atlas uses permanent conventions\n");
+        } else if location == "pending" {
+            fx.write(".everett/core/inbox.jsonl", "{\"scope\":\"global\",\"text\":\"Atlas uses permanent conventions\"}\n");
+        } else {
+            assert_eq!(s.call("everett_learn", json!({"fact":"Atlas uses permanent conventions"}))["isError"], false);
+            fx.write(".everett/core/inbox.jsonl", "");
+        }
+        let core_before = std::fs::read(fx.home().join(".everett/core/core.md")).unwrap_or_default();
+        let pending_before = std::fs::read(fx.home().join(".everett/core/inbox.jsonl")).unwrap_or_default();
+        let facts_before = s.call("everett_core", json!({"action":"search", "query":"Atlas"}))["structuredContent"]["facts"].clone();
+        let rejected = s.call("everett_learn", json!({"fact":"atlas uses permanent conventions.", "ttl_seconds":60}));
+        assert_eq!(rejected["isError"], true, "{location}: {rejected}");
+        assert!(text(&rejected).contains("permanent"), "{rejected}");
+        assert_eq!(std::fs::read(fx.home().join(".everett/core/core.md")).unwrap_or_default(), core_before);
+        assert_eq!(std::fs::read(fx.home().join(".everett/core/inbox.jsonl")).unwrap_or_default(), pending_before);
+        assert_eq!(s.call("everett_core", json!({"action":"search", "query":"Atlas"}))["structuredContent"]["facts"], facts_before);
+        assert_eq!(fx.home().join(".everett/core/facts.sqlite3").exists(), location == "store");
+        assert_eq!(s.call("everett_core", json!({"action":"forget", "fact":"Atlas uses permanent conventions"}))["isError"], false);
+        let temporary = s.call("everett_learn", json!({"fact":"Atlas uses permanent conventions", "ttl_seconds":60}));
+        assert_eq!(temporary["structuredContent"]["pending"], false, "{temporary}");
+        s.close();
+    }
+}
+
+#[test]
+fn temporary_corrections_preserve_expiry_and_reject_lifetime_collisions() {
+    let fx = home_with_claude_session();
+    let mut s = Server::start(&fx, &[]);
+    let first = s.call("everett_learn", json!({"fact":"Orion preview uses port 4200", "project":"atlas", "ttl_seconds":3600}));
+    assert_eq!(first["isError"], false, "{first}");
+    let refreshed = s.call("everett_learn", json!({"fact":"Orion preview uses port 4200", "project":"atlas", "ttl_seconds":7200}));
+    assert_eq!(refreshed["structuredContent"]["id"], first["structuredContent"]["id"]);
+    let expiry = refreshed["structuredContent"]["expires_at"].as_i64().unwrap();
+    assert!(expiry >= first["structuredContent"]["expires_at"].as_i64().unwrap() + 3600);
+    let corrected = s.call("everett_core", json!({"action":"correct", "fact":"Orion preview uses port 4200", "replacement":"Orion preview uses port 4300", "project":"atlas"}));
+    assert_eq!(corrected["isError"], false, "{corrected}");
+    assert_eq!(corrected["structuredContent"]["expires_at"], expiry, "{corrected}");
+    assert!(!fx.home().join(".everett/core/inbox.jsonl").exists());
+    assert!(!fx.home().join(".everett/core/projects/atlas.md").exists());
+    assert_eq!(s.call("everett_core", json!({"action":"search", "query":"Orion", "project":"other"}))["structuredContent"]["facts"], json!([]));
+    let found = s.call("everett_core", json!({"action":"search", "query":"Orion", "project":"atlas"}));
+    assert_eq!(found["structuredContent"]["facts"][0]["expires_at"], expiry, "{found}");
+    let missing = s.call("everett_core", json!({"action":"correct", "fact":"Missing fact", "replacement":"Orion preview uses port 4300", "project":"atlas"}));
+    assert_eq!(missing["structuredContent"]["changed"], false, "{missing}");
+    assert_eq!(s.call("everett_learn", json!({"fact":"Atlas has a permanent release process", "project":"atlas"}))["isError"], false);
+    fx.write(".everett/core/projects/atlas.md", "# Project core: atlas\n\n- Legacy active convention\n");
+    let pending_path = fx.home().join(".everett/core/inbox.jsonl");
+    let pending = std::fs::read_to_string(&pending_path).unwrap() + "{\"scope\":\"project\",\"project\":\"atlas\",\"text\":\"Legacy pending convention\"}\n";
+    std::fs::write(&pending_path, &pending).unwrap();
+    assert_eq!(s.call("everett_learn", json!({"fact":"Another temporary convention", "project":"atlas", "ttl_seconds":60}))["isError"], false);
+    for replacement in ["Atlas has a permanent release process", "Legacy active convention", "Legacy pending convention", "Another temporary convention"] {
+        let rejected = s.call("everett_core", json!({"action":"correct", "fact":"Orion preview uses port 4300", "replacement":replacement, "project":"atlas"}));
+        assert_eq!(rejected["isError"], true, "{replacement}: {rejected}");
+        assert!(text(&rejected).contains("lifetime"), "{rejected}");
+        assert_eq!(std::fs::read_to_string(&pending_path).unwrap(), pending);
+        assert_eq!(std::fs::read_to_string(fx.home().join(".everett/core/projects/atlas.md")).unwrap(), "# Project core: atlas\n\n- Legacy active convention\n");
+    }
+    let rejected = s.call("everett_core", json!({"action":"correct", "fact":"Atlas has a permanent release process", "replacement":"Orion preview uses port 4300", "project":"atlas"}));
+    assert_eq!(rejected["isError"], true, "{rejected}");
+    assert_eq!(std::fs::read_to_string(&pending_path).unwrap(), pending);
+    assert_eq!(s.call("everett_core", json!({"action":"search", "query":"Orion", "project":"atlas"}))["structuredContent"]["facts"][0]["expires_at"], expiry);
+    let promoted = s.call("everett_learn", json!({"fact":"Orion preview uses port 4300", "project":"atlas"}));
+    assert_eq!(promoted["structuredContent"]["pending"], true, "{promoted}");
+    assert_eq!(promoted["structuredContent"]["expires_at"], Value::Null, "{promoted}");
+    assert_eq!(fx.run(&["trunk", "merge", "--llm", "none"]).status.code(), Some(0));
+    assert!(std::fs::read_to_string(fx.home().join(".everett/core/projects/atlas.md")).unwrap().contains("Orion preview uses port 4300"));
+    s.close();
+}
+
+#[test]
 fn card_needs_identity() {
     let fx = home_with_claude_session();
     let mut s = Server::start(&fx, &[]);
