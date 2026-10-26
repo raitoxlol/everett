@@ -165,6 +165,47 @@ fn t3_filters_old_deleted_archived_unknown_missing_and_mismatched_native_referen
 }
 
 #[test]
+fn read_only_acceptance_check_observes_real_cli_filtering_with_synthetic_t3_state() {
+    let fx = fixture();
+    let con = v2(&fx);
+    add(&con, "app-1", Some("native-1"), "codex");
+    let script = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../scripts/check_t3_filter.py");
+    let check = |expected: &str| {
+        Command::new("python3").arg(&script)
+            .arg("--binary").arg(env!("CARGO_BIN_EXE_everett"))
+            .arg("--home").arg(fx.home())
+            .args(["--native-id", "native-1", "--expect", expected])
+            .env_clear().env("PATH", "/usr/bin:/bin")
+            .output().unwrap()
+    };
+    for (sql, expected, state) in [
+        ("SELECT 1", "visible", "active"),
+        ("UPDATE orchestration_v2_projection_threads SET archived_at=updated_at", "hidden", "archived"),
+        ("UPDATE orchestration_v2_projection_threads SET archived_at=NULL,deleted_at=updated_at,active_provider_thread_id=NULL", "hidden", "deleted"),
+    ] {
+        con.execute_batch(sql).unwrap();
+        let path = fx.home().join(".t3/userdata/statev2.sqlite");
+        let before = std::fs::read(&path).unwrap();
+        let out = check(expected);
+        assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+        let receipt: Value = serde_json::from_slice(&out.stdout).unwrap();
+        assert_eq!(receipt["passed"], true);
+        assert_eq!(receipt["links"][0]["state"], state);
+        assert_eq!(receipt["resolved"], expected == "visible");
+        assert_eq!(receipt["native_client_mcp_binding"], "not_checked");
+        assert!(!String::from_utf8_lossy(&out.stdout).contains("real request"));
+        assert!(!String::from_utf8_lossy(&out.stdout).contains("app-1"));
+        assert_eq!(std::fs::read(&path).unwrap(), before);
+        assert!(!fx.home().join(".everett/inbox").exists());
+    }
+    let mismatch = check("visible");
+    assert_eq!(mismatch.status.code(), Some(1));
+    let receipt: Value = serde_json::from_slice(&mismatch.stdout).unwrap();
+    assert_eq!(receipt["passed"], false);
+}
+
+#[test]
 fn provider_transcript_is_preserved_and_current_store_does_not_revive_legacy_rows() {
     let fx = fixture();
     let con = v2(&fx);
