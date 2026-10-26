@@ -1134,18 +1134,24 @@ fn cmd_merge(args: &Args) -> i32 {
 }
 
 fn cmd_trunk_schedule(args: &Args) -> i32 {
-    if !cfg!(target_os = "macos") && args.apply {
-        eprintln!("everett: automatic scheduling requires macOS. Run `everett trunk merge --llm none` manually.");
+    let Some(scheduler) = crate::trunk_schedule::Scheduler::current() else {
+        eprintln!("everett: automatic scheduling requires macOS launchd or Linux systemd. Run `everett trunk merge --llm none` manually.");
         return 2;
-    }
+    };
     let llm = args.llm.clone().unwrap_or_else(|| "claude".to_string());
     if args.remove {
-        let path = crate::trunk_schedule::plist_path();
+        let path = scheduler.path();
         if !args.apply {
             println!("would remove {} (run again with --apply)", path.display());
             return 0;
         }
-        let result = crate::trunk_schedule::remove(None);
+        let result = match scheduler.remove() {
+            Ok(result) => result,
+            Err(error) => {
+                eprintln!("everett: {}", error.message);
+                return error.code;
+            }
+        };
         if result.get("removed").and_then(|v| v.as_bool()).unwrap_or(false) {
             println!("removed {}", result.get("path").and_then(|v| v.as_str()).unwrap_or(""));
         } else {
@@ -1153,37 +1159,23 @@ fn cmd_trunk_schedule(args: &Args) -> i32 {
         }
         return 0;
     }
-    if let Err(e) = crate::trunk_schedule::plist_data(&args.at, &llm) {
-        eprintln!("everett: {}", e.message);
-        return 2;
-    }
-    if !args.apply {
-        println!(
-            "would write {}, then `launchctl bootstrap` it:",
-            crate::trunk_schedule::plist_path().display()
-        );
-        match crate::trunk_schedule::render_plist(&args.at, &llm) {
-            Ok(plist) => println!("{}", String::from_utf8_lossy(&plist)),
-            Err(e) => {
-                eprintln!("everett: {}", e.message);
-                return 2;
-            }
+    let preview = match scheduler.preview(&args.at, &llm) {
+        Ok(preview) => preview,
+        Err(error) => {
+            eprintln!("everett: {}", error.message);
+            return error.code;
         }
+    };
+    if !args.apply {
+        println!("{}", preview);
         println!("# run again with --apply to install it");
         return 0;
     }
-    match crate::trunk_schedule::install(&args.at, &llm, None, None) {
+    match scheduler.install(&args.at, &llm) {
         Ok(result) => {
             println!("wrote {}", result.get("path").and_then(|v| v.as_str()).unwrap_or(""));
-            if result.get("launchctl_ok").and_then(|v| v.as_bool()).unwrap_or(false) {
-                println!("launchctl bootstrap: ok");
-            } else {
-                println!(
-                    "launchctl bootstrap reported an issue (the plist is still installed): {}",
-                    result.get("stderr").and_then(|v| v.as_str()).unwrap_or("")
-                );
-            }
-            println!("logs: {}", crate::trunk_schedule::log_path().display());
+            println!("{} activation: ok", scheduler.name());
+            println!("logs: {}", scheduler.logs());
             0
         }
         Err(e) => {

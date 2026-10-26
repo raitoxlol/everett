@@ -1,4 +1,8 @@
-//! `everett trunk schedule`: a macOS LaunchAgent that runs `everett trunk merge` nightly.
+//! Native user schedules for nightly shared-core merging.
+
+mod systemd;
+
+pub use systemd::{render as render_systemd, SystemdUnits};
 
 use std::collections::HashMap;
 use std::fs;
@@ -12,6 +16,101 @@ use crate::proc::run_capture;
 use crate::session::home;
 
 pub const LABEL: &str = "dev.everett.core-merge";
+
+#[derive(Clone, Copy)]
+pub enum Scheduler {
+    Launchd,
+    Systemd,
+}
+
+impl Scheduler {
+    pub fn current() -> Option<Self> {
+        if cfg!(target_os = "macos") {
+            Some(Self::Launchd)
+        } else if cfg!(target_os = "linux") {
+            Some(Self::Systemd)
+        } else {
+            None
+        }
+    }
+
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Launchd => "launchd",
+            Self::Systemd => "systemd user timer",
+        }
+    }
+
+    pub fn path(self) -> PathBuf {
+        match self {
+            Self::Launchd => plist_path(),
+            Self::Systemd => systemd::timer_path(),
+        }
+    }
+
+    pub fn preview(self, at: &str, llm: &str) -> Result<String> {
+        match self {
+            Self::Launchd => Ok(format!(
+                "would write {}, then `launchctl bootstrap` it:\n{}",
+                self.path().display(), String::from_utf8_lossy(&render_plist(at, llm)?),
+            )),
+            Self::Systemd => {
+                let units = render_systemd(at, llm)?;
+                Ok(format!(
+                    "would write {}, then `systemctl --user daemon-reload` and `systemctl --user enable --now {}.timer`:\n\n# {}\n{}\n# {}\n{}",
+                    self.path().display(), LABEL,
+                    systemd::service_path().display(), units.service,
+                    self.path().display(), units.timer,
+                ))
+            }
+        }
+    }
+
+    pub fn install(self, at: &str, llm: &str) -> Result<Map<String, Value>> {
+        match self {
+            Self::Launchd => {
+                let result = install(at, llm, None, None)?;
+                if result.get("launchctl_ok").and_then(Value::as_bool) != Some(true) {
+                    return Err(EverettError::new(5, format!(
+                        "launchctl bootstrap failed; the plist remains at {}. {}",
+                        self.path().display(), result.get("stderr").and_then(Value::as_str).unwrap_or(""),
+                    )));
+                }
+                Ok(result)
+            }
+            Self::Systemd => systemd::install(at, llm),
+        }
+    }
+
+    pub fn remove(self) -> Result<Map<String, Value>> {
+        match self {
+            Self::Launchd => Ok(remove(None)),
+            Self::Systemd => systemd::remove(),
+        }
+    }
+
+    pub fn logs(self) -> String {
+        match self {
+            Self::Launchd => log_path().display().to_string(),
+            Self::Systemd => format!("journalctl --user -u {LABEL}.service"),
+        }
+    }
+
+    pub fn status(self) -> (Option<bool>, String) {
+        match self {
+            Self::Launchd => {
+                if !is_scheduled(None) {
+                    return (None, "not scheduled (optional, launchd; `everett trunk schedule --apply`)".into());
+                }
+                if is_stale(None) {
+                    return (Some(false), format!("stale ({}); run `everett trunk schedule --apply`", self.path().display()));
+                }
+                (Some(true), format!("configured launchd plist ({})", self.path().display()))
+            }
+            Self::Systemd => systemd::status(),
+        }
+    }
+}
 
 pub fn plist_path() -> PathBuf {
     home().join("Library").join("LaunchAgents").join(format!("{}.plist", LABEL))
@@ -50,6 +149,7 @@ fn parse_at(at: &str) -> Result<(i64, i64)> {
 
 pub fn plist_data(at: &str, llm: &str) -> Result<Map<String, Value>> {
     let (hour, minute) = parse_at(at)?;
+    validate_llm(llm)?;
     let log = log_path().to_string_lossy().to_string();
     let mut env = Map::new();
     env.insert(
@@ -73,6 +173,14 @@ pub fn plist_data(at: &str, llm: &str) -> Result<Map<String, Value>> {
     d.insert("StandardErrorPath".into(), json!(log));
     d.insert("RunAtLoad".into(), json!(false));
     Ok(d)
+}
+
+fn validate_llm(llm: &str) -> Result<()> {
+    if ["claude", "codex", "none"].contains(&llm) {
+        Ok(())
+    } else {
+        Err(EverettError::new(2, "--llm must be claude, codex, or none."))
+    }
 }
 
 fn plist_escape(s: &str) -> String {

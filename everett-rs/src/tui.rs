@@ -1647,10 +1647,10 @@ fn screen_jev(
                         } else {
                             "off"
                         },
-                        if cfg!(target_os = "macos") {
+                        if crate::trunk_schedule::Scheduler::current().is_some() {
                             " (04:00, Claude)"
                         } else {
-                            " (requires macOS)"
+                            " (requires launchd or systemd)"
                         }
                     ),
                     p.dim,
@@ -1726,7 +1726,7 @@ fn screen_jev(
                 }
             }
             KeyCode::Char('s') => cfg.jev_choice = "skip".to_string(),
-            KeyCode::Char('m') if cfg!(target_os = "macos") => {
+            KeyCode::Char('m') if crate::trunk_schedule::Scheduler::current().is_some() => {
                 cfg.trunk_schedule_enabled = !cfg.trunk_schedule_enabled
             }
             KeyCode::Enter => return Ok(Dir::Forward),

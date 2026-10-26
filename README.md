@@ -108,7 +108,7 @@ everett onboard --yes --span-days 7         # backfill cards for the last 7 days
 everett onboard --yes --no-backfill         # skip card backfill
 everett onboard --yes --no-mcp              # skip MCP registration
 everett onboard --yes --jev-key-env MY_KEY  # save a Jev key from an env var (validated first)
-everett onboard --yes --schedule-merge      # macOS: also schedule nightly `everett trunk merge`
+everett onboard --yes --schedule-merge      # macOS/Linux: also schedule nightly `everett trunk merge`
 ```
 
 **Smarter routing (optional).** Jev ([typesafe.ai](https://typesafe.ai)) picks the right session
@@ -223,7 +223,7 @@ Done. MAX_RETRIES is now 5 and the backoff test covers the cap.
 | `everett trunk merge [--llm claude\|codex\|none] [--dry-run]` | Distills the inbox into the shared core. |
 | `everett core [show\|edit-path\|history] [--project P]` | Shows the core a new session in this folder receives, the file to edit, or past merges. |
 | `everett trunk [view] [--dry-run]` | Writes the session list as a Markdown note into your notes vault (optional). |
-| `everett trunk schedule [--at HH:MM] [--remove] [--llm claude\|codex\|none] [--apply]` | Prints (default) or, with `--apply`, installs/removes a macOS LaunchAgent that runs `everett trunk merge` nightly (default 04:00, `--llm claude`). See [Nightly auto-merge](#nightly-auto-merge). |
+| `everett trunk schedule [--at HH:MM] [--remove] [--llm claude\|codex\|none] [--apply]` | Prints (default) or, with `--apply`, installs/removes a macOS LaunchAgent or Linux systemd user timer that runs `everett trunk merge` nightly (default 04:00, `--llm claude`). See [Nightly auto-merge](#nightly-auto-merge). |
 | `everett login [--device NAME] [--open] [--force] [--json]` | Native Rust binary only: signs this device in to an Everett account with the OAuth device-code flow (see [Accounts](#accounts)). |
 | `everett whoami [--json]` | Prints the signed-in account (email, issuer, device); refreshes a stale token first. |
 | `everett logout [--revoke-device] [--json]` | Revokes the refresh token and deletes the local credential; optionally attempts permanent registry device revocation first. |
@@ -440,16 +440,25 @@ For storage boundaries, mid-session reads, and the relationship to Power Proxy a
 
 ### Nightly auto-merge
 
-`everett trunk schedule` installs a macOS LaunchAgent so the shared core merges itself every night instead of waiting on someone to run `everett trunk merge`:
+`everett trunk schedule` previews a native nightly schedule. Apply it explicitly to run the shared-core merge each day (default 04:00 in the host's local time, `--llm claude`):
 
 ```bash
-everett trunk schedule                       # print what would be installed (default 04:00, --llm claude)
-everett trunk schedule --apply               # write the LaunchAgent and launchctl bootstrap it
+everett trunk schedule                       # print the files and activation commands; change nothing
+everett trunk schedule --apply               # write and activate this user's schedule
 everett trunk schedule --at 02:30 --llm codex --apply
-everett trunk schedule --remove --apply      # launchctl bootout it and delete the plist
+everett trunk schedule --remove --apply      # disable and remove only Everett's schedule
 ```
 
-`--apply` writes `~/Library/LaunchAgents/dev.everett.core-merge.plist` (label `dev.everett.core-merge`) and runs `launchctl bootstrap gui/<uid> <plist>`; without `--apply` it only prints the plist. The scheduled job runs `everett trunk merge --llm <x>` once a day and skips cleanly when the inbox is empty, same as running it by hand. Logs go to `~/.everett/logs/merge.log`. `everett doctor` reports whether it's currently scheduled. `everett onboard` offers the same thing as a "merge shared memory nightly" toggle next to the Jev step.
+| Platform | Files and activation | Inspect runs |
+| --- | --- | --- |
+| macOS | `~/Library/LaunchAgents/dev.everett.core-merge.plist`; `launchctl bootstrap gui/<uid> <plist>` | `~/.everett/logs/merge.log` |
+| Linux | `$XDG_CONFIG_HOME/systemd/user/dev.everett.core-merge.service` and `.timer` (default `~/.config/systemd/user/`); `systemctl --user daemon-reload`, then `systemctl --user enable --now dev.everett.core-merge.timer` | `journalctl --user -u dev.everett.core-merge.service` |
+
+The job uses the current Everett executable, selected `EVERETT_HOME`, and absolute entries from `PATH`. It runs `everett trunk merge --llm <x>` and skips cleanly when the inbox is empty. `--llm none` needs no harness CLI. Linux units contain only `HOME`, `EVERETT_HOME`, and `PATH` from the installation environment; they do not copy API keys. A configured harness can still read its own account files or environment supplied by the user manager.
+
+Linux requires systemd and a reachable user manager. If activation fails, Everett exits nonzero with the failed command and leaves the unit files for inspection/retry. The timer uses [`Persistent=true`](https://www.freedesktop.org/software/systemd/man/latest/systemd.timer.html) to catch a missed run when the user manager starts again. Running while logged out depends on the host's existing user-manager/linger configuration; Everett does not change it.
+
+`everett doctor` checks that the Linux timer is enabled and active; this confirms scheduling, not a completed merge. Check the journal for the actual run result. On macOS it checks the plist and saved executable path. `everett onboard` offers the same "merge shared memory nightly" toggle, or use `--schedule-merge` for an unattended opt-in. Preview and removal do not alter the core or its pending facts.
 
 ## For agents: MCP
 
@@ -594,7 +603,7 @@ limitations: [relay threat model](docs/relay-threat-model.md).
 | Hermes points to a missing Everett binary | Run `everett install-mcp --hermes` and merge its printed entry into `mcp_servers.everett` in `~/.hermes/config.yaml`, preserving other entries. Use the printed executable path and `mcp --harness hermes` arguments, then restart Hermes. This command does not edit Hermes configuration automatically. |
 | Session not found / no live reply | Start a harness session or run `everett --hours 168 ls` for older ones; send to its exact id or title. In MCP, pass `hours: 168` to listing and sending. Hook injection needs enabled/trusted hooks; Pi/Hermes poll `everett_inbox`. A queued message is not a read receipt. |
 | Codex reports `Interrupted system call (os error 4)` | Delivery is unconfirmed. Check the target session before retrying; for an open session with Everett hooks, use `--mode inbox` (MCP: `mode: "inbox"`). Failed resumes are not retried automatically. |
-| Shared fact missing / scheduling unavailable | Run `everett trunk merge --llm none`, then `everett core`. Automatic launchd scheduling and default desktop notifications require macOS; manual merging works on Linux. |
+| Shared fact missing / scheduling unavailable | Run `everett trunk merge --llm none`, then `everett core`. Run `everett doctor` to inspect the macOS LaunchAgent or Linux systemd user timer. On Linux, inspect `systemctl --user status dev.everett.core-merge.timer` and the service journal; a missing user manager prevents automatic scheduling. |
 
 ## Development
 
