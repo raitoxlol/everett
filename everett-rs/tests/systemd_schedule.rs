@@ -97,6 +97,24 @@ fn systemd_preview_validates_without_files_and_preserves_only_selected_environme
 }
 
 #[test]
+fn systemd_relative_selected_home_is_saved_as_an_absolute_path() {
+    let home = isolated();
+    let selected = PathBuf::from("./store %h $literal");
+    std::env::set_var("EVERETT_HOME", &selected);
+    let absolute = std::env::current_dir().unwrap().join(&selected);
+    let expected = format!(
+        "Environment=\"EVERETT_HOME={}\"",
+        absolute.to_string_lossy().replace('%', "%%")
+    );
+    let units = render_systemd("04:00", "none").unwrap();
+    assert!(units.service.contains(&expected), "{}", units.service);
+    Scheduler::Systemd.install("04:00", "none").unwrap();
+    assert!(std::fs::read_to_string(unit_dir(&home).join(SERVICE))
+        .unwrap()
+        .contains(&expected));
+}
+
+#[test]
 fn systemd_install_reapply_status_and_remove_are_user_scoped_and_idempotent() {
     let home = isolated();
     assert_eq!(Scheduler::Systemd.remove().unwrap()["removed"], false);
