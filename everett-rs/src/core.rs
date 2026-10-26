@@ -406,14 +406,21 @@ pub fn change(change: CoreChange<'_>, project: Option<&str>, scope: Option<&str>
             active.retain(|bullet| norm(bullet) != norm(replacement));
             active.push(replacement.clone());
         }
+        let cwd = std::env::current_dir().map(|p| p.to_string_lossy().to_string()).unwrap_or_default();
+        let mut entry = replacement.as_ref().map(|text| learning_entry(text, scope.key(), scope.name(), &cwd));
+        if removed_store == 0 && entry.is_some() {
+            if let Some(store) = &mut store {
+                store.change(&scope, &target, entry.as_mut())?;
+            }
+        }
+        write_file(&path, &render(&title(scope.key()), &active, CORE_WORDS)).map_err(|e| EverettError::new(2, e.to_string()))?;
         if removed_pending > 0 {
             write_file(&inbox_path(), &retained).map_err(|e| EverettError::new(2, e.to_string()))?;
         }
-        write_file(&path, &render(&title(scope.key()), &active, CORE_WORDS)).map_err(|e| EverettError::new(2, e.to_string()))?;
-        if let Some(store) = &mut store {
-            let cwd = std::env::current_dir().map(|p| p.to_string_lossy().to_string()).unwrap_or_default();
-            let mut entry = replacement.as_ref().map(|text| learning_entry(text, scope.key(), scope.name(), &cwd));
-            store.change(&scope, &target, entry.as_mut())?;
+        if removed_store > 0 {
+            if let Some(store) = &mut store {
+                store.change(&scope, &target, entry.as_mut())?;
+            }
         }
     }
     let mirror = if changed { write_vault_mirror(&current_core()) } else { None };

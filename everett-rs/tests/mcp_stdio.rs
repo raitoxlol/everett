@@ -680,6 +680,78 @@ fn core_correction_can_be_retried_after_a_store_commit_failure() {
 }
 
 #[test]
+fn legacy_core_and_pending_corrections_retry_after_store_commit_failure() {
+    for location in ["core", "pending"] {
+        let fx = home_with_claude_session();
+        assert_eq!(fx.run(&["learn", "Keep the unrelated convention"]).status.code(), Some(0));
+        assert_eq!(fx.run(&["trunk", "merge", "--llm", "none"]).status.code(), Some(0));
+        if location == "core" {
+            fx.write(".everett/core/core.md", "# Everett core\n\n- Keep the unrelated convention\n- Legacy packages use rpm\n");
+            fx.write(".everett/core/inbox.jsonl", "");
+        } else {
+            fx.write(".everett/core/inbox.jsonl", "{\"scope\":\"global\",\"text\":\"Legacy packages use rpm\"}\n");
+        }
+        let core_before = std::fs::read(fx.home().join(".everett/core/core.md")).unwrap();
+        let pending_before = std::fs::read(fx.home().join(".everett/core/inbox.jsonl")).unwrap();
+        let mut database = rusqlite::Connection::open(fx.home().join(".everett/core/facts.sqlite3")).unwrap();
+        let transaction = database.transaction().unwrap();
+        assert_eq!(transaction.query_row("SELECT count(*) FROM facts WHERE text LIKE '%Legacy%'", [], |row| row.get::<_, i64>(0)).unwrap(), 0);
+        let mut s = Server::start(&fx, &[]);
+        let args = json!({"action":"correct", "fact":"Legacy packages use rpm", "replacement":"Legacy packages use deb"});
+        let failed = s.call("everett_core", args.clone());
+        assert_eq!(failed["isError"], true, "{location}: {failed}");
+        assert!(text(&failed).contains("locked"), "{failed}");
+        assert_eq!(std::fs::read(fx.home().join(".everett/core/core.md")).unwrap(), core_before, "{location}");
+        assert_eq!(std::fs::read(fx.home().join(".everett/core/inbox.jsonl")).unwrap(), pending_before, "{location}");
+        drop(transaction);
+        let retried = s.call("everett_core", args);
+        assert_eq!(retried["isError"], false, "{location}: {retried}");
+        assert_eq!(retried["structuredContent"]["changed"], true, "{retried}");
+        let found = s.call("everett_core", json!({"action":"search", "query":"Legacy"}));
+        assert_eq!(found["structuredContent"]["facts"][0]["text"], "Legacy packages use deb", "{found}");
+        assert_eq!(fx.run(&["trunk", "merge", "--llm", "none"]).status.code(), Some(0));
+        let core = std::fs::read_to_string(fx.home().join(".everett/core/core.md")).unwrap();
+        assert!(core.contains("Legacy packages use deb") && !core.contains("rpm"), "{location}: {core}");
+        s.close();
+    }
+}
+
+#[test]
+fn legacy_corrections_retry_after_a_core_file_write_failure() {
+    use std::os::unix::fs::PermissionsExt;
+    for location in ["core", "pending"] {
+        let fx = home_with_claude_session();
+        assert_eq!(fx.run(&["learn", "Keep the unrelated convention"]).status.code(), Some(0));
+        assert_eq!(fx.run(&["trunk", "merge", "--llm", "none"]).status.code(), Some(0));
+        let projects = fx.home().join(".everett/core/projects");
+        std::fs::create_dir_all(&projects).unwrap();
+        if location == "core" {
+            fx.write(".everett/core/projects/atlas.md", "# Project core: atlas\n\n- Legacy packages use rpm\n");
+        } else {
+            fx.write(".everett/core/inbox.jsonl", "{\"scope\":\"project\",\"project\":\"atlas\",\"text\":\"Legacy packages use rpm\"}\n");
+        }
+        let mut s = Server::start(&fx, &[]);
+        let args = json!({"action":"correct", "fact":"Legacy packages use rpm", "replacement":"Legacy packages use deb", "project":"atlas"});
+        std::fs::set_permissions(&projects, std::fs::Permissions::from_mode(0o500)).unwrap();
+        let failed = s.call("everett_core", args.clone());
+        std::fs::set_permissions(&projects, std::fs::Permissions::from_mode(0o700)).unwrap();
+        assert_eq!(failed["isError"], true, "{location}: {failed}");
+        let original = if location == "core" { projects.join("atlas.md") } else { fx.home().join(".everett/core/inbox.jsonl") };
+        assert!(std::fs::read_to_string(original).unwrap().contains("Legacy packages use rpm"));
+        let persisted = s.call("everett_core", json!({"action":"search", "query":"Legacy", "project":"atlas"}));
+        assert_eq!(persisted["structuredContent"]["facts"][0]["text"], "Legacy packages use deb", "{persisted}");
+        let retried = s.call("everett_core", args);
+        assert_eq!(retried["isError"], false, "{retried}");
+        assert_eq!(retried["structuredContent"]["changed"], true, "{retried}");
+        let core = std::fs::read_to_string(projects.join("atlas.md")).unwrap();
+        assert!(core.contains("Legacy packages use deb") && !core.contains("rpm"), "{core}");
+        let pending = std::fs::read_to_string(fx.home().join(".everett/core/inbox.jsonl")).unwrap_or_default();
+        assert!(!pending.contains("Legacy packages use rpm"), "{pending}");
+        s.close();
+    }
+}
+
+#[test]
 fn card_needs_identity() {
     let fx = home_with_claude_session();
     let mut s = Server::start(&fx, &[]);
