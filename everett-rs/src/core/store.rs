@@ -106,13 +106,14 @@ impl FactStore {
         transaction.commit().map_err(error)
     }
 
-    pub(super) fn count(&self, scope: &CoreScope, target: &str) -> Result<usize> {
+    pub(super) fn expiry(&self, scope: &CoreScope, target: &str) -> Result<Option<Option<i64>>> {
         self.0
             .query_row(
-                "SELECT count(*) FROM facts WHERE scope = ?1 AND project = ?2 AND normalized = ?3",
+                "SELECT expires_at FROM facts WHERE scope = ?1 AND project = ?2 AND normalized = ?3",
                 params![scope.name(), scope.key(), target],
                 |row| row.get(0),
             )
+            .optional()
             .map_err(error)
     }
 

@@ -105,11 +105,12 @@ pub fn tools() -> &'static Vec<Value> {
             }),
             json!({
                 "name": "everett_learn",
-                "description": "Push one durable fact (a decision, convention, gotcha, path, or command) into the shared core that every session starts from. Max 500 characters. Anything that looks like a secret is rejected. Use scope \"project\" for facts only this project needs.",
+                "description": "Store one fact (a decision, convention, gotcha, path, or command). Durable facts queue for the shared core. Optional ttl_seconds stores temporary facts only for local search until expiry; they never enter merge or injected context. Max 500 characters. Secrets are rejected. Use scope \"project\" for project-only facts.",
                 "inputSchema": {"type": "object", "properties": {
                     "fact": {"type": "string", "description": "One self-contained fact.", "maxLength": crate::core::MAX_LEARNING},
                     "project": s("Project name (default: the current folder's project)."),
                     "scope": {"type": "string", "enum": ["global", "project"]},
+                    "ttl_seconds": {"type":"integer", "minimum":1, "maximum":crate::core::MAX_TTL_SECONDS, "description":"Optional lifetime in whole seconds, up to one year. Temporary facts are search-only; existing permanent copies must be forgotten first."},
                 }, "required": ["fact"], "additionalProperties": false},
             }),
             json!({
@@ -810,7 +811,12 @@ fn tool_learn(args: &Map<String, Value>) -> std::result::Result<Map<String, Valu
     let fact = str_arg(args, "fact", true)?;
     let project = str_arg(args, "project", false)?;
     let scope = str_arg(args, "scope", false)?;
-    let entry = crate::core::learn(
+    let ttl_seconds = match args.get("ttl_seconds") {
+        None => None,
+        Some(value) => Some(value.as_u64().filter(|ttl| (1..=crate::core::MAX_TTL_SECONDS).contains(ttl))
+            .ok_or_else(|| ToolFailure::Params("ttl_seconds must be an integer between 1 and 31536000".into()))?),
+    };
+    let entry = crate::core::learn_with_ttl(
         &fact,
         if project.is_empty() {
             None
@@ -819,10 +825,14 @@ fn tool_learn(args: &Map<String, Value>) -> std::result::Result<Map<String, Valu
         },
         if scope.is_empty() { None } else { Some(&scope) },
         None,
+        ttl_seconds,
     )
     .map_err(ToolFailure::Tool)?;
     let mut out = Map::new();
     out.insert("learned".into(), json!(true));
+    out.insert("stored".into(), json!(true));
+    out.insert("pending".into(), json!(ttl_seconds.is_none()));
+    out.insert("expires_at".into(), entry.get("expires_at").cloned().unwrap_or(Value::Null));
     out.insert("id".into(), entry.get("id").cloned().unwrap_or(Value::Null));
     out.insert(
         "scope".into(),
@@ -834,9 +844,8 @@ fn tool_learn(args: &Map<String, Value>) -> std::result::Result<Map<String, Valu
     );
     out.insert(
         "note".into(),
-        json!(
-            "Queued in the inbox; it reaches every session after the next `everett trunk merge`."
-        ),
+        json!(if ttl_seconds.is_some() { "Stored for local search until expires_at; excluded from merge and injected core." }
+            else { "Stored for search and queued in the inbox; the next `everett trunk merge` updates the shared core." }),
     );
     Ok(out)
 }
