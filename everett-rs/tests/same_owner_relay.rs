@@ -38,102 +38,104 @@ impl Server {
         let url = format!("http://{}", listener.local_addr().unwrap());
         let state = Arc::new(Mutex::new(State::default()));
         let weak = Arc::downgrade(&state);
-        std::thread::spawn(move || loop {
-            let Some(shared) = weak.upgrade() else { break };
-            let Ok((mut stream, _)) = listener.accept() else {
-                drop(shared);
-                std::thread::sleep(Duration::from_millis(5));
-                continue;
-            };
-            let (path, caller, args) = request(&mut stream);
-            let mut s = shared.lock().unwrap();
-            let mut status = 200;
-            let value = match path.as_str() {
-                "/v2/relay/whoami" => json!({"owner":OWNER,"deviceId":caller,"role":"admin"}),
-                "/v2/relay/register" => {
-                    let device: Device = serde_json::from_value(args["device"].clone()).unwrap();
-                    device.verify().unwrap();
-                    assert_eq!(device.device_id, caller);
-                    s.labels.insert(
-                        caller.clone(),
-                        if caller == "agent-max" {
-                            "Max NUC"
-                        } else {
-                            "Hugo Box"
-                        }
-                        .into(),
-                    );
-                    s.devices.insert(caller.clone(), device);
-                    Value::Null
-                }
-                "/v2/relay/devices" => json!(s.devices.values().collect::<Vec<_>>()),
-                "/v2/relay/deviceLabels" => {
-                    let mut labels = s.labels.clone();
-                    if s.duplicate {
-                        labels.insert("agent-third".into(), "Hugo Box".into());
+        std::thread::spawn(move || {
+            while let Some(shared) = weak.upgrade() {
+                let Ok((mut stream, _)) = listener.accept() else {
+                    drop(shared);
+                    std::thread::sleep(Duration::from_millis(5));
+                    continue;
+                };
+                let (path, caller, args) = request(&mut stream);
+                let mut s = shared.lock().unwrap();
+                let mut status = 200;
+                let value = match path.as_str() {
+                    "/v2/relay/whoami" => json!({"owner":OWNER,"deviceId":caller,"role":"admin"}),
+                    "/v2/relay/register" => {
+                        let device: Device =
+                            serde_json::from_value(args["device"].clone()).unwrap();
+                        device.verify().unwrap();
+                        assert_eq!(device.device_id, caller);
+                        s.labels.insert(
+                            caller.clone(),
+                            if caller == "agent-max" {
+                                "Max NUC"
+                            } else {
+                                "Hugo Box"
+                            }
+                            .into(),
+                        );
+                        s.devices.insert(caller.clone(), device);
+                        Value::Null
                     }
-                    if s.labels_unavailable {
+                    "/v2/relay/devices" => json!(s.devices.values().collect::<Vec<_>>()),
+                    "/v2/relay/deviceLabels" => {
+                        let mut labels = s.labels.clone();
+                        if s.duplicate {
+                            labels.insert("agent-third".into(), "Hugo Box".into());
+                        }
+                        if s.labels_unavailable {
+                            status = 503;
+                            json!({"error":"unavailable"})
+                        } else {
+                            json!({"labels":labels,"complete":!s.incomplete})
+                        }
+                    }
+                    "/v2/relay/device" => {
+                        s.device_queries += 1;
+                        if s.revoked || s.unavailable {
+                            status = if s.unavailable { 503 } else { 403 };
+                            json!({"error":"device_unavailable"})
+                        } else {
+                            let mut d = s.devices.get(args["deviceId"].as_str().unwrap()).cloned();
+                            if s.foreign {
+                                d = Some(
+                                    everett::relay::crypto::Keys::new(
+                                        "other-owner".into(),
+                                        args["deviceId"].as_str().unwrap().into(),
+                                        [19; 32],
+                                        [20; 32],
+                                    )
+                                    .device,
+                                );
+                            }
+                            json!(d)
+                        }
+                    }
+                    "/v2/relay/enqueue" if s.enqueue_unavailable => {
                         status = 503;
                         json!({"error":"unavailable"})
-                    } else {
-                        json!({"labels":labels,"complete":!s.incomplete})
                     }
-                }
-                "/v2/relay/device" => {
-                    s.device_queries += 1;
-                    if s.revoked || s.unavailable {
-                        status = if s.unavailable { 503 } else { 403 };
-                        json!({"error":"device_unavailable"})
-                    } else {
-                        let mut d = s.devices.get(args["deviceId"].as_str().unwrap()).cloned();
-                        if s.foreign {
-                            d = Some(
-                                everett::relay::crypto::Keys::new(
-                                    "other-owner".into(),
-                                    args["deviceId"].as_str().unwrap().into(),
-                                    [19; 32],
-                                    [20; 32],
-                                )
-                                .device,
-                            );
+                    "/v2/relay/enqueue" => {
+                        let e: Envelope = serde_json::from_value(args["envelope"].clone()).unwrap();
+                        if !s.messages.iter().any(|m| m.message_id == e.message_id) {
+                            s.messages.push(e);
                         }
-                        json!(d)
+                        json!({"state":"queued"})
                     }
-                }
-                "/v2/relay/enqueue" if s.enqueue_unavailable => {
-                    status = 503;
-                    json!({"error":"unavailable"})
-                }
-                "/v2/relay/enqueue" => {
-                    let e: Envelope = serde_json::from_value(args["envelope"].clone()).unwrap();
-                    if !s.messages.iter().any(|m| m.message_id == e.message_id) {
-                        s.messages.push(e);
+                    "/v2/relay/pending" => {
+                        let envelopes: Vec<_> = s
+                            .messages
+                            .iter()
+                            .filter(|m| !s.pending_empty && m.to_device == caller)
+                            .map(|e| json!({"envelope":e}))
+                            .collect();
+                        json!({"serverNow":(everett::session::now()*1000.0) as i64,"envelopes":envelopes,"isDone":true,"continueCursor":"0"})
                     }
-                    json!({"state":"queued"})
+                    "/v2/relay/observe" | "/v2/relay/accept" => json!({}),
+                    "/v2/relay/status" => json!({"state":"queued"}),
+                    _ => {
+                        status = 404;
+                        json!({"error":"unsupported"})
+                    }
+                };
+                let body = if status == 200 {
+                    json!({"result":value})
+                } else {
+                    value
                 }
-                "/v2/relay/pending" => {
-                    let envelopes: Vec<_> = s
-                        .messages
-                        .iter()
-                        .filter(|m| !s.pending_empty && m.to_device == caller)
-                        .map(|e| json!({"envelope":e}))
-                        .collect();
-                    json!({"serverNow":(everett::session::now()*1000.0) as i64,"envelopes":envelopes,"isDone":true,"continueCursor":"0"})
-                }
-                "/v2/relay/observe" | "/v2/relay/accept" => json!({}),
-                "/v2/relay/status" => json!({"state":"queued"}),
-                _ => {
-                    status = 404;
-                    json!({"error":"unsupported"})
-                }
-            };
-            let body = if status == 200 {
-                json!({"result":value})
-            } else {
-                value
+                .to_string();
+                let _ = write!(stream,"HTTP/1.1 {status} Test\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",body.len());
             }
-            .to_string();
-            let _ = write!(stream,"HTTP/1.1 {status} Test\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",body.len());
         });
         Self { url, state }
     }
