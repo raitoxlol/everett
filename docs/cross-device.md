@@ -1,5 +1,9 @@
 # Cross-device Everett
 
+Use the [native Cloudflare guide](cloudflare-native.md) and
+[agent support and wake](agent-support.md) for current Cloudflare setup and
+per-agent wake capabilities.
+
 Everett supports two **independent, inbox-only transports per peer**: manual SSH
 and an end-to-end encrypted Convex relay. SSH pairing remains one-way, with replies
 through status polling; its setup below is unchanged. Relay peers pin both directions
@@ -201,7 +205,7 @@ everett relay register
 everett relay devices
 ```
 
-Configuration can instead be persisted using the [auth config example](auth.md#native-sign-in).
+Configuration can instead be persisted using the [auth config example](auth.md#existing-oidc-sign-in).
 `relay whoami` must report the same owner namespace for A/B but different `deviceId`s.
 Registration prints `device` and `fingerprint`; the relay fingerprint is **64 lowercase
 hex characters, with no `SHA256:` prefix**. It covers the protocol version, owner,

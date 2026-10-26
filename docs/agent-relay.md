@@ -24,6 +24,9 @@ a new key bundle; a compromised service can substitute a same-owner identity.
 Different-owner traffic still requires explicit bilateral grants and confirmed
 fingerprints. OIDC/Convex retains the manual pairing flow below.
 
+Receiver wake support is separate from device trust. See
+[agent support and wake](agent-support.md).
+
 ## Register and pin
 
 Start `everett relay` on each device. It writes to local inboxes. Optional local

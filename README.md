@@ -4,6 +4,12 @@ Route requests, messages, and shared memory across your coding-agent sessions—
 
 **Works with:** Claude Code · Codex · OMP · Pi · Hermes Agent · Grok CLI · Devin CLI.
 T3 Code threads are recognized through their underlying harness sessions.
+OpenAI dots and Grok Bot connect through registered external MCP inboxes.
+Hark and Muse compatibility is unverified.
+
+**Wake support:** Claude Code has native local wake and an optional relay receiver policy.
+Dots and Grok Bot can use owner-configured webhook nudges. Other harnesses use
+headless resume or inbox pickup. See [agent support and wake](docs/agent-support.md).
 
 ## Quickstart
 
@@ -208,7 +214,7 @@ Done. MAX_RETRIES is now 5 and the backoff test covers the cap.
 | `everett route "<text>" [--router local\|jev] [--json]` | Picks the session a request continues: `SESSION`, `NEW`, or `ASK`, with a confidence and the resume command. It never sends. |
 | `everett send "<text>" [--dry-run] [--timeout S] [--router …]` | Routes the request (jev when a key is configured, else local). An idle local session is resumed headless after it goes quiet (up to 2 min), and the reply is printed. Automatic delivery refuses passive inbox targets without queueing. `NEW` and `ASK` send nothing (`ASK` prints its candidates; resend with `--to`). See [Live delivery](#live-delivery). |
 | `everett send … [--mode auto\|resume\|inbox] [--wait S]` | Default `auto` resumes when safe or fails without queueing. `--mode inbox` explicitly queues for hooks or polling. It does not send a Claude wake. A matching owner `receiver-webhook.json` rule can POST a nudge for `grok-bot` or `openai-dot`; `wake` stays false. `--wait S` waits for an inbox reply; a timeout leaves the explicit queue intact. |
-| `everett send --to <full-Claude-session-UUID> --wake [--wait S] "<request>"` | Queues the request, then explicitly wakes an existing local Claude Code background session through a PTY and waits for a reply linked to that inbox message. Requires an interactive local terminal and Claude Code 2.1.285 or newer. Default `auto`, MCP, gateway, relay, remote, and T3 Code sends do not wake sessions. |
+| `everett send --to <full-Claude-session-UUID> --wake [--wait S] "<request>"` | Queues the request, then explicitly wakes an existing local Claude Code background session through a PTY and waits for a reply linked to that inbox message. Requires an interactive local terminal and Claude Code 2.1.285 or newer. The sender cannot request this native wake through `auto`, MCP, gateway, remote, or T3 Code sends. A separately enabled receiver policy can wake Claude after a relay import. |
 | `everett reply <message-id> "<text>"` | Answers an Everett message; the reply goes to the sender's inbox. |
 | `everett inbox [--session S] [--peek] [--message ID] [--json]` | Shows the messages waiting for this session (or the human inbox when run outside a session) and marks them delivered; `--message` shows and marks only that message. |
 | `everett event done\|blocked\|needs-input\|info "<msg>" [--project P]` | Records what this session is doing (see [Events](#events)). |
@@ -248,7 +254,7 @@ Global option: `--hours N` sets the look-back window (default 72).
 | T3 Code | Inbox; hooks where supported, otherwise explicit MCP polling; no CLI resume | not supported |
 | OpenAI dots / Grok Bot | Registered external inbox via owner-authorized MCP; no provider resume. Optional owner webhook nudge: [Wake a Grok Bot](#wake-a-grok-bot). | not supported |
 
-The harness appends the request and the reply to that session's history. Hermes sessions that belong to a chat platform (Telegram, Discord, and so on) are listed and routable, but `send` refuses them, because a CLI resume would not reach that chat. Scripted Hermes runs (cron, oneshot, webhook) are hidden like other automated runs. Grok sessions are read from `~/.grok/sessions/<url-encoded cwd>/<id>/` (`summary.json` for id, folder, and title; `prompt_history.jsonl` for the typed requests). A Grok session counts as running while `~/.grok/active_sessions.json` names it with a live process id. Headless `grok -p` runs are hidden like other scripted runs. Devin CLI sessions are read from `sessions.db` under `$DEVIN_HOME`, else the platform data dir (`~/Library/Application Support/devin/cli` on macOS, `~/.local/share/devin/cli` on Linux): the `sessions` table gives id, folder, title, and activity; `message_nodes` gives the user asks when the CLI build has it, otherwise `transcripts/<id>.json` carries the listing. Hidden sessions are skipped. Devin has no Everett hooks, so delivery is a headless `devin --resume <id>` run.
+The harness appends the request and the reply to that session's history. Hermes sessions that belong to a chat platform (Telegram, Discord, and so on) are listed and routable, but `send` refuses them, because a CLI resume would not reach that chat. Scripted Hermes runs (cron, oneshot, webhook) are hidden like other automated runs. Grok sessions are read from `~/.grok/sessions/<url-encoded cwd>/<id>/` (`summary.json` for id, folder, and title; `prompt_history.jsonl` for the typed requests). A Grok session counts as running while `~/.grok/active_sessions.json` names it with a live process id. Headless `grok -p` runs are hidden like other scripted runs. Devin CLI sessions are read from `sessions.db` under `$DEVIN_HOME`, else the platform data dir (`~/Library/Application Support/devin/cli` on macOS, `~/.local/share/devin/cli` on Linux): the `sessions` table gives id, folder, title, and activity; `message_nodes` gives the user asks when the CLI build has it, otherwise `transcripts/<id>.json` carries the listing. Hidden sessions are skipped. Devin has session-binding hooks but no inbox-injection hooks. Idle sessions use headless `devin --resume <id>`; open sessions require explicit MCP inbox polling.
 
 T3 Code is a desktop GUI that runs Codex, Claude Code, and Grok underneath. Everett marks the
 matching session with source `t3code` (`[t3code]` in `ls`) and uses the thread title when needed.
@@ -403,7 +409,8 @@ SSH needs no registry, account sign-in, Convex relay, or Everett listener. See
 Default sends must run the recipient or fail without leaving a queued request.
 Headless resume is used for an idle local session. Everett has no general wake mechanism
 for an attached, T3 Code, or registered external session, so `auto` refuses those targets.
-See the [delivery policy and explicit queue exceptions](docs/message-delivery.md).
+See [agent support and wake](docs/agent-support.md) and the
+[delivery policy and explicit queue exceptions](docs/message-delivery.md).
 
 1. **Which path.** `send --mode auto` (the default) resumes an idle local session and returns its reply. When the target requires passive inbox delivery, it fails before writing a message. `--mode inbox` explicitly accepts queueing for hooks or polling. It does not send a Claude wake. A matching owner webhook can nudge a registered Grok Bot or OpenAI dot; see [Wake a Grok Bot](#wake-a-grok-bot). `--mode resume` forces headless resume except where existing T3, external-agent, or remote-provenance rules refuse it.
 2. **Explicit Claude wake.** `send --to <full-session-UUID> --wake` is a separate local CLI opt-in. Everett verifies the Claude version and exact background-session state, queues the original request, then attaches to that same session in a PTY with a fixed nudge to read and answer the queued inbox item. It reports the native prompt receipt separately from a real Everett reply. `--wake` rejects prefixes, routed destinations, remote sessions, T3 Code, relay-derived callers, and non-Claude sessions. The request remains recorded if the attach or reply wait fails, but Claude may already have read it. A timeout does not mean the request is still pending. MCP, gateway, and ordinary `auto` sends cannot request wake.
@@ -418,7 +425,7 @@ See the [delivery policy and explicit queue exceptions](docs/message-delivery.md
 | Codex (0.155+) | `UserPromptSubmit` | `PostToolUse` | the same contract (checked against the hook schemas embedded in the 0.155.1 binary) |
 | Grok CLI | no | `PostToolUse` | Grok discards an allowing `UserPromptSubmit` hook's context, so messages wait for the next tool call. A Grok session that runs no tool before stopping reads them with `everett_inbox`, or at its next tool call. |
 | OMP | `before_agent_start` | `tool_result` (steered in with `pi.sendMessage(…, {deliverAs: "steer"})`) | the Everett extension |
-| Pi, Hermes, Devin | no hooks | no hooks | messages wait in the inbox; the agent reads them with `everett_inbox` |
+| Pi, Hermes, Devin | MCP polling | MCP polling | messages wait in the inbox; the agent reads them with `everett_inbox` |
 
 Grok also runs the hooks in `~/.claude/settings.json`. Everett's Claude delivery hook recognizes Grok's camelCase input and leaves a Grok session's messages alone on `UserPromptSubmit`, so nothing is marked delivered that Grok would drop.
 
@@ -539,10 +546,10 @@ Everett is mostly used by agents. `everett mcp` is a stdio MCP server (JSON-RPC 
 | `everett_subscribe` | `target`, `unsubscribe?` | Follows a session's or project's events in your inbox. |
 | `everett_agent_relay` | `action`, `id?`, `name?`, `fingerprint?`, `grant_id?` | Verified identity, registration, directory/pins and scoped revocation controls. |
 | `everett_agent_grants` | `action`, `id?`, named endpoints/fingerprints/limits for invite | Bilateral named-agent grants, key reconfirmation, expiry, rate/body caps and revocation. |
-| `everett_agent_send` | `agent`, `session`, `harness`, `text`, `idempotency_key` | Device-side encrypted send to a pinned named agent. No wake-up or implicit routing. |
+| `everett_agent_send` | `agent`, `session`, `harness`, `text`, `idempotency_key` | Device-side encrypted send to an explicit named agent. No sender-requested wake or implicit routing; receiver policies are separate. |
 | `everett_agent_status` | `message_id` | Sender-only status from signed delivery/pickup/reply observations. |
 
-For named agents in one or multiple organizations, see the [agent relay setup](docs/agent-relay.md)
+See [agent-facing relay MCP](docs/agent-relay.md), [cross-device deployment](docs/cross-device.md)
 and [relay threat model](docs/relay-threat-model.md). OIDC controls org/agent identity;
 cross-org delivery is denied without bilateral admin approval. External inbox text
 is labeled untrusted. Existing Jev routing, SSH, OMP, and Pi integration is unchanged.
