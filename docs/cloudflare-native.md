@@ -23,18 +23,20 @@ file, relay keys or an existing device identity to another computer.
    Open the printed approval URL on your phone or any browser. Compare the full code and device
    name, then approve the same Everett account. The terminal polls outbound HTTPS and verifies
    the server identity. It needs no incoming port or localhost browser callback.
-2. Run `everett relay register` on both computers. Each prints its public device ID and fingerprint.
-   Compare fingerprints through a trusted channel. On each computer, run
-   `everett peer add-relay other --device OTHER_DEVICE_ID --fingerprint OTHER_FINGERPRINT`.
-   Each device has independent Ed25519 and X25519 keys. A changed fingerprint requires explicit removal and repinning.
+2. Run `everett relay register` on both computers, then `everett relay devices --names`.
+   Same-owner devices trust the authenticated Cloudflare directory automatically. No
+   fingerprint exchange or local pin is required. Each device has independent Ed25519
+   and X25519 keys. Same-owner key rotation is discovered through active bundle checks.
 3. Keep `everett relay` running on both computers. Cloudflare polls every five seconds while idle.
    Temporary failures retain encrypted staging and retry with backoff up to 30 seconds.
    The CLI does not install a background service. Receiver-side Claude wake is disabled
    unless the receiving owner writes the exact local policy described below.
-4. Send with `everett send "test request" --to other/codex/EXACT_SESSION_ID --mode inbox --idempotency-key first-test --json`.
+4. Send with `everett send "test request" --to 'Other Computer/codex/EXACT_SESSION_ID' --mode inbox --idempotency-key first-test --json`.
+   Use the unique device name from the directory. Duplicate names and incomplete
+   directories are rejected. An exact `id:DEVICE_ID` selector needs no label metadata.
    Read on the recipient with `everett inbox --session EXACT_SESSION_ID --json`, then run
    `everett reply LOCAL_MESSAGE_ID "test reply"`. Check on the sender with
-   `everett peer status other REMOTE_MESSAGE_ID`. Queued means retained by the relay;
+   `everett peer status 'Other Computer' REMOTE_MESSAGE_ID`. Queued means retained by the relay;
    claimed means the recipient read its inbox; replied requires a signed reply observation.
 5. Revoke that computer from the owner approval page, or self-revoke with
    `everett logout --revoke-device --json` after registration. Verify the revoked listener
@@ -55,7 +57,7 @@ Wake is off by default. To allow a narrowly scoped Mac-to-NUC wake, create
 (use `.everett/relay/receiver-wake.json` for Convex). Keep `HOME` and
 `CLAUDE_CONFIG_DIR` pointed at the normal Claude account. The policy is local to that
 Everett profile and must name one canonical project directory, one full Claude session
-UUID, and one same-owner paired sender device ID:
+UUID. Omit `sender_device_id` to allow eligible same-owner senders:
 
 Create the file with owner-only permissions (`chmod 600 receiver-wake.json`).
 
@@ -66,15 +68,15 @@ Create the file with owner-only permissions (`chmod 600 receiver-wake.json`).
   "allow": [
     {
       "session_id": "38cab978-79c0-4f42-9aee-5c30d8aa6e4c",
-      "cwd": "/home/nuc/Projects/example",
-      "sender_device_id": "DEVICE_ID_FROM_PEER_LIST"
+      "cwd": "/home/nuc/Projects/example"
     }
   ]
 }
 ```
 
-Use the actual session UUID and cwd reported by `claude agents --json`, and the pinned
-same-owner sender device ID. Wildcards, cross-owner grants, external content, T3 sessions,
+Use the actual session UUID and cwd reported by `claude agents --json`. An optional
+`sender_device_id` narrows the rule to one device; `"*"` has the same effect as omission.
+Cross-owner grants, external content, T3 sessions,
 replies and SSH inboxes cannot enable wake. Import and durable inbox write happen first.
 An active, missing or blocked Claude session remains deferred until message expiry.
 After an attach may have sent the nudge, restart does not retry that import automatically.

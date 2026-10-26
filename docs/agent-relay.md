@@ -9,10 +9,25 @@ provision authoritative identities using [the owner runbook](cross-device.md). T
 temporary `agent_id`/`jti` enrollment contract and v1 pins are incompatible; do not
 silently migrate an existing deployment or discard revocation/replay records.
 
+## Same-owner Cloudflare devices
+
+Run `everett relay` on each registered device. Same-owner Cloudflare devices verify
+active signed bundles through the authenticated service without manual pins.
+Call `everett_agent_relay` with `{"action":"names"}` to discover hosted names.
+Send through `everett_send` to `Max NUC/codex/SESSION_ID` using a unique name.
+An exact `id:DEVICE_ID/HARNESS/SESSION_ID` selector works without name metadata.
+Duplicate or incomplete name directories fail closed. Names select an ID; they do
+not replace signed device identity. Existing SSH aliases retain their transport.
+
+The Cloudflare account service is the same-owner trust authority. It can authorize
+a new key bundle; a compromised service can substitute a same-owner identity.
+Different-owner traffic still requires explicit bilateral grants and confirmed
+fingerprints. OIDC/Convex retains the manual pairing flow below.
+
 ## Register and pin
 
-Start `everett relay` on each device. It writes to local inboxes without waking any
-harness. Within the agent's Everett MCP connection:
+Start `everett relay` on each device. It writes to local inboxes. Optional local
+receiver policies control wake actions. Within the agent's Everett MCP connection:
 
 ```json
 {"action":"identity"}
