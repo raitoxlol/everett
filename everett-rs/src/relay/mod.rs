@@ -1002,8 +1002,6 @@ pub fn devices() -> Result<Value> {
     })
 }
 
-/// Advisory hosted labels are fetched separately from immutable signed bundles.
-/// Names are never selectors and never establish trust or change pins.
 pub fn device_names() -> Result<String> {
     let owner = relay_account()?.owner;
     runtime(async move {

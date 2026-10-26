@@ -111,12 +111,10 @@ describe('Public enrollment: account isolation', () => {
     expect(updated.result.labels[pa2.agent_id!]).toBe('alice-nuc');
     expect(await (await nativeCall(pa.token!, 'devices')).json()).toEqual(signedBefore);
     expect(signedBefore).toEqual({ result: [bundle] });
-    // Metadata survives restart and does not require an online registered relay process.
     const stub = env.AUTH_STATE!.get(env.AUTH_STATE!.idFromName(issuer));
     await evictDurableObject(stub);
     expect(JSON.stringify(await (await nativeCall(pb.token!, 'deviceLabels')).json())).not.toContain('renamed-nuc');
     expect(JSON.stringify(await (await nativeCall(pa.token!, 'deviceLabels')).json())).toContain('renamed-nuc');
-    // Missing legacy hosted metadata never invents a name or leaks another account's row.
     await runInDurableObject(stub, (_i, state) => { state.storage.sql.exec('DELETE FROM hosted_agents WHERE agent_id=?', pa2.agent_id!); });
     expect(JSON.stringify(await (await nativeCall(pa.token!, 'deviceLabels')).json())).not.toContain(pa2.agent_id!);
     expect((await nativeCall(pa2.token!, 'deviceLabels')).status).toBe(401);
