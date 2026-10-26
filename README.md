@@ -129,8 +129,9 @@ and T3 Code's `~/.t3/userdata/statev2.sqlite` (legacy `state.sqlite` fallback). 
 
 Cloud agents use explicit local registrations and the native restricted MCP gateway, not fabricated
 provider transcripts or API-model substitutes. See [OpenAI dots setup](docs/openai-dots.md),
-[Grok Bot registration and polling](docs/grok-bot.md), and [gateway permissions](docs/gateway.md).
-Owner-side connector setup is required; queued messages do not prove pickup or wake-up.
+[Grok Bot registration, polling, and webhook wake](docs/grok-bot.md), and [gateway permissions](docs/gateway.md).
+Owner-side connector setup is required; queued messages do not prove pickup. A matching owner
+webhook is the supported Grok Bot wake path: [Wake a Grok Bot](#wake-a-grok-bot).
 Manage local bindings with `everett external add`, `list`, and `remove`.
 Keep an OpenAI tunnel client forwarding with `everett tunnel watch`; a ready
 health check does not show a stuck control-plane poll. See the dots doc.
@@ -195,7 +196,7 @@ Done. MAX_RETRIES is now 5 and the backoff test covers the cap.
 | `everett peer add <name> [--ssh user@host] [--port N] --binary /absolute/everett --host-key SHA256:... --device-key SHA256:...` | Resolve the address by registry name or use an explicit address; reject conflicts and require both confirmed fingerprints before pairing. |
 | `everett peer serve [--address user@host[:port]] --client ID` | Restricted sshd endpoint; signed-in devices attempt to publish their declared address, also configurable with `[peer] address`. |
 | `everett peer status <name> <message-id>` | SSH polls/imports replies; relay queries queued/delivered/claimed/replied/expired state from signed observations (not task completion). |
-| `everett relay` | Listen through the selected relay: Convex WebSocket or Cloudflare outbound polling; session wake is disabled unless an exact local receiver policy enables it. |
+| `everett relay` | Listen through the selected relay: Convex WebSocket or Cloudflare outbound polling. Claude session wake and external webhook posts follow the local owner policy. |
 | `everett relay register / devices / whoami` | Register this provisioned agent's keys and publish its display name/declared SSH address, list active key bundles (maximum 256), or verify agent/org authorization. |
 | `everett relay revoke-agent ID / revoke-member SUBJECT / rotate` | Revoke this or an admin-selected agent, remove org membership (admin), or rotate this agent's relay keys using its old signing key. |
 | `everett relay grant invite / accept / reconfirm / revoke / get / list` | Bilateral org-admin consent for named cross-org agents; [exact flags and journey](docs/cross-device.md#convex-relay-two-org-trial). |
@@ -204,7 +205,7 @@ Done. MAX_RETRIES is now 5 and the backoff test covers the cap.
 | `everett dashboard [--port 7347] [--no-open]` | Native Rust binary only: read-only local browser dashboard with session cards, filters, activity state, and copyable CLI actions. |
 | `everett route "<text>" [--router local\|jev] [--json]` | Picks the session a request continues: `SESSION`, `NEW`, or `ASK`, with a confidence and the resume command. It never sends. |
 | `everett send "<text>" [--dry-run] [--timeout S] [--router …]` | Routes the request (jev when a key is configured, else local). An idle local session is resumed headless after it goes quiet (up to 2 min), and the reply is printed. Automatic delivery refuses passive inbox targets without queueing. `NEW` and `ASK` send nothing (`ASK` prints its candidates; resend with `--to`). See [Live delivery](#live-delivery). |
-| `everett send … [--mode auto\|resume\|inbox] [--wait S]` | Default `auto` resumes when safe or fails without queueing. `--mode inbox` explicitly queues for hooks or polling and sends no ping or wake. `--wait S` waits for an inbox reply; a timeout leaves the explicit queue intact. |
+| `everett send … [--mode auto\|resume\|inbox] [--wait S]` | Default `auto` resumes when safe or fails without queueing. `--mode inbox` explicitly queues for hooks or polling. It does not send a Claude wake. A matching owner `receiver-webhook.json` rule can POST a nudge for `grok-bot` or `openai-dot`; `wake` stays false. `--wait S` waits for an inbox reply; a timeout leaves the explicit queue intact. |
 | `everett send --to <full-Claude-session-UUID> --wake [--wait S] "<request>"` | Queues the request, then explicitly wakes an existing local Claude Code background session through a PTY and waits for a reply linked to that inbox message. Requires an interactive local terminal and Claude Code 2.1.285 or newer. Default `auto`, MCP, gateway, relay, remote, and T3 Code sends do not wake sessions. |
 | `everett reply <message-id> "<text>"` | Answers an Everett message; the reply goes to the sender's inbox. |
 | `everett inbox [--session S] [--peek] [--message ID] [--json]` | Shows the messages waiting for this session (or the human inbox when run outside a session) and marks them delivered; `--message` shows and marks only that message. |
@@ -243,7 +244,7 @@ Global option: `--hours N` sets the look-back window (default 72).
 | Grok CLI | `grok --resume <id> -p <text>` | `grok --session-id <new uuid> -p <text>` |
 | Devin CLI | `devin --resume <id> --print <text>` | `devin -p <text>` |
 | T3 Code | Inbox; hooks where supported, otherwise explicit MCP polling; no CLI resume | not supported |
-| OpenAI dots / Grok Bot | Registered external inbox via owner-authorized MCP; no provider resume | not supported |
+| OpenAI dots / Grok Bot | Registered external inbox via owner-authorized MCP; no provider resume. Optional owner webhook nudge: [Wake a Grok Bot](#wake-a-grok-bot). | not supported |
 
 The harness appends the request and the reply to that session's history. Hermes sessions that belong to a chat platform (Telegram, Discord, and so on) are listed and routable, but `send` refuses them, because a CLI resume would not reach that chat. Scripted Hermes runs (cron, oneshot, webhook) are hidden like other automated runs. Grok sessions are read from `~/.grok/sessions/<url-encoded cwd>/<id>/` (`summary.json` for id, folder, and title; `prompt_history.jsonl` for the typed requests). A Grok session counts as running while `~/.grok/active_sessions.json` names it with a live process id. Headless `grok -p` runs are hidden like other scripted runs. Devin CLI sessions are read from `sessions.db` under `$DEVIN_HOME`, else the platform data dir (`~/Library/Application Support/devin/cli` on macOS, `~/.local/share/devin/cli` on Linux): the `sessions` table gives id, folder, title, and activity; `message_nodes` gives the user asks when the CLI build has it, otherwise `transcripts/<id>.json` carries the listing. Hidden sessions are skipped. Devin has no Everett hooks, so delivery is a headless `devin --resume <id>` run.
 
@@ -271,6 +272,24 @@ Safety rails for agents that call `send`:
 
 Exit codes: 2 bad input, 3 no Jev key with `--router jev`, 4 session stayed busy or automatic delivery has no safe ping/wake path, 5 harness did not start or timed out, 6 harness failed, 7 hop limit reached.
 
+## Wake a Grok Bot
+
+Everett queues a registered Grok Bot inbox. It does not resume the bot. Explicit
+`--mode inbox` writes the text. A matching `receiver-webhook.json` rule then POSTs
+a nudge that omits the inbox text. HTTP 200 means the routine accepted a run.
+`wake` stays false. Copy-paste commands, the policy file, and cross-device relay
+are in [Grok Bot webhook wake](docs/grok-bot.md#wake-a-grok-bot-with-a-webhook-routine).
+The same file can name `openai-dot`.
+
+Checklist, on the computer that holds the inbox:
+
+1. `everett whoami --json` prints `owner` and `agent_id`. Copy both with no added spaces.
+2. Create a Grok Bot webhook routine. Copy its Webhook URL and Sender key. Store the key alone in a mode `0600` file. Do not commit either.
+3. `everett external add --id ext-grok-acceptance --harness grok-bot --title 'Grok Bot inbox'`
+4. Write mode `0600` `receiver-webhook.json` (Cloudflare: `~/.everett/relay-cloudflare/`; OIDC: `~/.everett/relay/`; `$EVERETT_HOME` replaces `~`). Both device fields are this computer's `agent_id`. A terminal sender is `human` and `""`.
+5. Bind the routine's MCP to that id through a reachable Remote HTTPS [`everett gateway`](docs/gateway.md). Tell it to call `everett_inbox`, then `everett_send` with `reply_to`.
+6. From a shell with no session environment: `everett send 'check inbox' --to ext-grok-acceptance --mode inbox --json`. Expect `"wake": false` and `"webhook":{"state":"accepted","rule_id":"grok-inbox","http_status":200}`, then a routine run that calls `everett_inbox`.
+
 ## Cloudflare native relay
 
 With `[auth] provider = "cloudflare"`, native account approval and encrypted relay use
@@ -279,7 +298,9 @@ public fingerprints, pin them with `peer add-relay`, and run `everett relay` on 
 The listener polls outbound HTTPS, stages ciphertext durably, reauthorizes before inbox
 publication and retries temporary failures. Receiver-side Claude wake is disabled by
 default. An owner can opt in through the provider-local `receiver-wake.json` policy described
-in [the native relay guide](docs/cloudflare-native.md). Read, reply and revocation need their
+in [the native relay guide](docs/cloudflare-native.md). A registered Grok Bot or OpenAI dot
+on that computer uses `receiver-webhook.json` in the same directory; see
+[Wake a Grok Bot](#wake-a-grok-bot). Read, reply and revocation need their
 own verification.
 
 The actual native CLI passed local production-Worker acceptance and a physical Mac/NUC
@@ -360,7 +381,7 @@ Headless resume is used for an idle local session. Everett has no general wake m
 for an attached, T3 Code, or registered external session, so `auto` refuses those targets.
 See the [delivery policy and explicit queue exceptions](docs/message-delivery.md).
 
-1. **Which path.** `send --mode auto` (the default) resumes an idle local session and returns its reply. When the target requires passive inbox delivery, it fails before writing a message. `--mode inbox` explicitly accepts queueing for hooks or polling. It sends no ping or wake. `--mode resume` forces headless resume except where existing T3, external-agent, or remote-provenance rules refuse it.
+1. **Which path.** `send --mode auto` (the default) resumes an idle local session and returns its reply. When the target requires passive inbox delivery, it fails before writing a message. `--mode inbox` explicitly accepts queueing for hooks or polling. It does not send a Claude wake. A matching owner webhook can nudge a registered Grok Bot or OpenAI dot; see [Wake a Grok Bot](#wake-a-grok-bot). `--mode resume` forces headless resume except where existing T3, external-agent, or remote-provenance rules refuse it.
 2. **Explicit Claude wake.** `send --to <full-session-UUID> --wake` is a separate local CLI opt-in. Everett verifies the Claude version and exact background-session state, queues the original request, then attaches to that same session in a PTY with a fixed nudge to read and answer the queued inbox item. It reports the native prompt receipt separately from a real Everett reply. `--wake` rejects prefixes, routed destinations, remote sessions, T3 Code, relay-derived callers, and non-Claude sessions. The request remains recorded if the attach or reply wait fails, but Claude may already have read it. A timeout does not mean the request is still pending. MCP, gateway, and ordinary `auto` sends cannot request wake.
 3. **Inbox.** `~/.everett/inbox/<session-id>.jsonl`, one message per line: `id`, `from` (the sender's session id, or `human` from a terminal), `from_harness`, `from_card`, `text`, `ts`, `reply_to`, `hops`, `kind` (`message`, `reply`, or `event`). Delivered ids go to `<session-id>.done`. Undelivered messages expire after 7 days.
 4. **Injection.** The hook adds at most 5 messages (2,000 characters each, 6,000 in total) as context, marked as coming from Everett with the sender's session and card, and marks exactly those delivered. The rest arrive at the next hook. The hook reads local files only, takes about 40 ms, and prints nothing on any error.

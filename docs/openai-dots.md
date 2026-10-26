@@ -9,8 +9,8 @@ Use this path only when you deliberately want the existing tunnel integration.
 
 This optional integration connects **your existing dot** to Everett tools. It
 does not call an OpenAI model API or replace the dot with a new model instance.
-It provides tool access and owner-started handoff processing, **not automatic
-dot wake-ups**.
+It provides tool access and owner-started handoff processing, not an OpenAI wake
+API. The same owner file can name `openai-dot`: [Grok Bot](grok-bot.md#wake-a-grok-bot-with-a-webhook-routine).
 
 Everett 1.6.0 is enough. A manual end-to-end check on that version returned
 `ext-openai-dots` from `everett_whoami`, peeked a message a local session had
@@ -336,8 +336,9 @@ restarts `tunnel-client`. Stop it with
   compatible Grok connectors, not an advertised OpenAI OAuth app. ChatGPT OAuth
   discovery against this gateway fails.
 - MCP2 protocol/events, event subscriptions, callback signing, webhook
-  verification, and automatic wake-ups are not implemented. OpenAI documents a
+  verification, and automatic OpenAI wake-ups are not implemented. OpenAI documents a
   future extension path in [MCP Events](https://developers.openai.com/plugins/build/mcp-events).
+  An Everett owner webhook for this harness is [Grok Bot](grok-bot.md), not MCP Events.
 - A skill can describe this workflow but cannot replace the connection, runtime
   authorization, external-session registration, or wake-up mechanism.
 - Another Slack bot is not a supported generic dot wake-up path. OpenAI says

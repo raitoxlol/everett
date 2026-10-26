@@ -772,9 +772,11 @@ fn tool_send(
             "Inbox pickup was observed. No ping or wake was sent. Read replies with everett_inbox."
                 .to_string()
         } else if crate::adapters::external::is_external(&session.harness) {
-            "Queued for the external agent to poll through MCP. \
-             No provider wake-up or consumption is confirmed. Read replies with everett_inbox."
-                .to_string()
+            match result.get("webhook").and_then(|value| value.get("state")).and_then(Value::as_str) {
+                Some("accepted") => "Queued for the external agent. The owner webhook returned HTTP 200, so a routine run was accepted. That is not inbox consumption. Read replies with everett_inbox.".to_string(),
+                Some(_) => "Queued for the external agent to poll through MCP. The owner webhook did not accept a routine run. No provider wake-up or consumption is confirmed. Read replies with everett_inbox.".to_string(),
+                None => "Queued for the external agent to poll through MCP. No provider wake-up or consumption is confirmed. Read replies with everett_inbox.".to_string(),
+            }
         } else {
             result.get("pickup_note").and_then(Value::as_str).map(str::to_string).unwrap_or_else(||
                 "Explicit inbox send. Hooks or everett_inbox must pick it up; no ping or wake was sent. \

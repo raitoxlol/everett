@@ -240,6 +240,10 @@ fn root() -> PathBuf {
         },
     )
 }
+
+pub(crate) fn state_dir() -> PathBuf {
+    root()
+}
 fn milliseconds() -> i64 {
     (session::now() * 1000.0) as i64
 }
@@ -1510,6 +1514,25 @@ fn import_inner(keys: &Keys, envelope: &Envelope, now: i64, publish: bool) -> Re
                         hops,
                     },
                 )?;
+                note_receiver_webhook(crate::receiver_webhook::on_imported(
+                    &crate::receiver_webhook::Arrival {
+                        owner: keys.device.owner.clone(),
+                        sender_owner: envelope.owner.clone(),
+                        recipient_owner: envelope.recipient_owner.clone(),
+                        recipient_device: keys.device.device_id.clone(),
+                        sender_device: envelope.from_device.clone(),
+                        session: session.clone(),
+                        harness: harness.clone(),
+                        sender_session: from.clone(),
+                        sender_harness: from_harness.clone(),
+                        message_id: local_id.clone(),
+                        created_at_ms: envelope.created_at,
+                        is_reply: false,
+                        external: envelope.owner != envelope.recipient_owner
+                            || external_untrusted
+                            || crate::adapters::external::is_external(&from_harness),
+                    },
+                ));
             }
             if !reply_to.is_empty() {
                 observe(&keys.device.owner, envelope, &reply_to, State::Replied)?;
@@ -2008,7 +2031,21 @@ async fn receive(
     }
     reconcile(client, keys).await?;
     drain_receiver_wakes(keys)?;
+    note_receiver_webhook(crate::receiver_webhook::poll());
     Ok(cursor)
+}
+
+fn note_receiver_webhook(outcome: Result<crate::receiver_webhook::Outcome>) {
+    match outcome {
+        Ok(outcome) => {
+            for line in outcome.logs {
+                eprintln!("everett relay: {line}");
+            }
+        }
+        Err(error) => {
+            eprintln!("everett relay: receiver webhook not posted: {}", error.message);
+        }
+    }
 }
 
 async fn run_native(
@@ -2018,7 +2055,7 @@ async fn run_native(
     register: &Value,
 ) -> Result<Value> {
     eprintln!(
-        "everett relay: Cloudflare outbound polling; receiver wake follows the local owner policy"
+        "everett relay: Cloudflare outbound polling; receiver wake and webhook follow the local owner policy"
     );
     let mut rejected = RejectedCache::new();
     let mut delay = 5;
@@ -2055,7 +2092,7 @@ pub fn run() -> Result<Value> {
         mutation(&mut client,"relay:register",register.clone()).await?;
         let mut final_cursor: Option<String> = None;
         let mut subscription = client.subscribe("relay:pending",args(json!({"deviceId":keys.device.device_id,"cursor":final_cursor}))?).await.map_err(|_| bad("Convex subscription failed"))?;
-        eprintln!("everett relay: subscribed; receiver wake follows the local owner policy");
+        eprintln!("everett relay: subscribed; receiver wake and webhook follow the local owner policy");
         let mut tick = tokio::time::interval(Duration::from_secs(1));
         let mut rejected = RejectedCache::new();
         loop {

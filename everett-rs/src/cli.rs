@@ -831,11 +831,17 @@ fn send_inbox_cmd(args: &Args, r: &Map<String, Value>, session: &Session, label:
         }
     };
     let picked_up = result.get("delivered").and_then(Value::as_bool) == Some(true);
+    let webhook_state = result.get("webhook").and_then(|value| value.get("state")).and_then(Value::as_str);
+    let wake_clause = match webhook_state {
+        Some("accepted") => "owner webhook returned HTTP 200; routine acceptance is not inbox consumption",
+        Some(_) => "owner webhook did not accept a routine run",
+        None => "no ping or wake was sent",
+    };
     let mut lines = vec![
         routed_line,
         Some(format!("{}  {}", if picked_up { "PICKED UP" } else { "QUEUED" }, label)),
         Some(format!(
-            "  message {}: no ping or wake was sent; {}",
+            "  message {}: {wake_clause}; {}",
             result.get("message_id").and_then(|v| v.as_str()).unwrap_or(""),
             if picked_up {
                 "inbox pickup was observed".to_string()
@@ -846,6 +852,12 @@ fn send_inbox_cmd(args: &Args, r: &Map<String, Value>, session: &Session, label:
             }
         )),
     ];
+    if let Some(webhook) = result.get("webhook") {
+        lines.push(Some(format!(
+            "  webhook {}",
+            serde_json::to_string(webhook).unwrap_or_else(|_| "{}".to_string())
+        )));
+    }
     if args.wait > 0.0 {
         match result.get("reply") {
             Some(Value::String(reply)) => lines.push(Some(reply.clone())),

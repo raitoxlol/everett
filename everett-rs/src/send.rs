@@ -775,6 +775,14 @@ pub fn send_inbox_as(
             .as_ref()
             .and_then(inbox::forward_provenance),
     )?;
+    let webhook = if external::is_external(&session.harness) {
+        match crate::receiver_webhook::after_local_queue(&session.id, &session.harness, &message) {
+            Ok(value) => value,
+            Err(error) => Some(json!({"state": "error", "reason": error.message})),
+        }
+    } else {
+        None
+    };
     let mut result = Map::new();
     result.insert("mode".into(), json!("inbox"));
     result.insert("message_id".into(), message.get("id").cloned().unwrap_or(Value::Null));
@@ -782,6 +790,9 @@ pub fn send_inbox_as(
     result.insert("reply".into(), Value::Null);
     result.insert("hooked".into(), json!(INBOX_HARNESSES.contains(&session.harness.as_str())));
     result.insert("wake".into(), json!(false));
+    if let Some(webhook) = webhook {
+        result.insert("webhook".into(), webhook);
+    }
     if session.source == "t3code" {
         result.insert("hooked".into(), json!(false));
         result.insert("pickup".into(), json!("poll"));
