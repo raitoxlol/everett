@@ -529,6 +529,33 @@ fn core_changes_reject_secrets_and_keep_project_scopes_separate() {
 }
 
 #[test]
+fn core_changes_accept_existing_bullets_longer_than_the_learning_limit() {
+    let fx = home_with_claude_session();
+    let long = "The compiler uses a shared cache with separate debug and release directories. ".repeat(10).trim().to_string();
+    assert!(long.chars().count() > 500);
+    assert!(long.split_whitespace().count() < 300);
+    let path = fx.home().join(".everett/core/core.md");
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    let mut s = Server::start(&fx, &[]);
+    for action in ["forget", "correct"] {
+        std::fs::write(&path, format!("# Everett core\n\n- {long}\n")).unwrap();
+        let mut args = json!({"action":action, "fact":long});
+        if action == "correct" {
+            let rejected = s.request("tools/call", Some(json!({"name":"everett_core", "arguments":{"action":"correct", "fact":long, "replacement":long}})));
+            assert_eq!(rejected["error"]["code"], -32602, "{rejected}");
+            args["replacement"] = json!("Keep debug and release cache directories separate");
+        }
+        let changed = s.call("everett_core", args);
+        assert_eq!(changed["isError"], false, "{changed}");
+        assert_eq!(changed["structuredContent"]["removed_core"], 1, "{changed}");
+        let stored = std::fs::read_to_string(&path).unwrap();
+        assert!(!stored.contains(&long), "{stored}");
+        assert_eq!(stored.contains("Keep debug and release cache directories separate"), action == "correct");
+    }
+    s.close();
+}
+
+#[test]
 fn card_needs_identity() {
     let fx = home_with_claude_session();
     let mut s = Server::start(&fx, &[]);
