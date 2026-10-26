@@ -33,3 +33,6 @@ pub mod trunk;
 pub mod trunk_schedule;
 pub mod tui;
 pub mod tunnel;
+
+#[cfg(test)]
+mod test_support;
