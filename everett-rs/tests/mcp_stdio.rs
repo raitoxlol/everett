@@ -729,7 +729,7 @@ fn remote_lineage_guard_binds_host_caller_and_preserves_durable_hops_over_stdio(
     }
     let result = server.call(
         "everett_send",
-        json!({"text":"untrusted","to":"c-1","session_id":"remote"}),
+        json!({"text":"untrusted","to":"c-1","mode":"inbox","session_id":"remote"}),
     );
     assert_eq!(result["isError"], false, "{result}");
     assert_eq!(result["structuredContent"]["mode"], "inbox");

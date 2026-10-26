@@ -275,14 +275,25 @@ fn synthetic_t3_mcp_routes_polls_replies_and_learns_without_provider_resume() {
     let guidance = routed["structuredContent"]["command"].as_str().unwrap();
     assert!(guidance.contains("everett_inbox"));
     assert!(!guidance.contains("codex resume"));
+    let refused = tool(
+        &fx,
+        "everett_send",
+        json!({"to":"native-1","text":"Do not silently queue"}),
+        "sender",
+    );
+    assert_eq!(refused["isError"], true);
+    assert!(refused.to_string().contains("Nothing was queued"));
+    assert!(!fx.home().join(".everett/inbox/native-1.jsonl").exists());
     let queued = tool(
         &fx,
         "everett_send",
-        json!({"to":"native-1","text":"Review the T3 task"}),
+        json!({"to":"native-1","text":"Review the T3 task","mode":"inbox"}),
         "sender",
     );
     assert_eq!(queued["isError"], false);
     let queued = &queued["structuredContent"];
+    assert_eq!(queued["queued"], true);
+    assert_eq!(queued["delivered"], false);
     assert_eq!(queued["pickup"], "poll");
     assert_eq!(queued["hooked"], false);
     assert_eq!(queued["poll_session_id"], "native-1");
