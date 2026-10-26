@@ -193,6 +193,45 @@ fn bad_llm_output_changes_nothing_and_output_is_capped() {
 }
 
 #[test]
+fn core_changes_refuse_an_inflight_merge_and_remove_pending_duplicates() {
+    let h = lib_home();
+    learn("Atlas deploys on Fridays", &h);
+    let runner = |_: &[String], _: Option<&str>, _: &HashMap<String, String>, _: f64| {
+        let blocked = core::change(core::CoreChange::Forget { fact: "Atlas deploys on Fridays" }, None, None).unwrap_err();
+        assert_eq!(blocked.code, 4);
+        assert_eq!(core::read_inbox()[0]["text"], "Atlas deploys on Fridays");
+        Ok(RunOutput { code: 0, stdout: json!({"global":"# Everett core\n\n- Atlas deploys on Fridays\n"}).to_string(), stderr: String::new(), timed_out: false })
+    };
+    core::merge_with("claude", false, &runner).unwrap();
+    learn("atlas deploys on fridays.", &h);
+    learn("Keep this pending fact", &h);
+    let changed = core::change(core::CoreChange::Forget { fact: "Atlas deploys on Fridays" }, None, None).unwrap();
+    assert_eq!(changed["removed_core"], 1);
+    assert_eq!(changed["removed_pending"], 1);
+    core::merge("none", false).unwrap();
+    assert_eq!(std::fs::read_to_string(core::global_path()).unwrap(), "# Everett core\n\n- Keep this pending fact\n");
+}
+
+#[test]
+fn correction_updates_the_mirror_and_preserves_unrelated_pending_lines() {
+    let h = lib_home();
+    learn("Atlas uses npm", &h);
+    let mut pending = std::fs::read_to_string(core::inbox_path()).unwrap();
+    pending.push_str("not a valid entry\n");
+    std::fs::write(core::inbox_path(), pending).unwrap();
+    std::env::set_var("EVERETT_VAULT", h.path().join("vault"));
+    let result = core::change(core::CoreChange::Correct { fact: "Atlas uses npm", replacement: "Atlas uses pnpm" }, None, None);
+    std::env::remove_var("EVERETT_VAULT");
+    let mirror = h.path().join("vault/Everett/Core.md");
+    assert_eq!(result.unwrap()["mirror"], json!(mirror.to_string_lossy()));
+    let mirrored = std::fs::read_to_string(mirror).unwrap();
+    assert!(mirrored.contains("Atlas uses pnpm") && !mirrored.contains("Atlas uses npm"), "{mirrored}");
+    assert_eq!(std::fs::read_to_string(core::inbox_path()).unwrap(), "not a valid entry\n");
+    use std::os::unix::fs::PermissionsExt;
+    assert_eq!(std::fs::metadata(core::inbox_path()).unwrap().permissions().mode() & 0o777, 0o600);
+}
+
+#[test]
 fn vault_mirror() {
     let h = lib_home();
     learn("Mirror me", &h);
