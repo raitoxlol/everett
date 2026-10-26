@@ -143,7 +143,7 @@ pub fn tools() -> &'static Vec<Value> {
             }),
             json!({
                 "name": "everett_agent_relay",
-                "description": "Verified agent identity, registration, directory, names and revocation. Cloudflare same-owner devices use automatic trust; cross-owner Cloudflare sends are unsupported. Retired Convex compatibility uses explicit pins and grants. Credentials are per agent, never bearer tokens. Membership management is admin-only; an agent can revoke itself. Run everett relay separately to receive. Disabled-by-default owner policies can wake an exact Claude background session or POST a registered external-agent webhook.",
+                "description": "Verified agent identity, registration, directory, names and revocation. Cloudflare same-owner devices use automatic trust; other owners require explicit pins and grants. Credentials are per agent, never bearer tokens. Membership management is admin-only; an agent can revoke itself. Run everett relay separately to receive. Disabled-by-default owner policies can wake an exact Claude background session or POST a registered external-agent webhook.",
                 "inputSchema": {"type":"object","properties":{
                     "action":{"type":"string","enum":["identity","register","directory","names","pair","unpair","credentials","memberships","revoke-membership","revoke-agent","revoke-credential"]},
                     "id":s("Provisioned agent ID; for revoke-membership, exact provider subject; for unpair, alias."),
@@ -154,7 +154,7 @@ pub fn tools() -> &'static Vec<Value> {
             }),
             json!({
                 "name": "everett_agent_grants",
-                "description": "Retired Convex compatibility only; Cloudflare does not support cross-owner grants. List/get named-agent grants, or administer explicit bilateral grants. Both org admins must independently confirm both key fingerprints. Either can revoke; key changes require bilateral reconfirmation. Non-admin agent credentials cannot administer grants.",
+                "description": "List/get named-agent grants, or administer explicit bilateral grants. Both org admins must independently confirm both key fingerprints. Either can revoke; key changes require bilateral reconfirmation. Non-admin agent credentials cannot administer grants.",
                 "inputSchema":{"type":"object","properties":{
                     "action":{"type":"string","enum":["list","get","invite","accept","reconfirm","revoke","propose","approve"]},
                     "id":s("Explicit grant ID; propose/approve are aliases for invite/accept."),
