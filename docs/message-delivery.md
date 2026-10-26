@@ -3,8 +3,6 @@
 Agents are Everett's message recipients. An inbox append does not ping an agent,
 wake its provider, or prove that it read the request.
 
-See [agent support and wake](agent-support.md) for the per-agent capability table.
-
 ## Default local sends
 
 `everett send` and `everett_send` default to `auto`. An idle local target is
