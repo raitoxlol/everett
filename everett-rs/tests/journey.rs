@@ -26,6 +26,23 @@ fn ls_empty_home() {
 }
 
 #[test]
+fn ls_names_the_project_behind_a_worktree() {
+    let fx = fixture();
+    let src = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/claude.jsonl"),
+    )
+    .unwrap();
+    fx.write(
+        ".claude/projects/app/c-1.jsonl",
+        &src.replace("/work/app", "/work/.t3/worktrees/everett/t3-1"),
+    );
+    let out = fx.run(&["ls"]);
+    let text = String::from_utf8_lossy(&out.stdout);
+    assert!(text.contains("everett"), "{text}");
+    assert!(!text.contains("t3-1"), "{text}");
+}
+
+#[test]
 fn route_local_picks_matching_session() {
     let fx = fixture_with_session();
     let out = fx.run(&["route", "add tests to the login bug fix", "--json"]);
