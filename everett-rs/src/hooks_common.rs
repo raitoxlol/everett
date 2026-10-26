@@ -920,6 +920,9 @@ mod tests {
 
     #[test]
     fn auto_card_freshness_uses_full_mtime_not_just_nanos() {
+        if !crate::test_support::isolated("hooks_common::tests::auto_card_freshness_uses_full_mtime_not_just_nanos") {
+            return;
+        }
         let home = tempfile::tempdir().unwrap();
         std::env::set_var("EVERETT_HOME", home.path());
         let sid = "mtime-sid";

@@ -711,8 +711,9 @@ impl ConvexClient {
 
 #[test]
 fn sdk_transport_denied_row_does_not_block_allowed_and_own_revocation_stops() {
-    // Only this test writes unit-test HOME; other relay units are pure crypto or
-    // use explicit temporary paths. All envelopes and credentials are synthetic.
+    if !crate::test_support::isolated("relay::tests::sdk_transport_denied_row_does_not_block_allowed_and_own_revocation_stops") {
+        return;
+    }
     let _env = RECEIVER_ENV_LOCK.lock().unwrap();
     let home = tempfile::tempdir().unwrap();
     std::env::set_var("HOME", home.path());
@@ -932,6 +933,9 @@ fn sdk_transport_denied_row_does_not_block_allowed_and_own_revocation_stops() {
 fn signed_import_schedules_exact_receiver_job_and_fake_claude_attaches_once() {
     use std::os::unix::fs::PermissionsExt;
 
+    if !crate::test_support::isolated("relay::tests::signed_import_schedules_exact_receiver_job_and_fake_claude_attaches_once") {
+        return;
+    }
     let _env = RECEIVER_ENV_LOCK.lock().unwrap();
     let home = tempfile::tempdir().unwrap();
     std::env::set_var("HOME", home.path());
@@ -1042,6 +1046,9 @@ fn signed_import_schedules_exact_receiver_job_and_fake_claude_attaches_once() {
 fn receiver_skips_consumed_or_digest_changed_inbox_rows() {
     use std::os::unix::fs::PermissionsExt;
 
+    if !crate::test_support::isolated("relay::tests::receiver_skips_consumed_or_digest_changed_inbox_rows") {
+        return;
+    }
     let _env = RECEIVER_ENV_LOCK.lock().unwrap();
     let home = tempfile::tempdir().unwrap();
     std::env::set_var("HOME", home.path());
