@@ -176,7 +176,7 @@ enum Cmd {
         /// harness for --spawn (default: config default_harness, else claude)
         #[arg(long, value_parser = clap::builder::PossibleValuesParser::new(SPAWNABLE.to_vec()))]
         harness: Option<String>,
-        /// auto (default): inbox for a session with a live harness process, else headless resume
+        /// auto (default): headless resume when safe; passive inbox delivery requires --mode inbox
         #[arg(long, value_parser = clap::builder::PossibleValuesParser::new(MODES.to_vec()), default_value = "auto")]
         mode: String,
         /// inbox mode: wait up to S seconds for the reply

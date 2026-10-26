@@ -64,7 +64,7 @@ pub fn tools() -> &'static Vec<Value> {
             }),
             json!({
                 "name": "everett_send",
-                "description": "Deliver a request to another session. This is the default way to hand off work: pass just `text` describing the task and Everett routes it for you (jev when configured, else the local matcher) -- do not call everett_ls and pick a target by hand. Only pass `to` (session id prefix, exact title, card name, or project folder) when the user named a specific session, or when replying to one; it skips routing entirely. The response always reports the route decision -- which router decided (jev/local), the chosen session, and its confidence -- so you can tell the user e.g. \"jev picked ...\". A SESSION decision is delivered. On ASK (ambiguous) nothing is sent; the candidate sessions come back for you to disambiguate, then call again with `to`. A session with a live harness process (someone has it open) gets the request in its inbox, injected at its next turn or tool call; pass `wait` to wait for the reply, or it arrives in YOUR inbox later. An idle session is resumed headless and its reply returned. To answer an Everett message you received, pass reply_to=<message id> and text. A NEW decision starts a new headless session only when spawn=true. It refuses to send to your own session and refuses requests forwarded more than 3 times.",
+                "description": "Deliver a request to another session. Pass just text and Everett routes it (jev when configured, else the local matcher). Use to only for a user-named destination. The result reports the route decision, router, session, and confidence. On ASK nothing is sent; choose from the returned candidates. An idle local session is resumed headless and its reply returned. Automatic delivery refuses attached, T3, and registered external sessions because no general agent ping or wake exists; nothing is queued. Explicit mode=inbox opts into passive queueing for hooks or everett_inbox polling. queued=true with delivered=false means pickup is unconfirmed; wait can observe a reply but never wakes the target. Explicit remote destinations use their durable inbox transport. To answer a received message, pass reply_to and text; replies are durably queued for the sender. NEW starts a headless session only with spawn=true. Self-send and requests forwarded more than 3 times are refused.",
                 "inputSchema": {"type": "object", "properties": {
                     "text": s("The request for the other session. Make it self-contained."),
                     "to": s("Local session id prefix/title/card/project, or explicit remote peer/harness/session. Remote delivery is inbox-only and never wakes a session."),
@@ -74,8 +74,8 @@ pub fn tools() -> &'static Vec<Value> {
                     "dir": s("Working directory for a spawned session."),
                     "harness": {"type": "string", "enum": crate::send::SPAWNABLE, "description": "Harness for a spawned session."},
                     "timeout": {"type": "number", "description": "Seconds to wait for the reply (default 300).", "minimum": 1},
-                    "mode": {"type": "string", "enum": crate::send::MODES, "description": "auto (default): inbox when the target has a live harness process, else headless resume."},
-                    "wait": {"type": "number", "minimum": 0, "description": "Inbox mode: seconds to wait for the reply (default 0: it arrives in your inbox later)."},
+                    "mode": {"type": "string", "enum": crate::send::MODES, "description": "auto (default): headless resume when safe; otherwise fails without queueing. inbox explicitly queues for hooks or polling and never pings or wakes."},
+                    "wait": {"type": "number", "minimum": 0, "description": "Explicit inbox mode: seconds to wait for a reply (default 0). Does not ping or wake the target."},
                     "reply_to": s("Answer this Everett message id; the reply goes to its sender."),
                 }, "required": ["text"], "additionalProperties": false},
             }),
@@ -567,7 +567,9 @@ fn tool_send(
         )
         .map_err(ToolFailure::Tool)?;
         let mut out = Map::new();
-        out.insert("delivered".into(), json!(true));
+        out.insert("delivered".into(), json!(false));
+        out.insert("queued".into(), json!(true));
+        out.insert("wake".into(), json!(false));
         for (k, v) in result {
             out.insert(k, v);
         }
@@ -613,6 +615,7 @@ fn tool_send(
         out.insert("decision".into(), json!("SESSION"));
         out.insert("router".into(), json!("direct-remote"));
         out.insert("mode".into(), json!("inbox"));
+        out.insert("delivered".into(), json!(false));
         out.insert("queued".into(), json!(true));
         out.insert("wake".into(), json!(false));
         return Ok(out);
@@ -757,22 +760,21 @@ fn tool_send(
             1.0,
         )
         .map_err(ToolFailure::Tool)?;
-        let note = if crate::adapters::external::is_external(&session.harness) {
+        let note = if result.get("delivered").and_then(Value::as_bool) == Some(true) {
+            "Inbox pickup was observed. No ping or wake was sent. Read replies with everett_inbox."
+                .to_string()
+        } else if crate::adapters::external::is_external(&session.harness) {
             "Queued for the external agent to poll through MCP. \
              No provider wake-up or consumption is confirmed. Read replies with everett_inbox."
                 .to_string()
         } else {
-            result.get("pickup_note").and_then(Value::as_str).map(str::to_string).unwrap_or_else(|| format!(
-                "Queued; it is injected into that live session at its next turn or tool call.{}",
-                if result.get("reply").map(|r| !r.is_null()).unwrap_or(false) {
-                    ""
-                } else {
-                    " Its reply will arrive in your inbox (injected by your hooks, or read it with everett_inbox)."
-                }
-            ))
+            result.get("pickup_note").and_then(Value::as_str).map(str::to_string).unwrap_or_else(||
+                "Explicit inbox send. Hooks or everett_inbox must pick it up; no ping or wake was sent. \
+                 The delivered field reports observed inbox pickup. Read replies with everett_inbox."
+                    .to_string()
+            )
         };
         let mut out = decision.clone();
-        out.insert("delivered".into(), json!(true));
         out.insert("session".into(), Value::Object(brief(&session)));
         for (k, v) in &result {
             out.insert(k.clone(), v.clone());

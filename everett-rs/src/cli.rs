@@ -800,11 +800,12 @@ fn wake_json(outcome: &crate::claude_wake::WakeOutcome) -> Value {
     }
 }
 
-/// Live delivery: queue the request in the running session's inbox (its hooks inject it).
 fn send_inbox_cmd(args: &Args, r: &Map<String, Value>, session: &Session, label: &str, routed_line: Option<String>) -> i32 {
     if args.dry_run {
         let mut payload = r.clone();
         payload.insert("delivered".into(), json!(false));
+        payload.insert("queued".into(), json!(false));
+        payload.insert("wake".into(), json!(false));
         payload.insert("dry_run".into(), json!(true));
         payload.insert("mode".into(), json!("inbox"));
         emit(
@@ -813,7 +814,7 @@ fn send_inbox_cmd(args: &Args, r: &Map<String, Value>, session: &Session, label:
             vec![
                 routed_line,
                 Some(format!("DRY RUN  {}", label)),
-                Some("  would queue in its inbox; delivered at its next turn or tool call".to_string()),
+                Some("  would explicitly queue for hooks or polling; no ping or wake".to_string()),
             ],
         );
         return 0;
@@ -829,16 +830,19 @@ fn send_inbox_cmd(args: &Args, r: &Map<String, Value>, session: &Session, label:
             return e.code;
         }
     };
+    let picked_up = result.get("delivered").and_then(Value::as_bool) == Some(true);
     let mut lines = vec![
         routed_line,
-        Some(format!("QUEUED  {}", label)),
+        Some(format!("{}  {}", if picked_up { "PICKED UP" } else { "QUEUED" }, label)),
         Some(format!(
-            "  message {}: delivered at its next turn or tool call{}",
+            "  message {}: no ping or wake was sent; {}",
             result.get("message_id").and_then(|v| v.as_str()).unwrap_or(""),
-            if result.get("hooked").and_then(|v| v.as_bool()).unwrap_or(false) {
-                String::new()
+            if picked_up {
+                "inbox pickup was observed".to_string()
+            } else if result.get("hooked").and_then(|v| v.as_bool()).unwrap_or(false) {
+                "hooks or `everett inbox` must pick it up".to_string()
             } else {
-                format!(" (no {} inbox hook; it must run `everett inbox`)", session.harness)
+                format!("no {} inbox hook; it must run `everett inbox`", session.harness)
             }
         )),
     ];
@@ -846,7 +850,7 @@ fn send_inbox_cmd(args: &Args, r: &Map<String, Value>, session: &Session, label:
         match result.get("reply") {
             Some(Value::String(reply)) => lines.push(Some(reply.clone())),
             _ => lines.push(Some(format!(
-                "  no reply within {}s; it will arrive in inbox {} (`everett inbox`)",
+                "  no reply within {}s; check inbox {} (`everett inbox`)",
                 crate::fmt::g(args.wait),
                 result.get("reply_inbox").and_then(|v| v.as_str()).unwrap_or("")
             ))),
@@ -858,7 +862,6 @@ fn send_inbox_cmd(args: &Args, r: &Map<String, Value>, session: &Session, label:
         )));
     }
     let mut payload = r.clone();
-    payload.insert("delivered".into(), json!(true));
     for (k, v) in &result {
         payload.insert(k.clone(), v.clone());
     }
