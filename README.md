@@ -432,6 +432,8 @@ Parallel sessions each build their own context and drift apart. The shared core 
 
 The project is the enclosing git repository's folder name, else the folder name. Your home folder is not a project. Default merge engine: `merge_llm` in the config, else `claude`.
 
+For storage boundaries, mid-session reads, and the relationship to Power Proxy and Basic Memory, see [Shared memory and other memory tools](docs/memory.md).
+
 ### Nightly auto-merge
 
 `everett trunk schedule` installs a macOS LaunchAgent so the shared core merges itself every night instead of waiting on someone to run `everett trunk merge`:
