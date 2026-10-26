@@ -58,6 +58,14 @@ fn quote(value: &str) -> String {
 }
 
 pub fn render(at: &str, llm: &str) -> Result<SystemdUnits> {
+    let selected_home = home();
+    let selected_home = if selected_home.is_absolute() {
+        selected_home
+    } else {
+        std::env::current_dir()
+            .map_err(|e| EverettError::new(2, format!("cannot resolve Everett home for systemd: {e}")))?
+            .join(selected_home)
+    };
     let path = std::env::var_os("PATH").unwrap_or_default();
     let dirs: Vec<_> = std::env::split_paths(&path)
         .filter(|p| p.is_absolute())
@@ -72,7 +80,7 @@ pub fn render(at: &str, llm: &str) -> Result<SystemdUnits> {
         &everett_command()[0],
         &[
             ("HOME", user_home().to_string_lossy().into_owned()),
-            ("EVERETT_HOME", home().to_string_lossy().into_owned()),
+            ("EVERETT_HOME", selected_home.to_string_lossy().into_owned()),
             ("PATH", path.to_string_lossy().into_owned()),
         ],
     )
