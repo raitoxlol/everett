@@ -42,7 +42,12 @@ before writing. Prefer an isolated test home configured for both MCP connections
 
 1. Read `everett_core(project="<approved test project>")` from both clients.
 2. In T3, call `everett_learn(fact="<approved unique fact>", project="<approved test project>")`.
-   Verify the fact and bound source session in the returned receipt.
+   Verify `learned=true`, `scope="project"`, and the approved project slug in the
+   receipt. The receipt does not contain the fact text or source session. With
+   owner-authorized local file access, inspect only the matching entry in
+   `<approved Everett home>/.everett/core/inbox.jsonl`: its `text` must equal the
+   approved fact, its `project` and `scope` must match, and its `session` must equal
+   the `session_id` recorded from T3's `everett_whoami()`.
 3. After the owner-approved merge, read `everett_core` again from the second
    client's existing MCP connection. Verify that the exact fact appears.
 
@@ -53,14 +58,25 @@ A pending count alone does not prove that the other client read the exact fact.
 ## Check archive and deletion from T3
 
 Filter behavior for archived/deleted threads is covered by the unit regressions on
-the filter fix PR. For [issue #5](https://github.com/raitoxlol/everett/issues/5)'s
-live lifecycle checkbox, use a disposable T3 thread on the real client:
+the [filter fix PR](https://github.com/raitoxlol/everett/pull/75). Use a binary that
+includes that fix. For [issue #5](https://github.com/raitoxlol/everett/issues/5)'s
+live lifecycle checkbox, use a disposable T3 thread on the real client. On its
+selected execution host, use the same Everett home as the MCP connections and
+replace the placeholder with the full native provider ID:
 
-1. Confirm the provider ID resolves with `everett send --mode inbox --dry-run --to <id>`
-   while the thread is active.
-2. Archive it in the T3 UI. Repeat the dry-run; resolution must fail with no session match.
-3. Restore, then with owner approval delete the disposable thread, and confirm dry-run
-   stays unresolved.
+```bash
+everett --hours 876000 send --mode inbox --dry-run --json \
+  --to "<full-native-id>" "Everett T3 read-only acceptance probe"
+```
+
+1. While the thread is active, require exit status 0, `dry_run=true`,
+   `delivered=false`, and `session.id` equal to that full ID. Check
+   `session.source="t3code"`; a prefix or title match to another ID does not pass.
+2. Archive it in the T3 UI. Repeat the command; require exit status 2 with
+   `no session matches`. A usage, identity, or store error is inconclusive.
+3. Restore it and require the exact active receipt again. Then, with owner
+   approval, delete the disposable thread and repeat the command; require exit
+   status 2 with `no session matches` again.
 
 Do not send a live message for this check. Keep the dry-run receipts with the rest of
 the evidence pack. There is no Python helper in-tree for this step.
