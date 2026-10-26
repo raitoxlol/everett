@@ -114,12 +114,12 @@ pub fn tools() -> &'static Vec<Value> {
             }),
             json!({
                 "name": "everett_core",
-                "description": "Read the latest shared core, including during an active session. Default action is read. Use forget or correct to remove an exact fact from active core and pending learnings immediately. Matching ignores case and punctuation. Corrections use the same 500-character limit and secret filter as learn. Scope defaults to global, or project when project is supplied. History backups are retained. Gateway connections can only read.",
+                "description": "Read the latest shared core, including during an active session. Default action is read. Use forget or correct to remove an exact fact from active core and pending learnings immediately. Matching ignores case and punctuation. Replacement facts use the same 500-character limit and secret filter as learn. Existing fact lookup has no learning-length cap. Scope defaults to global, or project when project is supplied. History backups are retained. Gateway connections can only read.",
                 "annotations": {"readOnlyHint":false, "destructiveHint":true, "openWorldHint":false},
                 "inputSchema": {"type": "object", "properties": {
                     "project": s("Project name (default: the current folder's project)."),
                     "action": {"type":"string", "enum":["read", "forget", "correct"], "default":"read"},
-                    "fact": {"type":"string", "description":"For forget or correct, copy the whole fact without its bullet marker.", "maxLength":crate::core::MAX_LEARNING},
+                    "fact": {"type":"string", "description":"For forget or correct, copy the whole existing fact without its bullet marker. It may exceed the learning-length cap."},
                     "replacement": {"type":"string", "description":"Required for correct. The replacement fact takes effect immediately.", "maxLength":crate::core::MAX_LEARNING},
                     "scope": {"type":"string", "enum":["global", "project"]},
                 }, "additionalProperties": false},

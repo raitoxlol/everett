@@ -350,11 +350,14 @@ fn read_optional(path: &Path) -> Result<String> {
 
 pub fn change(change: CoreChange<'_>, project: Option<&str>, scope: Option<&str>) -> Result<Map<String, Value>> {
     let (action, fact, replacement) = match change {
-        CoreChange::Forget { fact } => ("forget", validated_fact(fact)?, None),
-        CoreChange::Correct { fact, replacement } => ("correct", validated_fact(fact)?, Some(validated_fact(replacement)?)),
+        CoreChange::Forget { fact } => ("forget", fact, None),
+        CoreChange::Correct { fact, replacement } => ("correct", fact, Some(validated_fact(replacement)?)),
     };
     let scope = CoreScope::resolve(project, scope)?;
-    let target = norm(&fact);
+    let target = norm(fact);
+    if target.is_empty() {
+        return Err(EverettError::new(2, "The fact to find is empty."));
+    }
     let _merge_guard = locked(".merge.lock", false)?;
     let _inbox_guard = locked(".inbox.lock", true)?;
     let path = match &scope {
