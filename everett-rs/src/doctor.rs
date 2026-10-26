@@ -286,7 +286,12 @@ pub fn run(hours: f64) -> i32 {
     println!("harnesses:");
     for (harness, rel) in stores() {
         let path = if *harness == "devin" {
-            devin_adapter::data_dir()
+            devin_adapter::data_dirs()
+                .into_iter()
+                .find(|dir| dir.exists())
+                .unwrap_or_else(devin_adapter::data_dir)
+        } else if *harness == "t3code" {
+            crate::adapters::t3code::db_path()
         } else {
             home().join(rel)
         };
