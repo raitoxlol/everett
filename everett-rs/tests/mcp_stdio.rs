@@ -471,6 +471,64 @@ fn learn_secret_filter_core_and_card() {
 }
 
 #[test]
+fn core_refresh_correct_and_forget_update_active_and_pending_facts() {
+    let fx = home_with_claude_session();
+    let mut s = Server::start(&fx, &[]);
+    assert_eq!(s.call("everett_core", json!({}))["structuredContent"]["pending_learnings"], 0);
+    for fact in ["Atlas deploys on Fridays", "Keep the release checklist"] {
+        assert_eq!(fx.run(&["learn", fact]).status.code(), Some(0));
+    }
+    assert_eq!(fx.run(&["trunk", "merge", "--llm", "none"]).status.code(), Some(0));
+    let refreshed = s.call("everett_core", json!({}));
+    assert!(refreshed["structuredContent"]["core"].as_str().unwrap().contains("Atlas deploys on Fridays"), "{refreshed}");
+    assert_eq!(fx.run(&["learn", "Atlas deploys on Fridays"]).status.code(), Some(0));
+    assert_eq!(fx.run(&["learn", "Keep the release checklist"]).status.code(), Some(0));
+    let corrected = s.call("everett_core", json!({"action":"correct", "fact":"atlas deploys on fridays.", "replacement":"Atlas deploys on Mondays"}));
+    assert_eq!(corrected["isError"], false, "{corrected}");
+    assert_eq!(corrected["structuredContent"]["removed_core"], 1);
+    assert_eq!(corrected["structuredContent"]["removed_pending"], 1);
+    let active = std::fs::read_to_string(fx.home().join(".everett/core/core.md")).unwrap();
+    assert_eq!(active, "# Everett core\n\n- Keep the release checklist\n- Atlas deploys on Mondays\n");
+    let pending = std::fs::read_to_string(fx.home().join(".everett/core/inbox.jsonl")).unwrap();
+    assert!(!pending.contains("Fridays") && pending.contains("Keep the release checklist"), "{pending}");
+    let forgotten = s.call("everett_core", json!({"action":"forget", "fact":"keep the release checklist."}));
+    assert_eq!(forgotten["isError"], false, "{forgotten}");
+    assert_eq!(forgotten["structuredContent"]["removed_core"], 1);
+    assert_eq!(forgotten["structuredContent"]["removed_pending"], 1);
+    assert_eq!(fx.run(&["trunk", "merge", "--llm", "none"]).status.code(), Some(0));
+    assert_eq!(std::fs::read_to_string(fx.home().join(".everett/core/core.md")).unwrap(), "# Everett core\n\n- Atlas deploys on Mondays\n");
+    let refreshed = s.call("everett_core", json!({"action":"read"}));
+    let text = refreshed["structuredContent"]["core"].as_str().unwrap();
+    assert!(text.contains("Atlas deploys on Mondays") && !text.contains("Fridays") && !text.contains("checklist"), "{refreshed}");
+    s.close();
+}
+
+#[test]
+fn core_changes_reject_secrets_and_keep_project_scopes_separate() {
+    let fx = home_with_claude_session();
+    for args in [vec!["learn", "Atlas uses npm"], vec!["learn", "Atlas uses npm", "--project", "atlas"], vec!["learn", "Atlas uses npm", "--project", "other"]] {
+        assert_eq!(fx.run(&args).status.code(), Some(0));
+    }
+    let pending = std::fs::read_to_string(fx.home().join(".everett/core/inbox.jsonl")).unwrap();
+    let mut s = Server::start(&fx, &[]);
+    let bad = s.call("everett_core", json!({"action":"correct", "fact":"Atlas uses npm", "replacement":"the api_key = abcdef123456"}));
+    assert_eq!(bad["isError"], true, "{bad}");
+    assert!(text(&bad).contains("Secrets never go into the shared core"), "{bad}");
+    assert_eq!(std::fs::read_to_string(fx.home().join(".everett/core/inbox.jsonl")).unwrap(), pending);
+    let corrected = s.call("everett_core", json!({"action":"correct", "fact":"Atlas uses npm", "replacement":"Atlas uses pnpm", "project":"Atlas"}));
+    assert_eq!(corrected["isError"], false, "{corrected}");
+    assert_eq!(corrected["structuredContent"]["removed_core"], 0);
+    assert_eq!(corrected["structuredContent"]["removed_pending"], 1);
+    assert_eq!(std::fs::read_to_string(fx.home().join(".everett/core/projects/atlas.md")).unwrap(), "# Project core: atlas\n\n- Atlas uses pnpm\n");
+    assert_eq!(fx.run(&["trunk", "merge", "--llm", "none"]).status.code(), Some(0));
+    assert!(std::fs::read_to_string(fx.home().join(".everett/core/core.md")).unwrap().contains("Atlas uses npm"));
+    assert!(std::fs::read_to_string(fx.home().join(".everett/core/projects/other.md")).unwrap().contains("Atlas uses npm"));
+    let unchanged = s.call("everett_core", json!({"action":"forget", "fact":"Missing fact"}));
+    assert_eq!(unchanged["structuredContent"]["changed"], false, "{unchanged}");
+    s.close();
+}
+
+#[test]
 fn card_needs_identity() {
     let fx = home_with_claude_session();
     let mut s = Server::start(&fx, &[]);

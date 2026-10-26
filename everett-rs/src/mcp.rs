@@ -114,9 +114,14 @@ pub fn tools() -> &'static Vec<Value> {
             }),
             json!({
                 "name": "everett_core",
-                "description": "Read the shared core: the global facts plus this (or the named) project's facts.",
+                "description": "Read the latest shared core, including during an active session. Default action is read. Use forget or correct to remove an exact fact from active core and pending learnings immediately. Matching ignores case and punctuation. Corrections use the same 500-character limit and secret filter as learn. Scope defaults to global, or project when project is supplied. History backups are retained. Gateway connections can only read.",
+                "annotations": {"readOnlyHint":false, "destructiveHint":true, "openWorldHint":false},
                 "inputSchema": {"type": "object", "properties": {
                     "project": s("Project name (default: the current folder's project)."),
+                    "action": {"type":"string", "enum":["read", "forget", "correct"], "default":"read"},
+                    "fact": {"type":"string", "description":"For forget or correct, copy the whole fact without its bullet marker.", "maxLength":crate::core::MAX_LEARNING},
+                    "replacement": {"type":"string", "description":"Required for correct. The replacement fact takes effect immediately.", "maxLength":crate::core::MAX_LEARNING},
+                    "scope": {"type":"string", "enum":["global", "project"]},
                 }, "additionalProperties": false},
             }),
             json!({
@@ -833,6 +838,24 @@ fn tool_learn(args: &Map<String, Value>) -> std::result::Result<Map<String, Valu
 
 fn tool_core(args: &Map<String, Value>) -> std::result::Result<Map<String, Value>, ToolFailure> {
     let project = str_arg(args, "project", false)?;
+    let action = str_arg(args, "action", false)?;
+    if action == "forget" || action == "correct" {
+        let fact = str_arg(args, "fact", true)?;
+        let replacement = str_arg(args, "replacement", action == "correct")?;
+        if action == "forget" && args.contains_key("replacement") {
+            return Err(ToolFailure::Params("replacement is only allowed for correct".into()));
+        }
+        let scope = str_arg(args, "scope", false)?;
+        return crate::core::change(
+            if action == "forget" { crate::core::CoreChange::Forget { fact: &fact } }
+            else { crate::core::CoreChange::Correct { fact: &fact, replacement: &replacement } },
+            if project.is_empty() { None } else { Some(&project) },
+            if scope.is_empty() { None } else { Some(&scope) },
+        ).map_err(ToolFailure::Tool);
+    }
+    if args.contains_key("fact") || args.contains_key("replacement") || args.contains_key("scope") {
+        return Err(ToolFailure::Params("fact, replacement and scope require action forget or correct".into()));
+    }
     let text = if !project.is_empty() {
         [
             crate::core::global_path(),

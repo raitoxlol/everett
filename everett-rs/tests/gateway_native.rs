@@ -629,6 +629,8 @@ fn policy_rejects_foreign_identity_project_and_unsafe_arguments() {
     cases.extend(["everett_inbox", "everett_card", "everett_send"].iter().map(|n| (*n, json!({"session_id": "other"}))));
     cases.extend([
         ("everett_core", json!({"project": "elsewhere"})), ("everett_inbox", json!({"peek": 1})),
+        ("everett_core", json!({"action": "forget", "fact": "Owner fact"})),
+        ("everett_core", json!({"action": "correct", "fact": "Owner fact", "replacement": "New fact"})),
         ("everett_send", json!({"text": "task"})), ("everett_send", json!({"text": "task", "to": "agent"})),
         ("everett_send", json!({"text": "task", "to": "dot-one"})), ("everett_send", json!({"text": "task", "to": "foreign"})),
         ("everett_send", json!({"text": "task", "to": "agent-two", "reply_to": "one"})),
