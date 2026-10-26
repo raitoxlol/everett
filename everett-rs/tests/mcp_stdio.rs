@@ -556,6 +556,130 @@ fn core_changes_accept_existing_bullets_longer_than_the_learning_limit() {
 }
 
 #[test]
+fn core_search_retains_facts_beyond_the_injected_cap_and_forget_reaches_the_store() {
+    let fx = home_with_claude_session();
+    let mut s = Server::start(&fx, &[("CODEX_THREAD_ID", "memory-search-session")]);
+    let learned = s.call("everett_learn", json!({"fact":"Quartz compiler uses ccache"}));
+    assert_eq!(learned["isError"], false, "{learned}");
+    let id = learned["structuredContent"]["id"].as_str().unwrap().to_string();
+    assert_eq!(fx.run(&["learn", "Mica builds use gcc"]).status.code(), Some(0));
+    for i in 0..80 {
+        assert_eq!(fx.run(&["learn", &format!("Build system fact number {i} covers ordinary package checks and release verification")]).status.code(), Some(0));
+    }
+    assert_eq!(fx.run(&["trunk", "merge", "--llm", "none"]).status.code(), Some(0));
+    let injected = s.call("everett_core", json!({}));
+    assert!(!injected["structuredContent"]["core"].as_str().unwrap().contains("Quartz compiler"));
+    let found = s.call("everett_core", json!({"action":"search", "query":"Quartz ccache"}));
+    assert_eq!(found["isError"], false, "{found}");
+    let facts = found["structuredContent"]["facts"].as_array().unwrap();
+    assert_eq!(facts.len(), 1, "{found}");
+    assert_eq!(facts[0]["text"], "Quartz compiler uses ccache");
+    assert_eq!(facts[0]["id"], id);
+    assert_eq!(facts[0]["session"], "memory-search-session");
+    assert_eq!(facts[0]["harness"], "codex");
+    let corrected = s.call("everett_core", json!({"action":"correct", "fact":"Mica builds use gcc", "replacement":"Mica builds use clang"}));
+    assert_eq!(corrected["structuredContent"]["removed_store"], 1, "{corrected}");
+    assert_eq!(corrected["structuredContent"]["removed_core"], 0);
+    let found = s.call("everett_core", json!({"action":"search", "query":"Mica"}));
+    assert_eq!(found["structuredContent"]["facts"][0]["text"], "Mica builds use clang", "{found}");
+    let forgotten = s.call("everett_core", json!({"action":"forget", "fact":"Quartz compiler uses ccache"}));
+    assert_eq!(forgotten["structuredContent"]["removed_store"], 1, "{forgotten}");
+    assert_eq!(forgotten["structuredContent"]["removed_core"], 0);
+    s.close();
+    let mut restarted = Server::start(&fx, &[]);
+    let found = restarted.call("everett_core", json!({"action":"search", "query":"Quartz"}));
+    assert_eq!(found["structuredContent"]["facts"], json!([]), "{found}");
+    let found = restarted.call("everett_core", json!({"action":"search", "query":"clang"}));
+    assert_eq!(found["structuredContent"]["facts"][0]["text"], "Mica builds use clang", "{found}");
+    let database = rusqlite::Connection::open(fx.home().join(".everett/core/facts.sqlite3")).unwrap();
+    let forgotten_count: i64 = database.query_row("SELECT count(*) FROM facts WHERE text LIKE '%Quartz%'", [], |row| row.get(0)).unwrap();
+    assert_eq!(forgotten_count, 0);
+    use std::os::unix::fs::PermissionsExt;
+    assert_eq!(std::fs::metadata(fx.home().join(".everett/core/facts.sqlite3")).unwrap().permissions().mode() & 0o777, 0o600);
+    restarted.close();
+}
+
+#[test]
+fn core_search_scopes_limits_literal_queries_and_rejected_secrets() {
+    let fx = home_with_claude_session();
+    let mut s = Server::start(&fx, &[]);
+    let empty = s.call("everett_core", json!({"action":"search", "query":"Aurora"}));
+    assert_eq!(empty["structuredContent"]["facts"], json!([]), "{empty}");
+    assert!(!fx.home().join(".everett/core/facts.sqlite3").exists());
+    for args in [json!({"fact":"Aurora global convention"}), json!({"fact":"Aurora Atlas convention", "project":"atlas"}), json!({"fact":"Aurora other convention", "project":"other"})] {
+        assert_eq!(s.call("everett_learn", args)["isError"], false);
+    }
+    let rejected = s.call("everett_learn", json!({"fact":"the api_key = abcdef123456"}));
+    assert_eq!(rejected["isError"], true);
+    let global = s.call("everett_core", json!({"action":"search", "query":"Aurora"}));
+    assert_eq!(global["structuredContent"]["facts"].as_array().unwrap().len(), 1, "{global}");
+    assert_eq!(global["structuredContent"]["facts"][0]["text"], "Aurora global convention");
+    let repeated = s.call("everett_learn", json!({"fact":"Aurora global convention"}));
+    assert_eq!(repeated["structuredContent"]["id"], global["structuredContent"]["facts"][0]["id"]);
+    let project = s.call("everett_core", json!({"action":"search", "query":"Aurora \" OR *", "project":"Atlas"}));
+    let facts = project["structuredContent"]["facts"].as_array().unwrap();
+    assert_eq!(facts.len(), 2, "{project}");
+    assert!(facts.iter().all(|fact| fact["text"] != "Aurora other convention"));
+    let limited = s.call("everett_core", json!({"action":"search", "query":"Aurora", "project":"atlas", "limit":1}));
+    assert_eq!(limited["structuredContent"]["facts"].as_array().unwrap().len(), 1, "{limited}");
+    for limit in [json!(-1), json!(1.5), json!("5"), Value::Null, json!(0), json!(21)] {
+        let rejected = s.request("tools/call", Some(json!({"name":"everett_core", "arguments":{"action":"search", "query":"Aurora", "limit":limit}})));
+        assert_eq!(rejected["error"]["code"], -32602, "{rejected}");
+    }
+    let scoped = s.call("everett_core", json!({"action":"search", "query":"Aurora", "scope":"project", "project":"atlas"}));
+    assert_eq!(scoped["structuredContent"]["facts"][0]["text"], "Aurora Atlas convention", "{scoped}");
+    assert_eq!(s.call("everett_learn", json!({"fact":"R is used for reports"}))["isError"], false);
+    let single_letter = s.call("everett_core", json!({"action":"search", "query":"R"}));
+    assert_eq!(single_letter["structuredContent"]["facts"][0]["text"], "R is used for reports", "{single_letter}");
+    let database = rusqlite::Connection::open(fx.home().join(".everett/core/facts.sqlite3")).unwrap();
+    let count: i64 = database.query_row("SELECT count(*) FROM facts", [], |row| row.get(0)).unwrap();
+    assert_eq!(count, 4);
+    s.close();
+}
+
+#[test]
+fn failed_learning_does_not_publish_a_searchable_fact() {
+    let fx = home_with_claude_session();
+    std::fs::create_dir_all(fx.home().join(".everett/core/inbox.jsonl")).unwrap();
+    assert_eq!(fx.run(&["learn", "Uncommitted nebula fact"]).status.code(), Some(2));
+    let mut s = Server::start(&fx, &[]);
+    let found = s.call("everett_core", json!({"action":"search", "query":"nebula"}));
+    assert_eq!(found["isError"], false, "{found}");
+    assert_eq!(found["structuredContent"]["facts"], json!([]), "{found}");
+    let database = rusqlite::Connection::open(fx.home().join(".everett/core/facts.sqlite3")).unwrap();
+    let count: i64 = database.query_row("SELECT count(*) FROM facts", [], |row| row.get(0)).unwrap();
+    assert_eq!(count, 0);
+    s.close();
+}
+
+#[test]
+fn core_correction_can_be_retried_after_a_store_commit_failure() {
+    let fx = home_with_claude_session();
+    assert_eq!(fx.run(&["learn", "Oxide packages use rpm"]).status.code(), Some(0));
+    assert_eq!(fx.run(&["trunk", "merge", "--llm", "none"]).status.code(), Some(0));
+    let mut database = rusqlite::Connection::open(fx.home().join(".everett/core/facts.sqlite3")).unwrap();
+    let transaction = database.transaction().unwrap();
+    assert_eq!(transaction.query_row("SELECT count(*) FROM facts", [], |row| row.get::<_, i64>(0)).unwrap(), 1);
+    let mut s = Server::start(&fx, &[]);
+    let args = json!({"action":"correct", "fact":"Oxide packages use rpm", "replacement":"Oxide packages use deb"});
+    let failed = s.call("everett_core", args.clone());
+    assert_eq!(failed["isError"], true, "{failed}");
+    assert!(text(&failed).contains("locked"), "{failed}");
+    let core = std::fs::read_to_string(fx.home().join(".everett/core/core.md")).unwrap();
+    assert!(core.contains("Oxide packages use deb"), "{core}");
+    assert!(!core.contains("Oxide packages use rpm"), "{core}");
+    drop(transaction);
+    let retried = s.call("everett_core", args);
+    assert_eq!(retried["isError"], false, "{retried}");
+    assert_eq!(retried["structuredContent"]["removed_store"], 1, "{retried}");
+    let stale = s.call("everett_core", json!({"action":"search", "query":"rpm"}));
+    assert_eq!(stale["structuredContent"]["facts"], json!([]), "{stale}");
+    let replacement = s.call("everett_core", json!({"action":"search", "query":"deb"}));
+    assert_eq!(replacement["structuredContent"]["facts"][0]["text"], "Oxide packages use deb", "{replacement}");
+    s.close();
+}
+
+#[test]
 fn card_needs_identity() {
     let fx = home_with_claude_session();
     let mut s = Server::start(&fx, &[]);
