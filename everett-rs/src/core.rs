@@ -5,6 +5,8 @@ use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 
+mod store;
+
 use fs2::FileExt;
 use regex::Regex;
 use serde_json::{json, Map, Value};
@@ -258,6 +260,20 @@ pub fn learn(text: &str, project: Option<&str>, scope: Option<&str>, cwd: Option
             "No project: pass --project, or run from inside a project folder.",
         ));
     }
+    let mut entry = learning_entry(&text, &project, &scope, &cwd);
+    let _guard = locked(".inbox.lock", true)?;
+    store::FactStore::open(true)?.unwrap().remember(&mut entry, |entry| {
+        let mut f = OpenOptions::new().create(true).append(true).open(inbox_path()).map_err(|e| {
+            EverettError::new(2, e.to_string())
+        })?;
+        let _ = f.set_permissions(PermissionsExt::from_mode(0o600));
+        f.write_all((serde_json::to_string(entry).unwrap() + "\n").as_bytes())
+            .map_err(|e| EverettError::new(2, e.to_string()))
+    })?;
+    Ok(entry)
+}
+
+fn learning_entry(text: &str, project: &str, scope: &str, cwd: &str) -> Map<String, Value> {
     let mut entry = Map::new();
     entry.insert("ts".into(), json!(now()));
     entry.insert("session".into(), json!(caller_session_id()));
@@ -266,14 +282,7 @@ pub fn learn(text: &str, project: Option<&str>, scope: Option<&str>, cwd: Option
     entry.insert("project".into(), json!(project));
     entry.insert("scope".into(), json!(scope));
     entry.insert("text".into(), json!(text));
-    let _guard = locked(".inbox.lock", true)?;
-    let mut f = OpenOptions::new().create(true).append(true).open(inbox_path()).map_err(|e| {
-        EverettError::new(2, e.to_string())
-    })?;
-    let _ = f.set_permissions(PermissionsExt::from_mode(0o600));
-    f.write_all((serde_json::to_string(&entry).unwrap() + "\n").as_bytes())
-        .map_err(|e| EverettError::new(2, e.to_string()))?;
-    Ok(entry)
+    entry
 }
 
 pub fn read_inbox() -> Vec<Map<String, Value>> {
@@ -308,6 +317,13 @@ enum CoreScope {
 }
 
 impl CoreScope {
+    fn name(&self) -> &str {
+        match self {
+            Self::Global => "global",
+            Self::Project(_) => "project",
+        }
+    }
+
     fn resolve(project: Option<&str>, scope: Option<&str>) -> Result<Self> {
         match scope.unwrap_or(if project.is_some() { "project" } else { "global" }) {
             "global" => Ok(Self::Global),
@@ -382,26 +398,63 @@ pub fn change(change: CoreChange<'_>, project: Option<&str>, scope: Option<&str>
             retained.push_str(line);
         }
     }
-    let changed = removed_core + removed_pending > 0;
+    let mut store = store::FactStore::open(true)?;
+    let removed_store = store.as_ref().map(|store| store.count(&scope, &target)).transpose()?.unwrap_or(0);
+    let changed = removed_core + removed_pending + removed_store > 0;
     if changed {
         if let Some(replacement) = &replacement {
             active.retain(|bullet| norm(bullet) != norm(replacement));
             active.push(replacement.clone());
         }
+        let cwd = std::env::current_dir().map(|p| p.to_string_lossy().to_string()).unwrap_or_default();
+        let mut entry = replacement.as_ref().map(|text| learning_entry(text, scope.key(), scope.name(), &cwd));
+        if removed_store == 0 && entry.is_some() {
+            if let Some(store) = &mut store {
+                store.change(&scope, &target, entry.as_mut())?;
+            }
+        }
+        write_file(&path, &render(&title(scope.key()), &active, CORE_WORDS)).map_err(|e| EverettError::new(2, e.to_string()))?;
         if removed_pending > 0 {
             write_file(&inbox_path(), &retained).map_err(|e| EverettError::new(2, e.to_string()))?;
         }
-        write_file(&path, &render(&title(scope.key()), &active, CORE_WORDS)).map_err(|e| EverettError::new(2, e.to_string()))?;
+        if removed_store > 0 {
+            if let Some(store) = &mut store {
+                store.change(&scope, &target, entry.as_mut())?;
+            }
+        }
     }
     let mirror = if changed { write_vault_mirror(&current_core()) } else { None };
     let mut result = Map::new();
     result.insert("action".into(), json!(action));
     result.insert("changed".into(), json!(changed));
-    result.insert("scope".into(), json!(if matches!(scope, CoreScope::Global) { "global" } else { "project" }));
+    result.insert("scope".into(), json!(scope.name()));
     result.insert("project".into(), json!(scope.key()));
     result.insert("removed_core".into(), json!(removed_core));
     result.insert("removed_pending".into(), json!(removed_pending));
+    result.insert("removed_store".into(), json!(removed_store));
     result.insert("mirror".into(), mirror.map(|p| json!(p.to_string_lossy())).unwrap_or(Value::Null));
+    Ok(result)
+}
+
+pub fn search(query: &str, project: Option<&str>, scope: Option<&str>, limit: usize) -> Result<Map<String, Value>> {
+    if query.chars().count() > MAX_LEARNING || !(1..=20).contains(&limit) {
+        return Err(EverettError::new(2, "Search accepts at most 500 query characters and between 1 and 20 results."));
+    }
+    let normalized = norm(query);
+    let terms = normalized.split_whitespace().take(32).map(|word| format!("\"{word}\"")).collect::<Vec<_>>();
+    if terms.is_empty() {
+        return Err(EverettError::new(2, "Search needs at least one searchable word."));
+    }
+    let project = project.map(slug).unwrap_or_else(|| {
+        project_for(&std::env::current_dir().map(|p| p.to_string_lossy().to_string()).unwrap_or_default())
+    });
+    if let Some(scope) = scope {
+        CoreScope::resolve(Some(&project), Some(scope))?;
+    }
+    let facts = store::FactStore::open(false)?.map(|store| store.search(&terms.join(" OR "), &project, scope, limit)).transpose()?.unwrap_or_default();
+    let mut result = Map::new();
+    result.insert("facts".into(), json!(facts));
+    result.insert("project".into(), json!(project));
     Ok(result)
 }
 

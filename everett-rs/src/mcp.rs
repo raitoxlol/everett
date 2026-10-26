@@ -114,11 +114,13 @@ pub fn tools() -> &'static Vec<Value> {
             }),
             json!({
                 "name": "everett_core",
-                "description": "Read the latest shared core, including during an active session. Default action is read. Use forget or correct to remove an exact fact from active core and pending learnings immediately. Matching ignores case and punctuation. Replacement facts use the same 500-character limit and secret filter as learn. Existing fact lookup has no learning-length cap. Scope defaults to global, or project when project is supplied. History backups are retained. Gateway connections can only read.",
+                "description": "Read the latest shared core, including during an active session. Default action is read. Local search uses BM25 over original accepted learnings beyond the compact core cap; query matches literal words, with global plus current/named project by default. Use forget or correct to remove an exact fact from active core, pending learnings, and search immediately. Matching ignores case and punctuation. Replacement facts use the same 500-character limit and secret filter as learn. Existing fact lookup has no learning-length cap. Mutation scope defaults to global, or project when project is supplied. History backups are retained. Gateway connections can only read compact core.",
                 "annotations": {"readOnlyHint":false, "destructiveHint":true, "openWorldHint":false},
                 "inputSchema": {"type": "object", "properties": {
                     "project": s("Project name (default: the current folder's project)."),
-                    "action": {"type":"string", "enum":["read", "forget", "correct"], "default":"read"},
+                    "action": {"type":"string", "enum":["read", "search", "forget", "correct"], "default":"read"},
+                    "query": {"type":"string", "description":"For search, up to 500 characters of literal search words. BM25 ranks accepted learnings beyond the injected core cap.", "maxLength":crate::core::MAX_LEARNING},
+                    "limit": {"type":"integer", "description":"Maximum search results, default 5.", "minimum":1, "maximum":20},
                     "fact": {"type":"string", "description":"For forget or correct, copy the whole existing fact without its bullet marker. It may exceed the learning-length cap."},
                     "replacement": {"type":"string", "description":"Required for correct. The replacement fact takes effect immediately.", "maxLength":crate::core::MAX_LEARNING},
                     "scope": {"type":"string", "enum":["global", "project"]},
@@ -821,6 +823,7 @@ fn tool_learn(args: &Map<String, Value>) -> std::result::Result<Map<String, Valu
     .map_err(ToolFailure::Tool)?;
     let mut out = Map::new();
     out.insert("learned".into(), json!(true));
+    out.insert("id".into(), entry.get("id").cloned().unwrap_or(Value::Null));
     out.insert(
         "scope".into(),
         entry.get("scope").cloned().unwrap_or(Value::Null),
@@ -841,6 +844,26 @@ fn tool_learn(args: &Map<String, Value>) -> std::result::Result<Map<String, Valu
 fn tool_core(args: &Map<String, Value>) -> std::result::Result<Map<String, Value>, ToolFailure> {
     let project = str_arg(args, "project", false)?;
     let action = str_arg(args, "action", false)?;
+    if action == "search" {
+        if args.contains_key("fact") || args.contains_key("replacement") {
+            return Err(ToolFailure::Params("fact and replacement are not search arguments".into()));
+        }
+        let query = str_arg(args, "query", true)?;
+        let scope = str_arg(args, "scope", false)?;
+        let limit = match args.get("limit") {
+            None => 5,
+            Some(value) => value.as_u64().filter(|limit| (1..=20).contains(limit))
+                .ok_or_else(|| ToolFailure::Params("limit must be an integer between 1 and 20".into()))? as usize,
+        };
+        return crate::core::search(
+            &query, if project.is_empty() { None } else { Some(&project) },
+            if scope.is_empty() { None } else { Some(&scope) },
+            limit,
+        ).map_err(ToolFailure::Tool);
+    }
+    if args.contains_key("query") || args.contains_key("limit") {
+        return Err(ToolFailure::Params("query and limit require action search".into()));
+    }
     if action == "forget" || action == "correct" {
         let fact = str_arg(args, "fact", true)?;
         let replacement = str_arg(args, "replacement", action == "correct")?;

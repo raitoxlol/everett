@@ -436,9 +436,13 @@ Parallel sessions each build their own context and drift apart. The shared core 
 
 During an active session, call `everett_core` again to pull the latest merged facts. Every call reads the local files. Pending learnings still need a merge.
 
+For facts beyond the compact core, call `everett_core(action="search", query="compiler cache", project="atlas")`. Local BM25 search ranks original learnings in `~/.everett/core/facts.sqlite3`. The store keeps accepted facts beyond the 300-word injection cap, with a durable ID, timestamp, scope, project, and source session/harness/folder. Search defaults to global plus current/named project. Use `scope="global"` or `scope="project"` to narrow it. Queries accept up to 500 characters and use at most 32 literal words. Results default to five, with `limit` from 1 to 20. Search does not execute FTS operators supplied in the query.
+
+The searchable store starts with new learnings accepted by this version. It never imports history backups. Existing core files remain readable through the default action. New learnings become searchable immediately, while compact-core injection still needs a merge. Relearning the same normalized fact in the same scope keeps its ID and updates its source metadata.
+
 Local MCP sessions can update memory immediately with `everett_core(action="forget", fact="Atlas deploys on Fridays")` or `everett_core(action="correct", fact="Atlas deploys on Fridays", replacement="Atlas deploys on Mondays")`. Copy the whole fact without its bullet marker, including existing merged bullets longer than 500 characters. Matching ignores case, punctuation, and repeated whitespace. Both actions remove matching active bullets and pending learnings so a later merge cannot restore those pending copies. Replacement facts use the same 500-character limit and secret filter as `everett_learn`, and stay within the 300-word core cap. `changed=false` means no match was found.
 
-Changes default to global scope. Pass `project="atlas"` for project scope, or `scope="project"` for the current project. A running merge makes either action fail with a retry message. Generated vault mirrors update with the change. History backups stay intact and are never merge inputs. Gateway connections remain read-only for shared core and reject mutation arguments.
+Changes default to global scope. Pass `project="atlas"` for project scope, or `scope="project"` for the current project. Forget/correct also update exact matches in the searchable store, including facts dropped from the compact core. They do not match semantic paraphrases. A running merge makes either action fail with a retry message. File and search-store writes are separate: a storage error can leave a partial change; retry the same action after resolving the error to finish it. Generated vault mirrors update after a successful change. History backups stay intact and are never merge inputs. Gateway connections remain read-only for compact shared core and reject local search or mutation arguments.
 
 The project is the enclosing git repository's folder name, else the folder name. Your home folder is not a project. Default merge engine: `merge_llm` in the config, else `claude`.
 
@@ -478,7 +482,7 @@ Everett is mostly used by agents. `everett mcp` is a stdio MCP server (JSON-RPC 
 | `everett_route` | `text`, `router?`, `hours?` | `SESSION` / `NEW` / `ASK`, confidence, router used, candidates. Never sends; excludes the caller when known. |
 | `everett_send` | `text`, `to?`, `hours?`, `spawn?`, `dir?`, `harness?`, `timeout?`, `mode?`, `wait?`, `reply_to?` | Routes then resumes when safe. Automatic passive delivery fails without queueing. Explicit `mode: "inbox"` returns a message id and truthful `queued`/`delivered` pickup fields (plus a reply when `wait` observes one). `reply_to` durably queues an answer for the sender. |
 | `everett_learn` | `fact`, `project?`, `scope?` | Queues a fact for the shared core (secret-filtered). |
-| `everett_core` | `action?`, `project?`, `fact?`, `replacement?`, `scope?` | Reads the latest core by default. Local `forget` and `correct` actions update exact facts in active core and pending learnings. |
+| `everett_core` | `action?`, `project?`, `query?`, `limit?`, `fact?`, `replacement?`, `scope?` | Reads the latest core by default. Local `search` ranks original learnings beyond the core cap. `forget` and `correct` update exact facts in active, pending, and searchable memory. |
 | `everett_card` | `what`, `state`, `next` | Writes the calling session's card. |
 | `everett_whoami` | none | The caller's session id, harness, hop count, and how they were detected. |
 | `everett_inbox` | `peek?` | The Everett messages (requests, replies, events) waiting for you; marks them delivered. |
