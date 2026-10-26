@@ -12,9 +12,6 @@ contracts. It follows the application's active provider thread to
 provider instance, to select Codex, Claude, or Grok. Other drivers are not supported.
 Legacy cursors use Codex `threadId`, Claude `resume`, or Grok `sessionId`.
 
-Use the [real-client acceptance guide](t3-acceptance.md) to verify MCP binding,
-an exact message round trip, owner-approved shared core, and UI lifecycle changes.
-
 ## Discovery
 
 Existing provider transcripts keep their IDs, paths, prompts, and working directories.
