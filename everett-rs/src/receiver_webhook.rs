@@ -344,10 +344,10 @@ fn evaluate(
 
 fn preview(policy: &Policy, arrival: Option<&Arrival>) -> Option<Report> {
     let arrival = arrival?;
-    let Some(rule) = matching(policy, arrival) else {
+    if matching(policy, arrival).is_none() {
         return Some(Report::NoMatch);
-    };
-    gate(policy, arrival, &rule).map(|reason| Report::Skipped { reason })
+    }
+    gate(policy, arrival).map(|reason| Report::Skipped { reason })
 }
 
 fn handle(
@@ -361,7 +361,7 @@ fn handle(
     let Some(rule) = matching(policy, arrival) else {
         return Ok((Report::NoMatch, false));
     };
-    if let Some(reason) = gate(policy, arrival, &rule) {
+    if let Some(reason) = gate(policy, arrival) {
         return Ok((Report::Skipped { reason }, false));
     }
     if !message_ok(&arrival.message_id) {
@@ -607,7 +607,7 @@ fn matching(policy: &Policy, arrival: &Arrival) -> Option<Rule> {
         .cloned()
 }
 
-fn gate(policy: &Policy, arrival: &Arrival, _rule: &Rule) -> Option<String> {
+fn gate(policy: &Policy, arrival: &Arrival) -> Option<String> {
     if arrival.is_reply {
         return Some("replies do not post the webhook".into());
     }

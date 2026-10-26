@@ -228,34 +228,9 @@ jq -n \
 chmod 600 "$DIR/receiver-webhook.json"
 ```
 
-Without `jq`, write the same object by hand. Replace `OWNER_ID` with the account
-id inside the raw `owner` string from `whoami`, and keep that whole string,
-including its brackets and quotes. Replace both `agent-RECEIVER` values with
-`agent_id`. Replace `ROUTINE_ID`, the bearer path, and `activated_at`. On one
-computer, sender and recipient devices are the same `agent_id`.
-
-```json
-{
-  "version": 1,
-  "enabled": true,
-  "activated_at": 1792833622,
-  "rules": [{
-    "id": "grok-inbox",
-    "owner": "[\"https://everett.raitox.tech\",\"account\",\"github:OWNER_ID\"]",
-    "recipient_device": "agent-RECEIVER",
-    "session": "ext-grok-acceptance",
-    "harness": "grok-bot",
-    "sender_device": "agent-RECEIVER",
-    "sender_session": "human",
-    "sender_harness": "",
-    "cooldown_seconds": 30,
-    "url": "https://api2.cursor.sh/automations/webhook/ROUTINE_ID",
-    "bearer_file": "/absolute/path/to/grok-webhook.key"
-  }]
-}
-```
-
-The file must be a regular file, mode `0600` or stricter, version `1`, with no
+`owner` in that file is the raw `whoami` string, brackets included, with no
+added spaces. On one computer both device fields are that `agent_id`. The file
+must be a regular file, mode `0600` or stricter, version `1`, with no
 unknown fields. An enabled file needs `activated_at` (Unix seconds, from 1
 through 4000000000) and 1–16 rules. Rule ids are unique, 1–64 characters of
 letters, digits, `_`, or `-`. `harness` is only `grok-bot` or `openai-dot`.
@@ -289,36 +264,15 @@ A match that the endpoint accepts looks like this. `wake` stays false.
 }
 ```
 
-Then look at the Bot chat. HTTP 200 means the routine endpoint accepted a run.
-Confirm that run calls `everett_inbox` and that the queued text is the one you
-sent. The POST body is only:
-
-```json
-{
-  "source": "everett",
-  "event": "inbox",
-  "session": "ext-grok-acceptance",
-  "harness": "grok-bot",
-  "message_id": "<inbox id>",
-  "rule_id": "grok-inbox"
-}
-```
-
-Headers are `Authorization: Bearer <key>` and `User-Agent: everett-receiver-webhook`.
-Everett does not follow redirects. The timeout is 8 seconds. Only HTTP 200 is
-acceptance. 408, 429, and 5xx stay pending and retry. Other 4xx are rejected
-and are not retried. Transport failures retry. The cap is 5 attempts. After any
-HTTP attempt, that rule waits `cooldown_seconds` before another POST. Extra
-messages stay in the inbox; the woken bot should `everett_inbox` and take all
-of them. A pending retry runs on the next matching local send, or on the next
-`everett relay` receive cycle.
-
-Other `webhook.state` values: `no_match`, `already_posted`, `deferred`,
-`rejected`, `skipped`, and `error`. A policy or bearer-file problem is
-`error` and does not roll back the inbox write. The bearer is not printed.
-Replies, messages from an external harness, and cross-owner or untrusted relay
-messages do not POST. The first matching rule wins. Sender owner, recipient
-owner, and the rule owner must be the same string.
+Confirm the Bot chat shows a routine run that calls `everett_inbox`. The POST
+body is `source`, `event`, `session`, `harness`, `message_id`, and `rule_id`.
+It has no inbox text. The header is `Authorization: Bearer <key>`. Only HTTP 200
+is acceptance. 408, 429, and 5xx retry, up to 5 attempts, on the next matching
+local send or `everett relay` poll. Other 4xx do not. After any HTTP attempt the
+rule waits `cooldown_seconds`. Extra messages stay queued for `everett_inbox`.
+Replies, external or untrusted messages, and rows older than `activated_at` do
+not POST. A policy error does not roll back the inbox write and does not print
+the bearer.
 
 ### Cross-device
 
@@ -338,18 +292,13 @@ when the POST is accepted.
 
 ### What is proven, and what is not
 
-Unit tests and one relay-import test post to a fake endpoint. They check that
-the body has no inbox text, that a duplicate message does not POST again, and
-that an untrusted external message does not POST. They do not call `api2.cursor.sh`
-and do not prove a live Grok Bot chat.
-
-Cursor's Grok Bot routines help and the automations reference, reviewed
-2026-10-26, describe an owner webhook trigger: POST the routine URL with the
-sender key as `Authorization: Bearer`, and HTTP 200 starts a cloud run
+CI posts to a fake endpoint and does not call a live webhook. On 2026-10-26 an
+owner smoke POST to the routine `hugo-everett-wake`, with the sender key as
+`Authorization: Bearer`, returned HTTP 200 and the routine cleared the Everett
+backlog. Cursor's routines help describes that trigger
 ([routines](https://cursor.com/help/grok-bot/routines),
 [automations](https://cursor.com/docs/cloud-agent/automations)).
-An earlier owner machine used this file shape against a real routine URL. This
-repository change does not re-run that live check.
+xAI's pages still do not define a Bot resume API.
 
 ## What xAI documents—and what Everett does not assume
 

@@ -309,10 +309,6 @@ Only outbound GitHub responses and the exact synthetic CIMD document were mocked
 The test does not prove live provider consent, public TLS, an actual cloud client,
 or physical-device delivery.
 
-**The gateway does not resume a bot.** It does not implement MCP2 events, a Slack
-bridge, or an xAI or OpenAI messaging API. An owner can separately enable
-`receiver-webhook.json` so Everett POSTs a nudge to a webhook routine when a
-matching `grok-bot` or `openai-dot` inbox message arrives. See
-[Grok Bot webhook wake](grok-bot.md#wake-a-grok-bot-with-a-webhook-routine).
-Connector access alone does not wake a bot. A cloud routine cannot call a
-laptop-only Command MCP; use the Remote HTTPS gateway on a reachable host.
+**The gateway does not resume a bot**, and it does not implement MCP2 events, a
+Slack bridge, or an xAI or OpenAI messaging API. Owner webhook wake is a
+separate policy: [Grok Bot](grok-bot.md#wake-a-grok-bot-with-a-webhook-routine).

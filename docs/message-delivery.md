@@ -17,10 +17,8 @@ resume an attached session or turn remote agent data into an owner prompt.
 
 There is no general provider wake mechanism in the local CLI or MCP send route.
 Blocked and needs-input event notifications tell the human about those events;
-ordinary inbox sends do not trigger those notifications. A separate owner file,
-`receiver-webhook.json`, can POST a nudge when a registered `grok-bot` or
-`openai-dot` inbox message matches a rule. That POST is not a provider resume
-API. See [Grok Bot webhook wake](grok-bot.md#wake-a-grok-bot-with-a-webhook-routine).
+ordinary inbox sends do not trigger those notifications. Owner webhook wake for
+`grok-bot` and `openai-dot` is [Grok Bot](grok-bot.md#wake-a-grok-bot-with-a-webhook-routine).
 
 ## Explicit queue exceptions
 
