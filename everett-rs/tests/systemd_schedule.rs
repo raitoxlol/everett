@@ -24,6 +24,14 @@ if [ -e "$HOME/fail-$2" ]; then
     exit 1
 fi
 case "$2" in
+    enable|disable)
+        if [ ! -f "$XDG_CONFIG_HOME/systemd/user/dev.everett.core-merge.timer" ]; then
+            echo 'Unit dev.everett.core-merge.timer does not exist' >&2
+            exit 1
+        fi
+        ;;
+esac
+case "$2" in
     enable)
         touch "$HOME/enabled" "$HOME/active"
         ;;
@@ -143,6 +151,48 @@ fn systemd_manager_failures_never_claim_activation_or_successful_removal() {
     std::fs::remove_file(home.path().join("fail-disable")).unwrap();
     Scheduler::Systemd.remove().unwrap();
     assert_eq!(Scheduler::Systemd.status().0, None);
+}
+
+#[test]
+fn systemd_incomplete_installs_can_be_removed_without_masking_manager_failures() {
+    let home = isolated();
+    std::fs::create_dir_all(unit_dir(&home).join(TIMER)).unwrap();
+    assert!(Scheduler::Systemd.install("04:00", "none").is_err());
+    assert!(unit_dir(&home).join(SERVICE).is_file());
+    assert!(!home.path().join("systemctl.log").exists());
+    std::fs::remove_dir(unit_dir(&home).join(TIMER)).unwrap();
+    let unrelated = unit_dir(&home).join("another.service");
+    std::fs::write(&unrelated, "keep this unit").unwrap();
+    assert_eq!(Scheduler::Systemd.status().0, Some(false));
+    let removed = Scheduler::Systemd.remove().unwrap();
+    assert_eq!(removed["removed"], true);
+    assert_eq!(
+        removed["path"],
+        unit_dir(&home).join(SERVICE).to_str().unwrap()
+    );
+    assert!(!unit_dir(&home).join(SERVICE).exists());
+    assert_eq!(
+        std::fs::read_to_string(home.path().join("systemctl.log")).unwrap(),
+        "--user daemon-reload\n"
+    );
+
+    let units = render_systemd("04:00", "none").unwrap();
+    std::fs::write(unit_dir(&home).join(TIMER), units.timer).unwrap();
+    assert_eq!(Scheduler::Systemd.status().0, Some(false));
+    std::fs::write(home.path().join("fail-disable"), "fail").unwrap();
+    assert_eq!(Scheduler::Systemd.remove().unwrap_err().code, 5);
+    assert!(unit_dir(&home).join(TIMER).is_file());
+    std::fs::remove_file(home.path().join("fail-disable")).unwrap();
+    assert_eq!(Scheduler::Systemd.remove().unwrap()["removed"], true);
+    assert_eq!(Scheduler::Systemd.remove().unwrap()["removed"], false);
+    assert!(!unit_dir(&home).join(TIMER).exists());
+    assert_eq!(
+        std::fs::read_to_string(unrelated).unwrap(),
+        "keep this unit"
+    );
+    assert_eq!(std::fs::read_to_string(home.path().join("systemctl.log")).unwrap(), format!(
+        "--user daemon-reload\n--user disable --now {TIMER}\n--user disable --now {TIMER}\n--user daemon-reload\n",
+    ));
 }
 
 #[cfg(target_os = "linux")]

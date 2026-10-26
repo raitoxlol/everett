@@ -166,9 +166,12 @@ pub(super) fn install(at: &str, llm: &str) -> Result<Map<String, Value>> {
 pub(super) fn remove() -> Result<Map<String, Value>> {
     let timer = timer_path();
     let service = service_path();
-    let existed = timer.exists() || service.exists();
+    let has_timer = timer.exists();
+    let existed = has_timer || service.exists();
     if existed {
-        require_systemctl(&["disable", "--now", &format!("{LABEL}.timer")])?;
+        if has_timer {
+            require_systemctl(&["disable", "--now", &format!("{LABEL}.timer")])?;
+        }
         for path in [&timer, &service] {
             match fs::remove_file(path) {
                 Ok(()) => {}
@@ -183,7 +186,12 @@ pub(super) fn remove() -> Result<Map<String, Value>> {
         }
         require_systemctl(&["daemon-reload"])?;
     }
-    Ok(serde_json::from_value(json!({"path":timer, "removed":existed})).unwrap())
+    let path = if existed && !has_timer {
+        service
+    } else {
+        timer
+    };
+    Ok(serde_json::from_value(json!({"path":path, "removed":existed})).unwrap())
 }
 
 pub(super) fn status() -> (Option<bool>, String) {
