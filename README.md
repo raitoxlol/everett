@@ -167,7 +167,7 @@ Host headers and write methods, and sends no session data to a hosted service.
 Stop it with Ctrl-C.
 
 **Future direction:** a hosted dashboard could expose cross-device local activity.
-Cloudflare account auth and inbox-only SSH peer transport exist, but dashboard
+Optional account auth and inbox-only SSH/Convex peer transports exist, but dashboard
 hosting/session synchronization (including a custom-domain frontend on Vercel) do not.
 A Rust local-data service would still be required; a static website cannot read another
 device's session stores.
@@ -202,12 +202,12 @@ Done. MAX_RETRIES is now 5 and the backoff test covers the cap.
 | `everett peer add <name> [--ssh user@host] [--port N] --binary /absolute/everett --host-key SHA256:... --device-key SHA256:...` | Resolve the address by registry name or use an explicit address; reject conflicts and require both confirmed fingerprints before pairing. |
 | `everett peer serve [--address user@host[:port]] --client ID` | Restricted sshd endpoint; signed-in devices attempt to publish their declared address, also configurable with `[peer] address`. |
 | `everett peer status <name> <message-id>` | SSH polls/imports replies; relay queries queued/delivered/claimed/replied/expired state from signed observations (not task completion). |
-| `everett relay` | Listen through Cloudflare outbound polling. Claude session wake and external webhook posts follow the local owner policy. |
+| `everett relay` | Listen through the selected relay: Convex WebSocket or Cloudflare outbound polling. Claude session wake and external webhook posts follow the local owner policy. |
 | `everett relay register / devices / whoami` | Register this provisioned agent's keys and publish its display name/declared SSH address, list active key bundles (maximum 256), or verify agent/org authorization. |
 | `everett relay devices --names` | Hosted Cloudflare enrollment labels beside device IDs and fingerprints. Advisory only; the default JSON bundle list is unchanged. |
 | `everett relay rename NAME` | Update this Cloudflare device's hosted label. Device ID, keys, and pins stay the same. |
 | `everett relay revoke-agent ID / revoke-member SUBJECT / rotate` | Revoke this or an admin-selected agent, remove org membership (admin), or rotate this agent's relay keys using its old signing key. |
-| `everett relay grant invite / accept / reconfirm / revoke / get / list` | Legacy Convex compatibility only. Bilateral org-admin consent for named cross-org agents; [historical flags and journey](docs/cross-device.md#convex-relay-two-org-trial). |
+| `everett relay grant invite / accept / reconfirm / revoke / get / list` | Bilateral org-admin consent for named cross-org agents; [exact flags and journey](docs/cross-device.md#convex-relay-two-org-trial). |
 | `everett peer add-relay <name> --device ID --fingerprint HEX [--grant GRANT_ID]` | Pin a device on the selected relay after out-of-band bundle confirmation; fingerprint is raw 64-character lowercase hex, not the SSH `SHA256:` format. |
 | `everett peer identity / list / remove <name> / revoke <client-id>` | Inspect device keys/peers; remove a remote authorization or revoke a local tagged client key. |
 | `everett dashboard [--port 7347] [--no-open]` | Native Rust binary only: read-only local browser dashboard with session cards, filters, activity state, and copyable CLI actions. |
@@ -320,8 +320,7 @@ first-run GitHub approval. Real public Mac/NUC delivery, idle Claude wake/reply 
 Choosing sign-in during fresh interactive onboarding opens `https://everett.raitox.tech` for account approval.
 That service supports public enrollment; messaging stays within each account. Existing account configuration
 is preserved. Cloudflare's device protocol is custom, not RFC8628.
-Cloudflare messaging stays within one account. Legacy Convex cross-owner grants
-and cloud-agent OAuth are separate from same-owner trust.
+Cross-owner grants, Convex registry/SSH-address publication and cloud-agent OAuth are separate.
 
 Local harnesses that launch Everett with the same `HOME` and `EVERETT_HOME` use that
 home's account configuration and device credential. They do not each need a separate
@@ -349,16 +348,41 @@ IDs, peer aliases, keys, pins, and signed bundles stay as they are. When the
 backend has no label metadata, `--names` prints `(unnamed)` and says names are
 unavailable.
 
-## Cross-device peers
+## Cross-device peers (SSH or encrypted Convex)
 
-Cloudflare is the active hosted relay. Use [same-owner Cloudflare devices](#cloudflare-native-relay)
-and the [native receiver guide](docs/cloudflare-native.md) for account enrollment,
-device names, encrypted delivery, and optional receiver wake.
+For devices behind NAT, deploy the TypeScript backend in `convex/` (Convex cloud or
+self-hosted), configure a device-code OIDC provider with **issuer-controlled per-agent
+claims**, and provision authoritative memberships/credentials as deployment operator.
+`login` alone is not enrollment. Each machine uses its own agent-bound JWT/refresh
+credential and independent Ed25519/X25519 keys; an owner/admin JWT cannot act as every
+agent. Local/SSH commands need no sign-in. The client stays Rust-only.
 
-Convex is retired. Its compatibility code and [historical deployment runbook](docs/cross-device.md#convex-relay-owner-deployment)
-remain in this repository. Convex tests and deployment are not v2.2 acceptance
-requirements. Cross-org grants in that legacy implementation do not imply that
-Cloudflare supports cross-account messaging.
+Run `everett relay` on each device and confirm/pin bundles **out of band in both directions**.
+The same `send --to PEER/HARNESS/SESSION-ID` and `reply` commands exchange X25519 +
+HKDF-SHA256 + ChaCha20Poly1305 encrypted content, signed with Ed25519, over Convex live
+WebSockets. Same-owner/account or same-org peers need no cross-org grant. Cross-org chat
+requires an A-admin invite and B-admin acceptance naming exactly two agents, pinning
+both bundles, with optional expiry, either-side revocation, rate and serialized-body
+caps. Changed keys block traffic until both admins explicitly reconfirm and peers re-pin.
+
+Every public backend operation checks verified JWT, authoritative membership and its
+own revocable agent credential. Revocation also invalidates subscribed queries and
+blocks re-registration with a still-valid JWT; it cannot recall already local plaintext.
+External chat remains **external/untrusted agent data**, not owner instructions, across
+CLI, hooks, MCP, replies and local forwarding. No automatic resume/spawn/wake is allowed.
+SSH remains a separate per-peer transport, with no fallback for tainted external content.
+
+Convex stores ciphertext **plus observable metadata**. A signed delivery observation
+deletes the live ciphertext row; undelivered messages/replies have one-hour client TTL
+and bounded cron cleanup. Replay, revocation and grant metadata are retained permanently.
+`delivered` means authorized device ingress, `claimed` means observed inbox pickup,
+`replied` means acknowledged reply enqueue/observation—not sender pickup or task completion.
+There is no session sync, incoming agent port, Tailscale requirement or remote session listing.
+See [exact cloud/self-hosted deployment and two-machine steps](docs/cross-device.md#convex-relay-owner-deployment),
+[two-org invite/accept/revoke trial](docs/cross-device.md#convex-relay-two-org-trial),
+[OIDC/Keycloak setup](docs/auth.md) and [metadata, retention and crypto limits](docs/relay-threat-model.md).
+Real deployment/OIDC/WebSocket journeys are still operator verification gates, not implied
+by the offline tests. v1 relay deployments/pins require a reviewed v2 migration.
 
 For **SSH**, pair once using the receiving machine's host/device fingerprints and absolute Everett path.
 Existing noninteractive SSH login access is required for setup. The dedicated peer key can
@@ -521,13 +545,14 @@ Everett is mostly used by agents. `everett mcp` is a stdio MCP server (JSON-RPC 
 | `everett_event` | `kind`, `message`, `project?` | Records done / blocked / needs-input / info for your session. |
 | `everett_subscribe` | `target`, `unsubscribe?` | Follows a session's or project's events in your inbox. |
 | `everett_agent_relay` | `action`, `id?`, `name?`, `fingerprint?`, `grant_id?` | Verified identity, registration, directory/pins and scoped revocation controls. |
-| `everett_agent_grants` | `action`, `id?`, named endpoints/fingerprints/limits for invite | Retired Convex compatibility only. Bilateral named-agent grants, key reconfirmation, expiry, rate/body caps and revocation. |
+| `everett_agent_grants` | `action`, `id?`, named endpoints/fingerprints/limits for invite | Bilateral named-agent grants, key reconfirmation, expiry, rate/body caps and revocation. |
 | `everett_agent_send` | `agent`, `session`, `harness`, `text`, `idempotency_key` | Device-side encrypted send to an explicit named agent. No sender-requested wake or implicit routing; receiver policies are separate. |
 | `everett_agent_status` | `message_id` | Sender-only status from signed delivery/pickup/reply observations. |
 
-For active Cloudflare setup, see [same-owner agent relay](docs/agent-relay.md#same-owner-cloudflare-devices).
-Cloudflare messaging stays within one account. Cross-org OIDC grants belong to
-retired Convex compatibility. External inbox text remains labeled untrusted.
+See [agent-facing relay MCP](docs/agent-relay.md), [cross-device deployment](docs/cross-device.md)
+and [relay threat model](docs/relay-threat-model.md). OIDC controls org/agent identity;
+cross-org delivery is denied without bilateral admin approval. External inbox text
+is labeled untrusted. Existing Jev routing, SSH, OMP, and Pi integration is unchanged.
 
 Listing, routing and sending default to a 72-hour window. Pass the same larger `hours` value
 to these MCP tools when continuing an older session. Resume/spawn children have closed stdin;
@@ -577,11 +602,11 @@ notify_command = "…"          # e.g. a push-notification command; gets the sum
 escalate_minutes = 30         # re-notify once when a session stays blocked this long (0 = never)
 
 [auth]
-issuer = ""   # Legacy OIDC only; Cloudflare enrollment persists its own account config
-client_id = "" # Legacy OIDC public client id
+issuer = "https://login.example.com/"   # OIDC issuer for `everett login` (EVERETT_AUTH_ISSUER)
+client_id = "…"                         # public client id (EVERETT_AUTH_CLIENT_ID)
 
 [relay]
-url = "" # Retired Convex compatibility; leave empty for Cloudflare
+url = "https://YOUR-DEPLOYMENT.convex.cloud" # EVERETT_CONVEX_URL; optional encrypted inbox relay
 # ca_file = "/absolute/path/to/private-ca.pem" # EVERETT_RELAY_CA_FILE; optional extra PEM roots
 ```
 
@@ -596,17 +621,21 @@ closed; TLS failures report their certificate error instead of a request timeout
 
 ## Accounts
 
-Sign-in is optional for local and SSH use. Cloudflare is the active hosted
-account and encrypted relay service. Use [native Cloudflare sign-in](docs/auth.md#hosted-cloudflare-native-sign-in)
-for browser approval, per-device credentials, verification, and revocation.
-Cloudflare's device protocol is custom, not RFC 8628. Account enrollment, relay
-key registration, and a cloud agent's OAuth connection are separate steps.
+Sign-in is optional for local/SSH use. `everett login` runs the OAuth 2.0 device-code
+flow (RFC 8628): approve in a browser on any device, without opening an incoming CLI
+port or browser callback. Tokens live in `~/.everett/auth.json` (0600); `whoami` refreshes
+stale tokens and `logout` attempts provider refresh-token revocation before local deletion.
+There is no hosted default tenant. Configure your own public/native OIDC client.
 
-Sessions and shared core stay local. Explicit relay sends carry encrypted
-message and reply bodies to the backend. The retired Convex implementation's
-OIDC tokens, per-agent claims, and bilateral grants remain documented in the
-[historical auth guide](docs/auth.md#existing-oidc-sign-in). They are not needed for
-Cloudflare setup.
+Relay use additionally needs signed issuer-controlled `everett_agent`, optional
+`everett_org`, and administrative `everett_role`, **plus matching operator-provisioned
+membership/credential rows**. Use separate agent credentials, never client-editable roles
+or a shared owner token. Optional account fallback uses issuer+subject instead of org;
+the issuer must still bind each device to a distinct agent. `relay register` is key
+registration, not enrollment. Backend `revoke-agent`/`revoke-member` handles immediate
+server denial; provider logout alone cannot revoke an already issued ID token. See
+[auth and practical Keycloak setup](docs/auth.md). Sessions and shared core stay local;
+only explicit relay sends carry encrypted message/reply bodies to the backend.
 
 ## Privacy
 

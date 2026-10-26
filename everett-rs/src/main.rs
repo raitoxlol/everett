@@ -77,7 +77,7 @@ enum Cmd {
         #[arg(long)]
         json: bool,
     },
-    /// encrypted Cloudflare receiver; inbox delivery with optional owner wake policies
+    /// live encrypted Convex or Cloudflare receiver; inbox delivery with optional owner wake policies
     Relay {
         #[command(subcommand)]
         action: Option<RelayCmd>,

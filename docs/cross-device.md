@@ -1,11 +1,10 @@
 # Cross-device Everett
 
-Cloudflare is the active hosted transport. Use the [native Cloudflare guide](cloudflare-native.md)
-and [agent support and wake](agent-support.md) for current setup. The Convex
-deployment sections below are historical compatibility documentation. SSH remains
-supported independently.
+Use the [native Cloudflare guide](cloudflare-native.md) and
+[agent support and wake](agent-support.md) for current Cloudflare setup and
+per-agent wake capabilities.
 
-The legacy implementation provides two **independent, inbox-only transports per peer**: manual SSH
+Everett supports two **independent, inbox-only transports per peer**: manual SSH
 and an end-to-end encrypted Convex relay. SSH pairing remains one-way, with replies
 through status polling; its setup below is unchanged. Relay peers pin both directions
 and exchange encrypted messages/replies through live Convex WebSocket subscriptions,
