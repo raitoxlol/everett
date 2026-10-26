@@ -360,3 +360,17 @@ fn synthetic_t3_mcp_routes_polls_replies_and_learns_without_provider_resume() {
         .unwrap()
         .contains("T3 messages require explicit inbox polling"));
 }
+
+#[test]
+fn doctor_reports_the_t3_database_the_adapter_reads() {
+    let fx = fixture();
+    let con = v2(&fx);
+    add(&con, "app-1", Some("native-1"), "codex");
+    let out = run(&fx, &["doctor"], "", "");
+    let text = String::from_utf8(out.stdout).unwrap();
+    assert!(
+        text.contains(".t3/userdata/statev2.sqlite (found)"),
+        "{text}"
+    );
+    assert!(!text.contains(".t3/userdata/state.sqlite"), "{text}");
+}
