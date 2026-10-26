@@ -653,3 +653,43 @@ fn temporary_trust_lookup_failure_keeps_the_only_encrypted_stage_until_recovery(
         std::thread::sleep(Duration::from_millis(50));
     }
 }
+
+#[test]
+fn renamed_device_keeps_cli_and_mcp_message_status() {
+    let server = Server::new();
+    let a = fixture();
+    let b = fixture();
+    server.configure(&a, "agent-max");
+    server.configure(&b, "agent-hugo");
+    let sent = success(
+        &a,
+        &[
+            "send",
+            "status-marker",
+            "--to",
+            "Hugo Box/grok-bot/ext-hugo",
+            "--json",
+        ],
+    );
+    let mid = sent["message_id"].as_str().unwrap();
+    server
+        .state
+        .lock()
+        .unwrap()
+        .labels
+        .insert("agent-hugo".into(), "Renamed Hugo".into());
+    let status = success(&a, &["peer", "status", "Hugo Box", mid]);
+    assert_eq!(status["state"], "queued");
+    let results = common::mcp_calls(
+        &a,
+        &[],
+        &[],
+        &[("everett_agent_status", json!({"message_id":mid}))],
+    );
+    assert_ne!(results[0]["isError"], true, "{:?}", results);
+    assert!(results[0].to_string().contains("queued"), "{:?}", results);
+    server.state.lock().unwrap().revoked = true;
+    assert!(!run(&a, &["peer", "status", "Hugo Box", mid])
+        .status
+        .success());
+}
