@@ -38,6 +38,12 @@ struct Thread {
     session: Session,
 }
 
+#[derive(Default)]
+struct Projection {
+    active: HashMap<(String, String), Thread>,
+    hidden: HashSet<(String, String)>,
+}
+
 fn columns(con: &Connection, table: &str) -> rusqlite::Result<HashSet<String>> {
     let mut stmt = con.prepare(&format!("PRAGMA table_info({})", table))?;
     let rows = stmt.query_map([], |r| r.get(1))?;
@@ -85,7 +91,7 @@ fn prompts(con: &Connection, thread_id: &str, v2: bool) -> rusqlite::Result<(Str
     Ok((texts.remove(0), texts.remove(0)))
 }
 
-fn read(con: &Connection, path: &Path) -> rusqlite::Result<HashMap<(String, String), Thread>> {
+fn read(con: &Connection, path: &Path) -> rusqlite::Result<Projection> {
     let v2 = !columns(con, "orchestration_v2_projection_threads")?.is_empty();
     let table = if v2 {
         "orchestration_v2_projection_threads"
@@ -104,23 +110,25 @@ fn read(con: &Connection, path: &Path) -> rusqlite::Result<HashMap<(String, Stri
     } else {
         "LEFT JOIN projection_projects j ON j.project_id=t.project_id"
     };
-    let project_filter = if projects.contains("deleted_at") {
-        "AND j.deleted_at IS NULL"
+    let project_hidden = if projects.contains("deleted_at") {
+        "OR j.deleted_at IS NOT NULL"
     } else {
         ""
     };
-    let archive_filter = if cols.contains("archived_at") {
-        "AND t.archived_at IS NULL"
+    let archive_hidden = if cols.contains("archived_at") {
+        "OR t.archived_at IS NOT NULL"
     } else {
         ""
     };
+    let hidden = format!("t.deleted_at IS NOT NULL {} {}", archive_hidden, project_hidden);
     let sql = if v2 {
         format!(
             "SELECT t.thread_id, p.driver, p.payload_json, t.title, t.created_at, t.updated_at, \
-             t.payload_json, {} FROM {} t \
-             JOIN orchestration_v2_projection_provider_threads p ON p.provider_thread_id=t.active_provider_thread_id \
-             {} WHERE t.deleted_at IS NULL {} {} ORDER BY t.updated_at DESC, t.thread_id",
-            workspace, table, project_join, archive_filter, project_filter
+             t.payload_json, {}, ({}) FROM {} t {} \
+             JOIN orchestration_v2_projection_provider_threads p \
+             ON p.provider_thread_id=t.active_provider_thread_id OR (p.thread_id=t.thread_id AND ({})) \
+             ORDER BY t.updated_at DESC, t.thread_id",
+            workspace, hidden, table, project_join, hidden
         )
     } else {
         let worktree = if cols.contains("worktree_path") {
@@ -130,10 +138,10 @@ fn read(con: &Connection, path: &Path) -> rusqlite::Result<HashMap<(String, Stri
         };
         format!(
             "SELECT t.thread_id, r.provider_name, COALESCE(r.resume_cursor_json, '{{}}'), \
-             t.title, t.created_at, t.updated_at, {}, {} \
+             t.title, t.created_at, t.updated_at, {}, {}, ({}) \
              FROM projection_threads t JOIN provider_session_runtime r ON r.thread_id=t.thread_id \
-             {} WHERE t.deleted_at IS NULL {} {} ORDER BY t.updated_at DESC, t.thread_id",
-            worktree, workspace, project_join, archive_filter, project_filter
+             {} ORDER BY t.updated_at DESC, t.thread_id",
+            worktree, workspace, hidden, project_join
         )
     };
     let mut stmt = con.prepare(&sql)?;
@@ -147,11 +155,12 @@ fn read(con: &Connection, path: &Path) -> rusqlite::Result<HashMap<(String, Stri
             r.get::<_, String>(5)?,
             r.get::<_, String>(6)?,
             r.get::<_, String>(7)?,
+            r.get::<_, bool>(8)?,
         ))
     })?;
-    let mut out = HashMap::new();
+    let mut out = Projection::default();
     for row in rows {
-        let Ok((thread_id, provider, cursor, title, started, updated, worktree, workspace)) = row
+        let Ok((thread_id, provider, cursor, title, started, updated, worktree, workspace, hidden)) = row
         else {
             continue;
         };
@@ -173,6 +182,11 @@ fn read(con: &Connection, path: &Path) -> rusqlite::Result<HashMap<(String, Stri
         let Some(sid) = sid.map(str::trim).filter(|s| !s.is_empty()) else {
             continue;
         };
+        let native_key = (harness.to_string(), sid.to_string());
+        if hidden {
+            out.hidden.insert(native_key);
+            continue;
+        }
         let cwd = if v2 {
             serde_json::from_str::<Value>(&worktree)
                 .ok()
@@ -201,7 +215,7 @@ fn read(con: &Connection, path: &Path) -> rusqlite::Result<HashMap<(String, Stri
         session.source = SOURCE.into();
         session.first_user = first;
         session.last_user = last;
-        out.entry((harness.to_string(), sid.to_string()))
+        out.active.entry(native_key)
             .or_insert(Thread {
                 id: thread_id,
                 session,
@@ -210,9 +224,9 @@ fn read(con: &Connection, path: &Path) -> rusqlite::Result<HashMap<(String, Stri
     Ok(out)
 }
 
-fn read_threads(path: &Path) -> HashMap<(String, String), Thread> {
+fn read_threads(path: &Path) -> Projection {
     if !path.is_file() {
-        return HashMap::new();
+        return Projection::default();
     }
     let result = (|| {
         let con = Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_ONLY)?;
@@ -221,13 +235,14 @@ fn read_threads(path: &Path) -> HashMap<(String, String), Thread> {
     })();
     result.unwrap_or_else(|e| {
         warn(&format!("skip {}: {}", path.display(), e));
-        HashMap::new()
+        Projection::default()
     })
 }
 
 /// Active T3 metadata keyed by harness/native ID, never by provider instance ID.
 pub fn threads(path: &Path) -> ThreadMap {
     read_threads(path)
+        .active
         .into_iter()
         .map(|(key, thread)| (key, (thread.id, thread.session.title)))
         .collect()
@@ -259,7 +274,12 @@ pub fn annotate(sessions: &mut [Session], found: Option<&ThreadMap>) {
 
 pub fn overlay(sessions: &mut Vec<Session>, since_hours: f64, harness: &str) {
     let cutoff = now() - since_hours * 3600.0;
-    for (_, thread) in read_threads(&db_path()) {
+    let projection = read_threads(&db_path());
+    sessions.retain(|s| {
+        let key = (s.harness.clone(), s.id.clone());
+        !projection.hidden.contains(&key) || projection.active.contains_key(&key)
+    });
+    for (_, thread) in projection.active {
         let t = thread.session;
         if !harness.is_empty() && t.harness != harness {
             continue;
