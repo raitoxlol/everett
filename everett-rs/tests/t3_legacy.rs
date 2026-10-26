@@ -97,6 +97,21 @@ fn legacy_sessions_annotated_not_double_listed_and_route_only() {
 }
 
 #[test]
+fn legacy_hidden_threads_filter_provider_transcripts_too() {
+    let fx = fixture();
+    let db = legacy(&fx);
+    let con = Connection::open(&db).unwrap();
+    con.execute_batch("ALTER TABLE projection_threads ADD COLUMN archived_at TEXT;
+        UPDATE projection_threads SET archived_at=updated_at WHERE thread_id='t-cx';
+        UPDATE projection_threads SET deleted_at=updated_at WHERE thread_id='t-cl';").unwrap();
+    let before = std::fs::read(&db).unwrap();
+    let mut ids: Vec<String> = ls(&fx).iter().map(|s| s["id"].as_str().unwrap().to_string()).collect();
+    ids.sort();
+    assert_eq!(ids, ["gk-1", "no-such-session"]);
+    assert_eq!(std::fs::read(&db).unwrap(), before);
+}
+
+#[test]
 fn codex_originator_marks_t3_without_db_and_broken_db_is_ignored() {
     let fx = fixture();
     let db = legacy(&fx);
