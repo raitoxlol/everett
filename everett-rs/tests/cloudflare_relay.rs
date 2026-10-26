@@ -15,6 +15,7 @@ struct Server {
     revoked: Arc<AtomicBool>,
     calls: Arc<Mutex<Vec<String>>>,
     labels_missing: Arc<AtomicBool>,
+    device_error: Arc<Mutex<Option<String>>>,
 }
 impl Server {
     fn new() -> Self {
@@ -25,6 +26,8 @@ impl Server {
         let calls = Arc::new(Mutex::new(Vec::new()));
         let labels_missing = Arc::new(AtomicBool::new(false));
         let missing = labels_missing.clone();
+        let device_error = Arc::new(Mutex::new(None::<String>));
+        let denial = device_error.clone();
         let (p, r, c) = (pending.clone(), revoked.clone(), calls.clone());
         std::thread::spawn(move || {
             for stream in listener.incoming() {
@@ -40,6 +43,9 @@ impl Server {
                             json!({"result":{"owner":"synthetic-owner","deviceId":"synthetic-agent","role":"member"}}),
                         ),
                         "/v2/relay/register" => (200, json!({"result":null})),
+                        "/v2/relay/devices" if denial.lock().unwrap().is_some() => {
+                            (403, json!({"error":denial.lock().unwrap().clone().unwrap(),"detail":TOKEN}))
+                        }
                         "/v2/relay/devices" => {
                             let device = everett::relay::crypto::Keys::new(
                                 "synthetic-owner".into(),
@@ -84,6 +90,7 @@ impl Server {
             revoked,
             calls,
             labels_missing,
+            device_error,
         }
     }
     fn configure(&self, f: &Fixture) {
@@ -291,4 +298,23 @@ fn unsupported_registry_operation_never_falls_back_to_oidc() {
     assert!(!out.status.success());
     assert!(String::from_utf8_lossy(&out.stderr).contains("requires OIDC/Convex"));
     assert!(server.calls.lock().unwrap().is_empty());
+}
+
+#[test]
+fn missing_device_bundle_has_an_actionable_error_without_echoing_server_secrets() {
+    let f = fixture();
+    let server = Server::new();
+    server.configure(&f);
+    *server.device_error.lock().unwrap() = Some("device_unavailable".into());
+    let out = f.run(&["relay", "devices"]);
+    assert!(!out.status.success());
+    let text = String::from_utf8_lossy(&out.stderr);
+    assert!(text.contains("device_unavailable"), "{text}");
+    assert!(text.contains("registered key bundle"), "{text}");
+    assert!(!text.contains(TOKEN));
+    *server.device_error.lock().unwrap() = Some(TOKEN.into());
+    let unknown = f.run(&["relay", "devices"]);
+    assert!(!unknown.status.success());
+    assert!(!String::from_utf8_lossy(&unknown.stderr).contains(TOKEN));
+    assert!(!String::from_utf8_lossy(&unknown.stdout).contains(TOKEN));
 }

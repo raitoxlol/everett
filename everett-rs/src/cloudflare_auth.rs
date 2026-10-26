@@ -828,6 +828,9 @@ impl Credential {
         )?;
         if status != 200 {
             if (400..500).contains(&status) && status != 429 {
+                if body.get("error").and_then(Value::as_str) == Some("device_unavailable") {
+                    return Err(fail(1, &format!("Cloudflare relay denied {operation} (HTTP {status}, device_unavailable): a device has no active registered key bundle. Verify the account and device registration; this is separate from account sign-in.")));
+                }
                 return Err(fail(1, &format!("Cloudflare relay denied {operation} (HTTP {status}); check approval, current keys, message expiry and peer pins")));
             }
             return Err(fail(6, &format!("Cloudflare relay {operation} unavailable (HTTP {status}); delivery is unconfirmed; retry with the same idempotency key")));
