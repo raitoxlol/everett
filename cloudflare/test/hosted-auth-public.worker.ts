@@ -2,7 +2,7 @@ import { env as bindings, exports as workerExports } from 'cloudflare:workers';
 import { evictDurableObject, reset, runInDurableObject } from 'cloudflare:test';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { sha256 } from '@noble/hashes/sha256';
-import { namespace, deviceBytes, hexString } from '../src/protocol';
+import { namespace, deviceBytes, hexString, type Identity } from '../src/protocol';
 import { ed25519, x25519 } from '@noble/curves/ed25519';
 import type { Env } from '../src/index';
 
@@ -149,6 +149,29 @@ describe('Public enrollment: account isolation', () => {
     expect(after.result.labels[ids[0]]).toBeUndefined();
     for (let i = 0; i < 30; i++) expect((await nativeCall(pa.token!, 'renameDevice', { name: 'caller' })).status).toBe(200);
     expect((await nativeCall(pa.token!, 'renameDevice', { name: 'caller' })).status).toBe(429);
+  });
+
+  it('marks a capped device label directory incomplete instead of claiming unique name lookup', async () => {
+    const alice = await loginAs(ALICE), pending = await begin('caller');
+    await approve(alice, pending.user_code);
+    const pa = (await poll(pending.device_code)).body;
+    const identity: Identity = { issuer, subject: `github:${ALICE.id}`, org: null };
+    const relay = env.OWNERS.get(env.OWNERS.idFromName(namespace(identity)));
+    const auth = env.AUTH_STATE!.get(env.AUTH_STATE!.idFromName(issuer));
+    const ids: string[] = [];
+    for (let i = 0; i < 256; i++) {
+      const enrolled = await relay.enroll(identity, 'admin', crypto.randomUUID());
+      if (!enrolled.ok) throw new Error(enrolled.error);
+      ids.push(enrolled.value.deviceId);
+    }
+    await runInDurableObject(auth, (_i, state) => {
+      for (const id of ids) state.storage.sql.exec('INSERT INTO hosted_agents VALUES(?,?,?,?,?,?)', id, 'duplicate name', 'device', Date.now(), 0, identity.subject);
+    });
+    const response = await nativeCall(pa.token!, 'deviceLabels');
+    expect(response.status).toBe(200);
+    const result = await response.json() as { result: { labels: Record<string, string>; complete: boolean } };
+    expect(result.result.complete).toBe(false);
+    expect(Object.keys(result.result.labels)).toHaveLength(256);
   });
 
   it('lets two GitHub users approve their own devices into separate relay namespaces', async () => {

@@ -5,6 +5,20 @@ sandboxing, or an issuer enrollment service. See [auth](auth.md), [operator jour
 and the exact [wire/function contract](../convex/CONTRACT.md). No live deployment,
 OIDC/JWKS/WebSocket revocation test, or security audit is claimed by this document.
 
+## Cloudflare same-owner trust
+
+Cloudflare same-owner messaging uses the authenticated account service as its trust
+authority. Clients fetch the exact active signed bundle for each peer, verify its
+signature, owner and ID, and check the envelope fingerprints and encryption. They
+do not persist automatic pins. Revoked, foreign-owner and unavailable device checks
+fail closed. Name selection requires a complete directory and one matching label;
+explicit IDs bypass labels. Signed bundle formats are unchanged.
+
+This trusts the service to associate keys with the correct owner and device. A
+compromised control plane can substitute keys. Independent fingerprint confirmation
+continues to apply to OIDC/Convex and explicit different-owner grants. Same-owner
+trust does not authorize arbitrary wake actions or executing message text.
+
 ## Boundaries and controls
 
 - Trust the installed client, both endpoint OS accounts, the issuer's claim/enrollment

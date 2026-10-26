@@ -143,9 +143,9 @@ pub fn tools() -> &'static Vec<Value> {
             }),
             json!({
                 "name": "everett_agent_relay",
-                "description": "OIDC-authorized agent identity, registration, org directory, pinned relay aliases and revocation. Credentials are per agent, never bearer tokens. Membership management is admin-only; an agent can revoke itself. Run everett relay separately to receive; never wakes sessions.",
+                "description": "Verified agent identity, registration, directory, names and revocation. Cloudflare same-owner devices use automatic trust; other owners require explicit pins and grants. Credentials are per agent, never bearer tokens. Membership management is admin-only; an agent can revoke itself. Run everett relay separately to receive; never wakes sessions.",
                 "inputSchema": {"type":"object","properties":{
-                    "action":{"type":"string","enum":["identity","register","directory","pair","unpair","credentials","memberships","revoke-membership","revoke-agent","revoke-credential"]},
+                    "action":{"type":"string","enum":["identity","register","directory","names","pair","unpair","credentials","memberships","revoke-membership","revoke-agent","revoke-credential"]},
                     "id":s("Provisioned agent ID; for revoke-membership, exact provider subject; for unpair, alias."),
                     "name":s("Optional local relay alias for pair; defaults to the agent ID."),
                     "grant_id":s("Required for cross-org pairing; active bilateral named-agent grant."),
@@ -1277,6 +1277,7 @@ fn call_handler(
                     "identity" => crate::relay::admin_call("relay:whoami", json!({}), true)?,
                     "register" => crate::relay::register()?,
                     "directory" => crate::relay::devices()?,
+                    "names" => json!({"text":crate::relay::device_names()?}),
                     "credentials" => {
                         crate::relay::admin_call("relay:credentials", json!({}), true)?
                     }

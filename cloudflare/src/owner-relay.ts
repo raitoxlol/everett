@@ -93,7 +93,7 @@ export class OwnerRelay extends DurableObject<Env> {
       const p = principalSchema.parse(principalInput);
       this.#authorize(p);
       const rows = this.ctx.storage.sql.exec<{ agent_id: string }>(
-        "SELECT c.agent_id FROM credentials c JOIN members m ON c.subject=m.subject WHERE c.status='active' AND m.status='active' ORDER BY c.agent_id LIMIT 256");
+        "SELECT c.agent_id FROM credentials c JOIN members m ON c.subject=m.subject WHERE c.status='active' AND m.status='active' ORDER BY c.agent_id LIMIT 257");
       return { ok: true, value: rows.toArray().map(row => row.agent_id) };
     } catch (error) {
       if (error instanceof RelayError) return { ok: false, error: error.code, status: error.status };

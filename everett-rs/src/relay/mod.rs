@@ -280,6 +280,10 @@ pub fn configured(name: &str) -> bool {
     peer_path(name).is_ok_and(|p| p.exists())
 }
 
+pub(crate) fn same_owner_enabled() -> bool {
+    Provider::selected().is_ok_and(|provider| provider == Provider::Cloudflare)
+}
+
 fn deployment() -> Result<String> {
     if Provider::selected()? == Provider::Cloudflare {
         return native_credential()?.relay_origin();
@@ -458,21 +462,98 @@ fn keys(owner: &str) -> Result<Keys> {
     ))
 }
 
-fn paired(name: &str, owner: &str) -> Result<Paired> {
-    peer::assert_alias_unambiguous(name)?;
-    let paired: Paired = read(&peer_path(name)?)?;
-    paired.device.verify()?;
-    if (paired.device.owner != owner && paired.grant_id.is_none())
-        || paired.deployment != deployment()?
-    {
+fn same_owner_device(selector: &str, owner: &str, by_name: bool) -> Result<Paired> {
+    let owner = owner.to_string();
+    let selector = selector.to_string();
+    runtime(async move {
+        let mut client = client(&owner).await?;
+        let id = if let Some(id) = selector.strip_prefix("id:") {
+            valid(id)?;
+            id.to_string()
+        } else if by_name {
+            let labels = query(&mut client, "relay:deviceLabels", json!({})).await?;
+            resolve_device_name(&selector, &labels)?
+        } else {
+            selector
+        };
+        let device = active_same_owner_device(&mut client, &owner, &id).await?;
+        if device.device_id == relay_account()?.agent {
+            return Err(bad("cannot relay to this device; use the local inbox"));
+        }
+        Ok(Paired {
+            device,
+            deployment: deployment()?,
+            grant_id: None,
+        })
+    })
+}
+
+fn resolve_device_name(selector: &str, labels: &Value) -> Result<String> {
+    if labels["complete"] != true {
         return Err(bad(
-            "peer is pinned to another account or Convex deployment",
+            "device name directory is incomplete; use id:DEVICE_ID or update the backend",
         ));
     }
-    Ok(paired)
+    let labels = labels["labels"]
+        .as_object()
+        .ok_or_else(|| bad("invalid device labels"))?;
+    let matches: Vec<_> = labels
+        .iter()
+        .filter(|(_, name)| name.as_str() == Some(selector))
+        .collect();
+    match matches.as_slice() {
+        [(id, _)] if !labels.contains_key(selector) || *id == selector => Ok((*id).clone()),
+        [] => {
+            valid(selector)?;
+            Ok(selector.to_string())
+        }
+        _ => Err(bad(
+            "ambiguous device name; use a unique name or exact device ID",
+        )),
+    }
+}
+
+fn paired(name: &str, owner: &str) -> Result<Paired> {
+    let path = peer_path(name).ok();
+    if let Some(path) = path.filter(|path| path.exists()) {
+        peer::assert_alias_unambiguous(name)?;
+        let paired: Paired = read(&path)?;
+        paired.device.verify()?;
+        if (paired.device.owner != owner && paired.grant_id.is_none())
+            || paired.deployment != deployment()?
+        {
+            return Err(bad("peer is pinned to another account or relay deployment"));
+        }
+        if Provider::selected()? == Provider::Cloudflare
+            && paired.device.owner == owner
+            && paired.grant_id.is_none()
+        {
+            return same_owner_device(&paired.device.device_id, owner, false);
+        }
+        return Ok(paired);
+    }
+    if Provider::selected()? == Provider::Cloudflare {
+        return same_owner_device(name, owner, true);
+    }
+    Err(bad(
+        "peer is not pinned; confirm its fingerprint and pair it",
+    ))
 }
 
 fn trusted(device: &str, sender_owner: &str, grant_id: Option<&str>) -> Result<(String, Paired)> {
+    if Provider::selected()? == Provider::Cloudflare && grant_id.is_none() {
+        let local = relay_account()?;
+        if local.owner == sender_owner {
+            let pin = same_owner_device(device, sender_owner, false).map_err(|error| {
+                if denied(&error) {
+                    error
+                } else {
+                    EverettError::new(6, error.message)
+                }
+            })?;
+            return Ok((format!("id:{device}"), pin));
+        }
+    }
     for path in crate::paths::glob(&root().join("peers"), "*.json") {
         let name = path
             .file_stem()
@@ -654,6 +735,19 @@ async fn exact_device(client: &mut RelayClient, device_id: &str) -> Result<Devic
     valid(device_id)?;
     serde_json::from_value(query(client, "relay:device", json!({"deviceId":device_id})).await?)
         .map_err(bad)
+}
+
+async fn active_same_owner_device(
+    client: &mut RelayClient,
+    owner: &str,
+    device_id: &str,
+) -> Result<Device> {
+    let device = exact_device(client, device_id).await?;
+    device.verify()?;
+    if device.owner != owner || device.device_id != device_id {
+        return Err(bad("device owner or identifier mismatch"));
+    }
+    Ok(device)
 }
 
 async fn commit_rotation(
@@ -923,7 +1017,7 @@ pub fn rotate() -> Result<Value> {
         },
     )?;
     Ok(
-        json!({"device":device,"result":response,"note":"Peers must explicitly repin; both org admins must reconfirm cross-org grants."}),
+        json!({"device":device,"result":response,"note":"Same-owner Cloudflare peers discover current keys automatically; explicit pins and cross-org grants require reconfirmation."}),
     )
 }
 
@@ -1022,7 +1116,7 @@ fn format_device_names(bundles: Value, labels: Option<Value>, owner: &str) -> Re
     let devices: Vec<Device> = serde_json::from_value(bundles).map_err(bad)?;
     let labels = labels.filter(|v| v.get("labels").is_some_and(Value::is_object));
     let mut text = String::from(
-        "Names are advisory hosted metadata (not signed); verify fingerprints out of band.\n",
+        "Names are advisory hosted metadata (not signed). Same-owner Cloudflare sends verify active signed bundles automatically.\n",
     );
     if labels.is_none() {
         text.push_str("Names unavailable: backend metadata unsupported/unavailable; IDs remain authoritative.\n");
@@ -1625,7 +1719,7 @@ fn receiver_policy_allows(
     crate::receiver_wake::load_policy(&root()).is_ok_and(|policy| {
         policy.enabled
             && policy.allow.iter().any(|rule| {
-                rule.session_id == session_id && rule.sender_device_id == envelope.from_device
+                rule.session_id == session_id && rule.allows_sender(&envelope.from_device)
             })
     })
 }
@@ -1646,7 +1740,7 @@ fn record_receiver_import(keys: &Keys, envelope: &Envelope, context: ImportedRec
     if let Ok(policy) = crate::receiver_wake::load_policy(&receiver_root) {
         if let Some(rule) = policy.allow.iter().find(|rule| {
             rule.session_id == context.session_id
-                && rule.sender_device_id == envelope.from_device
+                && rule.allows_sender(&envelope.from_device)
                 && context.harness == "claude"
         }) {
             let imported = crate::receiver_wake::Imported {
@@ -1710,7 +1804,7 @@ fn drain_receiver_wakes(keys: &Keys) -> Result<()> {
         if !policy.allow.iter().any(|rule| {
             rule.session_id == imported.session_id
                 && rule.cwd == imported.cwd
-                && rule.sender_device_id == imported.sender_device_id
+                && rule.allows_sender(&imported.sender_device_id)
         }) {
             continue;
         }
@@ -1746,7 +1840,7 @@ fn drain_receiver_wakes(keys: &Keys) -> Result<()> {
         if !current_policy.allow.iter().any(|rule| {
             rule.session_id == imported.session_id
                 && rule.cwd == imported.cwd
-                && rule.sender_device_id == imported.sender_device_id
+                && rule.allows_sender(&imported.sender_device_id)
         }) || trusted(&imported.sender_device_id, &imported.sender_owner, None).is_err()
             || keys.device.owner != owner
         {
@@ -1885,10 +1979,21 @@ async fn reconcile(client: &mut RelayClient, keys: &Keys) -> Result<()> {
             && ((!out.posted && out.envelope.expires_at > milliseconds())
                 || (out.posted && out.reply_pending.is_some()))
         {
-            let pin = paired(&out.peer, &keys.device.owner)?;
-            if pin.device.fingerprint() != out.envelope.recipient_fingerprint
-                || pin.device.owner != out.envelope.recipient_owner
-                || pin.grant_id != out.envelope.grant_id
+            let pin = if client.is_native() && out.envelope.recipient_owner == keys.device.owner && out.envelope.grant_id.is_none() {
+                active_same_owner_device(client, &keys.device.owner, &out.envelope.to_device).await.map(|device| (device, None))
+            } else {
+                paired(&out.peer, &keys.device.owner).map(|pin| (pin.device, pin.grant_id))
+            };
+            let (device, grant_id) = match pin {
+                Ok(pin) => pin,
+                Err(error) => {
+                    if denied(&error) { check_own_identity(client, keys).await?; }
+                    continue;
+                }
+            };
+            if device.fingerprint() != out.envelope.recipient_fingerprint
+                || device.owner != out.envelope.recipient_owner
+                || grant_id != out.envelope.grant_id
             {
                 continue;
             }
@@ -1953,7 +2058,8 @@ async fn publish_staged(
     if let Err(error) = import_inner(keys, envelope, validation_at, false) {
         // A stale sender pin or invalid destination is specific to this row,
         // not evidence that our own agent has been revoked.
-        eprintln!("everett relay: refusing staged row: {}", error.message);
+        eprintln!("everett relay: staged row not published: {}", error.message);
+        if client.is_native() && error.code == 6 { return Ok(()); }
         remove_stage(path, envelope)?;
         return Ok(());
     }

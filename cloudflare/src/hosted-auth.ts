@@ -239,8 +239,8 @@ export class HostedAuth extends DurableObject<HostedAuthEnv> {
     } catch { return null; }
   }
 
-  async relayDeviceLabels(principal: Principal, rename?: string): Promise<{ ok: true; value: { labels: Record<string, string> } } | { ok: false; error: string; status: number }> {
-    try { return { ok: true, value: { labels: await this.#deviceLabels(principal, rename) } }; }
+  async relayDeviceLabels(principal: Principal, rename?: string): Promise<{ ok: true; value: { labels: Record<string, string>; complete: boolean } } | { ok: false; error: string; status: number }> {
+    try { return { ok: true, value: await this.#deviceLabels(principal, rename) }; }
     catch (error) {
       if (error instanceof RelayError) return { ok: false, error: error.code, status: error.status };
       if (error instanceof ZodError) return { ok: false, error: 'invalid_request', status: 400 };
@@ -248,7 +248,7 @@ export class HostedAuth extends DurableObject<HostedAuthEnv> {
     }
   }
 
-  async #deviceLabels(principal: Principal, rename?: string): Promise<Record<string, string>> {
+  async #deviceLabels(principal: Principal, rename?: string): Promise<{ labels: Record<string, string>; complete: boolean }> {
     const c = hostedConfig(this.env);
     const caller = this.#row<Agent>('SELECT * FROM hosted_agents WHERE agent_id=?', principal.agentId);
     if (!caller || !caller.account || !this.#accountAllowed(c, caller.account) || caller.revoked || principal.expiresAt <= Date.now() ||
@@ -263,10 +263,11 @@ export class HostedAuth extends DurableObject<HostedAuthEnv> {
       this.ctx.storage.sql.exec('UPDATE hosted_agents SET name=? WHERE agent_id=? AND account=?', name, principal.agentId, caller.account);
     }
     const labels: Record<string, string> = {};
-    for (const row of this.ctx.storage.sql.exec<Agent>('SELECT * FROM hosted_agents WHERE account=? AND revoked=0 ORDER BY agent_id LIMIT 256', caller.account)) {
+    const rows = this.ctx.storage.sql.exec<Agent>('SELECT * FROM hosted_agents WHERE account=? AND revoked=0 ORDER BY agent_id LIMIT 257', caller.account).toArray();
+    for (const row of rows.slice(0, 256)) {
       if (activeIds.has(row.agent_id)) labels[row.agent_id] = row.name;
     }
-    return labels;
+    return { labels, complete: rows.length <= 256 && active.value.length <= 256 };
   }
 
   async #route(request: Request, url: URL, c: HostedConfig): Promise<Response> {
