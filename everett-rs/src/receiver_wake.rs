@@ -26,7 +26,18 @@ pub struct Policy {
 pub struct Rule {
     pub session_id: String,
     pub cwd: String,
+    #[serde(default = "any_sender")]
     pub sender_device_id: String,
+}
+
+fn any_sender() -> String {
+    "*".into()
+}
+
+impl Rule {
+    pub fn allows_sender(&self, device_id: &str) -> bool {
+        self.sender_device_id == "*" || self.sender_device_id == device_id
+    }
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
@@ -119,12 +130,13 @@ fn validate_rule(rule: &Rule) -> Result<()> {
     if !cwd.is_absolute() || fs::canonicalize(cwd).map_err(bad)?.to_string_lossy() != rule.cwd {
         return Err(bad("cwd must be an existing canonical absolute path"));
     }
-    if rule.sender_device_id.is_empty()
-        || rule.sender_device_id.len() > 160
-        || !rule
-            .sender_device_id
-            .bytes()
-            .all(|byte| byte.is_ascii_alphanumeric() || b"_.-".contains(&byte))
+    if rule.sender_device_id != "*"
+        && (rule.sender_device_id.is_empty()
+            || rule.sender_device_id.len() > 160
+            || !rule
+                .sender_device_id
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || b"_.-".contains(&byte)))
     {
         return Err(bad("sender_device_id is invalid"));
     }
@@ -182,7 +194,7 @@ pub fn allowed(policy: &Policy, imported: &Imported, owner: &str, device_id: &st
         && policy.allow.iter().any(|rule| {
             rule.session_id == imported.session_id
                 && rule.cwd == imported.cwd
-                && rule.sender_device_id == imported.sender_device_id
+                && rule.allows_sender(&imported.sender_device_id)
         })
 }
 
@@ -566,4 +578,25 @@ mod tests {
         assert_eq!(duplicate, None);
         assert_eq!(attaches, 1);
     }
+    #[test]
+    fn omitted_sender_filter_allows_same_owner_but_preserves_recipient_and_grant_boundaries() {
+        let temp = tempfile::tempdir().unwrap();
+        let mut imported = fixture(temp.path());
+        let path = temp.path().join(POLICY_FILE);
+        let mut value: serde_json::Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        value["allow"][0].as_object_mut().unwrap().remove("sender_device_id");
+        write_policy(&path, &serde_json::to_vec(&value).unwrap());
+        let policy = load_policy(temp.path()).unwrap();
+        imported.sender_device_id = "new-same-owner-device".into();
+        assert!(allowed(&policy, &imported, "owner", "nuc-device"));
+        imported.sender_owner = "other-owner".into();
+        assert!(!allowed(&policy, &imported, "owner", "nuc-device"));
+        imported.sender_owner = "owner".into();
+        imported.recipient_device_id = "different-device".into();
+        assert!(!allowed(&policy, &imported, "owner", "nuc-device"));
+        imported.recipient_device_id = "nuc-device".into();
+        imported.grant_id = Some("grant".into());
+        assert!(!allowed(&policy, &imported, "owner", "nuc-device"));
+    }
+
 }

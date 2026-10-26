@@ -176,7 +176,9 @@ The policy file is `receiver-webhook.json` in the selected relay directory:
 | `oidc` (the default) | `$EVERETT_HOME/.everett/relay/receiver-webhook.json`, or `~/.everett/relay/` |
 
 That is the same directory as `receiver-wake.json`. The Claude wake file does
-not wake a Grok Bot.
+not wake a Grok Bot. Same-owner Cloudflare devices can also write this file with
+`everett relay webhook <inbox-id> --harness grok-bot --url-file … --bearer-file …`;
+omitted sender filters accept eligible same-owner arrivals.
 
 ```sh
 everett external add \
@@ -238,7 +240,7 @@ letters, digits, `_`, or `-`. `harness` is only `grok-bot` or `openai-dot`.
 (not an IP, `localhost`, `.local`, or `.localhost`), with no userinfo, query,
 or fragment, port 443 or the default, and a path longer than `/`.
 
-There is no new CLI flag. A missing file, or `"enabled": false`, does not add a
+A missing file, or `"enabled": false`, does not add a
 `webhook` field and does not change the queue.
 
 ### 3. Send and confirm the wake

@@ -12,6 +12,7 @@ use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Map, Value};
+use sha2::{Digest, Sha256};
 
 use crate::error::{EverettError, Result};
 
@@ -42,7 +43,7 @@ pub struct Outcome {
     pub logs: Vec<String>,
 }
 
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Policy {
     version: u8,
@@ -54,17 +55,21 @@ struct Policy {
     rules: Vec<Rule>,
 }
 
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Rule {
     id: String,
     owner: String,
-    recipient_device: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    recipient_device: Option<String>,
     session: String,
     harness: String,
-    sender_device: String,
-    sender_session: String,
-    sender_harness: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    sender_device: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    sender_session: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    sender_harness: Option<String>,
     cooldown_seconds: u64,
     url: String,
     bearer_file: String,
@@ -144,6 +149,86 @@ fn policy_dir() -> PathBuf {
         return path;
     }
     crate::relay::state_dir()
+}
+
+pub fn configure_inbox(
+    session: &str,
+    harness: &str,
+    url_file: &Path,
+    bearer_file: &Path,
+    cooldown_seconds: u64,
+) -> Result<Value> {
+    let identity = local_identity()?.ok_or_else(|| bad("sign in on this device first"))?;
+    if !crate::adapters::external::records()
+        .iter()
+        .any(|record| record.id == session && record.harness == harness)
+    {
+        return Err(bad(
+            "register this external inbox with everett external add first",
+        ));
+    }
+    let metadata = fs::symlink_metadata(url_file)
+        .map_err(|_| bad("url_file must be a private regular file"))?;
+    if !url_file.is_absolute()
+        || !metadata.file_type().is_file()
+        || metadata.mode() & 0o077 != 0
+        || metadata.len() > 2048
+    {
+        return Err(bad(
+            "url_file must be an absolute regular file with mode 0600 or stricter",
+        ));
+    }
+    let url = fs::read_to_string(url_file).map_err(|_| bad("url_file could not be read"))?;
+    let rule = Rule {
+        id: format!(
+            "inbox-{}",
+            &hex::encode(Sha256::digest(session.as_bytes()))[..32]
+        ),
+        owner: identity.owner,
+        recipient_device: None,
+        session: session.into(),
+        harness: harness.into(),
+        sender_device: None,
+        sender_session: None,
+        sender_harness: None,
+        cooldown_seconds,
+        url: url.trim().into(),
+        bearer_file: bearer_file.to_string_lossy().into(),
+    };
+    validate_rule(&rule)?;
+    read_bearer(bearer_file)?;
+    let root = policy_dir();
+    crate::peer::private_dir(&root.join(DIRECTORY))?;
+    let _guard = crate::peer::lock(&root.join(DIRECTORY).join("ledger.lock"))?;
+    let mut policy = load_policy(&root)?;
+    if !policy.enabled {
+        policy.activated_at = unix_secs();
+    }
+    policy.enabled = true;
+    policy.rules.retain(|existing| {
+        existing.id != rule.id
+            && !(existing.owner == rule.owner
+                && existing.session == rule.session
+                && existing.harness == rule.harness)
+    });
+    if policy.rules.len() >= 16 {
+        return Err(bad("policy already has 16 rules"));
+    }
+    policy.rules.push(rule);
+    let mut ids = std::collections::BTreeSet::new();
+    for rule in &policy.rules {
+        validate_rule(rule)?;
+        if !ids.insert(&rule.id) {
+            return Err(bad("duplicate rule id"));
+        }
+    }
+    crate::peer::save(
+        &root.join(POLICY_FILE),
+        &serde_json::to_vec_pretty(&policy).map_err(|_| bad("policy could not be encoded"))?,
+    )?;
+    Ok(
+        json!({"state":"configured","session":session,"harness":harness,"senders":"same-owner","recipient":"this-device","note":"No webhook was called. HTTP 200 acceptance does not prove inbox consumption."}),
+    )
 }
 
 pub fn on_imported(arrival: &Arrival) -> Result<Outcome> {
@@ -589,6 +674,18 @@ fn cooling(rule: &Rule, ledger: &Ledger, now: i64) -> bool {
     })
 }
 
+fn filter_matches(filter: &Option<String>, value: &str) -> bool {
+    filter
+        .as_deref()
+        .is_none_or(|filter| filter == "*" || filter == value)
+}
+
+fn valid_filter(filter: &Option<String>, allow_empty: bool) -> bool {
+    filter.as_deref().is_none_or(|filter| {
+        filter == "*" || (allow_empty && filter.is_empty()) || ident_ok(filter)
+    })
+}
+
 fn matching(policy: &Policy, arrival: &Arrival) -> Option<Rule> {
     policy
         .rules
@@ -597,12 +694,18 @@ fn matching(policy: &Policy, arrival: &Arrival) -> Option<Rule> {
             rule.owner == arrival.owner
                 && arrival.sender_owner == arrival.owner
                 && arrival.recipient_owner == arrival.owner
-                && rule.recipient_device == arrival.recipient_device
-                && rule.sender_device == arrival.sender_device
+                && match rule.recipient_device.as_deref() {
+                    Some(device) if device != "*" => device == arrival.recipient_device,
+                    _ => local_identity().ok().flatten().is_some_and(|identity| {
+                        identity.owner == arrival.owner
+                            && identity.device_id == arrival.recipient_device
+                    }),
+                }
+                && filter_matches(&rule.sender_device, &arrival.sender_device)
                 && rule.session == arrival.session
                 && rule.harness == arrival.harness
-                && rule.sender_session == arrival.sender_session
-                && rule.sender_harness == arrival.sender_harness
+                && filter_matches(&rule.sender_session, &arrival.sender_session)
+                && filter_matches(&rule.sender_harness, &arrival.sender_harness)
         })
         .cloned()
 }
@@ -753,12 +856,12 @@ fn validate_rule(rule: &Rule) -> Result<()> {
         return Err(bad("rule id is invalid"));
     }
     if !owner_ok(&rule.owner)
-        || !ident_ok(&rule.recipient_device)
-        || !ident_ok(&rule.sender_device)
+        || !valid_filter(&rule.recipient_device, false)
+        || !valid_filter(&rule.sender_device, false)
         || !crate::adapters::external::valid_id(&rule.session)
         || !matches!(rule.harness.as_str(), "grok-bot" | "openai-dot")
-        || !ident_ok(&rule.sender_session)
-        || !(rule.sender_harness.is_empty() || ident_ok(&rule.sender_harness))
+        || !valid_filter(&rule.sender_session, false)
+        || !valid_filter(&rule.sender_harness, true)
         || !(1..=86_400).contains(&rule.cooldown_seconds)
     {
         return Err(bad("rule fields are invalid"));
@@ -1323,4 +1426,30 @@ mod tests {
         assert_eq!(posts[0].bearer, SECRET);
         assert!(!posts[0].body.contains(PHRASE));
     }
+    #[test]
+    fn inbox_rule_defaults_accept_same_owner_senders_and_reject_other_devices() {
+        let root = tempfile::tempdir().unwrap();
+        let mut arrival = fixture(root.path());
+        let path = root.path().join(POLICY_FILE);
+        let mut value: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        for field in ["recipient_device", "sender_device", "sender_session", "sender_harness"] {
+            value["rules"][0].as_object_mut().unwrap().remove(field);
+        }
+        private(&path, &serde_json::to_vec(&value).unwrap());
+        IDENTITY_OVERRIDE.with(|slot| *slot.borrow_mut() = Some(Identity {
+            owner: arrival.owner.clone(), device_id: arrival.recipient_device.clone(),
+        }));
+        let policy = load_policy(root.path()).unwrap();
+        arrival.sender_device = "another-device".into();
+        arrival.sender_session = "max-project".into();
+        arrival.sender_harness = "hermes".into();
+        assert!(matching(&policy, &arrival).is_some());
+        arrival.recipient_device = "different-recipient".into();
+        assert!(matching(&policy, &arrival).is_none());
+        arrival.recipient_device = "agent-receiver".into();
+        arrival.sender_owner = "another-owner".into();
+        assert!(matching(&policy, &arrival).is_none());
+        IDENTITY_OVERRIDE.with(|slot| *slot.borrow_mut() = None);
+    }
+
 }

@@ -504,6 +504,18 @@ enum RelayCmd {
     },
     /// rename this Cloudflare device's advisory hosted label, not its ID or pins
     Rename { name: String },
+    /// configure a same-owner webhook wake for one registered local inbox
+    Webhook {
+        session: String,
+        #[arg(long)]
+        harness: String,
+        #[arg(long)]
+        url_file: std::path::PathBuf,
+        #[arg(long)]
+        bearer_file: std::path::PathBuf,
+        #[arg(long, default_value_t = 30)]
+        cooldown_seconds: u64,
+    },
     /// verified namespace, agent credential ID and authoritative role
     Whoami,
     /// permanently revoke this or an admin-selected agent/device credential
@@ -737,6 +749,9 @@ fn main() {
             },
             Some(RelayCmd::Devices { .. }) => peer_output(everett::relay::devices()),
             Some(RelayCmd::Rename { name }) => peer_output(everett::relay::rename_device(&name)),
+            Some(RelayCmd::Webhook { session, harness, url_file, bearer_file, cooldown_seconds }) => peer_output(
+                everett::receiver_webhook::configure_inbox(&session, &harness, &url_file, &bearer_file, cooldown_seconds)
+            ),
             Some(RelayCmd::Whoami) => peer_output(everett::relay::admin_call(
                 "relay:whoami",
                 serde_json::json!({}),

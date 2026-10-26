@@ -1,7 +1,7 @@
 import { DurableObject } from 'cloudflare:workers';
 import { z, ZodError } from 'zod';
 import { sha256 } from '@noble/hashes/sha256';
-import { digest, identifier, namespace, RelayError, type Identity, type Principal } from './protocol';
+import { DEVICE_LABEL_LIMIT, digest, identifier, namespace, RelayError, type Identity, type Principal } from './protocol';
 import { hostedConfig, requireOAuth, type HostedConfig, type HostedAuthEnv } from './hosted-config';
 import { authFontStyles } from './hosted-auth-fonts';
 
@@ -239,8 +239,8 @@ export class HostedAuth extends DurableObject<HostedAuthEnv> {
     } catch { return null; }
   }
 
-  async relayDeviceLabels(principal: Principal, rename?: string): Promise<{ ok: true; value: { labels: Record<string, string> } } | { ok: false; error: string; status: number }> {
-    try { return { ok: true, value: { labels: await this.#deviceLabels(principal, rename) } }; }
+  async relayDeviceLabels(principal: Principal, rename?: string): Promise<{ ok: true; value: { labels: Record<string, string>; complete: boolean } } | { ok: false; error: string; status: number }> {
+    try { return { ok: true, value: await this.#deviceLabels(principal, rename) }; }
     catch (error) {
       if (error instanceof RelayError) return { ok: false, error: error.code, status: error.status };
       if (error instanceof ZodError) return { ok: false, error: 'invalid_request', status: 400 };
@@ -248,7 +248,7 @@ export class HostedAuth extends DurableObject<HostedAuthEnv> {
     }
   }
 
-  async #deviceLabels(principal: Principal, rename?: string): Promise<Record<string, string>> {
+  async #deviceLabels(principal: Principal, rename?: string): Promise<{ labels: Record<string, string>; complete: boolean }> {
     const c = hostedConfig(this.env);
     const caller = this.#row<Agent>('SELECT * FROM hosted_agents WHERE agent_id=?', principal.agentId);
     if (!caller || !caller.account || !this.#accountAllowed(c, caller.account) || caller.revoked || principal.expiresAt <= Date.now() ||
@@ -263,10 +263,11 @@ export class HostedAuth extends DurableObject<HostedAuthEnv> {
       this.ctx.storage.sql.exec('UPDATE hosted_agents SET name=? WHERE agent_id=? AND account=?', name, principal.agentId, caller.account);
     }
     const labels: Record<string, string> = {};
-    for (const row of this.ctx.storage.sql.exec<Agent>('SELECT * FROM hosted_agents WHERE account=? AND revoked=0 ORDER BY agent_id LIMIT 256', caller.account)) {
+    const rows = this.ctx.storage.sql.exec<Agent>('SELECT * FROM hosted_agents WHERE account=? AND revoked=0 ORDER BY agent_id LIMIT ?', caller.account, DEVICE_LABEL_LIMIT + 1).toArray();
+    for (const row of rows.slice(0, DEVICE_LABEL_LIMIT)) {
       if (activeIds.has(row.agent_id)) labels[row.agent_id] = row.name;
     }
-    return labels;
+    return { labels, complete: rows.length <= DEVICE_LABEL_LIMIT && active.value.length <= DEVICE_LABEL_LIMIT };
   }
 
   async #route(request: Request, url: URL, c: HostedConfig): Promise<Response> {
@@ -420,7 +421,7 @@ export class HostedAuth extends DurableObject<HostedAuthEnv> {
       if (this.#row<{ n: number }>('SELECT count(*) n FROM hosted_agents WHERE account=?', account.subject)!.n + inflight >= 128) throw new RelayError('credential_limit', 429);
       if (this.#row<{ n: number }>('SELECT count(*) n FROM hosted_agents WHERE account=? AND revoked=0', account.subject)!.n + inflight >= 64) throw new RelayError('credential_limit', 429);
       if (this.#count('hosted_agents') + this.#inflightClaims() >= 8192) throw new RelayError('credential_limit', 429);
-    } else if (this.#count('hosted_agents') + this.#inflightClaims() >= 2048) {
+    } else if (this.#count('hosted_agents') + this.#inflightClaims() >= DEVICE_LABEL_LIMIT) {
       throw new RelayError('credential_limit', 429);
     }
   }
