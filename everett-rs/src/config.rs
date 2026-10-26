@@ -209,6 +209,9 @@ mod tests {
 
     #[test]
     fn set_value_escapes_and_roundtrips_toml() {
+        if !crate::test_support::isolated("config::tests::set_value_escapes_and_roundtrips_toml") {
+            return;
+        }
         let dir = tempfile::tempdir().unwrap();
         std::env::set_var("EVERETT_HOME", dir.path());
         set_value("vault", "a\"b\\c\nline").unwrap();
