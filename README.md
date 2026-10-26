@@ -283,20 +283,22 @@ a nudge that omits the inbox text. HTTP 200 means the routine accepted a run.
 are in [Grok Bot webhook wake](docs/grok-bot.md#wake-a-grok-bot-with-a-webhook-routine).
 The same file can name `openai-dot`.
 
-Checklist, on the computer that holds the inbox:
+On the computer that holds the inbox:
 
-1. `everett whoami --json` prints `owner` and `agent_id`. Copy both with no added spaces.
-2. Create a Grok Bot webhook routine. Copy its Webhook URL and Sender key. Store the key alone in a mode `0600` file. Do not commit either.
-3. `everett external add --id ext-grok-acceptance --harness grok-bot --title 'Grok Bot inbox'`
-4. Write mode `0600` `receiver-webhook.json` (Cloudflare: `~/.everett/relay-cloudflare/`; OIDC: `~/.everett/relay/`; `$EVERETT_HOME` replaces `~`). Both device fields are this computer's `agent_id`. A terminal sender is `human` and `""`.
-5. Bind the routine's MCP to that id through a reachable Remote HTTPS [`everett gateway`](docs/gateway.md). Tell it to call `everett_inbox`, then `everett_send` with `reply_to`.
-6. From a shell with no session environment: `everett send 'check inbox' --to ext-grok-acceptance --mode inbox --json`. Expect `"wake": false` and `"webhook":{"state":"accepted","rule_id":"grok-inbox","http_status":200}`, then a routine run that calls `everett_inbox`.
+1. Sign in and register the inbox with `everett external add --id ext-grok-acceptance --harness grok-bot --title 'Grok Bot inbox'`.
+2. Create a Grok Bot webhook routine and store its URL and Sender key in separate private files with mode `0600`.
+3. Run `everett relay webhook ext-grok-acceptance --harness grok-bot --url-file /absolute/webhook.url --bearer-file /absolute/webhook.key`. Everett derives the owner and binds the rule to this device's inbox.
+4. Bind the routine's MCP to that inbox through a reachable Remote HTTPS [`everett gateway`](docs/gateway.md). Tell it to call `everett_inbox`, then `everett_send` with `reply_to`.
+5. Send `everett send 'check inbox' --to ext-grok-acceptance --mode inbox --json`. Expect `"wake":false` and webhook `"state":"accepted"` with HTTP 200, then verify the routine calls `everett_inbox`.
 
 ## Cloudflare native relay
 
 With `[auth] provider = "cloudflare"`, native account approval and encrypted relay use
-the same separately approved device identity. Register both computers, compare their
-public fingerprints, pin them with `peer add-relay`, and run `everett relay` on both.
+the same separately approved device identity. Register both computers and run
+`everett relay` on both. Devices on the same owner account trust active signed bundles
+automatically. Use `everett relay devices --names`, then send to a unique name such as
+`--to 'Max NUC/codex/SESSION_ID'`. No fingerprint exchange or `peer add-relay` is required
+for same-owner Cloudflare messaging.
 The listener polls outbound HTTPS, stages ciphertext durably, reauthorizes before inbox
 publication and retries temporary failures. Receiver-side Claude wake is disabled by
 default. An owner can opt in through the provider-local `receiver-wake.json` policy described
@@ -326,9 +328,14 @@ On the hosted Cloudflare provider, `everett relay devices --names` prints enroll
 labels beside device IDs and verified fingerprints. `everett relay devices` and
 `everett relay devices --json` keep the signed JSON bundle array.
 
-Labels are advisory hosted metadata. They are unsigned, may duplicate, and are
-not send, revoke, or pairing selectors. Pair with the device ID and confirm the
-fingerprint out of band.
+Labels come from the hosted account metadata already written during browser
+approval. They are **not covered by the relay bundle signature** and do not
+establish ownership. Duplicate names remain separate rows with separate IDs;
+same-owner Cloudflare sends resolve a unique name to an active device ID and verify
+its signed bundle. Duplicate or incomplete name directories fail closed. Use
+`id:DEVICE_ID/HARNESS/SESSION` to select an exact device without name metadata.
+Revocation and explicit pairing continue to use IDs. Different owners still require
+explicit bilateral grants and fingerprint confirmation. No label lookup writes a pin.
 
 `everett relay rename 'Office NUC'` updates this device's hosted label. Device
 IDs, peer aliases, keys, pins, and signed bundles stay as they are. When the

@@ -1076,7 +1076,13 @@ pub fn target(value: &str) -> Result<(&str, &str, &str)> {
     if parts.len() != 3 {
         return Err(bad("remote target must be PEER/HARNESS/SESSION"));
     }
-    for part in &parts {
+    if parts[0].trim().is_empty()
+        || parts[0].chars().count() > 160
+        || parts[0].chars().any(char::is_control)
+    {
+        return Err(bad("invalid device name"));
+    }
+    for part in &parts[1..] {
         valid(part)?;
     }
     Ok((parts[0], parts[1], parts[2]))
@@ -1119,6 +1125,9 @@ pub fn send_as(
     caller_harness: Option<&str>,
 ) -> Result<Value> {
     let (name, harness, session) = target(value)?;
+    if !peers()?.contains_key(name) && crate::relay::same_owner_enabled() {
+        return crate::relay::send_as(value, text, key, caller, caller_harness);
+    }
     assert_alias_unambiguous(name)?;
     if crate::relay::configured(name) {
         return crate::relay::send_as(value, text, key, caller, caller_harness);
@@ -1176,6 +1185,9 @@ pub fn send_as(
 }
 
 pub fn status(name: &str, message_id: &str) -> Result<Value> {
+    if !peers()?.contains_key(name) && crate::relay::same_owner_enabled() {
+        return crate::relay::status(name, message_id);
+    }
     assert_alias_unambiguous(name)?;
     if crate::relay::configured(name) {
         return crate::relay::status(name, message_id);
