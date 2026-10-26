@@ -67,14 +67,14 @@ pub fn tools() -> &'static Vec<Value> {
                 "description": "Deliver a request to another session. Pass just text and Everett routes it (jev when configured, else the local matcher). Use to only for a user-named destination. The result reports the route decision, router, session, and confidence. On ASK nothing is sent; choose from the returned candidates. An idle local session is resumed headless and its reply returned. Automatic delivery refuses attached, T3, and registered external sessions because no general agent ping or wake exists; nothing is queued. Explicit mode=inbox opts into passive queueing for hooks or everett_inbox polling. queued=true with delivered=false means pickup is unconfirmed; wait can observe a reply but never wakes the target. Explicit remote destinations use their durable inbox transport. To answer a received message, pass reply_to and text; replies are durably queued for the sender. NEW starts a headless session only with spawn=true. Self-send and requests forwarded more than 3 times are refused.",
                 "inputSchema": {"type": "object", "properties": {
                     "text": s("The request for the other session. Make it self-contained."),
-                    "to": s("Local session id prefix/title/card/project, or explicit remote peer/harness/session. Remote delivery is inbox-only and never wakes a session."),
+                    "to": s("Local session id prefix/title/card/project, or explicit remote peer/harness/session. Remote delivery uses a durable inbox. A separately enabled receiver policy may wake Claude or POST an external-agent webhook."),
                     "idempotency_key": s("Stable key for an explicit remote send; reuse it only for the same request when delivery is uncertain."),
                     "hours": hours_prop(),
                     "spawn": {"type": "boolean", "description": "Allow starting a NEW session when routing says NEW.", "default": false},
                     "dir": s("Working directory for a spawned session."),
                     "harness": {"type": "string", "enum": crate::send::SPAWNABLE, "description": "Harness for a spawned session."},
                     "timeout": {"type": "number", "description": "Seconds to wait for the reply (default 300).", "minimum": 1},
-                    "mode": {"type": "string", "enum": crate::send::MODES, "description": "auto (default): headless resume when safe; otherwise fails without queueing. inbox explicitly queues for hooks or polling and never pings or wakes."},
+                    "mode": {"type": "string", "enum": crate::send::MODES, "description": "auto (default): headless resume when safe; otherwise fails without queueing. inbox explicitly queues for hooks or polling. It does not request Claude native wake; a matching owner webhook may POST a nudge."},
                     "wait": {"type": "number", "minimum": 0, "description": "Explicit inbox mode: seconds to wait for a reply (default 0). Does not ping or wake the target."},
                     "reply_to": s("Answer this Everett message id; the reply goes to its sender."),
                 }, "required": ["text"], "additionalProperties": false},
@@ -143,7 +143,7 @@ pub fn tools() -> &'static Vec<Value> {
             }),
             json!({
                 "name": "everett_agent_relay",
-                "description": "Verified agent identity, registration, directory, names and revocation. Cloudflare same-owner devices use automatic trust; other owners require explicit pins and grants. Credentials are per agent, never bearer tokens. Membership management is admin-only; an agent can revoke itself. Run everett relay separately to receive; never wakes sessions.",
+                "description": "Verified agent identity, registration, directory, names and revocation. Cloudflare same-owner devices use automatic trust; cross-owner Cloudflare sends are unsupported. Retired Convex compatibility uses explicit pins and grants. Credentials are per agent, never bearer tokens. Membership management is admin-only; an agent can revoke itself. Run everett relay separately to receive. Disabled-by-default owner policies can wake an exact Claude background session or POST a registered external-agent webhook.",
                 "inputSchema": {"type":"object","properties":{
                     "action":{"type":"string","enum":["identity","register","directory","names","pair","unpair","credentials","memberships","revoke-membership","revoke-agent","revoke-credential"]},
                     "id":s("Provisioned agent ID; for revoke-membership, exact provider subject; for unpair, alias."),
@@ -154,7 +154,7 @@ pub fn tools() -> &'static Vec<Value> {
             }),
             json!({
                 "name": "everett_agent_grants",
-                "description": "List/get named-agent grants, or administer explicit bilateral grants. Both org admins must independently confirm both key fingerprints. Either can revoke; key changes require bilateral reconfirmation. Non-admin agent credentials cannot administer grants.",
+                "description": "Retired Convex compatibility only; Cloudflare does not support cross-owner grants. List/get named-agent grants, or administer explicit bilateral grants. Both org admins must independently confirm both key fingerprints. Either can revoke; key changes require bilateral reconfirmation. Non-admin agent credentials cannot administer grants.",
                 "inputSchema":{"type":"object","properties":{
                     "action":{"type":"string","enum":["list","get","invite","accept","reconfirm","revoke","propose","approve"]},
                     "id":s("Explicit grant ID; propose/approve are aliases for invite/accept."),

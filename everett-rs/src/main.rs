@@ -77,7 +77,7 @@ enum Cmd {
         #[arg(long)]
         json: bool,
     },
-    /// live encrypted Convex relay; writes inboxes, never wakes sessions
+    /// encrypted Cloudflare receiver; inbox delivery with optional owner wake policies
     Relay {
         #[command(subcommand)]
         action: Option<RelayCmd>,
