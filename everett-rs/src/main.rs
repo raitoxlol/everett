@@ -1,4 +1,4 @@
-use clap::{CommandFactory, Parser, Subcommand};
+use clap::{CommandFactory, FromArgMatches, Parser, Subcommand};
 
 use everett::cli::{self, Args};
 
@@ -19,6 +19,44 @@ const HARNESSES: &[&str] = &[
     "openai-dot",
     "grok-bot",
 ];
+
+/// Top-level help lists commands by what a newcomer needs first, not by declaration order.
+const HELP_GROUPS: &[(&str, &[&str])] = &[
+    ("Start here", &["onboard", "dashboard", "ls", "doctor"]),
+    (
+        "Work across sessions",
+        &["send", "route", "inbox", "reply", "event", "events", "subscribe"],
+    ),
+    ("Shared memory", &["learn", "core", "trunk", "cards"]),
+    (
+        "Setup and account",
+        &["install-hooks", "install-mcp", "mcp", "login", "whoami", "logout"],
+    ),
+    (
+        "Advanced: devices and external agents",
+        &["relay", "peer", "devices", "gateway", "external", "tunnel"],
+    ),
+];
+
+fn command() -> clap::Command {
+    let cmd = Cli::command();
+    let mut groups = String::new();
+    for (heading, names) in HELP_GROUPS {
+        groups.push_str(&format!("{heading}:\n"));
+        for name in *names {
+            let about = cmd
+                .find_subcommand(name)
+                .and_then(|s| s.get_about())
+                .map(|a| a.to_string())
+                .unwrap_or_default();
+            groups.push_str(&format!("  {name:<14} {about}\n"));
+        }
+        groups.push('\n');
+    }
+    cmd.help_template(format!(
+        "{{about-with-newline}}\n{{usage-heading}} {{usage}}\n\n{groups}Options:\n{{options}}\n\nRun `everett <command> --help` for details.\n"
+    ))
+}
 
 #[derive(Parser)]
 #[command(name = "everett", version = env!("CARGO_PKG_VERSION"), about = "See and reach parallel coding-agent sessions.")]
@@ -612,7 +650,7 @@ enum ExternalCmd {
 }
 
 fn main() {
-    let cli = Cli::parse();
+    let cli = Cli::from_arg_matches(&command().get_matches()).unwrap_or_else(|e| e.exit());
     let mut a = Args {
         hours: cli.hours,
         ..Default::default()
@@ -628,7 +666,7 @@ fn main() {
                 a.span_days = 3;
                 std::process::exit(cli::cmd_onboard(&a));
             }
-            Cli::command().print_long_help().unwrap_or_else(|e| {
+            command().print_long_help().unwrap_or_else(|e| {
                 eprintln!("everett: {e}");
                 std::process::exit(1);
             });

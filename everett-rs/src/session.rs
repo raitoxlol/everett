@@ -91,6 +91,41 @@ pub fn warn(message: &str) {
     eprintln!("everett: {}", message);
 }
 
+/// Short name for where a session runs: its folder, or the repo behind a T3 or Claude worktree.
+/// Codex app chat folders (`Codex/<date>/<prompt-slug>`) are not projects and read as "chat".
+pub fn project_label(cwd: &str) -> String {
+    project_label_in(cwd, &home())
+}
+
+fn project_label_in(cwd: &str, home: &Path) -> String {
+    let path = Path::new(cwd.trim_end_matches('/'));
+    if path.as_os_str().is_empty() {
+        return "-".to_string();
+    }
+    if path == home {
+        return "~".to_string();
+    }
+    let parts: Vec<&str> = path.iter().filter_map(|part| part.to_str()).collect();
+    if let Some(worktree) = parts.windows(3).find(|w| w[0] == ".t3" && w[1] == "worktrees") {
+        return worktree[2].to_string();
+    }
+    if let Some(i) = parts.windows(2).position(|w| w == [".claude", "worktrees"]) {
+        if i > 0 {
+            return parts[i - 1].to_string();
+        }
+    }
+    let dated = |s: &str| {
+        s.len() == 10
+            && s.char_indices()
+                .all(|(i, c)| if i == 4 || i == 7 { c == '-' } else { c.is_ascii_digit() })
+    };
+    let n = parts.len();
+    if n >= 3 && parts[n - 3].eq_ignore_ascii_case("codex") && dated(parts[n - 2]) {
+        return "chat".to_string();
+    }
+    parts[n - 1].to_string()
+}
+
 pub fn home() -> PathBuf {
     if let Ok(v) = std::env::var("EVERETT_HOME") {
         if !v.is_empty() {
@@ -228,6 +263,27 @@ pub fn recent_files(paths: Vec<PathBuf>, since_hours: f64) -> Vec<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn project_label_names_the_project_not_the_path() {
+        let home = Path::new("/Users/w");
+        for (cwd, want) in [
+            ("", "-"),
+            ("/", "-"),
+            ("/Users/w", "~"),
+            ("/Users/w/", "~"),
+            ("/Users/w/Projects/everett", "everett"),
+            ("/Users/w/.t3/worktrees/everett/t3-dcb3322b", "everett"),
+            ("/Users/w/src/api/.claude/worktrees/fix-retry", "api"),
+            (
+                "/Users/w/Documents/Codex/2026-10-19/yo-my-hermes-agent-on-mynuc",
+                "chat",
+            ),
+            ("/Users/w/notes/2026-10-19/standup", "standup"),
+        ] {
+            assert_eq!(project_label_in(cwd, home), want, "{cwd}");
+        }
+    }
 
     #[test]
     fn read_edges_keeps_tail_line_at_record_boundary() {

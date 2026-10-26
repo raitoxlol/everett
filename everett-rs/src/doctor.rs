@@ -222,6 +222,13 @@ pub fn device_revocation_checks(
     checks
 }
 
+fn owner_label(owner: &str) -> String {
+    serde_json::from_str::<Vec<String>>(owner)
+        .ok()
+        .and_then(|parts| parts.into_iter().last())
+        .unwrap_or_else(|| owner.to_string())
+}
+
 fn account_check() -> (Option<bool>, String) {
     match crate::config::get("auth.provider", Some("EVERETT_AUTH_PROVIDER"), "oidc").as_str() {
         "cloudflare" => match crate::cloudflare_auth::load() {
@@ -233,7 +240,7 @@ fn account_check() -> (Option<bool>, String) {
                 None,
                 format!(
                     "account: Cloudflare {} via {} ({}; stored credential, not verified online)",
-                    stored.owner, stored.issuer, stored.device_name
+                    owner_label(&stored.owner), stored.issuer, stored.device_name
                 ),
             ),
             Ok(None) => (None, "account: not signed in to Cloudflare (optional)".into()),
@@ -284,7 +291,12 @@ pub fn run(hours: f64) -> i32 {
             home().join(rel)
         };
         let found = path.exists();
-        let state = if found { "found" } else { "not found" };
+        let cli = if *harness != "t3code" { which(harness) } else { None };
+        let state = match (found, cli.is_some()) {
+            (true, _) => "found",
+            (false, true) => "no sessions yet",
+            (false, false) => "not found",
+        };
         let extra = if *harness == "t3code" {
             if found {
                 format!(
@@ -295,9 +307,8 @@ pub fn run(hours: f64) -> i32 {
                 "desktop app".to_string()
             }
         } else {
-            format!("cli: {}", which(harness).unwrap_or_else(|| "not on PATH".to_string()))
+            format!("cli: {}", cli.as_deref().unwrap_or("not on PATH"))
         };
-        let cli = if *harness != "t3code" { which(harness) } else { None };
         line(
             &mut warnings,
             if cli.is_some() || found { Some(true) } else { None },
@@ -515,11 +526,13 @@ pub fn run(hours: f64) -> i32 {
     for (ok, detail) in device_revocation_checks(crate::relay::revoked_devices) {
         line(&mut warnings, ok, &detail);
     }
-    let warning_count = warnings.len() - problems;
-    if warnings.is_empty() {
-        println!("ready");
-    } else {
-        println!("{} problem(s), {} warning(s); setup needs attention", problems, warning_count);
+    let warnings_only = warnings.len() - problems;
+    println!();
+    match (problems, warnings_only) {
+        _ if seen.is_empty() => println!("Not ready: no coding agent found yet."),
+        (0, 0) => println!("Ready."),
+        (0, n) => println!("Ready. {} warning(s) limit what Everett can do.", n),
+        (p, _) => println!("{} problem(s) to fix; setup needs attention.", p),
     }
     println!("Next:");
     let steps = if next_steps.is_empty() {
@@ -534,5 +547,20 @@ pub fn run(hours: f64) -> i32 {
         1
     } else {
         0
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn owner_label_prefers_the_account_id_from_a_claim_array() {
+        assert_eq!(owner_label("github:282002453"), "github:282002453");
+        assert_eq!(
+            owner_label(r#"["https://everett.raitox.tech","account","github:282002453"]"#),
+            "github:282002453"
+        );
+        assert_eq!(owner_label("[]"), "[]");
     }
 }
