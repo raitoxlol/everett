@@ -163,35 +163,75 @@ process, or the gateway file's `agent_id` and `harness` for Remote HTTPS).
 
 ### 2. Register the inbox and write the policy
 
-Sign in on the receiving computer and register the local inbox:
+Sign in on the receiving computer first. `everett whoami --json` prints `owner`
+and `agent_id`. Copy both exactly. `owner` is one compact JSON array string,
+for example `["https://everett.raitox.tech","account","github:OWNER_ID"]`.
+Do not insert spaces.
+
+The policy file is `receiver-webhook.json` in the selected relay directory:
+
+| Auth provider | Path |
+| --- | --- |
+| `cloudflare` (`[auth] provider` or `EVERETT_AUTH_PROVIDER`) | `$EVERETT_HOME/.everett/relay-cloudflare/receiver-webhook.json`, or `~/.everett/relay-cloudflare/` when `EVERETT_HOME` is unset |
+| `oidc` (the default) | `$EVERETT_HOME/.everett/relay/receiver-webhook.json`, or `~/.everett/relay/` |
+
+That is the same directory as `receiver-wake.json`. The Claude wake file does
+not wake a Grok Bot. Same-owner Cloudflare devices can also write this file with
+`everett relay webhook <inbox-id> --harness grok-bot --url-file … --bearer-file …`;
+omitted sender filters accept eligible same-owner arrivals.
 
 ```sh
-everett external add --id ext-grok-acceptance --harness grok-bot --title 'Grok Bot inbox'
-everett relay webhook ext-grok-acceptance --harness grok-bot \
-  --url-file /absolute/private/webhook.url \
-  --bearer-file /absolute/private/webhook.key
+everett external add \
+  --id ext-grok-acceptance --harness grok-bot \
+  --title 'Grok Bot inbox'
+
+everett whoami --json
 ```
 
-Both input files must be regular files with mode `0600` or stricter. The command
-reads the local identity, validates the registered inbox, and writes a private
-`receiver-webhook.json`. It does not call the webhook or create a provider routine.
-Repeating it updates that inbox's rule. The result prints no URL or bearer value.
+Same-machine rule. Both device fields are this computer's `agent_id`.
+`sender_session` and `sender_harness` must equal the sender of `everett send`.
+A terminal with none of `EVERETT_SESSION_ID`, `EVERETT_HARNESS_NAME`,
+`CLAUDE_CODE_SESSION_ID`, `CLAUDE_SESSION_ID`, `CODEX_THREAD_ID`,
+`HERMES_SESSION_ID`, `PI_SESSION_FILE`, or `GROK_SESSION_ID` set is `human` and
+`""`. A Codex session is that session id and `codex`. A rule with
+`sender_harness` set to `codex` does not match a bare terminal. Set
+`activated_at` to `date +%s` when you enable the file so an old inbox backlog
+is not posted. `cooldown_seconds` is an integer from 1 through 86400.
 
-The policy lives in `$EVERETT_HOME/.everett/relay-cloudflare/` for Cloudflare,
-or `$EVERETT_HOME/.everett/relay/` for OIDC. When unset, `EVERETT_HOME` is your
-home directory. Claude uses the separate `receiver-wake.json` policy.
-
-Device and sender filters are optional. Omit `recipient_device` to bind to this
-signed-in device. Omit `sender_device`, `sender_session` and `sender_harness` to
-accept eligible same-owner arrivals. `"*"` also selects those defaults. Explicit
-values narrow a rule. Legacy exact-filter policies still work. Replies, external
-content, external-harness senders and messages older than `activated_at` do not
-post the webhook. `cooldown_seconds` is an integer from 1 through 86400.
-
-For manually maintained policies, the following validation still applies.
+```sh
+umask 077
+DIR="$HOME/.everett/relay-cloudflare"   # "$HOME/.everett/relay" for OIDC/Convex
+mkdir -p "$DIR"
+WHO=$(everett whoami --json)
+jq -n \
+  --arg owner "$(jq -r .owner <<<"$WHO")" \
+  --arg agent "$(jq -r .agent_id <<<"$WHO")" \
+  --arg url 'https://api2.cursor.sh/automations/webhook/ROUTINE_ID' \
+  --arg key "$HOME/.config/everett/grok-webhook.key" \
+  --argjson activated "$(date +%s)" \
+  '{
+    version: 1,
+    enabled: true,
+    activated_at: $activated,
+    rules: [{
+      id: "grok-inbox",
+      owner: $owner,
+      recipient_device: $agent,
+      session: "ext-grok-acceptance",
+      harness: "grok-bot",
+      sender_device: $agent,
+      sender_session: "human",
+      sender_harness: "",
+      cooldown_seconds: 30,
+      url: $url,
+      bearer_file: $key
+    }]
+  }' > "$DIR/receiver-webhook.json"
+chmod 600 "$DIR/receiver-webhook.json"
+```
 
 `owner` in that file is the raw `whoami` string, brackets included, with no
-added spaces. Omitted recipient filtering always means this device. The file
+added spaces. On one computer both device fields are that `agent_id`. The file
 must be a regular file, mode `0600` or stricter, version `1`, with no
 unknown fields. An enabled file needs `activated_at` (Unix seconds, from 1
 through 4000000000) and 1–16 rules. Rule ids are unique, 1–64 characters of
@@ -205,11 +245,15 @@ A missing file, or `"enabled": false`, does not add a
 
 ### 3. Send and confirm the wake
 
-Same-machine send does not need `everett relay`. With the default inbox rule,
-any eligible local sender can queue the request:
+Same-machine send does not need `everett relay`. Unset session variables so the
+sender is the terminal identity the rule names:
 
 ```sh
-everett send 'check inbox' --to ext-grok-acceptance --mode inbox --json
+env -u EVERETT_SESSION_ID -u EVERETT_HARNESS_NAME \
+  -u CLAUDE_CODE_SESSION_ID -u CLAUDE_SESSION_ID \
+  -u CODEX_THREAD_ID -u HERMES_SESSION_ID \
+  -u PI_SESSION_FILE -u GROK_SESSION_ID \
+  everett send 'check inbox' --to ext-grok-acceptance --mode inbox --json
 ```
 
 A match that the endpoint accepts looks like this. `wake` stays false.
@@ -218,7 +262,7 @@ A match that the endpoint accepts looks like this. `wake` stays false.
 {
   "queued": true,
   "wake": false,
-  "webhook": {"state": "accepted", "http_status": 200}
+  "webhook": {"state": "accepted", "rule_id": "grok-inbox", "http_status": 200}
 }
 ```
 
@@ -234,17 +278,18 @@ the bearer.
 
 ### Cross-device
 
-The default inbox rule accepts eligible arrivals from other same-owner devices.
-No sender or recipient ID edits are needed. Run `everett relay` on the receiver.
-Use `everett relay devices --names` to find a unique same-owner target:
+On the receiver, `recipient_device` is that computer's `agent_id` and
+`sender_device` is the sending computer's `agent_id`. `sender_session` and
+`sender_harness` still come from the sending process. Run `everett relay` on
+the receiver. The sender uses the peer target:
 
 ```sh
 everett send 'check inbox' \
-  --to 'Hugo Box/grok-bot/ext-grok-acceptance' --mode inbox
+  --to <peer>/grok-bot/ext-grok-acceptance --mode inbox
 ```
 
 The sender's JSON does not include `webhook`. The receiver logs
-`receiver webhook accepted HTTP 200 for session ext-grok-acceptance rule inbox-<stable-id>`
+`receiver webhook accepted HTTP 200 for session ext-grok-acceptance rule grok-inbox`
 when the POST is accepted.
 
 ### What is proven, and what is not
