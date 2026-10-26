@@ -239,7 +239,6 @@ export class HostedAuth extends DurableObject<HostedAuthEnv> {
     } catch { return null; }
   }
 
-  // Advisory enrollment metadata only. Never modify or decorate signed relay bundles.
   async relayDeviceLabels(principal: Principal, rename?: string): Promise<{ ok: true; value: { labels: Record<string, string> } } | { ok: false; error: string; status: number }> {
     try { return { ok: true, value: { labels: await this.#deviceLabels(principal, rename) } }; }
     catch (error) {
@@ -265,7 +264,6 @@ export class HostedAuth extends DurableObject<HostedAuthEnv> {
     }
     const labels: Record<string, string> = {};
     for (const row of this.ctx.storage.sql.exec<Agent>('SELECT * FROM hosted_agents WHERE account=? AND revoked=0 ORDER BY agent_id LIMIT 256', caller.account)) {
-      // Relay-side revocations also suppress stale auth metadata.
       if (activeIds.has(row.agent_id)) labels[row.agent_id] = row.name;
     }
     return labels;
