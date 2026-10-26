@@ -1002,6 +1002,71 @@ pub fn devices() -> Result<Value> {
     })
 }
 
+pub fn device_names() -> Result<String> {
+    let owner = relay_account()?.owner;
+    runtime(async move {
+        let mut client = client(&owner).await?;
+        let bundles = query(&mut client, "relay:devices", json!({})).await?;
+        let labels = if client.is_native() {
+            query(&mut client, "relay:deviceLabels", json!({}))
+                .await
+                .ok()
+        } else {
+            None
+        };
+        format_device_names(bundles, labels, &owner)
+    })
+}
+
+fn format_device_names(bundles: Value, labels: Option<Value>, owner: &str) -> Result<String> {
+    let devices: Vec<Device> = serde_json::from_value(bundles).map_err(bad)?;
+    let labels = labels.filter(|v| v.get("labels").is_some_and(Value::is_object));
+    let mut text = String::from(
+        "Names are advisory hosted metadata (not signed); verify fingerprints out of band.\n",
+    );
+    if labels.is_none() {
+        text.push_str("Names unavailable: backend metadata unsupported/unavailable; IDs remain authoritative.\n");
+    }
+    text.push_str("NAME\tDEVICE ID\tFINGERPRINT\n");
+    for device in devices {
+        device.verify()?;
+        if device.owner != owner {
+            return Err(bad("device owner mismatch"));
+        }
+        let name = labels
+            .as_ref()
+            .and_then(|v| v["labels"][&device.device_id].as_str())
+            .filter(|name| {
+                !name.trim().is_empty()
+                    && name.chars().count() <= 100
+                    && !name.chars().any(char::is_control)
+            });
+        // JSON quoting escapes user-authored labels without terminal control sequences.
+        let label = name
+            .map(|n| json!(n).to_string())
+            .unwrap_or_else(|| "(unnamed)".into());
+        text.push_str(&format!(
+            "{label}\t{}\t{}\n",
+            device.device_id,
+            device.fingerprint()
+        ));
+    }
+    Ok(text)
+}
+
+pub fn rename_device(name: &str) -> Result<Value> {
+    if name.trim().is_empty() || name.chars().count() > 100 || name.chars().any(char::is_control) {
+        return Err(bad("device name must contain 1-100 printable characters"));
+    }
+    if Provider::selected()? != Provider::Cloudflare {
+        return Err(bad(
+            "relay rename requires hosted Cloudflare metadata; Convex registry names are separate",
+        ));
+    }
+    let stored = native_credential()?;
+    stored.relay_request("relay:renameDevice", &json!({"name":name.trim()}))
+}
+
 pub fn add(
     name: &str,
     device_id: &str,

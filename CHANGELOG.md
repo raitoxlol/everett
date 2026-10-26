@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Add `relay devices --names` to show hosted enrollment names beside device IDs and verified fingerprints, and `relay rename NAME` to update only this device's advisory label. Original JSON bundle output and pairing/pin semantics are unchanged. Hosted metadata requires a backend update; missing labels remain explicitly unnamed.
+
 - Add an owner `receiver-webhook.json` policy. When a rule matches a registered `grok-bot` or `openai-dot` inbox message, Everett POSTs a wake nudge to the owner's HTTPS URL. The POST omits message text. HTTP 200 means the endpoint accepted a routine run, not that the bot consumed the inbox. A missing or disabled policy leaves send behavior unchanged.
 
 ## 2.1.0 — 2026-10-24

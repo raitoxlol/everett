@@ -2,7 +2,8 @@ import { env as bindings, exports as workerExports } from 'cloudflare:workers';
 import { evictDurableObject, reset, runInDurableObject } from 'cloudflare:test';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { sha256 } from '@noble/hashes/sha256';
-import { namespace } from '../src/protocol';
+import { namespace, deviceBytes, hexString } from '../src/protocol';
+import { ed25519, x25519 } from '@noble/curves/ed25519';
 import type { Env } from '../src/index';
 
 const issuer = 'https://everett.test';
@@ -87,6 +88,69 @@ async function authorize(browser: Browser, verifier = 'v'.repeat(64)) {
 }
 
 describe('Public enrollment: account isolation', () => {
+  it('lists owner-scoped advisory device labels and renames only the caller', async () => {
+    const alice = await loginAs(ALICE), bob = await loginAs(BOB);
+    const a = await begin('alice-nuc'), a2 = await begin('alice-nuc'), b = await begin('private-bob');
+    await approve(alice, a.user_code); await approve(alice, a2.user_code); await approve(bob, b.user_code);
+    const pa = (await poll(a.device_code)).body, pa2 = (await poll(a2.device_code)).body, pb = (await poll(b.device_code)).body;
+    const signing = new Uint8Array(32).fill(17), encryption = new Uint8Array(32).fill(18);
+    const bundle = { owner: pa.owner!, deviceId: pa.agent_id!, signingKey: hexString(ed25519.getPublicKey(signing)), encryptionKey: hexString(x25519.getPublicKey(encryption)), signature: '' };
+    bundle.signature = hexString(ed25519.sign(deviceBytes(bundle), signing));
+    expect((await nativeCall(pa.token!, 'register', { device: bundle })).status).toBe(200);
+    const signedBefore = await (await nativeCall(pa.token!, 'devices')).json();
+    const response = await nativeCall(pa.token!, 'deviceLabels');
+    expect(response.status).toBe(200);
+    const labels = (await response.json() as { result: { labels: Record<string, string> } }).result.labels;
+    expect(labels).toEqual({ [pa.agent_id!]: 'alice-nuc', [pa2.agent_id!]: 'alice-nuc' });
+    expect(JSON.stringify(labels)).not.toContain(pb.agent_id!);
+    expect((await nativeCall(pa.token!, 'renameDevice', { name: 'renamed-nuc', deviceId: pb.agent_id })).status).toBe(400);
+    expect((await nativeCall(pa.token!, 'renameDevice', { name: '\u001b[31m' })).status).toBe(400);
+    expect((await nativeCall(pa.token!, 'renameDevice', { name: 'renamed-nuc' })).status).toBe(200);
+    const updated = await (await nativeCall(pa2.token!, 'deviceLabels')).json() as { result: { labels: Record<string, string> } };
+    expect(updated.result.labels[pa.agent_id!]).toBe('renamed-nuc');
+    expect(updated.result.labels[pa2.agent_id!]).toBe('alice-nuc');
+    expect(await (await nativeCall(pa.token!, 'devices')).json()).toEqual(signedBefore);
+    expect(signedBefore).toEqual({ result: [bundle] });
+    const stub = env.AUTH_STATE!.get(env.AUTH_STATE!.idFromName(issuer));
+    await evictDurableObject(stub);
+    expect(JSON.stringify(await (await nativeCall(pb.token!, 'deviceLabels')).json())).not.toContain('renamed-nuc');
+    expect(JSON.stringify(await (await nativeCall(pa.token!, 'deviceLabels')).json())).toContain('renamed-nuc');
+    await runInDurableObject(stub, (_i, state) => { state.storage.sql.exec('DELETE FROM hosted_agents WHERE agent_id=?', pa2.agent_id!); });
+    expect(JSON.stringify(await (await nativeCall(pa.token!, 'deviceLabels')).json())).not.toContain(pa2.agent_id!);
+    expect((await nativeCall(pa2.token!, 'deviceLabels')).status).toBe(401);
+    await alice.request('/enroll/revoke', form({ csrf: await alice.csrf(), agent_id: pa.agent_id! }));
+    expect((await nativeCall(pa.token!, 'deviceLabels')).status).toBe(401);
+    expect(JSON.stringify(await (await nativeCall(pa2.token!, 'deviceLabels')).json())).not.toContain('renamed-nuc');
+  });
+
+  it('batches 64 active labels, excludes relay revocations and preserves RPC error status', async () => {
+    const alice = await loginAs(ALICE), pending = await begin('caller');
+    await approve(alice, pending.user_code);
+    const pa = (await poll(pending.device_code)).body;
+    const identity = { issuer, subject: `github:${ALICE.id}`, org: null };
+    const relay = env.OWNERS.get(env.OWNERS.idFromName(namespace(identity)));
+    const auth = env.AUTH_STATE!.get(env.AUTH_STATE!.idFromName(issuer));
+    const ids: string[] = [];
+    for (let i = 0; i < 63; i++) {
+      const enrolled = await relay.enroll(identity, 'admin', crypto.randomUUID());
+      if (!enrolled.ok) throw new Error(enrolled.error);
+      ids.push(enrolled.value.deviceId);
+    }
+    await runInDurableObject(auth, (_i, state) => {
+      for (const id of ids) state.storage.sql.exec('INSERT INTO hosted_agents VALUES(?,?,?,?,?,?)', id, 'duplicate name', 'device', Date.now(), 0, identity.subject);
+      state.storage.sql.exec('INSERT INTO hosted_agents VALUES(?,?,?,?,?,?)', 'legacy-unbound', 'must-not-leak', 'device', Date.now(), 0, null);
+    });
+    const listed = await (await nativeCall(pa.token!, 'deviceLabels')).json() as { result: { labels: Record<string, string> } };
+    expect(Object.keys(listed.result.labels)).toHaveLength(64);
+    expect(JSON.stringify(listed)).not.toContain('must-not-leak');
+    expect(await relay.revokeCredential(identity, ids[0])).toBe(true);
+    const after = await (await nativeCall(pa.token!, 'deviceLabels')).json() as { result: { labels: Record<string, string> } };
+    expect(Object.keys(after.result.labels)).toHaveLength(63);
+    expect(after.result.labels[ids[0]]).toBeUndefined();
+    for (let i = 0; i < 30; i++) expect((await nativeCall(pa.token!, 'renameDevice', { name: 'caller' })).status).toBe(200);
+    expect((await nativeCall(pa.token!, 'renameDevice', { name: 'caller' })).status).toBe(429);
+  });
+
   it('lets two GitHub users approve their own devices into separate relay namespaces', async () => {
     const alice = await loginAs(ALICE), bob = await loginAs(BOB);
     const aDevice = await begin('alice-laptop'), bDevice = await begin('bob-desktop');
