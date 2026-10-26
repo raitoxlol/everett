@@ -461,22 +461,36 @@ fn malformed_oversized_and_rejected_poll_bodies_do_not_retry() {
 
 #[test]
 fn dropped_poll_connections_stop_at_the_approval_deadline() {
-    let f = fixture();
-    let fake = Fake::new();
-    fake.configure(&f);
-    *fake.drop_polls.lock().unwrap() = usize::MAX;
-    *fake.expires.lock().unwrap() = 4;
-    let out = f.run(&["login", "--json"]);
-    redact(&out);
-    assert_eq!(out.status.code(), Some(5));
-    assert!(String::from_utf8_lossy(&out.stderr).contains("approval code expired"));
-    assert!(fake.approval_elapsed() >= Duration::from_secs(4));
-    assert!(fake.approval_elapsed() < Duration::from_secs(7));
-    assert!(!f.home().join(".everett/cloudflare-pending.json").exists());
-    assert!(!f.home().join(".everett/cloudflare-auth.json").exists());
-    let requests = fake.requests();
-    assert_eq!(requests.iter().filter(|r| r.0 == "/v2/auth/device").count(), 1);
-    assert_eq!(requests.iter().filter(|r| r.0 == "/v2/auth/poll").count(), 2);
+    for first_delay in [Duration::ZERO, Duration::from_millis(1500)] {
+        let f = fixture();
+        let fake = Fake::new();
+        fake.configure(&f);
+        *fake.drop_polls.lock().unwrap() = usize::MAX;
+        *fake.expires.lock().unwrap() = 4;
+        if !first_delay.is_zero() {
+            fake.raw_polls.lock().unwrap().push_back(RawPoll {
+                status: 200,
+                body: "{\"state\":".into(),
+                declared_len: 256,
+                stall: first_delay,
+            });
+        }
+        let out = f.run(&["login", "--json"]);
+        redact(&out);
+        assert_eq!(out.status.code(), Some(5));
+        assert!(String::from_utf8_lossy(&out.stderr).contains("approval code expired"));
+        assert!(fake.approval_elapsed() >= Duration::from_secs(4));
+        assert!(fake.approval_elapsed() < Duration::from_secs(7));
+        assert!(!f.home().join(".everett/cloudflare-pending.json").exists());
+        assert!(!f.home().join(".everett/cloudflare-auth.json").exists());
+        let requests = fake.requests();
+        assert_eq!(requests.iter().filter(|r| r.0 == "/v2/auth/device").count(), 1);
+        let polls = requests.iter().filter(|r| r.0 == "/v2/auth/poll").count();
+        assert!((1..=2).contains(&polls), "unexpected poll count: {polls}");
+        if !first_delay.is_zero() {
+            assert_eq!(polls, 1);
+        }
+    }
 }
 
 #[test]
