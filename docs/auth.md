@@ -1,7 +1,9 @@
 # Accounts, agents, and relay authorization
 
 Local indexing, routing, inboxes, hooks, MCP, and SSH peers need no Everett sign-in.
-The existing Convex relay needs an OIDC provider **and deployment-side enrollment**;
+Cloudflare is the active hosted transport. Convex is retired; the OIDC sections
+below document retained compatibility code. That code needs an OIDC provider
+**and deployment-side enrollment**;
 `everett login` alone does not grant relay access. Fresh interactive onboarding uses
 Everett's public native approval site; OIDC remains separately configured. See [deployment and journeys](cross-device.md)
 and the [relay threat model](relay-threat-model.md).

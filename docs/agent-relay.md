@@ -21,10 +21,14 @@ not replace signed device identity. Existing SSH aliases retain their transport.
 
 The Cloudflare account service is the same-owner trust authority. It can authorize
 a new key bundle; a compromised service can substitute a same-owner identity.
-Different-owner traffic still requires explicit bilateral grants and confirmed
-fingerprints. OIDC/Convex retains the manual pairing flow below.
+Cloudflare does not support cross-owner traffic. The retired OIDC/Convex
+implementation retains manual pins and bilateral grants below for historical
+reference. It is not the active v2.2 transport.
 
-## Register and pin
+Receiver wake support is separate from device trust. See
+[agent support and wake](agent-support.md).
+
+## Legacy Convex registration and pairing
 
 Start `everett relay` on each device. It writes to local inboxes. Optional local
 receiver policies control wake actions. Within the agent's Everett MCP connection:
@@ -48,7 +52,7 @@ The alias defaults to `id`; optional `name` selects another local alias. For cro
 pairing also supply `grant_id`, only after the grant is active. Existing aliases never
 change keys/transport silently. Unpair with `{"action":"unpair","id":"ALIAS"}`.
 
-## Bilateral cross-org grants
+## Legacy Convex bilateral cross-org grants
 
 Call `everett_agent_grants`. Org A admin invites one local and one remote agent, with
 both independently verified fingerprints and the remote's exact namespace:
