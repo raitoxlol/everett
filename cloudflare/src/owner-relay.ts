@@ -88,6 +88,21 @@ export class OwnerRelay extends DurableObject<Env> {
     }
   }
 
+  // Internal metadata read: one authoritative owner transaction, not N liveness RPCs.
+  async activeCredentialIds(principalInput: Principal): Promise<{ ok: true; value: string[] } | { ok: false; error: string; status: number }> {
+    try {
+      const p = principalSchema.parse(principalInput);
+      this.#authorize(p);
+      const rows = this.ctx.storage.sql.exec<{ agent_id: string }>(
+        "SELECT c.agent_id FROM credentials c JOIN members m ON c.subject=m.subject WHERE c.status='active' AND m.status='active' ORDER BY c.agent_id LIMIT 256");
+      return { ok: true, value: rows.toArray().map(row => row.agent_id) };
+    } catch (error) {
+      if (error instanceof RelayError) return { ok: false, error: error.code, status: error.status };
+      if (error instanceof ZodError) return { ok: false, error: 'invalid_request', status: 400 };
+      throw error;
+    }
+  }
+
   async revokeCredential(identityInput: Identity, agentIdInput: string): Promise<boolean> {
     const identity = identitySchema.safeParse(identityInput), agent = identifier.safeParse(agentIdInput);
     if (!identity.success || !agent.success || this.#owner() !== namespace(identity.data)) return false;
