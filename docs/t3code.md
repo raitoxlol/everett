@@ -19,7 +19,9 @@ Everett marks them `source=t3code` and fills missing metadata from T3. If the pr
 transcript is absent, an active T3 projection with a real native ID supplies the
 session metadata instead. No transcript file or provider ID is fabricated.
 
-Deleted/archived threads and deleted projects do not supply fallback sessions.
+Deleted or archived threads and deleted projects hide their linked provider sessions,
+including existing native transcripts. An active T3 thread linked to the same native
+session keeps that session visible. Unlinked standalone provider sessions stay visible.
 Fallback sessions obey the look-back window and harness filter before the listing
 limit. Worktrees take precedence over the project's workspace root. A current v2
 database with unsupported/corrupt schema is reported and skipped, not silently
