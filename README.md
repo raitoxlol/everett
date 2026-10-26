@@ -198,6 +198,8 @@ Done. MAX_RETRIES is now 5 and the backoff test covers the cap.
 | `everett peer status <name> <message-id>` | SSH polls/imports replies; relay queries queued/delivered/claimed/replied/expired state from signed observations (not task completion). |
 | `everett relay` | Listen through the selected relay: Convex WebSocket or Cloudflare outbound polling. Claude session wake and external webhook posts follow the local owner policy. |
 | `everett relay register / devices / whoami` | Register this provisioned agent's keys and publish its display name/declared SSH address, list active key bundles (maximum 256), or verify agent/org authorization. |
+| `everett relay devices --names` | Hosted Cloudflare enrollment labels beside device IDs and fingerprints. Advisory only; the default JSON bundle list is unchanged. |
+| `everett relay rename NAME` | Update this Cloudflare device's hosted label. Device ID, keys, and pins stay the same. |
 | `everett relay revoke-agent ID / revoke-member SUBJECT / rotate` | Revoke this or an admin-selected agent, remove org membership (admin), or rotate this agent's relay keys using its old signing key. |
 | `everett relay grant invite / accept / reconfirm / revoke / get / list` | Bilateral org-admin consent for named cross-org agents; [exact flags and journey](docs/cross-device.md#convex-relay-two-org-trial). |
 | `everett peer add-relay <name> --device ID --fingerprint HEX [--grant GRANT_ID]` | Pin a device on the selected relay after out-of-band bundle confirmation; fingerprint is raw 64-character lowercase hex, not the SSH `SHA256:` format. |
@@ -320,38 +322,18 @@ with the provider.
 
 ## Human-readable relay device names
 
-For the hosted Cloudflare provider, use `everett relay devices --names` to see
-approved enrollment labels beside full device IDs and verified bundle fingerprints.
-The original `everett relay devices` JSON output is unchanged; `--json` is an
-explicit synonym, so existing scripts do not need migration. `--names` is a
-human display mode, not a new machine identity format.
+On the hosted Cloudflare provider, `everett relay devices --names` prints enrollment
+labels beside device IDs and verified fingerprints. `everett relay devices` and
+`everett relay devices --json` keep the signed JSON bundle array.
 
-Labels come from the hosted account metadata already written during browser
-approval. They are **not covered by the relay bundle signature** and do not
-establish ownership. Duplicate names remain separate rows with separate IDs;
-names are never resolved as send/revoke/pairing selectors. Continue to use the
-exact device ID and confirm the full fingerprint out of band for `peer add-relay`.
-No label lookup changes a pin or silently creates a peer.
+Labels are advisory hosted metadata. They are unsigned, may duplicate, and are
+not send, revoke, or pairing selectors. Pair with the device ID and confirm the
+fingerprint out of band.
 
-`everett relay rename 'Office NUC'` updates only the calling Cloudflare device's
-hosted label. It does not rename IDs, local peer aliases, keys, pins or the
-credential's locally stored enrollment-name snapshot. Other devices see the new
-label on their next `--names` query; no relay listener or recipient needs to be
-online. Duplicate labels are allowed. Revoked devices are filtered, and label
-metadata cannot disclose another GitHub account's devices. Offline is not revoked:
-the display reports registered bundles, not device presence or liveness.
-
-Rollout requires both an updated CLI and the updated Cloudflare Worker/HostedAuth
-code. No schema migration or enrollment replay is required: existing hosted names
-are reused. Old clients and the signed `device`/`devices` endpoints stay unchanged.
-On old backends, non-hosted bindings, missing legacy metadata or a failed optional
-metadata fetch, `--names` shows `(unnamed)` and an explicit availability warning,
-retaining IDs/fingerprints. Rename fails on unsupported backends; it never falls
-back to OIDC or reenrolls. OIDC/Convex registry names remain available through
-`everett devices`, a separate SSH-discovery contract.
-
-This is unreleased patch work for a future 2.1.x update. It does not modify the
-published2.1.0 archive or imply the hosted backend is already deployed.
+`everett relay rename 'Office NUC'` updates this device's hosted label. Device
+IDs, peer aliases, keys, pins, and signed bundles stay as they are. When the
+backend has no label metadata, `--names` prints `(unnamed)` and says names are
+unavailable.
 
 ## Cross-device peers (SSH or encrypted Convex)
 

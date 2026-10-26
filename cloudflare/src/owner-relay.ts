@@ -88,7 +88,6 @@ export class OwnerRelay extends DurableObject<Env> {
     }
   }
 
-  // Internal metadata read: one authoritative owner transaction, not N liveness RPCs.
   async activeCredentialIds(principalInput: Principal): Promise<{ ok: true; value: string[] } | { ok: false; error: string; status: number }> {
     try {
       const p = principalSchema.parse(principalInput);
