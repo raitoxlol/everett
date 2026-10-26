@@ -251,10 +251,10 @@ enum Cmd {
         /// schedule: time of day HH:MM (default 04:00)
         #[arg(long, default_value = "04:00")]
         at: String,
-        /// schedule: write the LaunchAgent and launchctl bootstrap it
+        /// schedule: write and activate a launchd job or systemd user timer
         #[arg(long)]
         apply: bool,
-        /// schedule: uninstall the LaunchAgent
+        /// schedule: uninstall the native user schedule
         #[arg(long)]
         remove: bool,
     },
