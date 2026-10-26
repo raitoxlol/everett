@@ -82,6 +82,10 @@ Prompt receipt still does not prove a model reply. The Mac-to-NUC acceptance bou
 the correlated reply arriving in the Mac sender session's inbox; the physical acceptance
 commands remain a separate device check.
 
+`receiver-wake.json` applies to one Claude session. It does not wake a registered
+Grok Bot or OpenAI dot. Those inboxes use `receiver-webhook.json` in this same
+relay directory. See [Grok Bot webhook wake](grok-bot.md#wake-a-grok-bot-with-a-webhook-routine).
+
 ### Real public-relay receiver acceptance
 
 `scripts/accept_receiver_wake.py` runs the actual Mac-to-NUC acceptance journey against

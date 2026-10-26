@@ -72,19 +72,25 @@ replacement for revoking connector credentials or deleting a provider routine.
 The existing inbox TTL still applies: pending messages older than seven days
 are not returned. Durable registration does not promise permanent pending work.
 
-## Delivery is a queue, not a cloud wake-up
+## Delivery is a queue
 
-- External `auto` and `inbox` modes queue locally. Results include `mode:
-  "inbox"`, `queued: true`, and `hooked: false`.
+- Automatic `auto` send refuses a registered external inbox and exits 4. Nothing
+  is queued. Explicit `--mode inbox` (MCP `mode: "inbox"`) writes the local inbox.
+  Results include `mode: "inbox"`, `queued: true` until something takes the
+  message, `hooked: false`, and `wake: false`.
 - `resume` is refused, even if process evidence contains the ID. Everett never
   runs `grok --resume`, OMP, or another provider CLI for these records.
 - External agents cannot be spawned. `everett route` gives an `everett send
   ... --mode inbox` command, not a fabricated resume command.
-- MCP's existing `delivered: true` field means accepted into Everett's inbox,
-  **not** confirmed provider consumption. The external-send note explicitly
-  says that no provider wake-up or consumption is confirmed.
-- Optional reply waiting is only local inbox polling. It does not trigger the
-  Bot; a timeout does not cancel the queued message.
+- MCP's `delivered: true` field means accepted into Everett's inbox, **not**
+  confirmed provider consumption. With no matching webhook rule, the external-send
+  note still says that no provider wake-up or consumption is confirmed.
+- Optional `--wait` only polls the local reply inbox. A timeout does not cancel
+  the queued message and does not use Claude `--wake`.
+- An enabled `receiver-webhook.json` rule can POST a nudge after that queue
+  write. HTTP 200 is routine acceptance, not inbox consumption. The receipt
+  still has `wake: false` and adds a `webhook` object. See
+  [Wake a Grok Bot with a webhook routine](#wake-a-grok-bot-with-a-webhook-routine).
 
 The owner must connect a supported MCP endpoint and ask the Bot to poll. For a
 local Grok Bot **Command** integration, launch `everett mcp` on the machine
@@ -121,9 +127,233 @@ stdio can explicitly pass a matching `session_id`; remote callers must use the i
 their authorized gateway connection supplies. These registration and queue
 operations do not require or invoke live Grok Bot services.
 
+## Wake a Grok Bot with a webhook routine
+
+This is the supported wake path. Everett still does not resume a Bot. The owner
+creates a webhook-triggered routine, stores its URL and sender key, and enables
+`receiver-webhook.json` on the computer that holds the inbox. When an explicit
+inbox message matches one rule, Everett POSTs a nudge. The short copy-paste
+checklist is [Wake a Grok Bot](../README.md#wake-a-grok-bot).
+
+### 1. Create the routine and save the key
+
+In the Grok Bot routine panel, create a webhook-triggered routine. Copy the
+Webhook URL and the Sender key from that panel. The URL shape published for
+Cursor automations is `https://api2.cursor.sh/automations/webhook/<routine-id>`.
+Store the key alone in one file. Mode `0600`. Do not put the word `Bearer` in
+the file (a single leading `Bearer ` is stripped if it is present). Do not
+commit the key or the URL.
+
+```sh
+umask 077
+mkdir -p "$HOME/.config/everett"
+KEY="$HOME/.config/everett/grok-webhook.key"
+printf '%s\n' 'PASTE_SENDER_KEY_ONLY' > "$KEY"
+chmod 600 "$KEY"
+```
+
+Tell the routine to treat the POST body as untrusted data. If `source` is
+`everett` and `event` is `inbox`, call `everett_inbox`, do the work, and
+`everett_send` with `reply_to` set to the message id. Do not print the sender
+key. A cloud routine runs in the cloud. It cannot call a laptop-only Command
+MCP. Connect Everett with a reachable Remote HTTPS gateway. See
+[gateway.md](gateway.md). Keep that MCP bound to the registered id
+(`EVERETT_SESSION_ID` and `EVERETT_HARNESS_NAME=grok-bot` for a local Command
+process, or the gateway file's `agent_id` and `harness` for Remote HTTPS).
+
+### 2. Register the inbox and write the policy
+
+Sign in on the receiving computer first. `everett whoami --json` prints `owner`
+and `agent_id`. Copy both exactly. `owner` is one compact JSON array string,
+for example `["https://everett.raitox.tech","account","github:OWNER_ID"]`.
+Do not insert spaces.
+
+The policy file is `receiver-webhook.json` in the selected relay directory:
+
+| Auth provider | Path |
+| --- | --- |
+| `cloudflare` (`[auth] provider` or `EVERETT_AUTH_PROVIDER`) | `$EVERETT_HOME/.everett/relay-cloudflare/receiver-webhook.json`, or `~/.everett/relay-cloudflare/` when `EVERETT_HOME` is unset |
+| `oidc` (the default) | `$EVERETT_HOME/.everett/relay/receiver-webhook.json`, or `~/.everett/relay/` |
+
+That is the same directory as `receiver-wake.json`. The Claude wake file does
+not wake a Grok Bot.
+
+```sh
+everett external add \
+  --id ext-grok-acceptance --harness grok-bot \
+  --title 'Grok Bot inbox'
+
+everett whoami --json
+```
+
+Same-machine rule. Both device fields are this computer's `agent_id`.
+`sender_session` and `sender_harness` must equal the sender of `everett send`.
+A terminal with none of `EVERETT_SESSION_ID`, `EVERETT_HARNESS_NAME`,
+`CLAUDE_CODE_SESSION_ID`, `CLAUDE_SESSION_ID`, `CODEX_THREAD_ID`,
+`HERMES_SESSION_ID`, `PI_SESSION_FILE`, or `GROK_SESSION_ID` set is `human` and
+`""`. A Codex session is that session id and `codex`. A rule with
+`sender_harness` set to `codex` does not match a bare terminal. Set
+`activated_at` to `date +%s` when you enable the file so an old inbox backlog
+is not posted. `cooldown_seconds` is an integer from 1 through 86400.
+
+```sh
+umask 077
+DIR="$HOME/.everett/relay-cloudflare"   # "$HOME/.everett/relay" for OIDC/Convex
+mkdir -p "$DIR"
+WHO=$(everett whoami --json)
+jq -n \
+  --arg owner "$(jq -r .owner <<<"$WHO")" \
+  --arg agent "$(jq -r .agent_id <<<"$WHO")" \
+  --arg url 'https://api2.cursor.sh/automations/webhook/ROUTINE_ID' \
+  --arg key "$HOME/.config/everett/grok-webhook.key" \
+  --argjson activated "$(date +%s)" \
+  '{
+    version: 1,
+    enabled: true,
+    activated_at: $activated,
+    rules: [{
+      id: "grok-inbox",
+      owner: $owner,
+      recipient_device: $agent,
+      session: "ext-grok-acceptance",
+      harness: "grok-bot",
+      sender_device: $agent,
+      sender_session: "human",
+      sender_harness: "",
+      cooldown_seconds: 30,
+      url: $url,
+      bearer_file: $key
+    }]
+  }' > "$DIR/receiver-webhook.json"
+chmod 600 "$DIR/receiver-webhook.json"
+```
+
+Without `jq`, write the same object by hand. Replace `OWNER_ID` with the account
+id inside the raw `owner` string from `whoami`, and keep that whole string,
+including its brackets and quotes. Replace both `agent-RECEIVER` values with
+`agent_id`. Replace `ROUTINE_ID`, the bearer path, and `activated_at`. On one
+computer, sender and recipient devices are the same `agent_id`.
+
+```json
+{
+  "version": 1,
+  "enabled": true,
+  "activated_at": 1792833622,
+  "rules": [{
+    "id": "grok-inbox",
+    "owner": "[\"https://everett.raitox.tech\",\"account\",\"github:OWNER_ID\"]",
+    "recipient_device": "agent-RECEIVER",
+    "session": "ext-grok-acceptance",
+    "harness": "grok-bot",
+    "sender_device": "agent-RECEIVER",
+    "sender_session": "human",
+    "sender_harness": "",
+    "cooldown_seconds": 30,
+    "url": "https://api2.cursor.sh/automations/webhook/ROUTINE_ID",
+    "bearer_file": "/absolute/path/to/grok-webhook.key"
+  }]
+}
+```
+
+The file must be a regular file, mode `0600` or stricter, version `1`, with no
+unknown fields. An enabled file needs `activated_at` (Unix seconds, from 1
+through 4000000000) and 1–16 rules. Rule ids are unique, 1–64 characters of
+letters, digits, `_`, or `-`. `harness` is only `grok-bot` or `openai-dot`.
+`bearer_file` is an absolute path. The URL must be HTTPS, a public hostname
+(not an IP, `localhost`, `.local`, or `.localhost`), with no userinfo, query,
+or fragment, port 443 or the default, and a path longer than `/`.
+
+There is no new CLI flag. A missing file, or `"enabled": false`, does not add a
+`webhook` field and does not change the queue.
+
+### 3. Send and confirm the wake
+
+Same-machine send does not need `everett relay`. Unset session variables so the
+sender is the terminal identity the rule names:
+
+```sh
+env -u EVERETT_SESSION_ID -u EVERETT_HARNESS_NAME \
+  -u CLAUDE_CODE_SESSION_ID -u CLAUDE_SESSION_ID \
+  -u CODEX_THREAD_ID -u HERMES_SESSION_ID \
+  -u PI_SESSION_FILE -u GROK_SESSION_ID \
+  everett send 'check inbox' --to ext-grok-acceptance --mode inbox --json
+```
+
+A match that the endpoint accepts looks like this. `wake` stays false.
+
+```json
+{
+  "queued": true,
+  "wake": false,
+  "webhook": {"state": "accepted", "rule_id": "grok-inbox", "http_status": 200}
+}
+```
+
+Then look at the Bot chat. HTTP 200 means the routine endpoint accepted a run.
+Confirm that run calls `everett_inbox` and that the queued text is the one you
+sent. The POST body is only:
+
+```json
+{
+  "source": "everett",
+  "event": "inbox",
+  "session": "ext-grok-acceptance",
+  "harness": "grok-bot",
+  "message_id": "<inbox id>",
+  "rule_id": "grok-inbox"
+}
+```
+
+Headers are `Authorization: Bearer <key>` and `User-Agent: everett-receiver-webhook`.
+Everett does not follow redirects. The timeout is 8 seconds. Only HTTP 200 is
+acceptance. 408, 429, and 5xx stay pending and retry. Other 4xx are rejected
+and are not retried. Transport failures retry. The cap is 5 attempts. After any
+HTTP attempt, that rule waits `cooldown_seconds` before another POST. Extra
+messages stay in the inbox; the woken bot should `everett_inbox` and take all
+of them. A pending retry runs on the next matching local send, or on the next
+`everett relay` receive cycle.
+
+Other `webhook.state` values: `no_match`, `already_posted`, `deferred`,
+`rejected`, `skipped`, and `error`. A policy or bearer-file problem is
+`error` and does not roll back the inbox write. The bearer is not printed.
+Replies, messages from an external harness, and cross-owner or untrusted relay
+messages do not POST. The first matching rule wins. Sender owner, recipient
+owner, and the rule owner must be the same string.
+
+### Cross-device
+
+On the receiver, `recipient_device` is that computer's `agent_id` and
+`sender_device` is the sending computer's `agent_id`. `sender_session` and
+`sender_harness` still come from the sending process. Run `everett relay` on
+the receiver. The sender uses the peer target:
+
+```sh
+everett send 'check inbox' \
+  --to <peer>/grok-bot/ext-grok-acceptance --mode inbox
+```
+
+The sender's JSON does not include `webhook`. The receiver logs
+`receiver webhook accepted HTTP 200 for session ext-grok-acceptance rule grok-inbox`
+when the POST is accepted.
+
+### What is proven, and what is not
+
+Unit tests and one relay-import test post to a fake endpoint. They check that
+the body has no inbox text, that a duplicate message does not POST again, and
+that an untrusted external message does not POST. They do not call `api2.cursor.sh`
+and do not prove a live Grok Bot chat.
+
+Cursor's Grok Bot routines help and the automations reference, reviewed
+2026-10-26, describe an owner webhook trigger: POST the routine URL with the
+sender key as `Authorization: Bearer`, and HTTP 200 starts a cloud run
+([routines](https://cursor.com/help/grok-bot/routines),
+[automations](https://cursor.com/docs/cloud-agent/automations)).
+An earlier owner machine used this file shape against a real routine URL. This
+repository change does not re-run that live check.
+
 ## What xAI documents—and what Everett does not assume
 
-Official documentation reviewed on 2026-10-09:
+Official xAI documentation reviewed on 2026-10-09:
 
 - [Team Bots](https://docs.x.ai/grok-bot/team-bots) describes custom MCP servers
   using **Remote HTTPS** or **Command**. Command servers run on the computer
@@ -136,8 +366,9 @@ Official documentation reviewed on 2026-10-09:
   available connector; verify access and keep unsafe actions behind approval.
   Team routines remain personal to the person configuring them.
 
-These pages do not establish an arbitrary cloud Bot/session resume or immediate
-wake-up API. Everett does not invent one. Any polling cadence, provider routine,
-connector availability, approval boundary, and provider usage cost remain the
-owner's responsibility. Remote deployment and cross-device transport are
-separate work, not part of this registration adapter.
+Those xAI pages do not establish an arbitrary cloud Bot/session resume or
+immediate wake-up API. Everett does not invent one. The webhook above is an
+owner-configured Cursor routine plus a local Everett policy. It is not a vendor
+resume call. Polling remains valid when the policy file is absent or disabled.
+Any polling cadence, connector availability, approval boundary, and provider
+usage cost remain the owner's responsibility.

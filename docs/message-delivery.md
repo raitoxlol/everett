@@ -17,7 +17,10 @@ resume an attached session or turn remote agent data into an owner prompt.
 
 There is no general provider wake mechanism in the local CLI or MCP send route.
 Blocked and needs-input event notifications tell the human about those events;
-ordinary inbox sends do not trigger those notifications.
+ordinary inbox sends do not trigger those notifications. A separate owner file,
+`receiver-webhook.json`, can POST a nudge when a registered `grok-bot` or
+`openai-dot` inbox message matches a rule. That POST is not a provider resume
+API. See [Grok Bot webhook wake](grok-bot.md#wake-a-grok-bot-with-a-webhook-routine).
 
 ## Explicit queue exceptions
 
@@ -25,7 +28,7 @@ These routes deliberately retain messages for later pickup.
 
 | Explicit action | Retention and pickup |
 | --- | --- |
-| `--mode inbox` or MCP `mode: "inbox"` | Opts into the local inbox. Hooks or `everett_inbox` must read it. T3 and registered external agents use this path. `wait` waits for a reply and never wakes the recipient. A timeout leaves the request recorded. |
+| `--mode inbox` or MCP `mode: "inbox"` | Opts into the local inbox. Hooks or `everett_inbox` must read it. T3 and registered external agents use this path. `wait` waits for a reply and does not use Claude `--wake`. A matching `receiver-webhook.json` rule may POST a nudge; the receipt keeps `wake: false`. A timeout leaves the request recorded. |
 | `send --to <full-Claude-UUID> --wake` | A local interactive human opts into a queue plus a verified same-session Claude background wake. Native prompt receipt and a correlated Everett reply are separate observations. Attach failure, cancellation, or timeout can leave the request recorded because the recipient may already have read it. |
 | An exact SSH peer, encrypted relay, or named-agent destination | Explicit durable remote transport, including approved offline-device retention. There is no fallback to a silent local queue. Preserve the transport's signed status meanings and configured receiver wake policy. |
 | `reply_to` or `everett reply` | Queues or retains a correlated reply for its sender. The sender polls, uses its hooks, or waits for that reply. Enqueue does not prove sender pickup. |
@@ -61,3 +64,4 @@ queue receipts, and read-once inbox consumption. `tests/live.rs`,
 `tests/external.rs`, `tests/t3code.rs`, and `tests/release_journey.rs` cover hooks,
 explicit external polling, synthetic T3 request/reply, and the CLI/MCP journey.
 These fixtures do not prove that a real provider UI wakes or accepts a prompt.
+Webhook tests post to a fake endpoint. They do not prove a live Grok Bot run.
