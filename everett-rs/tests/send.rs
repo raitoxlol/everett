@@ -269,7 +269,7 @@ fn cli_remote_derived_delivery_is_inbox_only_and_durable_hops_do_not_expire() {
         );
     }
     let out = fx.run_stdin(
-        &["send", "--to", "c-1", "--json", "untrusted"],
+        &["send", "--to", "c-1", "--mode", "inbox", "--json", "untrusted"],
         "",
         &[("EVERETT_SESSION_ID", "caller"), ("EVERETT_HOPS", "0")],
     );

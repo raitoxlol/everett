@@ -168,18 +168,19 @@ fn inbox_hooks_run_fast_and_silent_as_native_commands() {
 }
 
 #[test]
-fn delivery_mode_prefers_inbox_for_live_sessions() {
+fn delivery_mode_requires_explicit_queue_for_live_sessions() {
     let h = lib_home();
     let s = session(&h.path(), "target-1");
     assert_eq!(delivery_mode(&s, "auto", Some("")).unwrap(), "resume");
-    assert_eq!(delivery_mode(&s, "auto", Some("/usr/bin/claude --resume target-1")).unwrap(), "inbox");
+    assert_eq!(delivery_mode(&s, "auto", Some("/usr/bin/claude --resume target-1")).unwrap_err().code, 4);
     assert_eq!(delivery_mode(&s, "inbox", Some("")).unwrap(), "inbox");
     inbox::touch_live("target-1", "claude", "");
-    assert_eq!(delivery_mode(&s, "auto", Some("")).unwrap(), "inbox");
+    assert_eq!(delivery_mode(&s, "auto", Some("")).unwrap_err().code, 4);
     assert_eq!(delivery_mode(&s, "resume", Some("")).unwrap(), "resume");
     let mut t3 = session(&h.path(), "t3");
     t3.source = "t3code".into();
-    assert_eq!(delivery_mode(&t3, "auto", Some("")).unwrap(), "inbox");
+    assert_eq!(delivery_mode(&t3, "auto", Some("")).unwrap_err().code, 4);
+    assert_eq!(delivery_mode(&t3, "inbox", Some("")).unwrap(), "inbox");
     assert!(delivery_mode(&s, "bogus", None).is_err());
 }
 

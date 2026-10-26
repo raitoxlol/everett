@@ -675,26 +675,33 @@ pub fn delivery_mode_for(
     }
     guard_delivery(mode, false, caller)?;
     let sid = caller.map(str::to_string).unwrap_or_else(caller_session_id);
-    if inbox::relay_context(&sid).is_some() {
-        return Ok("inbox".into());
-    }
-    if external::is_external(&session.harness) {
-        if mode == "resume" {
-            return Err(EverettError::new(
-                2,
-                "Registered external sessions are inbox-only; use --mode inbox. \
-                 No provider CLI resume or wake-up is available.",
-            ));
-        }
-        return Ok("inbox".to_string());
+    let remote_derived = inbox::relay_context(&sid).is_some();
+    if external::is_external(&session.harness) && mode == "resume" {
+        return Err(EverettError::new(
+            2,
+            "Registered external sessions are inbox-only; use --mode inbox. \
+             No provider CLI resume or wake-up is available.",
+        ));
     }
     if mode != "auto" {
-        return Ok(mode.to_string());
+        return Ok(if remote_derived { "inbox" } else { mode }.to_string());
     }
-    if session.source == "t3code" {
-        return Ok("inbox".to_string());
+    if remote_derived
+        || external::is_external(&session.harness)
+        || session.source == "t3code"
+        || attached(session, ps_out)
+    {
+        return Err(EverettError::new(
+            4,
+            format!(
+                "Automatic delivery cannot ping or wake [{}] {}. Nothing was queued. \
+                 Use --to {} --mode inbox (MCP to={:?}, mode=\"inbox\") to explicitly queue for hooks or polling. \
+                 A local terminal user can use --wake for one exact verified Claude background session.",
+                session.harness, session.id, session.id, session.id,
+            ),
+        ));
     }
-    Ok(if attached(session, ps_out) { "inbox" } else { "resume" }.to_string())
+    Ok("resume".to_string())
 }
 
 /// Who is sending: the calling session (with its card), else the human at a terminal.
@@ -774,9 +781,7 @@ pub fn send_inbox_as(
     result.insert("reply_inbox".into(), json!(sender));
     result.insert("reply".into(), Value::Null);
     result.insert("hooked".into(), json!(INBOX_HARNESSES.contains(&session.harness.as_str())));
-    if external::is_external(&session.harness) {
-        result.insert("queued".into(), json!(true));
-    }
+    result.insert("wake".into(), json!(false));
     if session.source == "t3code" {
         result.insert("hooked".into(), json!(false));
         result.insert("pickup".into(), json!("poll"));
@@ -799,6 +804,13 @@ pub fn send_inbox_as(
                 reply.get("from").cloned().unwrap_or(Value::Null),
             );
         }
+    }
+    let picked_up = inbox::done_ids(&session.id)
+        .contains(message.get("id").and_then(Value::as_str).unwrap_or(""));
+    result.insert("delivered".into(), json!(picked_up));
+    result.insert("queued".into(), json!(!picked_up));
+    if picked_up {
+        result.remove("pickup_note");
     }
     Ok(result)
 }
