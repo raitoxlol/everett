@@ -27,3 +27,10 @@ jobs:
         env:
           EVERETT_VERIFY_BINARY: ${{ github.workspace }}/everett-rs/target/release/everett
         run: cargo test --locked --test release_journey
+      - name: Verify native schedule selection and failure handling
+        run: cargo test --locked --test systemd_schedule --test onboard_schedule
+      - name: Verify generated Linux units with systemd's parser
+        if: runner.os == 'Linux'
+        run: |
+          /usr/bin/systemd-analyze --version
+          cargo test --locked --lib trunk_schedule

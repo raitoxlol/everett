@@ -295,7 +295,9 @@ fn apply_trunk_schedule(cfg: &OnboardConfig) -> Result<String, String> {
     if !cfg.trunk_schedule_enabled {
         return Ok("trunk schedule: skipped (not selected)".to_string());
     }
-    crate::trunk_schedule::install("04:00", "claude", None, None)
+    let scheduler = crate::trunk_schedule::Scheduler::current()
+        .ok_or_else(|| "trunk schedule: requires macOS launchd or Linux systemd".to_string())?;
+    scheduler.install("04:00", "claude")
         .map(|result| {
             format!(
                 "trunk schedule: installed ({}, nightly at 04:00, --llm claude)",
@@ -636,11 +638,11 @@ fn run_plain(args: &crate::cli::Args) -> Result<i32, QuitOnboarding> {
     }
     println!();
 
-    cfg.trunk_schedule_enabled = cfg!(target_os = "macos")
-        && ask_yes(
-            "Merge shared memory nightly? (schedules `everett trunk merge` via launchd, 04:00, --llm claude)",
-            false,
-        )?;
+    cfg.trunk_schedule_enabled = if let Some(scheduler) = crate::trunk_schedule::Scheduler::current() {
+        ask_yes(&format!("Merge shared memory nightly? (via {}, 04:00, --llm claude)", scheduler.name()), false)?
+    } else {
+        false
+    };
     println!();
 
     cfg.backfill_enabled = ask_yes(
@@ -688,8 +690,8 @@ fn run_plain(args: &crate::cli::Args) -> Result<i32, QuitOnboarding> {
 }
 
 pub fn run(args: &crate::cli::Args) -> i32 {
-    if args.schedule_merge && !cfg!(target_os = "macos") {
-        eprintln!("everett onboard: --schedule-merge requires macOS; use `everett trunk merge --llm none`.");
+    if args.schedule_merge && crate::trunk_schedule::Scheduler::current().is_none() {
+        eprintln!("everett onboard: --schedule-merge requires macOS launchd or Linux systemd; use `everett trunk merge --llm none`.");
         return 2;
     }
     if !(1..=30).contains(&args.span_days) {

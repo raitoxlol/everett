@@ -499,31 +499,21 @@ pub fn run(hours: f64) -> i32 {
         ),
     );
 
-    if cfg!(target_os = "macos") {
-        let scheduled = crate::trunk_schedule::is_scheduled(None);
-        let stale = scheduled && crate::trunk_schedule::is_stale(None);
-        if stale {
+    if let Some(scheduler) = crate::trunk_schedule::Scheduler::current() {
+        let (ok, detail) = scheduler.status();
+        if ok == Some(false) {
             problems += 1;
         }
         line(
             &mut warnings,
-            if stale { Some(false) } else if scheduled { Some(true) } else { None },
-            &format!(
-                "trunk schedule: {}",
-                if stale {
-                    format!("stale ({}); run `everett trunk schedule --apply`", crate::trunk_schedule::plist_path().display())
-                } else if scheduled {
-                    format!("scheduled ({})", crate::trunk_schedule::plist_path().display())
-                } else {
-                    "not scheduled (optional, macOS; `everett trunk schedule --apply`)".to_string()
-                }
-            ),
+            ok,
+            &format!("trunk schedule: {}", detail),
         );
     } else {
         line(
             &mut warnings,
             None,
-            "trunk schedule: automatic scheduling requires macOS; run `everett trunk merge --llm none` manually",
+            "trunk schedule: automatic scheduling requires macOS launchd or Linux systemd; run `everett trunk merge --llm none` manually",
         );
     }
     let (ok, detail) = account_check();
