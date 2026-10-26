@@ -309,6 +309,6 @@ Only outbound GitHub responses and the exact synthetic CIMD document were mocked
 The test does not prove live provider consent, public TLS, an actual cloud client,
 or physical-device delivery.
 
-**No automatic dot wake-ups, MCP2 Events, webhook engine, Slack bridge, or external
-Grok Bot messaging API is implemented.** The owner must start the bot or configure
-a supported routine to check its inbox; connector access alone does not wake it.
+**The gateway does not resume a bot**, and it does not implement MCP2 events, a
+Slack bridge, or an xAI or OpenAI messaging API. Owner webhook wake is a
+separate policy: [Grok Bot](grok-bot.md#wake-a-grok-bot-with-a-webhook-routine).

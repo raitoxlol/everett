@@ -23,6 +23,7 @@ pub mod paths;
 pub mod peer;
 pub mod proc;
 pub mod receiver_wake;
+pub mod receiver_webhook;
 pub mod registry;
 pub mod relay;
 pub mod route;

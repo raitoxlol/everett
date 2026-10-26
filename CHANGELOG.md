@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- Add an owner `receiver-webhook.json` policy. When a rule matches a registered `grok-bot` or `openai-dot` inbox message, Everett POSTs a wake nudge to the owner's HTTPS URL. The POST omits message text. HTTP 200 means the endpoint accepted a routine run, not that the bot consumed the inbox. A missing or disabled policy leaves send behavior unchanged.
+
 ## 2.1.0 — 2026-10-24
 
 - Make local setup account-free, with remote enrollment as an explicit choice. Open browser sign-in only after explicit confirmation.

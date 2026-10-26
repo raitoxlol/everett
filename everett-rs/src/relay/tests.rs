@@ -1137,3 +1137,111 @@ fn receiver_skips_consumed_or_digest_changed_inbox_rows() {
     }
     assert_eq!(attaches.get(), 0);
 }
+
+#[test]
+fn imported_external_inbox_posts_one_webhook_without_the_message_text() {
+    use std::os::unix::fs::PermissionsExt;
+
+    if !crate::test_support::isolated(
+        "relay::tests::imported_external_inbox_posts_one_webhook_without_the_message_text",
+    ) {
+        return;
+    }
+    let _env = RECEIVER_ENV_LOCK.lock().unwrap();
+    let home = tempfile::tempdir().unwrap();
+    std::env::set_var("HOME", home.path());
+    std::env::set_var("EVERETT_HOME", home.path());
+    std::env::set_var("EVERETT_CONVEX_URL", "https://test.convex.cloud");
+    std::env::set_var("EVERETT_NOTIFY", "none");
+    std::env::set_var("EVERETT_AUTH_PROVIDER", "oidc");
+    let (a, b) = devices();
+    peer::private_dir(&root().join("peers")).unwrap();
+    write(
+        &peer_path("mac").unwrap(),
+        &Paired {
+            device: a.device.clone(),
+            deployment: "https://test.convex.cloud".into(),
+            grant_id: None,
+        },
+    )
+    .unwrap();
+    crate::adapters::external::register("ext-grok-acceptance", "grok-bot", "Grok", "/work", false)
+        .unwrap();
+    let bearer = home.path().join("webhook.key");
+    fs::write(&bearer, "test-sender-key-0123456789").unwrap();
+    fs::set_permissions(&bearer, fs::Permissions::from_mode(0o600)).unwrap();
+    let policy = json!({
+        "version": 1,
+        "enabled": true,
+        "activated_at": 1,
+        "rules": [{
+            "id": "grok-inbox",
+            "owner": a.device.owner,
+            "recipient_device": b.device.device_id,
+            "session": "ext-grok-acceptance",
+            "harness": "grok-bot",
+            "sender_device": a.device.device_id,
+            "sender_session": "human",
+            "sender_harness": "codex",
+            "cooldown_seconds": 30,
+            "url": "https://api2.cursor.sh/automations/webhook/routine",
+            "bearer_file": bearer
+        }]
+    });
+    write(&root().join("receiver-webhook.json"), &policy).unwrap();
+    let now = milliseconds();
+    let phrase = "synthetic webhook phrase";
+    let envelope = a
+        .seal(
+            &b.device,
+            "webhook-test",
+            &Payload::Inbox {
+                session: "ext-grok-acceptance".into(),
+                harness: "grok-bot".into(),
+                text: phrase.into(),
+                from: "human".into(),
+                from_harness: "codex".into(),
+                from_card: String::new(),
+                reply_to: String::new(),
+                hops: 1,
+                external_untrusted: false,
+            },
+            now,
+            TTL,
+            None,
+            None,
+        )
+        .unwrap();
+    let _capture = crate::receiver_webhook::testing_begin(200);
+    import_inner(&b, &envelope, now, true).unwrap();
+    let posts = crate::receiver_webhook::testing_posts();
+    assert_eq!(posts.len(), 1, "{}", posts.first().map(|post| post.body.as_str()).unwrap_or(""));
+    assert_eq!(posts[0].bearer, "test-sender-key-0123456789");
+    assert!(posts[0].body.contains("ext-grok-acceptance"));
+    assert!(!posts[0].body.contains(phrase));
+    import_inner(&b, &envelope, now, true).unwrap();
+    assert_eq!(crate::receiver_webhook::testing_posts().len(), 1);
+    let external = a
+        .seal(
+            &b.device,
+            "webhook-external",
+            &Payload::Inbox {
+                session: "ext-grok-acceptance".into(),
+                harness: "grok-bot".into(),
+                text: phrase.into(),
+                from: "human".into(),
+                from_harness: "codex".into(),
+                from_card: String::new(),
+                reply_to: String::new(),
+                hops: 1,
+                external_untrusted: true,
+            },
+            now,
+            TTL,
+            None,
+            None,
+        )
+        .unwrap();
+    import_inner(&b, &external, now, true).unwrap();
+    assert_eq!(crate::receiver_webhook::testing_posts().len(), 1);
+}
