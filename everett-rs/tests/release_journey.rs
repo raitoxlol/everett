@@ -9,7 +9,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
 use std::time::{Duration, SystemTime};
 
-const TOOLS: [&str; 14] = ["everett_agent_grants", "everett_agent_relay", "everett_agent_send", "everett_agent_status",
+const TOOLS: [&str; 13] = [ "everett_agent_relay", "everett_agent_send", "everett_agent_status",
     "everett_card", "everett_core", "everett_event", "everett_inbox", "everett_learn",
     "everett_ls", "everett_route", "everett_send", "everett_subscribe", "everett_whoami"];
 
@@ -149,7 +149,7 @@ fn release_journey_over_cli_and_all_mcp_tools() {
     let home = Home::new();
     let root = home.path().to_path_buf();
     assert!(home.run(&["--version"], "").starts_with("everett "));
-    assert!(home.run(&["doctor"], "").contains("14 tools over stdio"));
+    assert!(home.run(&["doctor"], "").contains("13 tools over stdio"));
     home.run(&["onboard", "--yes", "--no-backfill"], "");
     assert!(root.join(".claude.json").is_file(), "onboarding missed the CLI without a session store");
     assert!(!home.run(&["doctor"], "").contains("setup needs attention"));
@@ -230,7 +230,6 @@ fn release_journey_over_cli_and_all_mcp_tools() {
     // No deployment/provider is configured in this isolated home: fail closed over real stdio.
     for (name, args) in [
         ("everett_agent_relay", json!({"action":"identity"})),
-        ("everett_agent_grants", json!({"action":"list"})),
         ("everett_agent_send", json!({"agent":"a".repeat(64),"session":"recipient","harness":"pi","text":"hello","idempotency_key":"key"})),
         ("everett_agent_status", json!({"message_id":"message"})),
     ] {

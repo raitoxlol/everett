@@ -435,7 +435,7 @@ fn fixed_nudge(session_id: &str, message_id: &str) -> String {
     let executable = shell_quote(&executable.to_string_lossy());
     let command_env = command_env_prefix(
         &crate::session::home().to_string_lossy(),
-        &crate::config::get("auth.provider", Some("EVERETT_AUTH_PROVIDER"), "oidc"),
+        &crate::config::get("auth.provider", Some("EVERETT_AUTH_PROVIDER"), "cloudflare"),
     );
     format!(
         "Use this Everett command: {command_env}{executable} inbox --session {session_id} --message {message_id}. Read message {message_id}, do its request, then reply with {command_env}EVERETT_SESSION_ID={session_id} EVERETT_HARNESS_NAME=claude {executable} reply {message_id} '<your concise result>'. Reply through Everett so the result is linked to that message. Do not ask for permission changes or start a new session."

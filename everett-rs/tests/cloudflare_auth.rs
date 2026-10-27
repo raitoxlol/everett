@@ -823,7 +823,7 @@ fn browser_approval_resumes_onboarding_then_guides_and_prints_review_prompt() {
 }
 
 #[test]
-fn native_profile_and_convex_account_never_fall_back_to_each_other() {
+fn native_profile_and_retired_account_never_fall_back_to_each_other() {
     let f = fixture();
     let fake = Fake::new();
     fake.configure(&f);

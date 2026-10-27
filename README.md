@@ -170,7 +170,7 @@ Host headers and write methods, and sends no session data to a hosted service.
 Stop it with Ctrl-C.
 
 **Future direction:** a hosted dashboard could expose cross-device local activity.
-Optional account auth and inbox-only SSH/Convex peer transports exist, but dashboard
+Optional account auth and inbox-only SSH/Cloudflare peer transports exist, but dashboard
 hosting/session synchronization (including a custom-domain frontend on Vercel) do not.
 A Rust local-data service would still be required; a static website cannot read another
 device's session stores.
@@ -201,18 +201,17 @@ Done. MAX_RETRIES is now 5 and the backoff test covers the cap.
 |---|---|
 | `everett ls [--json] [--all] [--harness H]` | Recent sessions from every harness, one line each. `--all` includes scripted runs. |
 | `everett ls --peer <name> [--json]` | Sessions on one paired SSH device, with `peer/harness/session-id` IDs. |
-| `everett devices [--json]` | List signed-in account/org registry metadata across all pages, including declared SSH addresses and historical devices. |
-| `everett peer add <name> [--ssh user@host] [--port N] --binary /absolute/everett --host-key SHA256:... --device-key SHA256:...` | Resolve the address by registry name or use an explicit address; reject conflicts and require both confirmed fingerprints before pairing. |
-| `everett peer serve [--address user@host[:port]] --client ID` | Restricted sshd endpoint; signed-in devices attempt to publish their declared address, also configurable with `[peer] address`. |
+| `everett devices [--json]` | List active Cloudflare device bundles. |
+| `everett peer add <name> --ssh user@host [--port N] --binary /absolute/everett --host-key SHA256:... --device-key SHA256:...` | Pair at an explicit SSH address; require both confirmed fingerprints. |
+| `everett peer serve --client ID` | Restricted sshd endpoint; no hosted address publication. |
 | `everett peer status <name> <message-id>` | SSH polls/imports replies; relay queries queued/delivered/claimed/replied/expired state from signed observations (not task completion). |
-| `everett relay` | Listen through the selected relay: Convex WebSocket or Cloudflare outbound polling. Claude session wake and external webhook posts follow the local owner policy. |
-| `everett relay register / devices / whoami` | Register this provisioned agent's keys and publish its display name/declared SSH address, list active key bundles (maximum 256), or verify agent/org authorization. |
+| `everett relay` | Receive encrypted messages through Cloudflare outbound polling. Claude session wake and external webhook posts follow the local owner policy. |
+| `everett relay register / devices / whoami` | Register this agent's keys and display name, list active key bundles (maximum 256), or verify account/agent authorization. |
 | `everett relay devices --names` | Hosted Cloudflare enrollment labels beside device IDs and fingerprints. Advisory only; the default JSON bundle list is unchanged. |
 | `everett relay expose SESSION [--harness H] [--remove]` | Opt in to sharing this exact local session's card, or withdraw it. The backend derives its authenticated author and agent. |
 | `everett relay authors` | List exposed authenticated author/session cards across the account, without device pairing. |
 | `everett relay rename NAME` | Update this Cloudflare device's hosted label. Device ID, keys, and pins stay the same. |
 | `everett relay revoke-agent ID / revoke-member SUBJECT / rotate` | Revoke this or an admin-selected agent, remove org membership (admin), or rotate this agent's relay keys using its old signing key. |
-| `everett relay grant invite / accept / reconfirm / revoke / get / list` | Bilateral org-admin consent for named cross-org agents; [exact flags and journey](docs/cross-device.md#convex-relay-two-org-trial). |
 | `everett peer add-relay <name> --device ID --fingerprint HEX [--grant GRANT_ID]` | Pin a device on the selected relay after out-of-band bundle confirmation; fingerprint is raw 64-character lowercase hex, not the SSH `SHA256:` format. |
 | `everett peer identity / list / remove <name> / revoke <client-id>` | Inspect device keys/peers; remove a remote authorization or revoke a local tagged client key. |
 | `everett dashboard [--port 7347] [--no-open]` | Native Rust binary only: read-only local browser dashboard with session cards, filters, activity state, and copyable CLI actions. |
@@ -232,16 +231,16 @@ Done. MAX_RETRIES is now 5 and the backoff test covers the cap.
 | `everett install-hooks [--claude] [--codex] [--omp] [--grok] [--apply]` | Prints the hook registrations. `--apply` backs up the file, then merges idempotently. |
 | `everett mcp` | Runs the stdio MCP server (harnesses start it; see below). |
 | `everett install-mcp [--claude] [--codex] [--omp] [--grok] [--devin] [--apply]` | Prints or registers the MCP server for each harness. |
-| `everett doctor` | Installed CLIs, stores, hooks, live stdio/MCP registration checks, cards, router, and registry revocation cleanup of tagged SSH authorizations. |
+| `everett doctor` | Installed CLIs, stores, hooks, live stdio/MCP registration checks, cards, router, and account diagnostics; SSH revocation remains explicit. |
 | `everett learn "<fact>" [--project P] [--scope global\|project]` | Pushes a fact to the shared core inbox. Secrets are rejected. |
 | `everett trunk merge [--llm claude\|codex\|none] [--dry-run]` | Distills the inbox into the shared core. |
 | `everett core [show\|edit-path\|history] [--project P]` | Shows the core a new session in this folder receives, the file to edit, or past merges. |
 | `everett trunk [view] [--dry-run]` | Writes the session list as a Markdown note into your notes vault (optional). |
 | `everett trunk schedule [--at HH:MM] [--remove] [--llm claude\|codex\|none] [--apply]` | Prints (default) or, with `--apply`, installs/removes a macOS LaunchAgent or Linux systemd user timer that runs `everett trunk merge` nightly (default 04:00, `--llm claude`). See [Nightly auto-merge](#nightly-auto-merge). |
-| `everett login [--device NAME] [--open] [--force] [--json]` | Native Rust binary only: signs this device in to an Everett account with the OAuth device-code flow (see [Accounts](#accounts)). |
-| `everett whoami [--json]` | Prints the signed-in account (email, issuer, device); refreshes a stale token first. |
-| `everett logout [--revoke-device] [--json]` | Revokes the refresh token and deletes the local credential; optionally attempts permanent registry device revocation first. |
-| `everett devices revoke <device-id>` | Permanently revokes self or a same-owner device as admin, and removes matching local peer configuration and pins. Peers prune matching SSH tags on their next doctor fetch. |
+| `everett login [--device NAME] [--open] [--force] [--json]` | Native Rust binary only: signs this device in to an Everett account with Cloudflare native device approval (see [Accounts](#accounts)). |
+| `everett whoami [--json]` | Verifies the saved Cloudflare credential online. |
+| `everett logout [--revoke-device] [--json]` | Deletes the local Cloudflare credential; optionally confirms hosted device revocation first. |
+| `everett devices revoke <device-id>` | Permanently revokes self or a same-owner device as admin, and removes matching local peer configuration and pins. SSH authorizations must be revoked separately. |
 
 Global option: `--hours N` sets the look-back window (default 72).
 
@@ -326,7 +325,7 @@ first-run GitHub approval. Real public Mac/NUC delivery, idle Claude wake/reply 
 Choosing sign-in during fresh interactive onboarding opens `https://everett.raitox.tech` for account approval.
 That service supports public enrollment; messaging stays within each account. Existing account configuration
 is preserved. Cloudflare's device protocol is custom, not RFC8628.
-Cross-owner grants, Convex registry/SSH-address publication and cloud-agent OAuth are separate.
+Cross-owner grants are unavailable on Cloudflare. SSH pairing uses an explicit address; cloud-agent OAuth is separate.
 
 Local harnesses that launch Everett with the same `HOME` and `EVERETT_HOME` use that
 home's account configuration and device credential. They do not each need a separate
@@ -354,43 +353,14 @@ IDs, peer aliases, keys, pins, and signed bundles stay as they are. When the
 backend has no label metadata, `--names` prints `(unnamed)` and says names are
 unavailable.
 
-## Cross-device peers (SSH or encrypted Convex)
+## Cross-device peers (SSH or Cloudflare)
 
-For devices behind NAT, deploy the TypeScript backend in `convex/` (Convex cloud or
-self-hosted), configure a device-code OIDC provider with **issuer-controlled per-agent
-claims**, and provision authoritative memberships/credentials as deployment operator.
-`login` alone is not enrollment. Each machine uses its own agent-bound JWT/refresh
-credential and independent Ed25519/X25519 keys; an owner/admin JWT cannot act as every
-agent. Local/SSH commands need no sign-in. The client stays Rust-only.
-
-Run `everett relay` on each device and confirm/pin bundles **out of band in both directions**.
-The same `send --to PEER/HARNESS/SESSION-ID` and `reply` commands exchange X25519 +
-HKDF-SHA256 + ChaCha20Poly1305 encrypted content, signed with Ed25519, over Convex live
-WebSockets. Same-owner/account or same-org peers need no cross-org grant. Cross-org chat
-requires an A-admin invite and B-admin acceptance naming exactly two agents, pinning
-both bundles, with optional expiry, either-side revocation, rate and serialized-body
-caps. Changed keys block traffic until both admins explicitly reconfirm and peers re-pin.
-
-Every public backend operation checks verified JWT, authoritative membership and its
-own revocable agent credential. Revocation also invalidates subscribed queries and
-blocks re-registration with a still-valid JWT; it cannot recall already local plaintext.
-External chat remains **external/untrusted agent data**, not owner instructions, across
-CLI, hooks, MCP, replies and local forwarding. No automatic resume/spawn/wake is allowed.
-SSH remains a separate per-peer transport, with no fallback for tainted external content.
-
-Convex stores ciphertext **plus observable metadata**. A signed delivery observation
-deletes the live ciphertext row; undelivered messages/replies have one-hour client TTL
-and bounded cron cleanup. Replay, revocation and grant metadata are retained permanently.
-`delivered` means authorized device ingress, `claimed` means observed inbox pickup,
-`replied` means acknowledged reply enqueue/observation—not sender pickup or task completion.
-There is no session sync, incoming agent port, or Tailscale requirement. Opted-in
-author/session metadata is available through `everett relay authors`; it is not a
-remote transcript listing.
-See [exact cloud/self-hosted deployment and two-machine steps](docs/cross-device.md#convex-relay-owner-deployment),
-[two-org invite/accept/revoke trial](docs/cross-device.md#convex-relay-two-org-trial),
-[OIDC/Keycloak setup](docs/auth.md) and [metadata, retention and crypto limits](docs/relay-threat-model.md).
-Real deployment/OIDC/WebSocket journeys are still operator verification gates, not implied
-by the offline tests. v1 relay deployments/pins require a reviewed v2 migration.
+Cloudflare is the only hosted relay. Sign in on each device, run `everett relay`,
+then send to an exact authenticated target. Same-account device bundles are pinned
+on first use and key changes fail closed. Messages use X25519 + HKDF-SHA256 +
+ChaCha20Poly1305 encryption and Ed25519 signatures; opted-in session cards are
+available through `everett relay authors`. See [Cloudflare setup](docs/cloudflare-native.md)
+and the [metadata and crypto limits](docs/relay-threat-model.md).
 
 For **SSH**, pair once using the receiving machine's host/device fingerprints and absolute Everett path.
 Existing noninteractive SSH login access is required for setup. The dedicated peer key can
@@ -409,7 +379,7 @@ until the sender polls `peer status`. No reverse SSH pairing is needed for repli
 correlated reply exists. A timeout can leave remote delivery uncertain: retry the same explicit
 idempotency key. Requests have a 64 KiB cap, 20-second deadline, and three-hop end-to-end limit.
 
-SSH needs no registry, account sign-in, Convex relay, or Everett listener. See
+SSH needs no registry, account sign-in, hosted relay, or Everett listener. See
 [cross-device setup, protocol, revocation, and real-machine checks](docs/cross-device.md).
 
 ## Live delivery
@@ -554,14 +524,13 @@ Everett is mostly used by agents. `everett mcp` is a stdio MCP server (JSON-RPC 
 | `everett_inbox` | `peek?` | The Everett messages (requests, replies, events) waiting for you; marks them delivered. |
 | `everett_event` | `kind`, `message`, `project?` | Records done / blocked / needs-input / info for your session. |
 | `everett_subscribe` | `target`, `unsubscribe?` | Follows a session's or project's events in your inbox. |
-| `everett_agent_relay` | `action`, `id?`, `name?`, `fingerprint?`, `grant_id?` | Verified identity, registration, directory/pins and scoped revocation controls. |
-| `everett_agent_grants` | `action`, `id?`, named endpoints/fingerprints/limits for invite | Bilateral named-agent grants, key reconfirmation, expiry, rate/body caps and revocation. |
+| `everett_agent_relay` | `action`, `id?`, `name?`, `fingerprint?` | Verified identity, registration, directory/pins and scoped revocation controls. |
 | `everett_agent_send` | `agent`, `session`, `harness`, `text`, `idempotency_key` | Device-side encrypted send to an explicit named agent. No sender-requested wake or implicit routing; receiver policies are separate. |
 | `everett_agent_status` | `message_id` | Sender-only status from signed delivery/pickup/reply observations. |
 
 See [agent-facing relay MCP](docs/agent-relay.md), [cross-device deployment](docs/cross-device.md)
-and [relay threat model](docs/relay-threat-model.md). OIDC controls org/agent identity;
-cross-org delivery is denied without bilateral admin approval. External inbox text
+and [relay threat model](docs/relay-threat-model.md). Cloudflare binds account/agent identity;
+cross-owner delivery is unavailable. External inbox text
 is labeled untrusted. Existing Jev routing, SSH, OMP, and Pi integration is unchanged.
 
 Listing, routing and sending default to a 72-hour window. Pass the same larger `hours` value
@@ -612,40 +581,23 @@ notify_command = "…"          # e.g. a push-notification command; gets the sum
 escalate_minutes = 30         # re-notify once when a session stays blocked this long (0 = never)
 
 [auth]
-issuer = "https://login.example.com/"   # OIDC issuer for `everett login` (EVERETT_AUTH_ISSUER)
-client_id = "…"                         # public client id (EVERETT_AUTH_CLIENT_ID)
+provider = "cloudflare"                 # EVERETT_AUTH_PROVIDER; only supported provider
+issuer = "https://everett.raitox.tech"  # EVERETT_AUTH_ISSUER; optional custom issuer
 
-[relay]
-url = "https://YOUR-DEPLOYMENT.convex.cloud" # EVERETT_CONVEX_URL; optional encrypted inbox relay
-# ca_file = "/absolute/path/to/private-ca.pem" # EVERETT_RELAY_CA_FILE; optional extra PEM roots
 ```
 
-Environment overrides: `EVERETT_VAULT`, `EVERETT_VAULT_DIR`, `EVERETT_HARNESS`, `EVERETT_ROUTER`, `TYPESAFE_API_KEY`, `EVERETT_NOTIFY`, `EVERETT_NOTIFY_COMMAND`, `EVERETT_ESCALATE_MINUTES`, `EVERETT_AUTH_ISSUER`, `EVERETT_AUTH_CLIENT_ID`, `EVERETT_CONVEX_URL`, `EVERETT_RELAY_CA_FILE`, and `EVERETT_HOME` (the root used in place of `~`).
-
-Relay connections require HTTPS and verify certificate signatures, validity, and hostnames.
-By default only bundled WebPKI roots are trusted. An explicit `relay.ca_file` or
-`EVERETT_RELAY_CA_FILE` adds PEM roots for that relay client, including reconnects;
-it does not change system trust or OIDC/other HTTP clients. A nonempty environment
-value takes precedence over the config file. Missing or invalid CA files fail
-closed; TLS failures report their certificate error instead of a request timeout.
+Environment overrides: `EVERETT_VAULT`, `EVERETT_VAULT_DIR`, `EVERETT_HARNESS`, `EVERETT_ROUTER`, `TYPESAFE_API_KEY`, `EVERETT_NOTIFY`, `EVERETT_NOTIFY_COMMAND`, `EVERETT_ESCALATE_MINUTES`, `EVERETT_AUTH_ISSUER`, and `EVERETT_HOME` (the root used in place of `~`).
 
 ## Accounts
 
-Sign-in is optional for local/SSH use. `everett login` runs the OAuth 2.0 device-code
-flow (RFC 8628): approve in a browser on any device, without opening an incoming CLI
-port or browser callback. Tokens live in `~/.everett/auth.json` (0600); `whoami` refreshes
-stale tokens and `logout` attempts provider refresh-token revocation before local deletion.
-There is no hosted default tenant. Configure your own public/native OIDC client.
-
-Relay use additionally needs signed issuer-controlled `everett_agent`, optional
-`everett_org`, and administrative `everett_role`, **plus matching operator-provisioned
-membership/credential rows**. Use separate agent credentials, never client-editable roles
-or a shared owner token. Optional account fallback uses issuer+subject instead of org;
-the issuer must still bind each device to a distinct agent. `relay register` is key
-registration, not enrollment. Backend `revoke-agent`/`revoke-member` handles immediate
-server denial; provider logout alone cannot revoke an already issued ID token. See
-[auth and practical Keycloak setup](docs/auth.md). Sessions and shared core stay local;
-only explicit relay sends carry encrypted message/reply bodies to the backend.
+Sign-in is optional for local/SSH use. `everett login` uses Cloudflare's native
+device approval protocol (not RFC 8628). Approve the named device at the printed
+browser link. Credentials live in `~/.everett/cloudflare-auth.json` (0600), and
+`whoami` verifies them online. `logout` removes the local credential;
+`logout --revoke-device` additionally requests server revocation first.
+No incoming CLI port or browser callback is needed. Relay keys and pins stay under
+`~/.everett/relay-cloudflare/`; retired state is not migrated or reused.
+See [account setup and revocation](docs/auth.md). Sessions and shared core stay local.
 
 ## Privacy
 
@@ -660,10 +612,10 @@ Transcript adapters generally inspect bounded slices; Grok prompt-history scans 
 card backfills may read more. SQLite stores are opened read-only. No harness session data is copied
 to a cloud service for plain `ls`, local routing, or inbox delivery.
 
-Explicit Convex sends share encrypted bodies and **visible** org/device/grant IDs,
+Explicit Cloudflare sends share encrypted bodies and **visible** org/device/grant IDs,
 public bundles/fingerprints, parent/hop lineage, message/idempotency IDs, timing/size,
-signatures and observation state. JWT identity claims and connection metadata
-are also visible to the service; permanent replay/revocation/grant records remain after
+signatures and observation state. Account identity and connection metadata
+are also visible to the service; replay/revocation records remain after
 ciphertext deletion. E2EE is not anonymity, secure backup erasure, endpoint protection
 or forward secrecy against later recipient static-key compromise. Full inventory and
 limitations: [relay threat model](docs/relay-threat-model.md).
@@ -674,7 +626,7 @@ limitations: [relay threat model](docs/relay-threat-model.md).
 | --- | --- |
 | `everett: command not found` | Add the install directory (default `~/.local/bin`; `~/.cargo/bin` for cargo) to `PATH`, open a new terminal, then `everett --version`. |
 | `No module named everett` / hooks call `python3` | A registration still points at the retired Python package. Run `everett install-hooks --apply` and `everett install-mcp --apply`. |
-| MCP client shows zero tools | Run `everett doctor`. It must list **14 tools over stdio**. For a stale/disabled launcher, run `everett install-mcp --claude --repair --apply` (replace `--claude` with `--codex`, `--omp`, `--grok` or `--devin`), then restart/enable the server in the client. Fix malformed config before repair. |
+| MCP client shows zero tools | Run `everett doctor`. It must list **13 tools over stdio**. For a stale/disabled launcher, run `everett install-mcp --claude --repair --apply` (replace `--claude` with `--codex`, `--omp`, `--grok` or `--devin`), then restart/enable the server in the client. Fix malformed config before repair. |
 | OMP or Devin has an old `everett mcp` registration | Run `everett install-mcp --omp --devin --repair --apply` to back up and restore the harness-specific arguments. Restart the affected MCP clients, then run `everett doctor`. |
 | Hermes points to a missing Everett binary | Run `everett install-mcp --hermes` and merge its printed entry into `mcp_servers.everett` in `~/.hermes/config.yaml`, preserving other entries. Use the printed executable path and `mcp --harness hermes` arguments, then restart Hermes. This command does not edit Hermes configuration automatically. |
 | Session not found / no live reply | Start a harness session or run `everett --hours 168 ls` for older ones; send to its exact id or title. In MCP, pass `hours: 168` to listing and sending. Hook injection needs enabled/trusted hooks; Pi/Hermes poll `everett_inbox`. A queued message is not a read receipt. |

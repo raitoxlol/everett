@@ -2,10 +2,12 @@
 
 ## Unreleased
 
+- Remove Convex completely: Cloudflare is the only hosted relay. Remove the legacy OIDC relay login, registry/address publication, backend package, vendored SDK and CI; retain local/offline messaging, explicit SSH pairing, signed envelopes, ping-default and authors cards.
+
 - Make `ping` the CLI and MCP send default. Idle local sessions run headless; verified local Claude background sessions receive an immediate native inbox nudge. Unsupported immediate transports fail instead of silently queueing. `inbox`, `auto`, and `resume` remain explicit compatibility modes.
-- Add opt-in authenticated author/session cards on Cloudflare and Convex. `relay expose SESSION`, `relay authors`, and MCP relay `expose`/`withdraw`/`authors` use credential-derived authors and agents, without device pairing for discovery. MCP `directory` retains device bundles. Revoked credentials and memberships disappear from directory results; unexpected lookup failures surface as errors.
+- Add opt-in authenticated author/session cards on Cloudflare. `relay expose SESSION`, `relay authors`, and MCP relay `expose`/`withdraw`/`authors` use credential-derived authors and agents, without device pairing for discovery. MCP `directory` retains device bundles. Revoked credentials and memberships disappear from directory results; unexpected lookup failures surface as errors.
 - Keep validated native Claude ping requests durable even when preflight or attach fails, returning the retained message ID without claiming successful dispatch. Stubbed CLI/MCP tests cover native receipts, failure retention, and non-interactive stdin; legacy `--wake` remains interactive-only.
-- Show authenticated peer cards and separate agent/session tags in the local dashboard. Cards are shared plaintext metadata only after explicit exposure; message encryption, remote provenance, cross-owner grants, and read-only provider stores are unchanged. Backend deployment is required for the new directory APIs.
+- Show authenticated peer cards and separate agent/session tags in the local dashboard. Cards are shared plaintext metadata only after explicit exposure; message encryption, remote provenance, and read-only provider stores are unchanged. Backend deployment is required for the new directory APIs.
 
 - Add `relay devices --names` to show hosted enrollment names beside device IDs and verified fingerprints, and `relay rename NAME` to update only this device's advisory label. Original JSON bundle output and pairing/pin semantics are unchanged. Hosted metadata requires a backend update; missing labels remain explicitly unnamed.
 
@@ -26,10 +28,6 @@
 
 - Add a compact interactive setup flow with a local, cloud and VM chooser. Cloud and VM selections remain pending until their own connections are configured.
 - Add native Cloudflare device approval to first-run setup. GitHub identifies the account owner; approving a device does not sign in to an agent provider.
-- Keep Cloudflare device credentials and relay state separate from OIDC/Convex credentials and state. Existing OIDC configuration remains available.
-
-### Relay and OAuth
-
 - Add encrypted native Cloudflare relay messaging with outbound polling, durable ciphertext staging, temporary-failure retries and explicit peer fingerprint pins.
 - Add an OAuth resource-server mode to the Rust gateway for allowlisted external clients. It uses PKCE, rotating refresh tokens, introspection and revocation. Dynamic client registration is not supported.
 - Keep local and SSH workflows usable without an Everett account. Native Cloudflare device authorization is a custom protocol, not RFC 8628.
@@ -87,27 +85,10 @@
 - Require host-bound MCP caller identity for delivery and replies; reject conflicting model
   session IDs instead of allowing them to replace provenance or hop lineage. Harnesses
   without native detection must bind `EVERETT_SESSION_ID` in their MCP launch environment.
-- Recover staged key rotations and pair same-org agents through authorized exact-device
-  lookup, independent of the bounded directory. Count recipient capacity with ciphertext-free
-  indexed metadata and cap pending pages at 32 to stay within Convex response budgets.
-- Bound rejected-message diagnostic state. Serialize SSH/Convex alias claims before SSH
-  pairing side effects and add `peer remove NAME --transport ssh|convex` for explicit repair
-  of ambiguous legacy aliases. Default ambiguous routing and removal fail closed.
-
 - Reconcile the account/device and agent relay implementations into one v2 encrypted
   transport. Preserve agent MCP identity/pairing, grants, send and status tools with
   authoritative per-agent revocation and explicit bilateral fingerprint confirmation.
 
-- Extend the Rust-only client's per-peer Convex transport to same-owner/account or org
-  chat over live WebSocket subscriptions behind NAT, with explicit full session IDs,
-  inbox-only messages/replies and no SSH/Tailscale dependency or session wake-up. Keep
-  SSH transport independent; no automatic fallback.
-- **Relay v2 is incompatible with v1 envelopes/pins/schema.** Require verified OIDC ID
-  tokens with issuer-controlled agent/org/role claims plus authoritative active membership
-  and a distinct per-agent revocable credential on every public function. Add operator-only
-  provisioning, `relay whoami`, `revoke-agent`, `revoke-member`, signed key `rotate`, and
-  existing-subscription revocation dependencies; still-valid JWTs cannot re-register a
-  revoked agent. No public enrollment or owner-wide impersonation token.
 - Add bilateral admin-only named-agent cross-org grants: `relay grant invite`, `accept`,
   `reconfirm`, `revoke`, `get`, `list`; pin both bundles/fingerprints, optional expiry,
   either-side revocation, per-grant shared rate and serialized-body caps. Key changes
@@ -122,12 +103,6 @@
   observed queued/delivered/claimed/replied states, three-hop end-to-end lineage,
   one-hour undelivered client TTL and bounded cron cleanup. Signed delivery deletes the
   live ciphertext row; state observations are signed metadata, not encrypted receipts.
-- Extend offline actual-function `convex-test` and Rust fixtures for authorization,
-  grants/revocation/rotation, tampering, caps/rates, duplicates, hops, TTL and inbox safety.
-  Document cloud/self-hosted deployment, native Keycloak/provider provisioning and exact
-  two-machine/two-org journeys plus metadata/retention/crypto threat model. Live
-  deployment/OIDC/WebSocket journeys remain operator verification gates, not implied
-  by offline coverage.
 - Add SSH-only cross-device peers: `peer add`, `serve`, `ls`, `card`, `status`, `identity`,
   `list`, `remove`, and `revoke`, plus `ls --peer` and explicit remote inbox sends.
   Pairing verifies host/device fingerprints, pins host keys, and installs a tagged restricted
@@ -135,9 +110,6 @@
 - For SSH, return cross-device replies only through status polling, with idempotent send/reply recovery,
   observed queued/delivered/replied states, a three-hop end-to-end limit, 64 KiB request frames,
   and 20-second deadlines. Offline peers fail without a local retry queue.
-- Document manual SSH setup and real-machine sshd checks in `docs/cross-device.md`.
-  SSH itself needs no registry, sign-in dependency, Convex relay, or Everett listener.
-
 ## 1.5.0 — 2026-10-10
 
 - **Breaking:** remove the Python package (`everett/`, `pyproject.toml`, `bin/everett`); `pipx install`
@@ -148,12 +120,6 @@
   `scripts/verify_release.py`, and CI runs it against a release build.
 - Fix the native stop hook comparing only the sub-second part of file mtimes, which made stale
   auto-card refresh effectively random. `trunk schedule` now runs `launchctl` with `PATH`/`HOME`.
-- Add optional account sign-in to the Rust binary: `everett login` (OIDC
-  device-code flow, RFC 8628), `everett whoami` with transparent token
-  refresh, and `everett logout` with RFC 7009 revocation. Tokens live in
-  `~/.everett/auth.json` (mode 0600); the issuer and client id come from
-  `[auth]` config or `EVERETT_AUTH_ISSUER`/`EVERETT_AUTH_CLIENT_ID`. See
-  `docs/auth.md`.
 - Add native `everett external add`, `list`, and `remove` for durable cloud-agent registrations,
   with cloud harness filters in `everett ls`.
 - Register OpenAI dots and Grok Bot as durable external sessions, with inbox-only delivery,

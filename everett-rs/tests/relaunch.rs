@@ -30,7 +30,7 @@ fn doctor_probes_stdio_and_explains_empty_home() {
     let out = fx.run_stdin(&["doctor"], "", &[("PATH", "/nonexistent")]);
     assert_eq!(out.status.code(), Some(0));
     let text = fx.stdout(&out);
-    assert!(text.contains("14 tools over stdio") && text.contains("No harness CLI") && text.contains("everett onboard --yes"), "{text}");
+    assert!(text.contains("13 tools over stdio") && text.contains("No harness CLI") && text.contains("everett onboard --yes"), "{text}");
     assert!(!text.contains("\nhealthy\n"));
 }
 

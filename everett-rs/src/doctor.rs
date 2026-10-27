@@ -130,96 +130,8 @@ fn line(warnings: &mut Vec<String>, ok: Option<bool>, text: &str) {
     println!("[{}] {}", mark, text);
 }
 
-pub fn device_revocation_checks(
-    fetch: impl FnOnce() -> crate::error::Result<Vec<crate::relay::RevokedDevice>>,
-) -> Vec<(Option<bool>, String)> {
-    match crate::config::get("auth.provider", Some("EVERETT_AUTH_PROVIDER"), "oidc").as_str() {
-        "cloudflare" => return vec![(
-            None,
-            "device revocations: Cloudflare SSH revocation check unavailable; SSH authorizations unchanged".into(),
-        )],
-        "oidc" => (),
-        _ => return vec![(
-            None,
-            "device revocations: unsupported auth provider; SSH authorizations unchanged".into(),
-        )],
-    }
-    if crate::auth::load().is_none() {
-        return vec![(
-            None,
-            "device revocations: not signed in; SSH authorizations unchanged".into(),
-        )];
-    }
-    let mut checks = Vec::new();
-    let ssh = crate::peer::local_device_id();
-    let agent = crate::relay::signed_in_device_id();
-    let binding = match (ssh, agent) {
-        (Ok(Some(ssh)), Ok(agent)) => format!(
-            "SSH device_id: {ssh}; signed-in relay agent: {agent}; {}",
-            if ssh == agent {
-                "IDs match"
-            } else {
-                "IDs differ; registration records the SSH id and key, signed by that key, so revocation still prunes it"
-            }
-        ),
-        (Ok(None), _) => "SSH device_id: not created; no local SSH identity binding".into(),
-        (Err(e), _) | (_, Err(e)) => format!("SSH device_id binding unavailable: {e}"),
-    };
-    checks.push((None, binding));
-    if crate::config::get("relay.url", Some("EVERETT_CONVEX_URL"), "").is_empty() {
-        checks.push((
-            None,
-            "device revocations: relay not configured; SSH authorizations unchanged".into(),
-        ));
-        return checks;
-    }
-    let revoked = match fetch() {
-        Ok(rows) => rows,
-        Err(e) => {
-            checks.push((
-                None,
-                format!("device revocations unavailable: {e}; SSH authorizations unchanged"),
-            ));
-            return checks;
-        }
-    };
-    let owner = crate::relay::signed_in_owner();
-    let mut removed = false;
-    for row in revoked {
-        let pruned = owner.clone().and_then(|owner| {
-            match crate::relay::verified_ssh_binding(&owner, &row)? {
-                Some((ssh, key)) => crate::peer::prune_revoked_key(ssh, key),
-                None => crate::peer::prune_revoked(&row.device_id),
-            }
-        });
-        match pruned {
-            Ok(true) => {
-                removed = true;
-                checks.push((
-                    Some(true),
-                    format!(
-                        "removed SSH authorization for revoked device {}",
-                        row.device_id
-                    ),
-                ));
-            }
-            Ok(false) => (),
-            Err(e) => checks.push((
-                Some(false),
-                format!(
-                    "cannot remove SSH authorization for revoked device {}: {e}",
-                    row.device_id
-                ),
-            )),
-        }
-    }
-    if !removed && !checks.iter().any(|(ok, _)| *ok == Some(false)) {
-        checks.push((
-            Some(true),
-            "device revocations checked; no matching SSH authorizations".into(),
-        ));
-    }
-    checks
+pub fn device_revocation_checks() -> Vec<(Option<bool>, String)> {
+    vec![(None, "device revocations: Cloudflare SSH revocation check unavailable; SSH authorizations unchanged".into())]
 }
 
 fn owner_label(owner: &str) -> String {
@@ -230,7 +142,7 @@ fn owner_label(owner: &str) -> String {
 }
 
 fn account_check() -> (Option<bool>, String) {
-    match crate::config::get("auth.provider", Some("EVERETT_AUTH_PROVIDER"), "oidc").as_str() {
+    match crate::config::get("auth.provider", Some("EVERETT_AUTH_PROVIDER"), "cloudflare").as_str() {
         "cloudflare" => match crate::cloudflare_auth::load() {
             Ok(Some(stored)) if stored.expired() => (
                 Some(false),
@@ -246,13 +158,7 @@ fn account_check() -> (Option<bool>, String) {
             Ok(None) => (None, "account: not signed in to Cloudflare (optional)".into()),
             Err(e) => (Some(false), format!("account: {e}")),
         },
-        "oidc" => (
-            None,
-            crate::auth::load()
-                .map(|s| format!("account: {} via {} ({})", s.email, s.issuer, s.device_name))
-                .unwrap_or_else(|| "account: not signed in (optional)".to_string()),
-        ),
-        _ => (Some(false), "account: auth.provider must be oidc or cloudflare".into()),
+        _ => (Some(false), "account: auth.provider must be cloudflare".into()),
     }
 }
 
@@ -518,7 +424,7 @@ pub fn run(hours: f64) -> i32 {
     }
     let (ok, detail) = account_check();
     line(&mut warnings, ok, &detail);
-    for (ok, detail) in device_revocation_checks(crate::relay::revoked_devices) {
+    for (ok, detail) in device_revocation_checks() {
         line(&mut warnings, ok, &detail);
     }
     let warnings_only = warnings.len() - problems;

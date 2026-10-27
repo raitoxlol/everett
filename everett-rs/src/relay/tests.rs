@@ -2,6 +2,18 @@ use super::*;
 use crate::receiver_wake;
 use std::sync::Mutex;
 
+static NATIVE_DEVICES: Mutex<Vec<Device>> = Mutex::new(vec![]);
+
+fn configure(keys: &Keys, devices: Vec<Device>) {
+    *NATIVE_DEVICES.lock().unwrap() = devices;
+    peer::private_dir(crate::cloudflare_auth::credential_path().parent().unwrap()).unwrap();
+    write(&crate::cloudflare_auth::credential_path(), &json!({
+        "issuer":"https://relay.example", "agent_id":keys.device.device_id,
+        "owner":keys.device.owner, "device_name":"fixture",
+        "token":format!("evt_{}", "a".repeat(64)), "expires_at":u64::MAX
+    })).unwrap();
+}
+
 static RECEIVER_ENV_LOCK: Mutex<()> = Mutex::new(());
 
 thread_local! {
@@ -265,55 +277,10 @@ fn javascript_v2_encryption_signatures_rotation_and_observation_match() {
         a.sign(wire["rotationSignedUtf8"].as_str().unwrap().as_bytes()),
         wire["rotation"]["signature"]
     );
-    let converted = args(json!({"envelope":e})).unwrap();
-    let round_trip: Value = converted["envelope"].clone().into();
+    let round_trip = serde_json::to_value(&e).unwrap();
     let decoded: Envelope = serde_json::from_value(round_trip).unwrap();
     assert_eq!(e, decoded);
     assert_eq!(e.signed_bytes(), decoded.signed_bytes());
-}
-
-#[test]
-fn local_id_token_claim_consistency_and_namespace_checks() {
-    let stored: auth::Stored = serde_json::from_value(json!({
-        "issuer":"https://issuer.example/","client_id":"client","sub":"alice","email":"",
-        "access_token":"","id_token":"","expires_at":5000.0
-    }))
-    .unwrap();
-    let claim = json!({"iss":stored.issuer,"aud":"client","sub":"alice","iat":900,"exp":2000,"everett_agent":"agent-a","everett_org":"org-a"});
-    assert_eq!(
-        checked_identity(&stored, &claim, 1000.0).unwrap(),
-        json!([stored.issuer, "org", "org-a"]).to_string()
-    );
-    for (key, value) in [
-        ("iss", json!("wrong")),
-        ("aud", json!("wrong")),
-        ("sub", json!("wrong")),
-        ("exp", json!(999)),
-        ("everett_agent", Value::Null),
-        ("everett_org", json!(4)),
-        ("iat", json!(1100)),
-        ("nbf", json!(1100)),
-    ] {
-        let mut invalid = claim.clone();
-        invalid[key] = value;
-        assert!(
-            checked_identity(&stored, &invalid, 1000.0).is_err(),
-            "{key}"
-        );
-    }
-    let mut account = claim.clone();
-    account.as_object_mut().unwrap().remove("everett_org");
-    assert_eq!(
-        checked_identity(&stored, &account, 1000.0).unwrap(),
-        json!([stored.issuer, "account", "alice"]).to_string()
-    );
-    let mut audience_array = claim;
-    audience_array["aud"] = json!(["client", "other"]);
-    audience_array["azp"] = json!("client");
-    assert!(checked_identity(&stored, &audience_array, 1000.0).is_ok());
-    audience_array["azp"] = json!("other");
-    assert!(checked_identity(&stored, &audience_array, 1000.0).is_err());
-    assert!(claims("opaque-token").is_err());
 }
 
 #[test]
@@ -327,7 +294,7 @@ fn per_agent_key_paths_and_exact_idempotent_ciphertext_retry() {
     let path = dir.path().join("retry.json");
     let pin = Paired {
         device: b.device.clone(),
-        deployment: "https://test.convex.cloud".into(),
+        deployment: "https://relay.example".into(),
         grant_id: None,
     };
     let out = Outgoing {
@@ -373,7 +340,7 @@ fn denied_agent_or_grant_observation_drops_cached_staging_before_publication() {
     for reason in ["revoked agent", "revoked grant", "changed key", "wrong org"] {
         let path = dir.path().join("pending.json");
         write(&path, &e).unwrap();
-        let err = bad(format!("Convex rejected the request: {reason}"));
+        let err = EverettError::new(1, format!("Cloudflare relay denied: {reason}"));
         assert!(finish_staged(&b, &path, &e, Err(err)).is_err());
         assert!(
             !path.exists(),
@@ -382,7 +349,7 @@ fn denied_agent_or_grant_observation_drops_cached_staging_before_publication() {
     }
     let path = dir.path().join("uncertain.json");
     write(&path, &e).unwrap();
-    assert!(finish_staged(&b, &path, &e, Err(bad("Convex mutation timed out"))).is_err());
+    assert!(finish_staged(&b, &path, &e, Err(bad("Cloudflare mutation timed out"))).is_err());
     assert!(path.exists(),"uncertain committed delivery retains encrypted durable recovery, never plaintext publication");
 }
 
@@ -397,7 +364,7 @@ fn empty_filtered_page_still_carries_cursor_and_requires_pagination() {
 }
 
 #[test]
-fn unsafe_convex_numbers_are_rejected() {
+fn unsafe_wire_numbers_are_rejected() {
     let wire: Value =
         serde_json::from_str(include_str!("../../tests/fixtures/relay-wire.json")).unwrap();
     for field in ["createdAt", "expiresAt", "hop"] {
@@ -418,7 +385,7 @@ fn exact_device_query_recovers_a_committed_rotation_without_directory_scanning()
         [9; 32],
         [10; 32],
     );
-    let mut client = ConvexClient::fake(vec![("relay:device", Ok(json!(new.device.clone())))]);
+    let mut client = TestClient::fake(vec![("relay:device", Ok(json!(new.device.clone())))]);
     let rt = tokio::runtime::Runtime::new().unwrap();
     let recovered = rt
         .block_on(commit_rotation(
@@ -440,7 +407,7 @@ fn exact_device_query_recovers_a_committed_rotation_without_directory_scanning()
         json!({"deviceId":old.device.device_id.clone()})
     );
 
-    let mut client = ConvexClient::fake(vec![
+    let mut client = TestClient::fake(vec![
         ("relay:device", Ok(json!(old.device.clone()))),
         ("relay:rotate", Ok(json!({"rotated":true}))),
     ]);
@@ -491,7 +458,7 @@ fn staged_rotation_keeps_old_primary_on_errors_and_promotes_committed_stage() {
         assert_eq!(read::<PrivateKeys>(&stage).unwrap().signing, staged.signing);
     }
 
-    let mut client = ConvexClient::fake(vec![("relay:device", Ok(json!(new.device.clone())))]);
+    let mut client = TestClient::fake(vec![("relay:device", Ok(json!(new.device.clone())))]);
     let rt = tokio::runtime::Runtime::new().unwrap();
     let (device, response) = staged_rotation(
         &path,
@@ -552,222 +519,56 @@ fn rejected_cache_is_bounded_and_expires_duplicate_suppression() {
     );
 }
 
-// Test-only transport around the official Rust SDK's sans-I/O protocol core.
-// Relay production args/result handling, signing, observation and publication
-// execute unchanged; there are no sockets and no mock of authorization helpers.
-pub(super) struct ConvexClient {
-    live: Option<super::transport::Client>,
-    base: convex::base_client::BaseConvexClient,
-    version: convex_sync_types::StateVersion,
+pub(super) struct TestClient {
+    native: Option<crate::cloudflare_auth::Credential>,
     responses: std::collections::VecDeque<(&'static str, std::result::Result<Value, &'static str>)>,
     calls: Vec<(String, Value)>,
 }
 
-impl ConvexClient {
+impl TestClient {
     fn fake(responses: Vec<(&'static str, std::result::Result<Value, &'static str>)>) -> Self {
-        Self {
-            live: None,
-            base: convex::base_client::BaseConvexClient::new(),
-            version: convex_sync_types::StateVersion::initial(),
-            responses: responses.into(),
-            calls: vec![],
-        }
+        Self { native: None, responses: responses.into(), calls: vec![] }
     }
 
     pub fn native(stored: crate::cloudflare_auth::Credential) -> Self {
-        let mut value = Self::fake(vec![]);
-        value.live = Some(super::transport::Client::native(stored));
-        value
-    }
-    pub fn is_native(&self) -> bool {
-        self.live.as_ref().is_some_and(|client| client.is_native())
-    }
-    pub async fn native_call(&self, name: &str, value: Value) -> Result<Value> {
-        self.live.as_ref().unwrap().native_call(name, value).await
+        Self { native: Some(stored), ..Self::fake(vec![]) }
     }
 
-    pub async fn new(url: &str) -> anyhow::Result<Self> {
-        let mut value = Self::fake(vec![]);
-        value.live = Some(super::transport::Client::new(url).await?);
-        Ok(value)
-    }
-
-    pub async fn tls_error(&mut self) -> anyhow::Error {
-        match self.live.as_mut() {
-            Some(live) => live.tls_error().await,
-            None => std::future::pending().await,
+    pub async fn call(&mut self, name: &str, value: Value) -> Result<Value> {
+        if let Some(stored) = &self.native {
+            return Ok(match name {
+                "relay:whoami" => json!({"owner":stored.owner,"deviceId":stored.agent_id}),
+                "relay:device" => json!(NATIVE_DEVICES.lock().unwrap().iter().find(|d| value["deviceId"] == d.device_id)),
+                _ => panic!("unexpected native fixture request: {name}"),
+            });
         }
-    }
-
-    pub async fn set_auth_callback(
-        &mut self,
-        fetcher: Option<convex::base_client::AuthTokenFetcher>,
-    ) {
-        self.live.as_mut().unwrap().set_auth_callback(fetcher).await;
-    }
-
-    pub async fn subscribe(
-        &mut self,
-        name: &str,
-        arguments: BTreeMap<String, convex::Value>,
-    ) -> anyhow::Result<convex::QuerySubscription> {
-        self.live
-            .as_mut()
-            .expect("subscriptions use the live SDK")
-            .subscribe(name, arguments)
-            .await
-    }
-
-    fn respond(
-        &mut self,
-        path: String,
-        arguments: &convex_sync_types::types::SerializedArgs,
-    ) -> anyhow::Result<
-        std::result::Result<convex::Value, convex_sync_types::ErrorPayload<convex::Value>>,
-    > {
-        let (expected, response) = self
-            .responses
-            .pop_front()
-            .expect("unexpected Convex request");
-        assert_eq!(path, expected);
-        self.calls.push((
-            expected.into(),
-            serde_json::from_str::<Value>(arguments.get())?[0].clone(),
-        ));
-        if response == Err("network") {
-            return Err(anyhow::anyhow!("synthetic network failure"));
-        }
-        Ok(match response {
-            Ok(value) => Ok(convex::Value::try_from(value)?),
-            Err(error) => Err(convex_sync_types::ErrorPayload::Message(error.into())),
-        })
-    }
-
-    pub async fn mutation(
-        &mut self,
-        name: &str,
-        arguments: BTreeMap<String, convex::Value>,
-    ) -> anyhow::Result<FunctionResult> {
-        use convex_sync_types::{ClientMessage, LogLinesMessage, ServerMessage};
-        if let Some(live) = self.live.as_mut() {
-            return live.mutation(name, arguments).await;
-        }
-        let future = self.base.mutation(name.parse()?, arguments);
-        let Some(ClientMessage::Mutation {
-            request_id,
-            udf_path,
-            args,
-            ..
-        }) = self.base.pop_next_message()
-        else {
-            panic!("missing SDK mutation");
-        };
-        let result = self.respond(udf_path.to_string(), &args)?;
-        self.base
-            .receive_message(ServerMessage::MutationResponse {
-                request_id,
-                result,
-                ts: Some(self.version.ts),
-                log_lines: LogLinesMessage(vec![]),
-            })
-            .map_err(anyhow::Error::msg)?;
-        let end_version = convex_sync_types::StateVersion {
-            ts: self.version.ts.succ()?,
-            ..self.version
-        };
-        self.base
-            .receive_message(ServerMessage::Transition {
-                start_version: self.version,
-                end_version,
-                modifications: vec![],
-                client_clock_skew: None,
-                server_ts: None,
-            })
-            .map_err(anyhow::Error::msg)?;
-        self.version = end_version;
-        Ok(future.await?)
-    }
-
-    pub async fn query(
-        &mut self,
-        name: &str,
-        arguments: BTreeMap<String, convex::Value>,
-    ) -> anyhow::Result<FunctionResult> {
-        use convex_sync_types::{
-            ClientMessage, LogLinesMessage, QuerySetModification, ServerMessage, StateModification,
-        };
-        if let Some(live) = self.live.as_mut() {
-            return live.query(name, arguments).await;
-        }
-        let id = self.base.subscribe(name.parse()?, arguments);
-        let Some(ClientMessage::ModifyQuerySet {
-            new_version,
-            modifications,
-            ..
-        }) = self.base.pop_next_message()
-        else {
-            panic!("missing SDK query");
-        };
-        let QuerySetModification::Add(query) = &modifications[0] else {
-            panic!("missing SDK query add");
-        };
-        let result = self.respond(query.udf_path.to_string(), &query.args)?;
-        let modification = match result {
-            Ok(value) => StateModification::QueryUpdated {
-                query_id: query.query_id,
-                value,
-                log_lines: LogLinesMessage(vec![]),
-                journal: None,
-            },
-            Err(error) => StateModification::QueryFailed {
-                query_id: query.query_id,
-                error_message: error.get_message().into(),
-                log_lines: LogLinesMessage(vec![]),
-                journal: None,
-                error_data: None,
-            },
-        };
-        let end_version = convex_sync_types::StateVersion {
-            query_set: new_version,
-            ts: self.version.ts.succ()?,
-            ..self.version
-        };
-        self.base
-            .receive_message(ServerMessage::Transition {
-                start_version: self.version,
-                end_version,
-                modifications: vec![modification],
-                client_clock_skew: None,
-                server_ts: None,
-            })
-            .map_err(anyhow::Error::msg)?;
-        self.version = end_version;
-        let value = self.base.get_query(query.query_id).unwrap();
-        self.base.unsubscribe(id);
-        self.base.pop_next_message();
-        Ok(value)
+        let (expected, result) = self.responses.pop_front().expect("unexpected relay request");
+        assert_eq!(name, expected);
+        self.calls.push((name.to_string(), value));
+        result.map_err(|e| EverettError::new(1, e))
     }
 }
 
 #[test]
-fn sdk_transport_denied_row_does_not_block_allowed_and_own_revocation_stops() {
-    if !crate::test_support::isolated("relay::tests::sdk_transport_denied_row_does_not_block_allowed_and_own_revocation_stops") {
+fn relay_transport_denied_row_does_not_block_allowed_and_own_revocation_stops() {
+    if !crate::test_support::isolated("relay::tests::relay_transport_denied_row_does_not_block_allowed_and_own_revocation_stops") {
         return;
     }
     let _env = RECEIVER_ENV_LOCK.lock().unwrap();
     let home = tempfile::tempdir().unwrap();
     std::env::set_var("HOME", home.path());
     std::env::set_var("EVERETT_HOME", home.path());
-    std::env::set_var("EVERETT_CONVEX_URL", "https://test.convex.cloud");
+
     std::env::set_var("EVERETT_NOTIFY", "none");
     let (a, b) = devices();
+    configure(&b, vec![a.device.clone(), b.device.clone()]);
     peer::private_dir(&root().join("peers")).unwrap();
     peer::private_dir(&root().join("ingress")).unwrap();
     write(
         &peer_path("peer").unwrap(),
         &Paired {
             device: a.device.clone(),
-            deployment: "https://test.convex.cloud".into(),
+            deployment: "https://relay.example".into(),
             grant_id: None,
         },
     )
@@ -782,7 +583,7 @@ fn sdk_transport_denied_row_does_not_block_allowed_and_own_revocation_stops() {
             &Payload::Inbox {
                 session: "x-1".into(),
                 harness: "codex".into(),
-                text: "synthetic SDK message".into(),
+                text: "synthetic relay message".into(),
                 from: "remote-session".into(),
                 from_harness: "claude".into(),
                 from_card: String::new(),
@@ -803,8 +604,8 @@ fn sdk_transport_denied_row_does_not_block_allowed_and_own_revocation_stops() {
     let allowed_path = root().join("ingress/allow.json");
     write(&denied_path, &denied_row).unwrap();
     write(&allowed_path, &allowed_row).unwrap();
-    let mut client = ConvexClient::fake(vec![
-        ("relay:observe", Err("revoked sender")),
+    let mut client = TestClient::fake(vec![
+        ("relay:observe", Err("Cloudflare relay denied: revoked sender")),
         (
             "relay:whoami",
             Ok(json!({"owner":b.device.owner,"deviceId":b.device.device_id})),
@@ -832,15 +633,15 @@ fn sdk_transport_denied_row_does_not_block_allowed_and_own_revocation_stops() {
     assert_eq!(client.calls[0].1["messageId"], denied_row.message_id);
     for (own_response, terminal) in [
         (Err("network"), false),
-        (Err("revoked own agent"), true),
+        (Err("Cloudflare relay denied: revoked own agent"), true),
         (
             Ok(json!({"owner":"changed","deviceId":b.device.device_id})),
             true,
         ),
     ] {
         write(&denied_path, &denied_row).unwrap();
-        let mut client = ConvexClient::fake(vec![
-            ("relay:observe", Err("revoked grant")),
+        let mut client = TestClient::fake(vec![
+            ("relay:observe", Err("Cloudflare relay denied: revoked grant")),
             ("relay:whoami", own_response),
         ]);
         let outcome = rt.block_on(publish_staged(&mut client, &b, &denied_path, &denied_row));
@@ -850,7 +651,7 @@ fn sdk_transport_denied_row_does_not_block_allowed_and_own_revocation_stops() {
             "uncertainty/own revocation must not delete the sole ciphertext inside publisher"
         );
     }
-    let mut transient = ConvexClient::fake(vec![("relay:observe", Err("network"))]);
+    let mut transient = TestClient::fake(vec![("relay:observe", Err("network"))]);
     rt.block_on(publish_staged(
         &mut transient,
         &b,
@@ -866,27 +667,27 @@ fn sdk_transport_denied_row_does_not_block_allowed_and_own_revocation_stops() {
     write(&blocked_path, &blocked).unwrap();
     fs::remove_file(inbox::path("x-1").unwrap()).unwrap();
     fs::create_dir(inbox::path("x-1").unwrap()).unwrap();
-    let mut committed = ConvexClient::fake(vec![("relay:observe", Ok(json!({})))]);
+    let mut committed = TestClient::fake(vec![("relay:observe", Ok(json!({})))]);
     assert!(rt
         .block_on(publish_staged(&mut committed, &b, &blocked_path, &blocked))
         .is_err());
     assert!(blocked_path.exists());
     fs::remove_dir(inbox::path("x-1").unwrap()).unwrap();
-    let mut retry = ConvexClient::fake(vec![("relay:observe", Ok(json!({})))]);
+    let mut retry = TestClient::fake(vec![("relay:observe", Ok(json!({})))]);
     rt.block_on(publish_staged(&mut retry, &b, &blocked_path, &blocked))
         .unwrap();
     assert!(!blocked_path.exists());
     // Claimed observations use the remote ID and remote sender owner, not the
     // independently generated local inbox ID. Reconcile retries idempotently.
     inbox::take("x-1");
-    let mut claims = ConvexClient::fake(vec![("relay:observe", Ok(json!({})))]);
+    let mut claims = TestClient::fake(vec![("relay:observe", Ok(json!({})))]);
     rt.block_on(reconcile(&mut claims, &b, &mut RejectedCache::new())).unwrap();
     assert_eq!(claims.calls[0].1["state"], "claimed");
     assert_eq!(claims.calls[0].1["messageId"], blocked.message_id);
     assert_eq!(claims.calls[0].1["senderOwner"], a.device.owner);
     rt.block_on(reconcile(&mut claims, &b, &mut RejectedCache::new())).unwrap();
     assert!(claims.responses.is_empty());
-    let mut replies = ConvexClient::fake(vec![("relay:observe", Ok(json!({})))]);
+    let mut replies = TestClient::fake(vec![("relay:observe", Ok(json!({})))]);
     rt.block_on(signed_observation(
         &mut replies,
         &b,
@@ -947,26 +748,30 @@ fn sdk_transport_denied_row_does_not_block_allowed_and_own_revocation_stops() {
         }),
     )
     .unwrap();
-    let mut unavailable = ConvexClient::fake(vec![("relay:enqueue", Err("network"))]);
+    let mut unavailable = TestClient::fake(vec![("relay:enqueue", Err("network"))]);
     assert!(rt
         .block_on(post(&mut unavailable, &path, &outgoing))
         .is_err());
     assert!(!read::<Outgoing>(&path).unwrap().posted);
-    let mut lost_observation = ConvexClient::fake(vec![
+    let mut lost_observation = TestClient::fake(vec![
+        ("relay:device", Ok(json!(a.device))),
         ("relay:enqueue", Ok(json!({}))),
         ("relay:observe", Err("network")),
     ]);
     rt.block_on(reconcile(&mut lost_observation, &b, &mut RejectedCache::new())).unwrap();
     let persisted: Outgoing = read(&path).unwrap();
     assert!(persisted.posted && persisted.reply_pending.is_some());
-    let mut recovered = ConvexClient::fake(vec![("relay:observe", Ok(json!({})))]);
+    let mut recovered = TestClient::fake(vec![
+        ("relay:device", Ok(json!(a.device))),
+        ("relay:observe", Ok(json!({}))),
+    ]);
     rt.block_on(reconcile(&mut recovered, &b, &mut RejectedCache::new())).unwrap();
-    assert_eq!(recovered.calls[0].1["state"], "replied");
-    assert_eq!(recovered.calls[0].1["messageId"], blocked.message_id);
-    assert_eq!(recovered.calls[0].1["senderOwner"], a.device.owner);
+    assert_eq!(recovered.calls[1].1["state"], "replied");
+    assert_eq!(recovered.calls[1].1["messageId"], blocked.message_id);
+    assert_eq!(recovered.calls[1].1["senderOwner"], a.device.owner);
     assert!(read::<Outgoing>(&path).unwrap().reply_pending.is_none());
     rt.block_on(reconcile(&mut recovered, &b, &mut RejectedCache::new())).unwrap();
-    assert_eq!(recovered.calls.len(), 1);
+    assert_eq!(recovered.calls.len(), 2);
 }
 
 #[test]
@@ -980,15 +785,16 @@ fn signed_import_schedules_exact_receiver_job_and_fake_claude_attaches_once() {
     let home = tempfile::tempdir().unwrap();
     std::env::set_var("HOME", home.path());
     std::env::set_var("EVERETT_HOME", home.path());
-    std::env::set_var("EVERETT_CONVEX_URL", "https://test.convex.cloud");
+
     std::env::set_var("EVERETT_NOTIFY", "none");
     let (a, b) = devices();
+    configure(&b, vec![a.device.clone(), b.device.clone()]);
     peer::private_dir(&root().join("peers")).unwrap();
     write(
         &peer_path("mac").unwrap(),
         &Paired {
             device: a.device.clone(),
-            deployment: "https://test.convex.cloud".into(),
+            deployment: "https://relay.example".into(),
             grant_id: None,
         },
     )
@@ -1191,16 +997,17 @@ fn imported_external_inbox_posts_one_webhook_without_the_message_text() {
     let home = tempfile::tempdir().unwrap();
     std::env::set_var("HOME", home.path());
     std::env::set_var("EVERETT_HOME", home.path());
-    std::env::set_var("EVERETT_CONVEX_URL", "https://test.convex.cloud");
+
     std::env::set_var("EVERETT_NOTIFY", "none");
-    std::env::set_var("EVERETT_AUTH_PROVIDER", "oidc");
+    std::env::set_var("EVERETT_AUTH_PROVIDER", "cloudflare");
     let (a, b) = devices();
+    configure(&b, vec![a.device.clone(), b.device.clone()]);
     peer::private_dir(&root().join("peers")).unwrap();
     write(
         &peer_path("mac").unwrap(),
         &Paired {
             device: a.device.clone(),
-            deployment: "https://test.convex.cloud".into(),
+            deployment: "https://relay.example".into(),
             grant_id: None,
         },
     )

@@ -77,7 +77,7 @@ enum Cmd {
         #[arg(long)]
         json: bool,
     },
-    /// live encrypted Convex or Cloudflare receiver; inbox delivery with optional owner wake policies
+    /// encrypted Cloudflare receiver; inbox delivery with optional owner wake policies
     Relay {
         #[command(subcommand)]
         action: Option<RelayCmd>,
@@ -324,10 +324,10 @@ enum Cmd {
         #[arg(long)]
         repair: bool,
     },
-    /// sign in to your Everett account (device-code flow)
+    /// sign in to your Everett account (Cloudflare device approval)
     Login {
-        /// native Cloudflare enrollment or existing OIDC (config: auth.provider)
-        #[arg(long, value_parser = ["oidc", "cloudflare"])]
+        /// Cloudflare enrollment (config: auth.provider)
+        #[arg(long, value_parser = ["cloudflare"])]
         provider: Option<String>,
         /// Cloudflare HTTPS origin (otherwise auth.issuer or stored issuer)
         #[arg(long)]
@@ -353,16 +353,16 @@ enum Cmd {
     },
     /// print the signed-in account
     Whoami {
-        #[arg(long, value_parser = ["oidc", "cloudflare"])]
+        #[arg(long, value_parser = ["cloudflare"])]
         provider: Option<String>,
         #[arg(long)]
         json: bool,
     },
     /// revoke this device's sign-in and delete the local token
     Logout {
-        #[arg(long, value_parser = ["oidc", "cloudflare"])]
+        #[arg(long, value_parser = ["cloudflare"])]
         provider: Option<String>,
-        /// best effort registry revocation before signing out
+        /// revoke this Cloudflare device before signing out
         #[arg(long)]
         revoke_device: bool,
         #[arg(long)]
@@ -415,9 +415,6 @@ enum PeerCmd {
         device: String,
         #[arg(long)]
         fingerprint: String,
-        /// active bilateral grant for a named cross-org agent
-        #[arg(long)]
-        grant: Option<String>,
     },
     /// pair one SSH direction; replies return through status polling
     Add {
@@ -440,11 +437,11 @@ enum PeerCmd {
     List,
     /// print this device's peer id and public key
     Identity,
-    /// remove a peer; duplicate transport aliases require --transport ssh|convex
+    /// remove a peer; duplicate transport aliases require --transport ssh|cloudflare
     Remove {
         name: String,
         /// select one transport when a legacy alias exists in both registries
-        #[arg(long, value_parser = ["ssh", "convex"])]
+        #[arg(long, value_parser = ["ssh", "cloudflare"])]
         transport: Option<String>,
     },
     /// remove a client's tagged key from this machine's authorized_keys
@@ -467,9 +464,6 @@ enum PeerCmd {
     Serve {
         #[arg(long)]
         client: Option<String>,
-        /// publish this device's declared SSH endpoint when signed in
-        #[arg(long)]
-        address: Option<String>,
     },
     #[command(hide = true)]
     Install,
@@ -544,99 +538,6 @@ enum RelayCmd {
     RevokeMember { subject: String },
     /// rotate both independent relay keys; requires the old signing key
     Rotate,
-    /// bilateral admin-only named-agent cross-org permissions
-    Grant {
-        #[command(subcommand)]
-        action: GrantCmd,
-    },
-}
-
-#[derive(Subcommand)]
-enum GrantCmd {
-    Invite {
-        grant_id: String,
-        #[arg(long)]
-        device: String,
-        #[arg(long)]
-        peer_owner: String,
-        #[arg(long)]
-        peer_device: String,
-        #[arg(long)]
-        local_fingerprint: String,
-        #[arg(long)]
-        peer_fingerprint: String,
-        /// Unix milliseconds; absent means no grant expiry
-        #[arg(long)]
-        expires_at: Option<i64>,
-        #[arg(long, default_value_t = 30)]
-        rate_per_minute: u32,
-        #[arg(long, default_value_t = 65536)]
-        body_cap_bytes: u32,
-    },
-    Accept {
-        grant_id: String,
-        #[arg(long)]
-        local_fingerprint: String,
-        #[arg(long)]
-        peer_fingerprint: String,
-    },
-    Reconfirm {
-        grant_id: String,
-        #[arg(long)]
-        local_fingerprint: String,
-        #[arg(long)]
-        peer_fingerprint: String,
-    },
-    Revoke {
-        grant_id: String,
-    },
-    Get {
-        grant_id: String,
-    },
-    List,
-}
-
-fn grant_command(action: GrantCmd) -> everett::error::Result<serde_json::Value> {
-    use serde_json::json;
-    let (name, args, query) = match action {
-        GrantCmd::Invite {
-            grant_id,
-            device,
-            peer_owner,
-            peer_device,
-            local_fingerprint,
-            peer_fingerprint,
-            expires_at,
-            rate_per_minute,
-            body_cap_bytes,
-        } => (
-            "grants:invite",
-            json!({"grantId":grant_id,"deviceId":device,"peerOwner":peer_owner,"peerDeviceId":peer_device,"localFingerprint":local_fingerprint,"peerFingerprint":peer_fingerprint,"expiresAt":expires_at,"ratePerMinute":rate_per_minute,"bodyCapBytes":body_cap_bytes}),
-            false,
-        ),
-        GrantCmd::Accept {
-            grant_id,
-            local_fingerprint,
-            peer_fingerprint,
-        } => (
-            "grants:accept",
-            json!({"grantId":grant_id,"localFingerprint":local_fingerprint,"peerFingerprint":peer_fingerprint}),
-            false,
-        ),
-        GrantCmd::Reconfirm {
-            grant_id,
-            local_fingerprint,
-            peer_fingerprint,
-        } => (
-            "grants:reconfirm",
-            json!({"grantId":grant_id,"localFingerprint":local_fingerprint,"peerFingerprint":peer_fingerprint}),
-            false,
-        ),
-        GrantCmd::Revoke { grant_id } => ("grants:revoke", json!({"grantId":grant_id}), false),
-        GrantCmd::Get { grant_id } => ("grants:get", json!({"grantId":grant_id}), true),
-        GrantCmd::List => ("grants:list", json!({}), true),
-    };
-    everett::relay::admin_call(name, args, query)
 }
 
 #[derive(Subcommand)]
@@ -723,40 +624,7 @@ fn main() {
             action: Some(Devices::Revoke { device_id }),
             ..
         } => peer_output(everett::relay::revoke_device(&device_id)),
-        Cmd::Devices { action: None, json } => match everett::device_registry::devices() {
-            Ok(rows) => {
-                if json {
-                    println!("{}", serde_json::to_string_pretty(&rows).unwrap());
-                } else {
-                    println!("NAME\tDEVICE ID\tLAST SEEN (UTC)\tSSH ADDRESS\tREVOKED");
-                    for row in rows {
-                        let seen = row
-                            .last_seen_at
-                            .and_then(chrono::DateTime::from_timestamp_millis)
-                            .map(|t| t.to_rfc3339())
-                            .unwrap_or_else(|| "-".into());
-                        let revoked = match row.flags.get("revokedAt") {
-                            Some(serde_json::Value::Null) => "no",
-                            Some(serde_json::Value::Number(_)) => "yes",
-                            _ => "-",
-                        };
-                        println!(
-                            "{}\t{}\t{}\t{}\t{}",
-                            row.name,
-                            row.device_id,
-                            seen,
-                            row.ssh_address.as_deref().unwrap_or("-"),
-                            revoked
-                        );
-                    }
-                }
-                0
-            }
-            Err(error) => {
-                eprintln!("everett: {}", error.message);
-                error.code
-            }
-        },
+        Cmd::Devices { action: None, .. } => peer_output(everett::relay::devices()),
         Cmd::Relay { action } => match action {
             Some(RelayCmd::Authors) => peer_output(everett::messaging::authors().map(|sessions| serde_json::json!({"sessions":sessions}))),
             Some(RelayCmd::Expose { session, harness, remove }) => peer_output(everett::messaging::expose_id(&session, harness.as_deref(), remove)),
@@ -796,19 +664,16 @@ fn main() {
                 serde_json::json!({"subject":subject}),
                 false,
             )),
-            Some(RelayCmd::Grant { action }) => peer_output(grant_command(action)),
         },
         Cmd::Peer { action } => match action {
             PeerCmd::AddRelay {
                 name,
                 device,
                 fingerprint,
-                grant,
             } => peer_output(everett::relay::add(
                 &name,
                 &device,
                 &fingerprint,
-                grant.as_deref(),
             )),
             PeerCmd::Add {
                 name,
@@ -834,8 +699,8 @@ fn main() {
             PeerCmd::Status { name, message_id } => {
                 peer_output(everett::peer::status(&name, &message_id))
             }
-            PeerCmd::Serve { client, address } => {
-                everett::peer::serve_with_address(client.as_deref(), false, address.as_deref())
+            PeerCmd::Serve { client } => {
+                everett::peer::serve(client.as_deref(), false)
             }
             PeerCmd::Install => everett::peer::serve(None, true),
             PeerCmd::Ls {

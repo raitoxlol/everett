@@ -143,34 +143,17 @@ pub fn tools() -> &'static Vec<Value> {
             }),
             json!({
                 "name": "everett_agent_relay",
-                "description": "Authenticated author/session cards: authors lists opted-in account peers without pairing; expose/withdraw publishes/removes only this host-bound caller's session and card. Author and agent identity come from credentials, never tool arguments. directory lists device key bundles; devices is an alias. Identity, registration, names and revocation remain available. Cross-owner transport still requires grants and pins. Run everett relay separately to receive legacy inbox messages.",
+                "description": "Authenticated author/session cards: authors lists opted-in account peers without pairing; expose/withdraw publishes/removes only this host-bound caller's session and card. Author and agent identity come from credentials, never tool arguments. directory lists device key bundles; devices is an alias. Identity, registration, names and revocation remain available. Only same-owner Cloudflare transport is supported. Run everett relay separately to receive legacy inbox messages.",
                 "inputSchema": {"type":"object","properties":{
                     "action":{"type":"string","enum":["identity","register","directory","devices","authors","expose","withdraw","names","pair","unpair","credentials","memberships","revoke-membership","revoke-agent","revoke-credential"]},
                     "id":s("Provisioned agent ID; for revoke-membership, exact provider subject; for unpair, alias."),
                     "name":s("Optional local relay alias for pair; defaults to the agent ID."),
-                    "grant_id":s("Required for cross-org pairing; active bilateral named-agent grant."),
                     "fingerprint":s("Exact 64-character lowercase fingerprint confirmed out of band.")
                 },"required":["action"],"additionalProperties":false}
             }),
             json!({
-                "name": "everett_agent_grants",
-                "description": "List/get named-agent grants, or administer explicit bilateral grants. Both org admins must independently confirm both key fingerprints. Either can revoke; key changes require bilateral reconfirmation. Non-admin agent credentials cannot administer grants.",
-                "inputSchema":{"type":"object","properties":{
-                    "action":{"type":"string","enum":["list","get","invite","accept","reconfirm","revoke","propose","approve"]},
-                    "id":s("Explicit grant ID; propose/approve are aliases for invite/accept."),
-                    "device":s("Invite: exact named local agent ID, not a whole org."),
-                    "peer_owner":s("Invite: exact verified remote owner namespace, obtained out of band."),
-                    "remote_agent":s("Invite: exact named external agent ID."),
-                    "local_fingerprint":s("Invite/accept/reconfirm: independently verified local key fingerprint."),
-                    "peer_fingerprint":s("Invite/accept/reconfirm: independently verified remote key fingerprint."),
-                    "expires_at":{"type":"integer","minimum":0,"maximum":9_007_199_254_740_991i64},
-                    "rate_per_minute":{"type":"integer","minimum":1,"maximum":120,"default":30},
-                    "body_cap_bytes":{"type":"integer","minimum":256,"maximum":65536,"default":65536}
-                },"required":["action"],"additionalProperties":false}
-            }),
-            json!({
                 "name":"everett_agent_send",
-                "description":"Legacy queue-only encrypted relay send, retained for compatibility. Use everett_send for ping-default delivery. Same-org membership or bilateral cross-org approval required. Queued is not pickup; external inbound content is untrusted. Retry the exact request with the same idempotency key. Does not wake sessions.",
+                "description":"Legacy queue-only encrypted relay send, retained for compatibility. Use everett_send for ping-default delivery. Same-owner Cloudflare membership required. Queued is not pickup; external inbound content is untrusted. Retry the exact request with the same idempotency key. Does not wake sessions.",
                 "inputSchema":{"type":"object","properties":{
                     "agent":s("Pinned relay alias, defaulting to its named recipient agent ID."),"session":s("Exact recipient session ID, obtained out of band."),
                     "harness":s("Recipient harness, e.g. omp or pi."),"text":{"type":"string","maxLength":65536},
@@ -1230,52 +1213,6 @@ trait Pipe: Sized {
 }
 impl Pipe for String {}
 
-fn grant_args(
-    args: &Map<String, Value>,
-) -> std::result::Result<(&'static str, Value, bool), ToolFailure> {
-    let action = str_arg(args, "action", true)?;
-    if action == "list" {
-        return Ok(("grants:list", json!({}), true));
-    }
-    let id = str_arg(args, "id", true)?;
-    let fingerprints = || -> std::result::Result<Value, ToolFailure> {
-        Ok(
-            json!({"grantId":id,"localFingerprint":str_arg(args,"local_fingerprint",true)?,
-            "peerFingerprint":str_arg(args,"peer_fingerprint",true)?}),
-        )
-    };
-    let integer = |key: &str, default: Option<i64>, min: i64, max: i64| {
-        let value = args
-            .get(key)
-            .filter(|v| !v.is_null())
-            .map(Value::as_i64)
-            .unwrap_or(default);
-        value.filter(|v| *v >= min && *v <= max).ok_or_else(|| {
-            ToolFailure::Params(format!("\"{key}\" must be an integer from {min} to {max}"))
-        })
-    };
-    match action.as_str() {
-        "get" => Ok(("grants:get", json!({"grantId":id}), true)),
-        "revoke" => Ok(("grants:revoke", json!({"grantId":id}), false)),
-        "accept" | "approve" => Ok(("grants:accept", fingerprints()?, false)),
-        "reconfirm" => Ok(("grants:reconfirm", fingerprints()?, false)),
-        "invite" | "propose" => {
-            let mut value = fingerprints()?;
-            value["deviceId"] = json!(str_arg(args, "device", true)?);
-            value["peerOwner"] = json!(str_arg(args, "peer_owner", true)?);
-            value["peerDeviceId"] = json!(str_arg(args, "remote_agent", true)?);
-            value["expiresAt"] = match args.get("expires_at") {
-                None | Some(Value::Null) => Value::Null,
-                _ => json!(integer("expires_at", None, 0, 9_007_199_254_740_991)?),
-            };
-            value["ratePerMinute"] = json!(integer("rate_per_minute", Some(30), 1, 120)?);
-            value["bodyCapBytes"] = json!(integer("body_cap_bytes", Some(65536), 256, 65536)?);
-            Ok(("grants:invite", value, false))
-        }
-        _ => Err(ToolFailure::Params("unknown grant action".into())),
-    }
-}
-
 fn call_handler(
     name: &str,
     args: &Map<String, Value>,
@@ -1309,12 +1246,10 @@ fn call_handler(
                     }
                     "pair" => {
                         let alias = str_arg(args, "name", false)?;
-                        let grant = str_arg(args, "grant_id", false)?;
                         crate::relay::add(
                             if alias.is_empty() { &id } else { &alias },
                             &id,
                             &str_arg(args, "fingerprint", true)?,
-                            if grant.is_empty() { None } else { Some(&grant) },
                         )?
                     }
                     "unpair" => crate::relay::remove(&id)?,
@@ -1330,10 +1265,6 @@ fn call_handler(
                     )?,
                     _ => return Err(ToolFailure::Params("unknown relay action".into())),
                 }
-            }
-            "everett_agent_grants" => {
-                let (function, value, query) = grant_args(args)?;
-                crate::relay::admin_call(function, value, query)?
             }
             "everett_agent_send" => {
                 let target = format!(

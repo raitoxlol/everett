@@ -47,14 +47,14 @@ The relay only imports into an existing exact session. It stores ciphertext in t
 with visible routing metadata. Fingerprint checks, signed observations, idempotency,
 private durable staging and the three-hop bound are shared with the existing relay.
 Cloudflare keys, pins and retry records live under `.everett/relay-cloudflare` beneath
-`EVERETT_HOME` or `HOME`. Existing OIDC/Convex state is separate. Selecting an unsupported
+`EVERETT_HOME` or `HOME`. Retired backend state is never loaded. Selecting an unsupported
 registry or cross-owner operation returns an error rather than using a different account.
 
 ## Optional receiver-side Claude wake
 
 Wake is off by default. To allow a narrowly scoped Mac-to-NUC wake, create
 `$EVERETT_HOME/.everett/relay-cloudflare/receiver-wake.json` on the receiving NUC
-(use `.everett/relay/receiver-wake.json` for Convex). Keep `HOME` and
+Keep `HOME` and
 `CLAUDE_CONFIG_DIR` pointed at the normal Claude account. The policy is local to that
 Everett profile and must name one canonical project directory, one full Claude session
 UUID. Omit `sender_device_id` to allow eligible same-owner senders:
@@ -166,7 +166,7 @@ python3 scripts/verify-cloudflare-native.py \
 The harness creates and removes isolated temporary homes. It checks separate approvals,
 signed registration and pins, an offline encrypted send, idempotent retry, durable inbox
 pickup, signed claimed/replied status, encrypted reply, independent owner revocation and
-preservation of old OIDC files. It never reads real account files. Stop the local fixture
+preservation of retired account files. It never reads real account files. Stop the local fixture
 with Ctrl-C. This harness proves the local Worker/native contract on one machine.
 The separately verified physical Mac/NUC journey used independent temporary identities,
 interrupted the private fixture connection, verified queued delivery after reconnect and

@@ -445,14 +445,11 @@ fn local_identity() -> Result<Option<Identity>> {
     if let Some(identity) = IDENTITY_OVERRIDE.with(|slot| slot.borrow().clone()) {
         return Ok(Some(identity));
     }
-    match crate::config::get("auth.provider", Some("EVERETT_AUTH_PROVIDER"), "oidc").as_str() {
-        "cloudflare" => match crate::cloudflare_auth::load() {
-            Ok(Some(stored)) => Ok(checked_identity(stored.owner, stored.agent_id)),
-            Ok(None) => Ok(None),
-            Err(error) => Err(bad(error.message)),
-        },
-        "oidc" => Ok(oidc_identity()),
-        _ => Ok(None),
+    crate::cloudflare_auth::require_provider().map_err(|error| bad(error.message))?;
+    match crate::cloudflare_auth::load() {
+        Ok(Some(stored)) => Ok(checked_identity(stored.owner, stored.agent_id)),
+        Ok(None) => Ok(None),
+        Err(error) => Err(bad(error.message)),
     }
 }
 
@@ -462,29 +459,6 @@ fn checked_identity(owner: String, device_id: String) -> Option<Identity> {
     } else {
         None
     }
-}
-
-fn oidc_identity() -> Option<Identity> {
-    let stored = crate::auth::load()?;
-    let claim = crate::relay::claims(&stored.id_token).ok()?;
-    if claim.get("iss").and_then(Value::as_str) != Some(stored.issuer.as_str()) {
-        return None;
-    }
-    let owner = if let Some(org) = claim.get("everett_org").and_then(Value::as_str) {
-        if org.is_empty() {
-            return None;
-        }
-        serde_json::json!([stored.issuer, "org", org]).to_string()
-    } else if !stored.sub.is_empty() {
-        serde_json::json!([stored.issuer, "account", stored.sub]).to_string()
-    } else {
-        return None;
-    };
-    let agent = claim
-        .get("everett_agent")
-        .and_then(Value::as_str)
-        .unwrap_or("");
-    checked_identity(owner, agent.to_string())
 }
 
 fn unix_secs() -> i64 {

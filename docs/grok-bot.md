@@ -216,8 +216,7 @@ The policy file is `receiver-webhook.json` in the selected relay directory:
 
 | Auth provider | Path |
 | --- | --- |
-| `cloudflare` (`[auth] provider` or `EVERETT_AUTH_PROVIDER`) | `$EVERETT_HOME/.everett/relay-cloudflare/receiver-webhook.json`, or `~/.everett/relay-cloudflare/` when `EVERETT_HOME` is unset |
-| `oidc` (the default) | `$EVERETT_HOME/.everett/relay/receiver-webhook.json`, or `~/.everett/relay/` |
+| `cloudflare` (the only provider) | `$EVERETT_HOME/.everett/relay-cloudflare/receiver-webhook.json`, or `~/.everett/relay-cloudflare/` when `EVERETT_HOME` is unset |
 
 That is the same directory as `receiver-wake.json`. The Claude wake file does
 not wake a Grok Bot. Same-owner Cloudflare devices can also write this file with
@@ -244,7 +243,7 @@ is not posted. `cooldown_seconds` is an integer from 1 through 86400.
 
 ```sh
 umask 077
-DIR="$HOME/.everett/relay-cloudflare"   # "$HOME/.everett/relay" for OIDC/Convex
+DIR="$HOME/.everett/relay-cloudflare"
 mkdir -p "$DIR"
 WHO=$(everett whoami --json)
 jq -n \

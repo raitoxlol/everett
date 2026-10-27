@@ -52,7 +52,7 @@ Required native auth names: EVERETT_ISSUER, AUTH_GITHUB_ID, AUTH_GITHUB_SECRET, 
 
 `EVERETT_ENROLLMENT` selects who may enroll. Unset or `owner` keeps today's behavior: only the configured GitHub owner completes sign-in, sessions, approval and credentials. `public` lets any verified GitHub account approve devices into its own relay namespace; accounts see, use and revoke only their own credentials, and cross-owner delivery stays denied. The owner names remain required in public mode: they identify pre-upgrade rows and the account restored by a rollback. Rolling back to `owner` immediately stops non-owner sessions, native tokens and OAuth liveness without deleting their records. On first deploy the broker backfills existing decided rows to the owner; live pending requests stay claimable. A mistyped value fails closed with `authentication_unconfigured`.
 
-Set the GitHub app callback to `<EVERETT_ISSUER>/auth/callback/github` for the selected deployment. Existing Convex app/deployment and existing gateway remain unchanged. Do not copy credentials into source, reports, chat or vault. Configure secret values privately through Cloudflare secret input.
+Set the GitHub app callback to `<EVERETT_ISSUER>/auth/callback/github` for the selected deployment. The gateway remains a separate OAuth consumer. Do not copy credentials into source, reports, chat or vault. Configure secret values privately through Cloudflare secret input.
 
 The native HTTP adapter and outbound polling are implemented. A physical Mac/NUC
 send/read/reply, reconnect, and revocation journey passed with synthetic GitHub and a

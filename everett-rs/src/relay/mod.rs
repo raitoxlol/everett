@@ -1,34 +1,32 @@
 pub mod crypto;
 mod queue;
 pub(crate) mod receiver;
+#[cfg(not(test))]
 mod transport;
 
 #[cfg(test)]
-use self::tests::ConvexClient as RelayClient;
+use self::tests::TestClient as RelayClient;
 #[cfg(not(test))]
 use self::transport::Client as RelayClient;
-use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
-use convex::FunctionResult;
 use fs2::FileExt;
-use futures::StreamExt;
 use rand::{rngs::OsRng, RngCore};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Map, Value};
 use sha2::{Digest, Sha256};
 use std::os::unix::fs::OpenOptionsExt;
 use std::{
-    collections::{BTreeMap, HashMap},
+    collections::HashMap,
     fs,
     path::{Path, PathBuf},
     time::Duration,
 };
 
 use crate::error::{EverettError, Result};
-use crate::{auth, inbox, peer, send, session};
+use crate::{inbox, peer, send, session};
 use crypto::{Device, Envelope, Keys, Parent};
 
-const TTL: i64 = 3_600_000;
 const DEADLINE: Duration = Duration::from_secs(20);
+const TTL: i64 = 3_600_000;
 
 pub(super) fn bad(error: impl std::fmt::Display) -> EverettError {
     EverettError::new(2, format!("relay: {error}"))
@@ -177,70 +175,27 @@ impl RejectedCache {
     }
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum Provider {
-    Oidc,
-    Cloudflare,
-}
-impl Provider {
-    fn selected() -> Result<Self> {
-        match crate::config::get("auth.provider", Some("EVERETT_AUTH_PROVIDER"), "oidc").as_str() {
-            "oidc" => Ok(Self::Oidc),
-            "cloudflare" => Ok(Self::Cloudflare),
-            _ => Err(bad("auth.provider must be oidc or cloudflare")),
-        }
-    }
-    fn transport(self) -> &'static str {
-        match self {
-            Self::Oidc => "convex",
-            Self::Cloudflare => "cloudflare",
-        }
-    }
-}
 struct RelayAccount {
     owner: String,
     agent: String,
-    name: String,
 }
 fn native_credential() -> Result<crate::cloudflare_auth::Credential> {
+    crate::cloudflare_auth::require_provider()?;
     let stored = crate::cloudflare_auth::load()?
         .ok_or_else(|| bad("run everett login --provider cloudflare first"))?;
     stored.relay_origin()?;
     Ok(stored)
 }
 fn relay_account() -> Result<RelayAccount> {
-    match Provider::selected()? {
-        Provider::Cloudflare => {
-            let stored = native_credential()?;
-            Ok(RelayAccount {
-                owner: stored.owner,
-                agent: stored.agent_id,
-                name: stored.device_name,
-            })
-        }
-        Provider::Oidc => {
-            let (stored, owner) = account()?;
-            let agent = claims(&stored.id_token)?["everett_agent"]
-                .as_str()
-                .ok_or_else(|| bad("missing agent claim"))?
-                .to_string();
-            Ok(RelayAccount {
-                owner,
-                agent,
-                name: stored.device_name,
-            })
-        }
-    }
+    let stored = native_credential()?;
+    Ok(RelayAccount {
+        owner: stored.owner,
+        agent: stored.agent_id,
+    })
 }
 
 fn root() -> PathBuf {
-    session::home().join(
-        if matches!(Provider::selected(), Ok(Provider::Cloudflare)) {
-            ".everett/relay-cloudflare"
-        } else {
-            ".everett/relay"
-        },
-    )
+    session::home().join(".everett/relay-cloudflare")
 }
 
 pub(crate) fn state_dir() -> PathBuf {
@@ -283,109 +238,12 @@ pub fn configured(name: &str) -> bool {
 }
 
 pub(crate) fn same_owner_enabled() -> bool {
-    Provider::selected().is_ok_and(|provider| provider == Provider::Cloudflare)
+    crate::cloudflare_auth::require_provider().is_ok()
+        && crate::cloudflare_auth::load().ok().flatten().is_some()
 }
 
 fn deployment() -> Result<String> {
-    if Provider::selected()? == Provider::Cloudflare {
-        return native_credential()?.relay_origin();
-    }
-    let value = crate::config::get("relay.url", Some("EVERETT_CONVEX_URL"), "");
-    let url = url::Url::parse(&value).map_err(|_| {
-        bad("set EVERETT_CONVEX_URL or [relay] url to your HTTPS Convex deployment")
-    })?;
-    if url.scheme() != "https"
-        || url.host_str().is_none()
-        || !url.username().is_empty()
-        || url.password().is_some()
-        || url.query().is_some()
-        || url.fragment().is_some()
-        || url.path() != "/"
-    {
-        return Err(bad("Convex deployment must be an HTTPS origin"));
-    }
-    Ok(value.trim_end_matches('/').to_string())
-}
-
-pub(crate) fn account() -> Result<(auth::Stored, String)> {
-    account_refresh(false)
-}
-
-fn account_refresh(force: bool) -> Result<(auth::Stored, String)> {
-    if crate::config::get("auth.provider", Some("EVERETT_AUTH_PROVIDER"), "oidc") != "oidc" {
-        return Err(bad("this operation requires OIDC/Convex; the Cloudflare relay does not support the Convex registry"));
-    }
-    initialize()?;
-    let _guard = peer::lock(&root().join("auth.lock"))?;
-    let stored = auth::load().ok_or_else(|| bad("run everett login first"))?;
-    let mut stored = stored;
-    if force && !stored.refresh_token.is_empty() {
-        stored.expires_at = 0.0;
-    }
-    let mut stored = auth::ensure_fresh(&stored)?;
-    let mut claim = claims(&stored.id_token)?;
-    if claim["exp"].as_f64().unwrap_or(0.0) - session::now() < 60.0 {
-        stored.expires_at = 0.0;
-        stored = auth::ensure_fresh(&stored)?;
-        claim = claims(&stored.id_token)?;
-    }
-    let owner = checked_identity(&stored, &claim, session::now())?;
-    Ok((stored, owner))
-}
-
-fn checked_identity(stored: &auth::Stored, claim: &Value, now: f64) -> Result<String> {
-    let issuer = claim["iss"]
-        .as_str()
-        .ok_or_else(|| bad("ID token has no issuer"))?;
-    if issuer.is_empty()
-        || issuer.len() > 2048
-        || stored.sub.is_empty()
-        || stored.sub.len() > 256
-        || stored.client_id.is_empty()
-        || issuer != stored.issuer
-        || claim["sub"] != stored.sub
-        || !(claim["aud"] == stored.client_id
-            || claim["aud"]
-                .as_array()
-                .is_some_and(|aud| aud.iter().any(|a| *a == stored.client_id)))
-        || claim["iat"].as_f64().is_some_and(|at| at > now + 30.0)
-        || claim["nbf"].as_f64().is_some_and(|at| at > now)
-        || (claim["aud"].as_array().is_some_and(|a| a.len() > 1)
-            && claim["azp"] != stored.client_id)
-        || (!claim["everett_org"].is_null() && !claim["everett_org"].is_string())
-        || claim["exp"].as_f64().unwrap_or(0.0) <= now
-        || claim["everett_agent"]
-            .as_str()
-            .is_none_or(|s| valid(s).is_err())
-        || claim["everett_org"]
-            .as_str()
-            .is_some_and(|s| s.is_empty() || s.len() > 160)
-    {
-        return Err(bad(
-            "expired or mismatched ID token; run everett login --force",
-        ));
-    }
-    // Claims are local consistency checks; Convex verifies signature and membership.
-    let owner = if let Some(org) = claim["everett_org"].as_str() {
-        json!([issuer, "org", org]).to_string()
-    } else {
-        json!([issuer, "account", stored.sub]).to_string()
-    };
-    Ok(owner)
-}
-
-pub(crate) fn claims(token: &str) -> Result<Value> {
-    let parts: Vec<_> = token.split('.').collect();
-    if parts.len() != 3 || parts.iter().any(|p| p.is_empty()) {
-        return Err(bad("OIDC ID token required"));
-    }
-    let part = parts[1];
-    serde_json::from_slice(
-        &URL_SAFE_NO_PAD
-            .decode(part)
-            .map_err(|_| bad("invalid OIDC ID token"))?,
-    )
-    .map_err(|_| bad("invalid OIDC ID token"))
+    native_credential()?.relay_origin()
 }
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -526,24 +384,16 @@ fn paired(name: &str, owner: &str) -> Result<Paired> {
         {
             return Err(bad("peer is pinned to another account or relay deployment"));
         }
-        if Provider::selected()? == Provider::Cloudflare
-            && paired.device.owner == owner
-            && paired.grant_id.is_none()
-        {
+        if paired.device.owner == owner && paired.grant_id.is_none() {
             return same_owner_device(&paired.device.device_id, owner, false);
         }
         return Ok(paired);
     }
-    if Provider::selected()? == Provider::Cloudflare {
-        return same_owner_device(name, owner, true);
-    }
-    Err(bad(
-        "peer is not pinned; confirm its fingerprint and pair it",
-    ))
+    same_owner_device(name, owner, true)
 }
 
 fn trusted(device: &str, sender_owner: &str, grant_id: Option<&str>) -> Result<(String, Paired)> {
-    if Provider::selected()? == Provider::Cloudflare && grant_id.is_none() {
+    if grant_id.is_none() {
         let local = relay_account()?;
         if local.owner == sender_owner {
             let pin = same_owner_device(device, sender_owner, false).map_err(|error| {
@@ -584,9 +434,9 @@ pub fn list() -> Result<Value> {
         let pin: Paired = read(&path)?;
         let name = path.file_stem().unwrap().to_string_lossy().to_string();
         if ssh.contains_key(&name) {
-            return Err(bad("alias is configured for both SSH and Convex; remove one binding explicitly before use"));
+            return Err(bad("alias is configured for both SSH and Cloudflare; remove one binding explicitly before use"));
         }
-        result.insert(name, json!({"transport":Provider::selected()?.transport(), "device_id":pin.device.device_id, "owner":pin.device.owner, "grant_id":pin.grant_id, "fingerprint":pin.device.fingerprint(), "deployment":pin.deployment}));
+        result.insert(name, json!({"transport":"cloudflare", "device_id":pin.device.device_id, "owner":pin.device.owner, "grant_id":pin.grant_id, "fingerprint":pin.device.fingerprint(), "deployment":pin.deployment}));
     }
     Ok(Value::Object(result))
 }
@@ -594,7 +444,7 @@ pub fn list() -> Result<Value> {
 pub(crate) fn remove_locked(name: &str) -> Result<Value> {
     fs::remove_file(peer_path(name)?).map_err(bad)?;
     Ok(
-        json!({"removed":name,"transport":Provider::selected()?.transport(),"note":"Local trust removed; permanent backend revocation is everett relay revoke-agent AGENT_ID."}),
+        json!({"removed":name,"transport":"cloudflare","note":"Local trust removed; permanent backend revocation is everett relay revoke-agent AGENT_ID."}),
     )
 }
 
@@ -614,121 +464,26 @@ fn runtime<T: Send + 'static>(
     }).join().map_err(|_| bad("relay worker failed"))?
 }
 
-fn args(value: Value) -> Result<BTreeMap<String, convex::Value>> {
-    value
-        .as_object()
-        .ok_or_else(|| bad("invalid Convex arguments"))?
-        .iter()
-        .map(|(k, v)| Ok((k.clone(), convex::Value::try_from(v.clone()).map_err(bad)?)))
-        .collect()
-}
-
-/// The message of a backend `userError({code, message})`; any other failure stays generic.
-pub fn user_error(data: &Value) -> Option<String> {
-    data["code"].as_str().filter(|code| !code.is_empty())?;
-    data["message"].as_str().map(str::to_string)
-}
-
-fn result(value: FunctionResult) -> Result<Value> {
-    match value {
-        FunctionResult::Value(v) => Ok(v.into()),
-        _ => Err(bad("Convex rejected the request; check OIDC configuration, device registration, TTL, and idempotency key")),
-    }
-}
-
 async fn client(owner: &str) -> Result<RelayClient> {
-    if Provider::selected()? == Provider::Cloudflare {
-        let stored = native_credential()?;
-        if stored.owner != owner {
-            return Err(bad("signed-in owner changed; restart the relay"));
-        }
-        let agent = stored.agent_id.clone();
-        let client = RelayClient::native(stored);
-        let identity = client.native_call("relay:whoami", json!({})).await?;
-        if identity["owner"] != owner || identity["deviceId"] != agent {
-            return Err(EverettError::new(
-                1,
-                "Cloudflare relay denied: verified identity changed",
-            ));
-        }
-        return Ok(client);
-    }
-    let (stored, current) = account()?;
-    let agent = claims(&stored.id_token)?["everett_agent"]
-        .as_str()
-        .ok_or_else(|| bad("missing agent claim"))?
-        .to_string();
-    if current != owner {
+    let stored = native_credential()?;
+    if stored.owner != owner {
         return Err(bad("signed-in owner changed; restart the relay"));
     }
-    let expected = owner.to_string();
-    let expected_agent = agent.clone();
-    let mut client = RelayClient::new(&deployment()?)
-        .await
-        .map_err(|e| bad(format!("cannot connect to Convex: {e:#}")))?;
-    client
-        .set_auth_callback(Some(Box::new(move |force| {
-            let expected = expected.clone();
-            let expected_agent = expected_agent.clone();
-            Box::pin(async move {
-                tokio::task::spawn_blocking(move || {
-                    let (stored, current) = account_refresh(force)?;
-                    if current != expected
-                        || claims(&stored.id_token)?["everett_agent"] != expected_agent
-                    {
-                        return Err(bad("signed-in owner changed"));
-                    }
-                    Ok(convex::AuthenticationToken::User(stored.id_token))
-                })
-                .await
-                .map_err(|_| anyhow_error())?
-                .map_err(|_| anyhow_error())
-            })
-        })))
-        .await;
-    let identity = query(&mut client, "relay:whoami", json!({})).await?;
+    let agent = stored.agent_id.clone();
+    let mut client = RelayClient::native(stored);
+    let identity = client.call("relay:whoami", json!({})).await?;
     if identity["owner"] != owner || identity["deviceId"] != agent {
-        return Err(bad(
-            "verified backend identity differs from local token claims",
-        ));
+        return Err(EverettError::new(1, "Cloudflare relay denied: verified identity changed"));
     }
     Ok(client)
 }
 
-fn anyhow_error() -> anyhow::Error {
-    anyhow::anyhow!("Everett OIDC token unavailable; sign in again")
-}
-
 async fn mutation(client: &mut RelayClient, name: &str, value: Value) -> Result<Value> {
-    if client.is_native() {
-        return client.native_call(name, value).await;
-    }
-    let response = tokio::time::timeout(DEADLINE, client.mutation(name, args(value)?))
-        .await
-        .map_err(|_| bad("Convex mutation timed out; delivery unconfirmed"))?
-        .map_err(|e| {
-            bad(format!(
-                "Convex mutation failed; delivery unconfirmed: {e:#}"
-            ))
-        })?;
-    if let FunctionResult::ConvexError(error) = &response {
-        if let Some(message) = user_error(&error.data.clone().into()) {
-            return Err(bad(message));
-        }
-    }
-    result(response)
+    client.call(name, value).await
 }
 
 async fn query(client: &mut RelayClient, name: &str, value: Value) -> Result<Value> {
-    if client.is_native() {
-        return client.native_call(name, value).await;
-    }
-    result(
-        tokio::time::timeout(DEADLINE, client.query(name, args(value)?))
-            .await
-            .map_err(|_| bad("Convex query timed out"))?
-            .map_err(|e| bad(format!("Convex query failed: {e:#}")))?,
-    )
+    client.call(name, value).await
 }
 
 /// The presentation directory is bounded. Existence, key pinning, and
@@ -809,10 +564,6 @@ pub fn admin_call(name: &str, value: Value, is_query: bool) -> Result<Value> {
 pub fn signed_in_owner() -> Result<String> {
     Ok(relay_account()?.owner)
 }
-pub fn signed_in_device_id() -> Result<String> {
-    Ok(relay_account()?.agent)
-}
-
 pub fn revoke_device(device_id: &str) -> Result<Value> {
     let owner = relay_account()?.owner;
     let deployment = deployment()?;
@@ -826,7 +577,7 @@ pub fn revoke_device_with(
     call: impl FnOnce(&str, Value, bool) -> Result<Value>,
 ) -> Result<Value> {
     valid(device_id)?;
-    call("relay:revokeDevice", json!({"deviceId":device_id}), false)?;
+    call("relay:revokeAgent", json!({"deviceId":device_id}), false)?;
     let cleanup = || -> Result<Vec<String>> {
         let _guard = peer::alias_lock()?;
         let mut removed = peer::forget_device_locked(device_id)?;
@@ -846,133 +597,6 @@ pub fn revoke_device_with(
     let removed =
         cleanup().map_err(|e| bad(format!("device revoked; local peer cleanup failed: {e}")))?;
     Ok(json!({"revoked":device_id,"removed_peers":removed}))
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct RevokedDevice {
-    pub device_id: String,
-    pub revoked_at: f64,
-    /// The revoked device's SSH peer id when it registered one; its SSH authorization carries this tag.
-    #[serde(default)]
-    pub ssh_device_id: Option<String>,
-    /// Base64 field of the `ssh-ed25519` key that signed the binding.
-    #[serde(default)]
-    pub ssh_public_key: Option<String>,
-    /// Hex Ed25519 signature over `ssh_binding_bytes` by `ssh_public_key`.
-    #[serde(default)]
-    pub ssh_signature: Option<String>,
-}
-
-pub fn ssh_binding_bytes(
-    owner: &str,
-    device_id: &str,
-    ssh_device_id: &str,
-    ssh_public_key: &str,
-) -> Vec<u8> {
-    json!([
-        "everett-ssh-bind-v1",
-        owner,
-        device_id,
-        ssh_device_id,
-        ssh_public_key
-    ])
-    .to_string()
-    .into_bytes()
-}
-
-const SSH_ED25519_PREFIX: &[u8] = b"\0\0\0\x0bssh-ed25519\0\0\0\x20";
-
-/// The SSH id and key a revoked row may prune, only when its binding is signed by that key for this owner.
-pub fn verified_ssh_binding<'a>(
-    owner: &str,
-    row: &'a RevokedDevice,
-) -> Result<Option<(&'a str, &'a str)>> {
-    let (Some(ssh), Some(key), Some(signature)) =
-        (&row.ssh_device_id, &row.ssh_public_key, &row.ssh_signature)
-    else {
-        return Ok(None);
-    };
-    let invalid = || {
-        bad(format!(
-            "invalid SSH binding proof for revoked device {}",
-            row.device_id
-        ))
-    };
-    let blob = base64::engine::general_purpose::STANDARD
-        .decode(key)
-        .map_err(|_| invalid())?;
-    let raw: [u8; 32] = blob
-        .strip_prefix(SSH_ED25519_PREFIX)
-        .and_then(|raw| raw.try_into().ok())
-        .ok_or_else(invalid)?;
-    let signature: [u8; 64] = hex::decode(signature)
-        .ok()
-        .and_then(|sig| sig.try_into().ok())
-        .ok_or_else(invalid)?;
-    ed25519_dalek::VerifyingKey::from_bytes(&raw)
-        .and_then(|vk| {
-            vk.verify_strict(
-                &ssh_binding_bytes(owner, &row.device_id, ssh, key),
-                &ed25519_dalek::Signature::from_bytes(&signature),
-            )
-        })
-        .map_err(|_| invalid())?;
-    Ok(Some((ssh, key)))
-}
-
-const MAX_REVOKED_PAGES: usize = 64;
-
-pub fn revoked_devices() -> Result<Vec<RevokedDevice>> {
-    revoked_devices_with(|cursor| {
-        admin_call("relay:revokedDevices", json!({"cursor": cursor}), true)
-    })
-}
-
-/// Follow the query's cursor until the backend reports the last page.
-pub fn revoked_devices_with(
-    mut fetch: impl FnMut(Option<String>) -> Result<Value>,
-) -> Result<Vec<RevokedDevice>> {
-    let mut all = Vec::new();
-    let mut cursor = None;
-    for _ in 0..MAX_REVOKED_PAGES {
-        let mut page = fetch(cursor)?;
-        all.extend(parse_revoked_devices(page["devices"].take())?);
-        cursor = match page["cursor"].take() {
-            Value::Null => return Ok(all),
-            Value::String(next) => Some(next),
-            _ => return Err(bad("invalid revocation cursor")),
-        };
-    }
-    Err(bad(format!(
-        "revocation list exceeds {MAX_REVOKED_PAGES} pages"
-    )))
-}
-
-pub fn parse_revoked_devices(value: Value) -> Result<Vec<RevokedDevice>> {
-    let rows: Vec<RevokedDevice> = serde_json::from_value(value).map_err(bad)?;
-    if rows.len() > 256 {
-        return Err(bad("revocation response exceeds 256 devices"));
-    }
-    for row in &rows {
-        valid(&row.device_id)?;
-        if let Some(ssh) = &row.ssh_device_id {
-            valid(ssh)?;
-        }
-        if row.ssh_device_id.is_some() != row.ssh_public_key.is_some()
-            || row.ssh_device_id.is_some() != row.ssh_signature.is_some()
-        {
-            return Err(bad("incomplete SSH binding in revocation"));
-        }
-        if !row.revoked_at.is_finite()
-            || row.revoked_at.fract() != 0.0
-            || row.revoked_at < 0.0
-            || row.revoked_at > 9_007_199_254_740_991.0
-        {
-            return Err(bad("invalid revocation timestamp"));
-        }
-    }
-    Ok(rows)
 }
 
 pub fn rotate() -> Result<Value> {
@@ -1019,74 +643,22 @@ pub fn rotate() -> Result<Value> {
         },
     )?;
     Ok(
-        json!({"device":device,"result":response,"note":"Same-owner Cloudflare peers discover current keys automatically; explicit pins and cross-org grants require reconfirmation."}),
+        json!({"device":device,"result":response,"note":"Same-owner Cloudflare peers discover current keys automatically; explicit pins require reconfirmation."}),
     )
 }
 
-/// Register args carry this machine's SSH peer id and key, signed by that key, so a later
-/// revocation can prune exactly this device's SSH authorization.
-fn register_args(device: &Device) -> Result<Value> {
-    if Provider::selected()? == Provider::Cloudflare {
-        return Ok(json!({"device":device}));
-    }
-    let mut args = json!({"device": device});
-    if let Some(ssh) = ssh_binding(device)? {
-        args["ssh"] = ssh;
-    }
-    Ok(args)
-}
-
-pub fn ssh_binding(device: &Device) -> Result<Option<Value>> {
-    use ed25519_dalek::Signer;
-    let Some((ssh, key, signing)) = peer::local_ssh_key()? else {
-        return Ok(None);
-    };
-    let signature = signing.sign(&ssh_binding_bytes(
-        &device.owner,
-        &device.device_id,
-        &ssh,
-        &key,
-    ));
-    Ok(Some(
-        json!({"sshDeviceId": ssh, "sshPublicKey": key, "sshSignature": hex::encode(signature.to_bytes())}),
-    ))
+fn register_args(device: &Device) -> Value {
+    json!({"device":device})
 }
 
 pub fn register() -> Result<Value> {
-    register_with_address(None)
-}
-
-pub fn register_with_address(address: Option<&str>) -> Result<Value> {
-    let identity = relay_account()?;
-    let (owner, name) = (identity.owner, identity.name);
-    if Provider::selected()? == Provider::Cloudflare && address.is_some() {
-        return Err(bad("Cloudflare relay does not publish SSH addresses; use its device ID and explicit fingerprint"));
-    }
-    let address = if Provider::selected()? == Provider::Cloudflare {
-        None
-    } else {
-        valid(&name).map_err(|_| bad("device name must use 1-160 letters, digits, '.', '_' or '-'; run everett login --device NAME --force"))?;
-        crate::device_registry::declared_address(address)?
-    };
-    let key = verified_keys(&owner)?;
-    let device = key.device.clone();
-    let args = register_args(&device)?;
+    let owner = relay_account()?.owner;
+    let device = verified_keys(&owner)?.device;
+    let args = register_args(&device);
     runtime(async move {
         let mut client = client(&owner).await?;
         mutation(&mut client, "relay:register", args).await?;
-        if client.is_native() {
-            return Ok(
-                json!({"device":device,"fingerprint":device.fingerprint(),"transport":"cloudflare"}),
-            );
-        }
-        let signature = key.sign(&crate::device_registry::metadata_bytes(
-            &owner,
-            &device.device_id,
-            &name,
-            address.as_deref(),
-        ));
-        mutation(&mut client, "registry:publish", json!({"deviceId":device.device_id,"name":name,"sshAddress":address,"signature":signature})).await?;
-        Ok(json!({"device":device, "fingerprint":device.fingerprint()}))
+        Ok(json!({"device":device,"fingerprint":device.fingerprint(),"transport":"cloudflare"}))
     })
 }
 
@@ -1103,13 +675,7 @@ pub fn device_names() -> Result<String> {
     runtime(async move {
         let mut client = client(&owner).await?;
         let bundles = query(&mut client, "relay:devices", json!({})).await?;
-        let labels = if client.is_native() {
-            query(&mut client, "relay:deviceLabels", json!({}))
-                .await
-                .ok()
-        } else {
-            None
-        };
+        let labels = query(&mut client, "relay:deviceLabels", json!({})).await.ok();
         format_device_names(bundles, labels, &owner)
     })
 }
@@ -1154,11 +720,6 @@ pub fn rename_device(name: &str) -> Result<Value> {
     if name.trim().is_empty() || name.chars().count() > 100 || name.chars().any(char::is_control) {
         return Err(bad("device name must contain 1-100 printable characters"));
     }
-    if Provider::selected()? != Provider::Cloudflare {
-        return Err(bad(
-            "relay rename requires hosted Cloudflare metadata; Convex registry names are separate",
-        ));
-    }
     let stored = native_credential()?;
     stored.relay_request("relay:renameDevice", &json!({"name":name.trim()}))
 }
@@ -1167,29 +728,12 @@ pub fn add(
     name: &str,
     device_id: &str,
     fingerprint: &str,
-    grant_id: Option<&str>,
 ) -> Result<Value> {
     valid(name)?;
     valid(device_id)?;
     initialize()?;
     let owner = relay_account()?.owner;
-    let device: Device = if let Some(grant) = grant_id {
-        valid(grant)?;
-        let view = admin_call("grants:get", json!({"grantId":grant}), true)?;
-        if view["access"] != "active" {
-            return Err(bad("grant is not active"));
-        }
-        let local = keys(&owner)?.device;
-        let (own, remote) = if view["aOwner"] == owner {
-            (&view["aBundle"], &view["bBundle"])
-        } else {
-            (&view["bBundle"], &view["aBundle"])
-        };
-        if *own != json!(local) {
-            return Err(bad("grant does not pin this agent's current keys"));
-        }
-        serde_json::from_value(remote.clone()).map_err(bad)?
-    } else {
+    let device: Device = {
         let owner_for_query = owner.clone();
         let device_id = device_id.to_string();
         runtime(async move {
@@ -1198,7 +742,7 @@ pub fn add(
         })?
     };
     device.verify()?;
-    if (grant_id.is_none() && device.owner != owner)
+    if device.owner != owner
         || device.device_id != device_id
         || device.fingerprint() != fingerprint
     {
@@ -1218,7 +762,7 @@ pub fn add(
             let pin = Paired {
                 device,
                 deployment: deployment()?,
-                grant_id: grant_id.map(String::from),
+                grant_id: None,
             };
             let path = peer_path(name)?;
             if path.exists() {
@@ -1234,7 +778,7 @@ pub fn add(
             }
             write(&path, &pin)?;
             Ok(
-                json!({"peer":name,"transport":Provider::selected()?.transport(),"device_id":device_id,"fingerprint":fingerprint}),
+                json!({"peer":name,"transport":"cloudflare","device_id":device_id,"fingerprint":fingerprint}),
             )
         },
     )
@@ -1423,7 +967,7 @@ pub fn send_as(
         let response = post(&mut client, &path, &outgoing).await?;
         let (_, observed) = find_outgoing(&owner, &outgoing.envelope.message_id)?;
         let state = if observed.state != State::Queued { json!(observed.state) } else { response["state"].clone() };
-        Ok(json!({"peer":name,"transport":Provider::selected()?.transport(),"message_id":outgoing.envelope.message_id,"idempotency_key":outgoing.envelope.idempotency_key,"state":state,"expires_at":outgoing.envelope.expires_at,"pickup":"live relay; hooks/MCP must consume local inbox"}))
+        Ok(json!({"peer":name,"transport":"cloudflare","message_id":outgoing.envelope.message_id,"idempotency_key":outgoing.envelope.idempotency_key,"state":state,"expires_at":outgoing.envelope.expires_at,"pickup":"live relay; hooks/MCP must consume local inbox"}))
     }).map_err(|e| EverettError::new(e.code, format!("{}; idempotency key {key}. A local retry record exists, but relay queueing is not confirmed.",e.message)))
 }
 
@@ -1996,7 +1540,7 @@ async fn reconcile(client: &mut RelayClient, keys: &Keys, rejected: &mut Rejecte
             && ((!out.posted && out.envelope.expires_at > milliseconds())
                 || (out.posted && out.reply_pending.is_some()))
         {
-            let pin = if client.is_native() && out.envelope.recipient_owner == keys.device.owner && out.envelope.grant_id.is_none() {
+            let pin = if out.envelope.recipient_owner == keys.device.owner && out.envelope.grant_id.is_none() {
                 active_same_owner_device(client, &keys.device.owner, &out.envelope.to_device).await.map(|device| (device, None))
             } else {
                 paired(&out.peer, &keys.device.owner).map(|pin| (pin.device, pin.grant_id))
@@ -2076,7 +1620,7 @@ async fn publish_staged(
         // A stale sender pin or invalid destination is specific to this row,
         // not evidence that our own agent has been revoked.
         eprintln!("everett relay: staged row not published: {}", error.message);
-        if client.is_native() && error.code == 6 { return Ok(()); }
+        if error.code == 6 { return Ok(()); }
         remove_stage(path, envelope)?;
         return Ok(());
     }
@@ -2129,8 +1673,7 @@ fn remove_stage(path: &Path, envelope: &Envelope) -> Result<()> {
     Ok(())
 }
 fn denied(error: &EverettError) -> bool {
-    error.message.contains("Convex rejected the request")
-        || error.message.starts_with("Cloudflare relay denied")
+    error.message.starts_with("Cloudflare relay denied")
 }
 
 fn finish_staged(
@@ -2270,39 +1813,14 @@ async fn run_native(
 pub fn run() -> Result<Value> {
     let owner = relay_account()?.owner;
     let keys = verified_keys(&owner)?;
-    let register = register_args(&keys.device)?;
+    let register = register_args(&keys.device);
     let _guard = daemon_lock()?;
     let _lease = receiver::Lease::start(&root(), &owner, &keys.device.device_id)?;
     let ingress = root().join("ingress");
     peer::private_dir(&ingress)?;
     let outcome = tokio::runtime::Runtime::new().map_err(bad)?.block_on(async {
-        let mut client = client(&owner).await?;
-        if client.is_native() { return run_native(client, &keys, &ingress, &register).await; }
-        mutation(&mut client,"relay:register",register.clone()).await?;
-        let mut final_cursor: Option<String> = None;
-        let mut subscription = client.subscribe("relay:pending",args(json!({"deviceId":keys.device.device_id,"cursor":final_cursor}))?).await.map_err(|_| bad("Convex subscription failed"))?;
-        eprintln!("everett relay: subscribed; receiver wake and webhook follow the local owner policy");
-        let mut tick = tokio::time::interval(Duration::from_secs(1));
-        let mut rejected = RejectedCache::new();
-        loop {
-            tokio::select! {
-                error = client.tls_error() => return Err(bad(error)),
-                update = subscription.next() => {
-                    // No pending result cache: a denied subscription terminates delivery.
-                    result(update.ok_or_else(|| bad("Convex subscription ended"))?)?;
-                    tick.reset_immediately();
-                }
-                _ = tick.tick() => {
-                    let (stored,current) = account()?;
-                    if current != owner || claims(&stored.id_token)?["everett_agent"] != keys.device.device_id { return Err(bad("signed-in identity changed; restart the relay")); }
-                    let cursor = receive(&mut client, &keys, &ingress, &register, &mut rejected).await?;
-                    if final_cursor != cursor {
-                        subscription = client.subscribe("relay:pending",args(json!({"deviceId":keys.device.device_id,"cursor":cursor}))?).await.map_err(|_| bad("Convex subscription failed"))?;
-                        final_cursor = cursor;
-                    }
-                }
-            }
-        }
+        let client = client(&owner).await?;
+        run_native(client, &keys, &ingress, &register).await
     });
     if outcome.as_ref().err().is_some_and(denied) {
         for path in crate::paths::glob(&ingress, "*.json") {

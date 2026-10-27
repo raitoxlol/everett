@@ -45,7 +45,7 @@ host-bound caller's session. `authors` returns author cards; `directory` retains
 the old key-bundle listing (`devices` is an alias). To update a shared card, expose the session again.
 To withdraw it, run `everett relay expose SESSION --remove`. Existing exposure
 persists until withdrawal or revocation; its update time is not live presence.
-Cloudflare and Convex both require the new backend APIs to be deployed. An old
+Cloudflare requires the new backend APIs to be deployed. An old
 backend produces an explicit unavailable-directory notice, not a fabricated list.
 
 ## Explicit queue exceptions

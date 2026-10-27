@@ -1,7 +1,0 @@
-{
-  "name": "everett-dev-login",
-  "private": true,
-  "type": "module",
-  "engines": { "node": ">=24" },
-  "dependencies": { "oidc-provider": "9.12.2" }
-}
