@@ -3,6 +3,32 @@ mod common;
 use common::{fixture, jsonl, mcp_calls, tool_json, Fixture};
 use serde_json::{json, Value};
 
+#[test]
+fn remote_default_ping_never_falls_back_to_a_queue() {
+    let fx = fixture();
+    let out = fx.run(&["send", "ping now", "--to", "id:agent/claude/remote"]);
+    assert_eq!(out.status.code(), Some(4));
+    assert!(String::from_utf8_lossy(&out.stderr).contains("Nothing was queued"));
+    let result = mcp_calls(&fx, &[], &[("EVERETT_SESSION_ID", "sender")], &[("everett_send",
+        json!({"to":"id:agent/claude/remote","text":"ping now"}))]);
+    assert_eq!(result[0]["isError"], true);
+    assert!(result[0].to_string().contains("Nothing was queued"));
+    assert!(!fx.home().join(".everett/peer/outgoing").exists());
+    assert!(!fx.home().join(".everett/inbox/remote.jsonl").exists());
+}
+
+#[test]
+fn exposure_cannot_use_an_unbound_or_forged_mcp_caller() {
+    let fx = fixture();
+    let unbound = mcp_calls(&fx, &[], &[], &[("everett_agent_relay", json!({"action":"expose"}))]);
+    assert!(unbound[0].to_string().contains("host-bound"));
+    let forged = mcp_calls(&fx, &[], &[("EVERETT_SESSION_ID", "sender")], &[("everett_agent_relay",
+        json!({"action":"expose","session_id":"victim"}))]);
+    assert_eq!(forged[0]["isError"], true, "{}", forged[0]);
+    assert!(forged[0].to_string().contains("conflicts"), "{}", forged[0]);
+    assert!(!fx.home().join(".everett/relay").exists());
+}
+
 fn live_target() -> Fixture {
     let fx = fixture();
     fx.write(
@@ -31,7 +57,7 @@ fn automatic_cli_send_refuses_passive_delivery_without_enqueuing() {
         "policy-target",
         "--json",
     ]);
-    assert_eq!(out.status.code(), Some(4));
+    assert_eq!(out.status.code(), Some(4), "{}", String::from_utf8_lossy(&out.stderr));
     let error = String::from_utf8_lossy(&out.stderr);
     assert!(error.contains("Nothing was queued"), "{error}");
     assert!(error.contains("--mode inbox"), "{error}");

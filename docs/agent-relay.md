@@ -14,7 +14,9 @@ silently migrate an existing deployment or discard revocation/replay records.
 Run `everett relay` on each registered device. Same-owner Cloudflare devices verify
 active signed bundles through the authenticated service without manual pins.
 Call `everett_agent_relay` with `{"action":"names"}` to discover hosted names.
-Send through `everett_send` to `Max NUC/codex/SESSION_ID` using a unique name.
+Send through `everett_send` to `Max NUC/codex/SESSION_ID` using a unique name and
+explicit `mode: "inbox"` for the legacy remote transport. The default is `ping`;
+remote transports currently return an unavailable-ping error instead of queueing.
 An exact `id:DEVICE_ID/HARNESS/SESSION_ID` selector works without name metadata.
 Duplicate or incomplete name directories fail closed. Names select an ID; they do
 not replace signed device identity. Existing SSH aliases retain their transport.
@@ -26,6 +28,16 @@ fingerprints. OIDC/Convex retains the manual pairing flow below.
 
 Receiver wake support is separate from device trust. See
 [agent support and wake](agent-support.md).
+
+## Discover authors and session cards
+
+After registration, `everett_agent_relay` with `{"action":"expose"}` shares only
+the host-bound caller's session and card. `{"action":"authors"}` lists opted-in
+account peers with authenticated author, agent and session tags, card text, update
+time, and an exact target selector. Discovery requires no pairing. Cards are
+plaintext account-visible metadata, not encrypted message bodies or live presence.
+`{"action":"withdraw"}` removes the caller's advertisement. Exposure is bounded
+to 32 sessions per agent. An updated Cloudflare Worker or Convex deployment is required.
 
 ## Register and pin
 
@@ -39,8 +51,8 @@ receiver policies control wake actions. Within the agent's Everett MCP connectio
 ```
 
 Call `everett_agent_relay` with each object. Identity/registration require the owner's
-OIDC login and deployment-side provisioning. Directory lists registered, active agents
-only within the authenticated namespace. Exchange full public bundles and fingerprints
+OIDC login and deployment-side provisioning. `directory` lists registered, active agents
+only within the authenticated namespace (`devices` remains an alias). Exchange full public bundles and fingerprints
 out of band; a registry response alone is not trust. Pin the other agent:
 
 ```json

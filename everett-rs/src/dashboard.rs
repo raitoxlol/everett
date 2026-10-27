@@ -201,7 +201,15 @@ fn dispatch(request: &Request, hours: f64, port: u16) -> (u16, &'static str, Str
                     }
                 }
             }
-            (200, "text/html; charset=utf-8", render(&sessions, hours, now()))
+            let (authors, note) = if crate::relay::signed_in_owner().is_ok() {
+                match crate::messaging::authors() {
+                    Ok(cards) => (cards, String::new()),
+                    Err(error) => (Vec::new(), format!("Authenticated directory unavailable: {}", error.message)),
+                }
+            } else {
+                (Vec::new(), "Sign in and run everett relay expose SESSION to share an author/session card. Local sessions below are not authenticated peer advertisements.".into())
+            };
+            (200, "text/html; charset=utf-8", render_with_authors(&sessions, &authors, &note, hours, now()))
         }
         "/healthz" => (200, "text/plain; charset=utf-8", "ok\n".to_string()),
         "/favicon.ico" => (204, "image/x-icon", String::new()),
@@ -224,6 +232,20 @@ fn allowed_host(host: Option<&str>, port: u16) -> bool {
 }
 
 pub fn render(sessions: &[Session], hours: f64, at: f64) -> String {
+    render_with_authors(sessions, &[], "", hours, at)
+}
+
+pub fn render_with_authors(sessions: &[Session], authors: &[crate::messaging::AuthorCard], directory_note: &str, hours: f64, at: f64) -> String {
+    let authored = if authors.is_empty() {
+        "<p>No exposed authenticated sessions. Exposure is opt-in; pairing is not required.</p>".into()
+    } else {
+        authors.iter().map(|card| {
+            let command = format!("everett send \"Your message\" --to {}", crate::proc::shlex_quote(&card.target));
+            format!(r#"<article class="author-card"><div class="author-tags"><span>Author: {}</span><span>Agent: {}</span><span>Session: {}</span><span>{}</span></div><p>{}</p><small>Authenticated account exposure · updated {}</small><div class="command"><code>{}</code><button type="button" data-copy="{}">Copy ping command</button></div><p class="command-note">Ping requires an immediate transport. No queue fallback; use --mode inbox only for legacy delivery.</p></article>"#,
+                html(&card.author), html(&card.agent), html(&card.session), html(&card.harness), html(&card.card), html(&ago(card.updated_at / 1000.0, at)), html(&command), attr(&command))
+        }).collect::<String>()
+    };
+    let directory_note = html(directory_note);
     let active = sessions.iter().filter(|session| session.running).count();
     let attention = sessions
         .iter()
@@ -283,7 +305,7 @@ pub fn render(sessions: &[Session], hours: f64, at: f64) -> String {
   </aside>
   <main id="top">
     <header class="page-head">
-      <div><h1>Recent sessions</h1><p>One local view of every agent Everett can see.</p></div>
+      <div><h1>Agents &amp; sessions</h1><p>Accounted authors first. Device pairing is a transport detail.</p></div>
       <button class="refresh" type="button" onclick="location.reload()">Refresh</button>
     </header>
     <section class="dispatch-summary" aria-label="Session summary">
@@ -292,6 +314,7 @@ pub fn render(sessions: &[Session], hours: f64, at: f64) -> String {
       <div class="attention"><strong>{attention}</strong><span>need attention</span></div>
       <div><strong>{cards}</strong><span>with Everett cards</span></div>
     </section>
+    <section class="workspace" id="authors" aria-label="Authenticated authors"><div class="workspace-head"><div><h2>Exposed author cards</h2><p>Authenticated account peers · no manual pairing · <code>everett relay authors</code></p></div></div><p>{directory_note}</p><div class="author-cards">{authored}</div></section>
     <section class="workspace" id="sessions">
       <div class="workspace-head">
         <div><h2>Session manifest</h2><p id="visible-count" aria-live="polite">{} shown</p></div>
@@ -340,7 +363,7 @@ fn session_row(session: &Session, index: usize, at: f64) -> String {
     let card_source = session.card_source.as_deref().unwrap_or("none");
     let status = status_label(session);
     let command = format!(
-        "everett send \"Your message\" --to {} --mode inbox",
+        "everett send \"Your message\" --to {}",
         crate::proc::shlex_quote(&session.id)
     );
     let events = format!(
@@ -370,14 +393,14 @@ fn session_row(session: &Session, index: usize, at: f64) -> String {
   <div class="route-stop" aria-hidden="true"><span>{}</span></div>
   <details>
     <summary>
-      <span class="session-main"><span class="harness">{}</span><strong>{}</strong><span class="summary-text">{}</span></span>
+      <span class="session-main"><span class="harness">{}</span><span class="author-tags"><span>Agent: local · {}</span><span>Session: {}</span></span><strong>{}</strong><span class="summary-text">{}</span></span>
       <span class="session-meta"><span class="status">{}</span><time>{}</time><span class="chevron" aria-hidden="true"></span></span>
     </summary>
     <div class="session-detail">
       <div class="card-copy"><span>Everett card · {}</span><p>{}</p></div>
       <dl><div><dt>Provider harness</dt><dd>{}</dd></div><div><dt>Session ID</dt><dd>{}</dd></div><div><dt>Working directory</dt><dd>{}</dd></div><div><dt>Source</dt><dd>{}</dd></div><div><dt>Latest event</dt><dd>{}</dd></div></dl>
       {commands}
-      <p class="command-note">The send command queues an inbox message when you run it. Pickup depends on hooks or polling. Route and events commands are read-only.</p>
+      <p class="command-note">The send command pings immediately or reports an unavailable transport. There is no queue-only fallback. Add --mode inbox only for legacy hooks or polling. Route and events commands are read-only.</p>
     </div>
   </details>
 </article>"#,
@@ -386,6 +409,8 @@ fn session_row(session: &Session, index: usize, at: f64) -> String {
         attr(filter_state(session)),
         index + 1,
         html(label),
+        html(&session.harness),
+        html(&session.id),
         html(&project),
         html(summary),
         html(status),

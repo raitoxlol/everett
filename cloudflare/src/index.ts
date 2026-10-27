@@ -10,7 +10,7 @@ export interface Env {
   AUTH_STATE?: DurableObjectNamespace<HostedAuth>;
   EVERETT_ISSUER?: string;
 }
-export const operations = ['whoami', 'register', 'device', 'devices', 'credentials', 'memberships', 'revokeAgent', 'revokeMember', 'rotate', 'enqueue', 'pending', 'accept', 'observe', 'status'] as const;
+export const operations = ['whoami', 'register', 'device', 'devices', 'exposeSession', 'sessionDirectory', 'credentials', 'memberships', 'revokeAgent', 'revokeMember', 'rotate', 'enqueue', 'pending', 'accept', 'observe', 'status'] as const;
 export type Operation = typeof operations[number];
 
 function hostedVerifier(env: Env): PrincipalVerifier {

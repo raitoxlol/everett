@@ -5,7 +5,7 @@ import {
 import { v } from "convex/values";
 import { deviceValidator, envelopeValidator, observationValidator, roleValidator } from "./schema";
 import {
-  authorize, ownAgent, requireAdmin, activeDevice, bundle, namespace,
+  authorize, ownAgent, requireAdmin, activeDevice, InactiveDeviceError, bundle, namespace,
   type Context, type WriteContext,
 } from "./authorization";
 import {
@@ -15,6 +15,54 @@ import {
 import { allowedGrant } from "./grants";
 import { named } from "./registry";
 export { deviceBytes, envelopeBytes } from "./protocol";
+
+export const exposeSession = mutation({
+  args: { session: v.string(), harness: v.string(), card: v.string(), remove: v.optional(v.boolean()) },
+  handler: async (ctx: WriteContext, args) => {
+    const p = await authorize(ctx);
+    await activeDevice(ctx, p.owner, p.agentId);
+    identifier(args.session); identifier(args.harness);
+    if (args.card.length > 640) throw new Error("Session card exceeds 640 characters");
+    const previous = await ctx.db.query("sessionCards").withIndex("by_session", q =>
+      q.eq("owner", p.owner).eq("agentId", p.agentId).eq("session", args.session)).unique();
+    if (args.remove) {
+      if (previous) await ctx.db.delete(previous._id);
+      return null;
+    }
+    const value = { owner: p.owner, agentId: p.agentId, session: args.session,
+      harness: args.harness, card: args.card, updatedAt: Date.now() };
+    if (previous) await ctx.db.replace(previous._id, value);
+    else {
+      const cards = await ctx.db.query("sessionCards").withIndex("by_agent", q =>
+        q.eq("owner", p.owner).eq("agentId", p.agentId)).take(32);
+      if (cards.length >= 32) throw new Error("Withdraw a session before exposing another (limit 32)");
+      await ctx.db.insert("sessionCards", value);
+    }
+    return null;
+  },
+});
+
+export const sessionDirectory = query({
+  args: { cursor: v.optional(v.union(v.null(), v.string())) },
+  handler: async (ctx: Context, { cursor }) => {
+    const p = await authorize(ctx);
+    await activeDevice(ctx, p.owner, p.agentId);
+    const page = await ctx.db.query("sessionCards").withIndex("by_owner", q =>
+      q.eq("owner", p.owner)).paginate({ numItems: 32, cursor: cursor ?? null });
+    const sessions = [];
+    for (const row of page.page) {
+      try { await activeDevice(ctx, row.owner, row.agentId); }
+      catch (error) { if (error instanceof InactiveDeviceError) continue; throw error; }
+      const credential = await ctx.db.query("credentials").withIndex("by_agent", q =>
+        q.eq("issuer", p.credential.issuer).eq("agentId", row.agentId)).unique();
+      if (!credential) continue;
+      sessions.push({ owner: row.owner, author: credential.subject, agent: row.agentId,
+        session: row.session, harness: row.harness, card: row.card, updated_at: row.updatedAt,
+        target: `id:${row.agentId}/${row.harness}/${row.session}` });
+    }
+    return { sessions, isDone: page.isDone, continueCursor: page.continueCursor };
+  },
+});
 
 // Deployment-privileged control plane, NOT a public JWT-callable function. Provision only after
 // authoritative issuer verification; the issuer must never source these claims from user metadata.

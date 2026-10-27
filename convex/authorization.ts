@@ -39,21 +39,22 @@ export function requireAdmin(p: Principal) {
 export function ownAgent(p: Principal, deviceId: string) {
   if (deviceId !== p.agentId) throw new Error("JWT agent does not match device");
 }
+export class InactiveDeviceError extends Error {}
 export async function activeDevice(ctx: Context, owner: string, deviceId: string) {
   identifier(deviceId);
   const row = await ctx.db.query("devices").withIndex("by_owner_device", (q) =>
     q.eq("owner", owner).eq("deviceId", deviceId)).unique();
-  if (!row) throw new Error("Device is not registered");
-  if (row.revokedAt != null) throw new Error("Device revoked");
+  if (!row) throw new InactiveDeviceError("Device is not registered");
+  if (row.revokedAt != null) throw new InactiveDeviceError("Device revoked");
   // Read both authoritative rows on EVERY access, including subscriptions to other agents.
   const parts: unknown = JSON.parse(owner);
   if (!Array.isArray(parts) || typeof parts[0] !== "string") throw new Error("Invalid owner namespace");
   const credential = await ctx.db.query("credentials").withIndex("by_agent", (q) =>
     q.eq("issuer", parts[0] as string).eq("agentId", deviceId)).unique();
-  if (!credential || credential.owner !== owner || credential.status !== "active") throw new Error("Agent credential revoked");
+  if (!credential || credential.owner !== owner || credential.status !== "active") throw new InactiveDeviceError("Agent credential revoked");
   const member = await ctx.db.query("memberships").withIndex("by_identity", (q) =>
     q.eq("owner", owner).eq("issuer", credential.issuer).eq("subject", credential.subject)).unique();
-  if (!member || member.status !== "active") throw new Error("Organization membership denied");
+  if (!member || member.status !== "active") throw new InactiveDeviceError("Organization membership denied");
   return row;
 }
 export function bundle(d: Device): Device {

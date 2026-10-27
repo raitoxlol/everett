@@ -6,7 +6,7 @@ const SPAWNABLE: &[&str] = &["claude", "codex", "omp", "pi", "hermes", "grok", "
 const ROUTERS: &[&str] = &["local", "jev"];
 const EVENT_KINDS: &[&str] = &["done", "blocked", "needs-input", "info"];
 const SCOPES: &[&str] = &["global", "project"];
-const MODES: &[&str] = &["auto", "inbox", "resume"];
+const MODES: &[&str] = everett::send::MODES;
 const LLMS: &[&str] = &["claude", "codex", "none"];
 const HARNESSES: &[&str] = &[
     "claude",
@@ -176,8 +176,8 @@ enum Cmd {
         /// harness for --spawn (default: config default_harness, else claude)
         #[arg(long, value_parser = clap::builder::PossibleValuesParser::new(SPAWNABLE.to_vec()))]
         harness: Option<String>,
-        /// auto (default): headless resume when safe; passive inbox delivery requires --mode inbox
-        #[arg(long, value_parser = clap::builder::PossibleValuesParser::new(MODES.to_vec()), default_value = "auto")]
+        /// ping (default): immediate delivery or an explicit error; inbox is legacy queue-only delivery
+        #[arg(long, value_parser = clap::builder::PossibleValuesParser::new(MODES.to_vec()), default_value = "ping")]
         mode: String,
         /// inbox mode: wait up to S seconds for the reply
         #[arg(long, value_name = "S", default_value_t = 0.0)]
@@ -490,10 +490,20 @@ fn peer_output(result: everett::error::Result<serde_json::Value>) -> i32 {
 
 #[derive(Subcommand)]
 enum RelayCmd {
+    /// list exposed, authenticated author/session cards in this account (no pairing)
+    Authors,
+    /// expose one exact local session and its card to authenticated account peers
+    Expose {
+        session: String,
+        #[arg(long)]
+        harness: Option<String>,
+        #[arg(long)]
+        remove: bool,
+    },
     /// register this device and print its public bundle and fingerprint
     Register,
     /// list signed bundles; use --names for advisory hosted device labels
-    #[command(alias = "credentials")]
+    #[command(aliases = ["credentials", "directory"])]
     Devices {
         /// readable labels with IDs/fingerprints; never changes pairing selectors
         #[arg(long, conflicts_with = "json")]
@@ -748,6 +758,8 @@ fn main() {
             }
         },
         Cmd::Relay { action } => match action {
+            Some(RelayCmd::Authors) => peer_output(everett::messaging::authors().map(|sessions| serde_json::json!({"sessions":sessions}))),
+            Some(RelayCmd::Expose { session, harness, remove }) => peer_output(everett::messaging::expose_id(&session, harness.as_deref(), remove)),
             None => peer_output(everett::relay::run()),
             Some(RelayCmd::Register) => peer_output(everett::relay::register()),
             Some(RelayCmd::Devices { names: true, .. }) => match everett::relay::device_names() {

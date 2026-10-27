@@ -4,6 +4,7 @@ import { afterEach, describe, expect, test, vi } from "vitest";
 import nacl from "tweetnacl";
 import schema from "../schema";
 import { namespace } from "../authorization";
+import * as authorization from "../authorization";
 import { queuedAttemptCount } from "../relay";
 import { metadataBytes } from "../registry";
 import { aadBytes, deviceBytes, sshBindingBytes, envelopeBytes, fingerprint, observationBytes, rotationBytes, hexString, type Envelope } from "../protocol";
@@ -83,6 +84,57 @@ async function expectRoutingDenied(f: Fixture, client: Fixture["a"] | Fixture["b
 }
 
 describe("actual Convex functions, offline", () => {
+  test("author directory propagates unexpected active-device failures", async () => {
+    const f = await fixture();
+    await f.c.mutation(ref("exposeSession"), { session: "session-c", harness: "claude", card: "available" });
+    const activeDevice = authorization.activeDevice;
+    vi.spyOn(authorization, "activeDevice").mockImplementation(async (ctx, owner, agent) => {
+      if (agent === "agent-c") throw new Error("device database unavailable");
+      return activeDevice(ctx, owner, agent);
+    });
+    await expect(f.a.query(query("sessionDirectory"), {})).rejects.toThrow("device database unavailable");
+  });
+  test("session cards expose authenticated authors without pairings and isolate owners", async () => {
+    const f = await fixture();
+    const card = { session: "session-c", harness: "codex", card: "reviewing messaging" };
+    expect((await f.a.query(query("sessionDirectory"), {})).sessions).toEqual([]);
+    await f.c.mutation(ref("exposeSession"), card);
+    const rows = (await f.a.query(query("sessionDirectory"), {})).sessions;
+    expect(rows).toEqual([expect.objectContaining({ author: "alice-member", agent: "agent-c", ...card,
+      target: "id:agent-c/codex/session-c", owner: ownerA })]);
+    expect((await f.b.query(query("sessionDirectory"), {})).sessions).toEqual([]);
+    await expect(f.c.mutation(ref("exposeSession"), { ...card, author: "alice" })).rejects.toThrow();
+    await f.a.mutation(ref("exposeSession"), { ...card, remove: true });
+    expect((await f.a.query(query("sessionDirectory"), {})).sessions).toHaveLength(1);
+    await f.c.mutation(ref("exposeSession"), { ...card, card: "updated" });
+    expect((await f.a.query(query("sessionDirectory"), {})).sessions[0].card).toBe("updated");
+    await f.c.mutation(ref("exposeSession"), { ...card, remove: true });
+    expect((await f.a.query(query("sessionDirectory"), {})).sessions).toEqual([]);
+    await expect(f.c.mutation(ref("exposeSession"), { ...card, card: "x".repeat(641) })).rejects.toThrow();
+  });
+
+  test("directory rechecks revoked callers and advertised author credentials", async () => {
+    const f = await fixture();
+    await f.c.mutation(ref("exposeSession"), { session: "session-c", harness: "claude", card: "available" });
+    await f.a.mutation(ref("revokeAgent"), { deviceId: "agent-c" });
+    expect((await f.a.query(query("sessionDirectory"), {})).sessions).toEqual([]);
+    await expect(f.c.query(query("sessionDirectory"), {})).rejects.toThrow(/revoked/);
+    await expect(f.c.mutation(ref("exposeSession"), { session: "new", harness: "claude", card: "" })).rejects.toThrow(/revoked/);
+    await expect(f.backend.query(query("sessionDirectory"), {})).rejects.toThrow(/Sign in/);
+  });
+
+  test("directory pagination and per-author exposure limits are bounded", async () => {
+    const f = await fixture();
+    for (let i = 0; i < 32; i++) await f.c.mutation(ref("exposeSession"), { session: `s-${i}`, harness: "codex", card: "" });
+    await expect(f.c.mutation(ref("exposeSession"), { session: "overflow", harness: "codex", card: "" })).rejects.toThrow(/limit 32/);
+    await f.a.mutation(ref("exposeSession"), { session: "admin", harness: "claude", card: "" });
+    const first = await f.a.query(query("sessionDirectory"), {});
+    expect(first.sessions).toHaveLength(32);
+    expect(first.isDone).toBe(false);
+    const second = await f.a.query(query("sessionDirectory"), { cursor: first.continueCursor });
+    expect(second.sessions).toHaveLength(1);
+    expect(second.isDone).toBe(true);
+  });
   test("self-revocation records a permanent device and credential tombstone", async () => {
     const f = await fixture();
     vi.spyOn(Date, "now").mockReturnValue(1700000000000);
