@@ -3,7 +3,8 @@
 ## Unreleased
 
 - Make `ping` the CLI and MCP send default. Idle local sessions run headless; verified local Claude background sessions receive an immediate native inbox nudge. Unsupported immediate transports fail instead of silently queueing. `inbox`, `auto`, and `resume` remain explicit compatibility modes.
-- Add opt-in authenticated author/session cards on Cloudflare and Convex. `relay expose SESSION`, `relay directory`, and MCP relay `expose`/`withdraw`/`directory` use credential-derived authors and agents, without device pairing for discovery. Revoked credentials and memberships disappear from directory results.
+- Add opt-in authenticated author/session cards on Cloudflare and Convex. `relay expose SESSION`, `relay authors`, and MCP relay `expose`/`withdraw`/`authors` use credential-derived authors and agents, without device pairing for discovery. MCP `directory` retains device bundles. Revoked credentials and memberships disappear from directory results; unexpected lookup failures surface as errors.
+- Keep validated native Claude ping requests durable even when preflight or attach fails, returning the retained message ID without claiming successful dispatch. Stubbed CLI/MCP tests cover native receipts, failure retention, and non-interactive stdin; legacy `--wake` remains interactive-only.
 - Show authenticated peer cards and separate agent/session tags in the local dashboard. Cards are shared plaintext metadata only after explicit exposure; message encryption, remote provenance, cross-owner grants, and read-only provider stores are unchanged. Backend deployment is required for the new directory APIs.
 
 - Add `relay devices --names` to show hosted enrollment names beside device IDs and verified fingerprints, and `relay rename NAME` to update only this device's advisory label. Original JSON bundle output and pairing/pin semantics are unchanged. Hosted metadata requires a backend update; missing labels remain explicitly unnamed.

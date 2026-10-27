@@ -57,13 +57,13 @@ fn update_card(session: &str, harness: &str, card: &str, remove: bool) -> Result
     Ok(json!({"session":session,"exposed":!remove}))
 }
 
-pub fn directory() -> Result<Vec<AuthorCard>> {
-    directory_with(|cursor| {
+pub fn authors() -> Result<Vec<AuthorCard>> {
+    authors_with(|cursor| {
         crate::relay::admin_call("relay:sessionDirectory", json!({"cursor":cursor}), true)
     })
 }
 
-fn directory_with(mut query: impl FnMut(Value) -> Result<Value>) -> Result<Vec<AuthorCard>> {
+fn authors_with(mut query: impl FnMut(Value) -> Result<Value>) -> Result<Vec<AuthorCard>> {
     let mut cards = Vec::new();
     let mut cursor = Value::Null;
     let mut seen = HashSet::new();
@@ -94,9 +94,9 @@ mod tests {
     use super::*;
 
     #[test]
-    fn directory_follows_empty_pages_and_rejects_repeated_cursors() {
+    fn authors_follows_empty_pages_and_rejects_repeated_cursors() {
         let mut calls = 0;
-        let cards = directory_with(|cursor| {
+        let cards = authors_with(|cursor| {
             calls += 1;
             assert_eq!(
                 cursor,
@@ -111,7 +111,7 @@ mod tests {
         .unwrap();
         assert!(cards.is_empty());
         assert_eq!(calls, 2);
-        assert!(directory_with(|_| Ok(
+        assert!(authors_with(|_| Ok(
             json!({"sessions":[],"isDone":false,"continueCursor":"same"})
         ))
         .is_err());

@@ -143,9 +143,9 @@ pub fn tools() -> &'static Vec<Value> {
             }),
             json!({
                 "name": "everett_agent_relay",
-                "description": "Authenticated author/session cards: directory lists opted-in account peers without pairing; expose/withdraw publishes/removes only this host-bound caller's session and card. Author and agent identity come from credentials, never tool arguments. devices retains the legacy key-bundle listing. Identity, registration, names and revocation remain available. Cross-owner transport still requires grants and pins. Run everett relay separately to receive legacy inbox messages.",
+                "description": "Authenticated author/session cards: authors lists opted-in account peers without pairing; expose/withdraw publishes/removes only this host-bound caller's session and card. Author and agent identity come from credentials, never tool arguments. directory lists device key bundles; devices is an alias. Identity, registration, names and revocation remain available. Cross-owner transport still requires grants and pins. Run everett relay separately to receive legacy inbox messages.",
                 "inputSchema": {"type":"object","properties":{
-                    "action":{"type":"string","enum":["identity","register","directory","devices","expose","withdraw","names","pair","unpair","credentials","memberships","revoke-membership","revoke-agent","revoke-credential"]},
+                    "action":{"type":"string","enum":["identity","register","directory","devices","authors","expose","withdraw","names","pair","unpair","credentials","memberships","revoke-membership","revoke-agent","revoke-credential"]},
                     "id":s("Provisioned agent ID; for revoke-membership, exact provider subject; for unpair, alias."),
                     "name":s("Optional local relay alias for pair; defaults to the agent ID."),
                     "grant_id":s("Required for cross-org pairing; active bilateral named-agent grant."),
@@ -1293,8 +1293,8 @@ fn call_handler(
                 match action.as_str() {
                     "identity" => crate::relay::admin_call("relay:whoami", json!({}), true)?,
                     "register" => crate::relay::register()?,
-                    "directory" => json!({"sessions":crate::messaging::directory()?}),
-                    "devices" => crate::relay::devices()?,
+                    "authors" => json!({"sessions":crate::messaging::authors()?}),
+                    "directory" | "devices" => crate::relay::devices()?,
                     "expose" | "withdraw" => {
                         let (caller, bound) = caller_session(args, identity)?;
                         if !bound { return Err(ToolFailure::Params("Session exposure requires a host-bound MCP caller".into())); }

@@ -20,7 +20,7 @@ fn authored_session_directory_and_exposure_use_native_authenticated_operations()
     f.write(".everett/cards/c-1.md", "Shared session card");
     let out = f.run(&["relay", "expose", "c-1", "--harness", "claude"]);
     assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
-    let out = f.run(&["relay", "directory"]);
+    let out = f.run(&["relay", "authors"]);
     assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
     let rows: Value = serde_json::from_slice(&out.stdout).unwrap();
     assert_eq!(rows["sessions"][0]["author"], "account-author");
@@ -31,6 +31,45 @@ fn authored_session_directory_and_exposure_use_native_authenticated_operations()
     assert_eq!(calls.iter().filter(|path| path.as_str() == "/v2/relay/sessionDirectory").count(), 2);
     assert_eq!(calls.iter().filter(|path| path.as_str() == "/v2/relay/exposeSession").count(), 2);
     assert!(!calls.iter().any(|path| path == "/v2/relay/devices"));
+}
+
+#[test]
+fn mcp_directory_keeps_device_bundles_and_authors_is_separate() {
+    let f = fixture();
+    let server = Server::new();
+    server.configure(&f);
+    let calls = common::mcp_calls(&f, &[], &[], &[
+        ("everett_agent_relay", json!({"action":"directory"})),
+        ("everett_agent_relay", json!({"action":"authors"})),
+    ]);
+    assert_ne!(calls[0]["isError"], true, "{}", calls[0]);
+    let devices = common::tool_json(&calls[0]);
+    let bundles = devices.get("result").unwrap_or(&devices);
+    assert!(bundles.is_array(), "{devices}");
+    assert_eq!(bundles[0]["deviceId"], "synthetic-agent");
+    assert_ne!(calls[1]["isError"], true, "{}", calls[1]);
+    let authors = common::tool_json(&calls[1]);
+    assert_eq!(authors["sessions"][0]["author"], "account-author");
+    let paths = server.calls.lock().unwrap();
+    assert_eq!(paths.iter().filter(|p| *p == "/v2/relay/devices").count(), 1);
+    assert_eq!(paths.iter().filter(|p| *p == "/v2/relay/sessionDirectory").count(), 2);
+    drop(paths);
+    let cli = f.run(&["relay", "directory"]);
+    assert!(cli.status.success());
+    let bundles: Value = serde_json::from_slice(&cli.stdout).unwrap();
+    assert_eq!(bundles.get("result").unwrap_or(&bundles)[0]["deviceId"], "synthetic-agent");
+}
+
+#[test]
+fn cli_authors_lists_session_cards_without_fetching_device_bundles() {
+    let f = fixture();
+    let server = Server::new();
+    server.configure(&f);
+    let out = f.run(&["relay", "authors"]);
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let authors: Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(authors["sessions"][0]["author"], "account-author");
+    assert!(!server.calls.lock().unwrap().iter().any(|p| p == "/v2/relay/devices"));
 }
 
 #[test]
