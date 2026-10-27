@@ -1205,7 +1205,7 @@ fn imported_external_inbox_posts_one_webhook_without_the_message_text() {
         },
     )
     .unwrap();
-    crate::adapters::external::register("ext-grok-acceptance", "grok-bot", "Grok", "/work", false)
+    crate::adapters::external::register("ext-grok-acceptance", "grok-bot", "Grok", "/work", None, false)
         .unwrap();
     let bearer = home.path().join("webhook.key");
     fs::write(&bearer, "test-sender-key-0123456789").unwrap();

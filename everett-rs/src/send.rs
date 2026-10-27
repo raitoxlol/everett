@@ -738,8 +738,15 @@ pub fn sender_info_as(caller: Option<&str>, caller_harness: Option<&str>) -> Map
 }
 
 /// Queue `text` in a running session's inbox; optionally wait for its reply.
-pub fn send_inbox(session: &Session, text: &str, wait: f64, caller: Option<&str>, poll: f64) -> Result<Map<String, Value>> {
-    send_inbox_as(session, text, wait, caller, None, poll)
+pub fn send_inbox(
+    session: &Session,
+    text: &str,
+    wait: f64,
+    caller: Option<&str>,
+    poll: f64,
+    key: Option<&str>,
+) -> Result<Map<String, Value>> {
+    send_inbox_as(session, text, wait, caller, None, poll, key)
 }
 
 pub fn send_inbox_as(
@@ -749,9 +756,38 @@ pub fn send_inbox_as(
     caller: Option<&str>,
     caller_harness: Option<&str>,
     poll: f64,
+    key: Option<&str>,
 ) -> Result<Map<String, Value>> {
     if !wait.is_finite() || wait < 0.0 {
         return Err(EverettError::new(2, "--wait must be a finite number of seconds, 0 or more."));
+    }
+    if external::is_external(&session.harness) {
+        if let Some(target) = external::device_target(&session.id) {
+            let out = crate::peer::send_as(&target, text, key, caller, caller_harness)?;
+            let reply_inbox = sender_info_as(caller, caller_harness)
+                .get("sender")
+                .and_then(|v| v.as_str())
+                .unwrap_or(inbox::HUMAN)
+                .to_string();
+            let mut result = Map::new();
+            result.insert("mode".into(), json!("inbox"));
+            result.insert("queued".into(), json!(true));
+            result.insert("delivered".into(), json!(false));
+            result.insert("external".into(), json!(true));
+            result.insert("hooked".into(), json!(false));
+            result.insert("wake".into(), json!(false));
+            result.insert("transport".into(), json!("relay"));
+            result.insert("peer".into(), out.get("peer").cloned().unwrap_or(Value::Null));
+            result.insert("relay_state".into(), out.get("state").cloned().unwrap_or(json!("queued")));
+            result.insert("message_id".into(), out.get("message_id").cloned().unwrap_or(Value::Null));
+            result.insert("idempotency_key".into(), out.get("idempotency_key").cloned().unwrap_or(Value::Null));
+            result.insert("reply_inbox".into(), json!(reply_inbox));
+            result.insert("reply".into(), Value::Null);
+            result.insert("pickup_note".into(), json!(
+                "Queued on the relay; the remote device picks it up and replies arrive via the relay listener. Poll: everett peer status <peer> <message id>."
+            ));
+            return Ok(result);
+        }
     }
     let who = sender_info_as(caller, caller_harness);
     let sender = who.get("sender").and_then(|v| v.as_str()).unwrap_or(inbox::HUMAN);

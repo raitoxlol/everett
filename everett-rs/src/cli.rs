@@ -9,8 +9,8 @@ use serde_json::{json, Map, Value};
 
 use crate::session::{now, project_label, Session};
 
-pub fn cmd_external_add(id: &str, harness: &str, title: &str, cwd: &str, replace: bool) -> i32 {
-    match crate::adapters::external::register(id, harness, title, cwd, replace) {
+pub fn cmd_external_add(id: &str, harness: &str, title: &str, cwd: &str, device: Option<&str>, replace: bool) -> i32 {
+    match crate::adapters::external::register(id, harness, title, cwd, device, replace) {
         Ok(record) => {
             println!("{}", serde_json::to_string(&record).unwrap());
             0
@@ -707,7 +707,7 @@ fn send_wake_cmd(args: &Args, r: &Map<String, Value>, session: &Session, label: 
             return error.code;
         }
     };
-    let queued = match crate::send::send_inbox(session, args.text.as_deref().unwrap_or(""), 0.0, None, 1.0) {
+    let queued = match crate::send::send_inbox(session, args.text.as_deref().unwrap_or(""), 0.0, None, 1.0, None) {
         Ok(result) => result,
         Err(error) => {
             eprintln!("everett: {}", error.message);
@@ -823,7 +823,7 @@ fn send_inbox_cmd(args: &Args, r: &Map<String, Value>, session: &Session, label:
         eprintln!("everett: --wait must be a finite number of seconds, 0 or more.");
         return 2;
     }
-    let result = match crate::send::send_inbox(session, args.text.as_deref().unwrap_or(""), args.wait, None, 1.0) {
+    let result = match crate::send::send_inbox(session, args.text.as_deref().unwrap_or(""), args.wait, None, 1.0, args.idempotency_key.as_deref()) {
         Ok(r) => r,
         Err(e) => {
             eprintln!("everett: {}", e.message);

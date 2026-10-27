@@ -72,10 +72,33 @@ replacement for revoking connector credentials or deleting a provider routine.
 The existing inbox TTL still applies: pending messages older than seven days
 are not returned. Durable registration does not promise permanent pending work.
 
+## Optional relay-bound delivery
+
+By default an external inbox is a local file that the agent polls through MCP
+on this host, so pending work depends on the host staying reachable. Binding a
+registration to a pinned relay peer routes sends through the encrypted relay
+instead: envelopes queue server-side until the remote device picks them up, so
+delivery survives this host sleeping.
+
+```sh
+everett peer add-relay hugo-box --device agent-… --fingerprint CONFIRMED_HEX
+everett external add --id ext-grok-wright --harness grok-bot \
+  --title 'Grok Bot: status' --device hugo-box/grok-bot/hugo
+everett send 'Report backup status' --to ext-grok-wright --mode inbox --json
+```
+
+`--device` is a literal `PEER/HARNESS/SESSION` target — the remote session ID
+must be exchanged out of band since relay sends do not list remote sessions.
+The send result reports `transport: "relay"` with the relay `message_id`; poll
+`everett peer status <peer> <id>` for signed delivery observations. Unpinned
+peers fail closed with an error; they never silently fall back to the local
+file. Replies still arrive through the relay listener into the sender's inbox.
+
 ## Delivery is a queue
 
 - Automatic `auto` send refuses a registered external inbox and exits 4. Nothing
-  is queued. Explicit `--mode inbox` (MCP `mode: "inbox"`) writes the local inbox.
+  is queued. Explicit `--mode inbox` (MCP `mode: "inbox"`) writes the local inbox
+  unless the registration is bound with `--device`.
   Results include `mode: "inbox"`, `queued: true` until something takes the
   message, `hooked: false`, and `wake: false`.
 - `resume` is refused, even if process evidence contains the ID. Everett never

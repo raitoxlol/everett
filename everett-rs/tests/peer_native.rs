@@ -1128,6 +1128,103 @@ fn mcp_new_remote_send_is_idempotent_and_never_wakes() {
     assert_eq!(message["text"], MESSAGE);
 }
 
+fn bound_external_send_returns_relay_transport() {
+    let p = Pair::new();
+    checked(p.add());
+    checked(p.run(&[
+        "external",
+        "add",
+        "--id",
+        "ext-worker",
+        "--harness",
+        "openai-dot",
+        "--device",
+        "linux/openai-dot/worker",
+    ]));
+    let sent = checked(p.run(&[
+        "send",
+        "Report status",
+        "--to",
+        "ext-worker",
+        "--mode",
+        "inbox",
+        "--json",
+        "--idempotency-key",
+        "bound-relay-1",
+    ]));
+    assert_eq!(sent["transport"], "relay");
+    assert_eq!(sent["queued"], true);
+    assert_eq!(sent["delivered"], false);
+    assert_eq!(sent["peer"], "linux");
+    assert_eq!(sent["relay_state"], "queued");
+    assert_eq!(sent["idempotency_key"], "bound-relay-1");
+    let message_id = sent["message_id"].as_str().expect("relay message id");
+    assert!(!message_id.is_empty());
+    assert!(!p
+        .local
+        .path()
+        .join(".everett/inbox/ext-worker.jsonl")
+        .exists());
+    let remote: Value = serde_json::from_str(
+        fs::read_to_string(p.remote.path().join(".everett/inbox/worker.jsonl"))
+            .unwrap()
+            .lines()
+            .next()
+            .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(remote["id"], message_id);
+    assert_eq!(remote["text"], "Report status");
+
+    let call = json!({"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"everett_send","arguments":{"to":"ext-worker","text":"Relay ping","mode":"inbox","idempotency_key":"bound-relay-mcp","session_id":"local-sender"}}})
+        .to_string()
+        + "\n";
+    let mut child = p
+        .command(false)
+        .arg("mcp")
+        .env("EVERETT_SESSION_ID", "local-sender")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    child
+        .stdin
+        .take()
+        .unwrap()
+        .write_all(call.as_bytes())
+        .unwrap();
+    let out = child.wait_with_output().unwrap();
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let row: Value = serde_json::from_str(
+        String::from_utf8(out.stdout)
+            .unwrap()
+            .lines()
+            .next()
+            .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(row["result"]["isError"], false, "{row}");
+    let mcp_sent = &row["result"]["structuredContent"];
+    assert_eq!(mcp_sent["transport"], "relay");
+    assert_eq!(mcp_sent["queued"], true);
+    assert_eq!(mcp_sent["idempotency_key"], "bound-relay-mcp");
+    assert!(!mcp_sent["message_id"].as_str().unwrap().is_empty());
+    assert_ne!(mcp_sent["message_id"], message_id);
+    assert!(!p
+        .local
+        .path()
+        .join(".everett/inbox/ext-worker.jsonl")
+        .exists());
+    let inbox = fs::read_to_string(p.remote.path().join(".everett/inbox/worker.jsonl")).unwrap();
+    assert_eq!(inbox.lines().count(), 2);
+    assert!(inbox.contains("Relay ping"));
+}
+
 type Case = (&'static str, fn());
 const CASES: &[Case] = &[
     (
@@ -1185,6 +1282,10 @@ const CASES: &[Case] = &[
     (
         "mcp_new_remote_send_is_idempotent_and_never_wakes",
         mcp_new_remote_send_is_idempotent_and_never_wakes,
+    ),
+    (
+        "bound_external_send_returns_relay_transport",
+        bound_external_send_returns_relay_transport,
     ),
     (
         "queued_delivered_replied_and_deduplicated",
