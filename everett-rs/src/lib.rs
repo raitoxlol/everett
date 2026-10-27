@@ -18,6 +18,7 @@ pub mod host;
 pub mod inbox;
 pub mod install;
 pub mod mcp;
+pub mod messaging;
 pub mod onboard;
 pub mod paths;
 pub mod peer;

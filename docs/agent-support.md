@@ -12,7 +12,7 @@ against an idle session. It does not inject a prompt into an attached agent.
 
 | Agent | Session discovery | Inbox pickup in an open session | Wake an existing session |
 | --- | --- | --- | --- |
-| Claude Code | Claude project transcripts | `UserPromptSubmit`, `PostToolUse`, or MCP polling | Local explicit `--wake`; optional Claude receiver policy for encrypted relay arrivals |
+| Claude Code | Claude project transcripts | `UserPromptSubmit`, `PostToolUse`, or MCP polling | Default local `ping` verifies and nudges an existing background session; compatibility `--wake`; optional receiver policy |
 | Codex | Codex session transcripts | Supported Codex hooks or MCP polling | No native wake |
 | OMP | OMP session files | Everett extension at agent start and tool results, or MCP polling | No native wake |
 | Pi | Pi session files | MCP polling; the Pi extension binds identity and records activity | No native wake |
@@ -48,9 +48,10 @@ See [dots setup](openai-dots.md) and [Grok Bot webhook wake](grok-bot.md#wake-a-
 
 ## Three delivery paths
 
-1. **Run an idle local agent.** Default `send` resumes the selected local
-   session headless and returns its output. Attached sessions, T3 threads, and
-   external registrations require an explicit inbox send instead.
+1. **Ping a local agent.** Default `send` runs an idle target headless or sends
+   a verified native nudge to an attached local Claude background session.
+   Unsupported immediate transports fail without a queue fallback. T3 threads,
+   external registrations, and remote transports require explicit legacy inbox mode.
 2. **Wake Claude.** Local `send --to FULL_UUID --wake` requires an interactive
    terminal, Claude Code 2.1.285 or newer, and a verified idle background session
    in its recorded project directory. MCP cannot request this flag. A receiving

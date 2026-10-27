@@ -253,6 +253,7 @@ fn unpaired_same_owner_names_deliver_encrypted_inbox_and_retry_once() {
     );
     let args = [
         "send",
+        "--mode", "inbox",
         "synthetic-private-marker",
         "--to",
         "Hugo Box/grok-bot/ext-hugo",
@@ -385,6 +386,7 @@ fn duplicate_names_revocation_foreign_owner_and_unavailability_fail_closed() {
             &a,
             &[
                 "send",
+                "--mode", "inbox",
                 "must-not-send",
                 "--to",
                 "Hugo Box/grok-bot/ext-hugo",
@@ -539,6 +541,7 @@ fn exact_device_works_without_labels_and_same_owner_alias_follows_active_rotatio
         &a,
         &[
             "send",
+            "--mode", "inbox",
             "rotated-marker",
             "--to",
             "hugo/grok-bot/ext-hugo",
@@ -549,6 +552,7 @@ fn exact_device_works_without_labels_and_same_owner_alias_follows_active_rotatio
         &a,
         &[
             "send",
+            "--mode", "inbox",
             "exact-marker",
             "--to",
             "id:agent-hugo/grok-bot/ext-hugo",
@@ -584,6 +588,7 @@ fn queued_retry_survives_name_change_and_remote_denial_without_stopping_receiver
         &a,
         &[
             "send",
+            "--mode", "inbox",
             "offline-marker",
             "--to",
             "Hugo Box/grok-bot/ext-hugo",
@@ -653,6 +658,7 @@ fn temporary_trust_lookup_failure_keeps_the_only_encrypted_stage_until_recovery(
         &a,
         &[
             "send",
+            "--mode", "inbox",
             "recover-staged-marker",
             "--to",
             "Hugo Box/grok-bot/ext-hugo",
@@ -711,6 +717,7 @@ fn renamed_device_keeps_cli_and_mcp_message_status() {
         &a,
         &[
             "send",
+            "--mode", "inbox",
             "status-marker",
             "--to",
             "Hugo Box/grok-bot/ext-hugo",

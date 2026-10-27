@@ -64,17 +64,17 @@ pub fn tools() -> &'static Vec<Value> {
             }),
             json!({
                 "name": "everett_send",
-                "description": "Deliver a request to another session. Pass just text and Everett routes it (jev when configured, else the local matcher). Use to only for a user-named destination. The result reports the route decision, router, session, and confidence. On ASK nothing is sent; choose from the returned candidates. An idle local session is resumed headless and its reply returned. Automatic delivery refuses attached, T3, and registered external sessions because no general agent ping or wake exists; nothing is queued. Explicit mode=inbox opts into passive queueing for hooks or everett_inbox polling. queued=true with delivered=false means pickup is unconfirmed; wait can observe a reply but never wakes the target. Explicit remote destinations use their durable inbox transport. To answer a received message, pass reply_to and text; replies are durably queued for the sender. NEW starts a headless session only with spawn=true. Self-send and requests forwarded more than 3 times are refused.",
+                "description": "Ping another session immediately. Pass text to route, or to for a user-named destination. An idle local target runs headless; a verified attached local Claude background session receives a fixed inbox nudge. pinged=true confirms dispatch, not inbox consumption or task completion. Unsupported immediate transports fail explicitly without queue fallback. Explicit mode=inbox retains legacy hooks/polling/remote queue delivery. reply_to queues a correlated answer. NEW starts a session only with spawn=true; ASK sends nothing. Host-bound caller identity, remote provenance and hop limits remain enforced.",
                 "inputSchema": {"type": "object", "properties": {
                     "text": s("The request for the other session. Make it self-contained."),
-                    "to": s("Local session id prefix/title/card/project, or explicit remote peer/harness/session. Remote delivery uses a durable inbox. A separately enabled receiver policy may wake Claude or POST an external-agent webhook."),
+                    "to": s("Local session id prefix/title/card/project, or a directory target id:AGENT/HARNESS/SESSION. Remote transports currently require explicit legacy mode=inbox."),
                     "idempotency_key": s("Stable key for an explicit remote send; reuse it only for the same request when delivery is uncertain."),
                     "hours": hours_prop(),
                     "spawn": {"type": "boolean", "description": "Allow starting a NEW session when routing says NEW.", "default": false},
                     "dir": s("Working directory for a spawned session."),
                     "harness": {"type": "string", "enum": crate::send::SPAWNABLE, "description": "Harness for a spawned session."},
                     "timeout": {"type": "number", "description": "Seconds to wait for the reply (default 300).", "minimum": 1},
-                    "mode": {"type": "string", "enum": crate::send::MODES, "description": "auto (default): headless resume when safe; otherwise fails without queueing. inbox explicitly queues for hooks or polling. It does not request Claude native wake; a matching owner webhook may POST a nudge."},
+                    "mode": {"type": "string", "enum": crate::send::MODES, "description": "ping (default): immediate headless delivery or a verified local Claude native nudge; an unavailable transport is an error, never silent queue fallback. inbox is explicit legacy queue delivery; auto/resume are compatibility modes."},
                     "wait": {"type": "number", "minimum": 0, "description": "Explicit inbox mode: seconds to wait for a reply (default 0). Does not ping or wake the target."},
                     "reply_to": s("Answer this Everett message id; the reply goes to its sender."),
                 }, "required": ["text"], "additionalProperties": false},
@@ -143,9 +143,9 @@ pub fn tools() -> &'static Vec<Value> {
             }),
             json!({
                 "name": "everett_agent_relay",
-                "description": "Verified agent identity, registration, directory, names and revocation. Cloudflare same-owner devices use automatic trust; other owners require explicit pins and grants. Credentials are per agent, never bearer tokens. Membership management is admin-only; an agent can revoke itself. Run everett relay separately to receive. Disabled-by-default owner policies can wake an exact Claude background session or POST a registered external-agent webhook.",
+                "description": "Authenticated author/session cards: authors lists opted-in account peers without pairing; expose/withdraw publishes/removes only this host-bound caller's session and card. Author and agent identity come from credentials, never tool arguments. directory lists device key bundles; devices is an alias. Identity, registration, names and revocation remain available. Cross-owner transport still requires grants and pins. Run everett relay separately to receive legacy inbox messages.",
                 "inputSchema": {"type":"object","properties":{
-                    "action":{"type":"string","enum":["identity","register","directory","names","pair","unpair","credentials","memberships","revoke-membership","revoke-agent","revoke-credential"]},
+                    "action":{"type":"string","enum":["identity","register","directory","devices","authors","expose","withdraw","names","pair","unpair","credentials","memberships","revoke-membership","revoke-agent","revoke-credential"]},
                     "id":s("Provisioned agent ID; for revoke-membership, exact provider subject; for unpair, alias."),
                     "name":s("Optional local relay alias for pair; defaults to the agent ID."),
                     "grant_id":s("Required for cross-org pairing; active bilateral named-agent grant."),
@@ -170,7 +170,7 @@ pub fn tools() -> &'static Vec<Value> {
             }),
             json!({
                 "name":"everett_agent_send",
-                "description":"Send E2E-encrypted text to a pinned issuer-named agent's bound session. Same-org membership or bilateral cross-org approval required. Queued is not pickup; external inbound content is untrusted. Retry the exact request with the same idempotency key. Does not wake sessions.",
+                "description":"Legacy queue-only encrypted relay send, retained for compatibility. Use everett_send for ping-default delivery. Same-org membership or bilateral cross-org approval required. Queued is not pickup; external inbound content is untrusted. Retry the exact request with the same idempotency key. Does not wake sessions.",
                 "inputSchema":{"type":"object","properties":{
                     "agent":s("Pinned relay alias, defaulting to its named recipient agent ID."),"session":s("Exact recipient session ID, obtained out of band."),
                     "harness":s("Recipient harness, e.g. omp or pi."),"text":{"type":"string","maxLength":65536},
@@ -522,7 +522,7 @@ fn tool_send(
     let caller_harness = identity.get("harness").and_then(Value::as_str);
     let mode = str_arg(args, "mode", false)?;
     let mode = if mode.is_empty() {
-        "auto".to_string()
+        "ping".to_string()
     } else {
         mode
     };
@@ -599,6 +599,9 @@ fn tool_send(
                 2,
                 "Remote sends are inbox-only; no spawn, resume, or wait. Poll everett peer status.",
             ));
+        }
+        if mode == "ping" {
+            return Err(err2(4, "No immediate remote ping transport. Nothing was queued. Use mode=\"inbox\" only for legacy relay/hooks/polling."));
         }
         let value = crate::peer::send_as(
             &to,
@@ -757,6 +760,12 @@ fn tool_send(
             2,
             "Cannot authenticate the calling session for delivery; use a host-bound MCP session.",
         ));
+    }
+    if delivery_mode == "ping" {
+        let mut out = decision;
+        out.extend(crate::send::ping_as(&session, &text, timeout, caller, caller_harness)?);
+        out.insert("session".into(), Value::Object(brief(&session)));
+        return Ok(out);
     }
     if delivery_mode == "inbox" {
         let result = send_inbox_as(
@@ -1284,7 +1293,13 @@ fn call_handler(
                 match action.as_str() {
                     "identity" => crate::relay::admin_call("relay:whoami", json!({}), true)?,
                     "register" => crate::relay::register()?,
-                    "directory" => crate::relay::devices()?,
+                    "authors" => json!({"sessions":crate::messaging::authors()?}),
+                    "directory" | "devices" => crate::relay::devices()?,
+                    "expose" | "withdraw" => {
+                        let (caller, bound) = caller_session(args, identity)?;
+                        if !bound { return Err(ToolFailure::Params("Session exposure requires a host-bound MCP caller".into())); }
+                        crate::messaging::expose_id(&caller, identity.get("harness").and_then(Value::as_str), action == "withdraw")?
+                    }
                     "names" => json!({"text":crate::relay::device_names()?}),
                     "credentials" => {
                         crate::relay::admin_call("relay:credentials", json!({}), true)?

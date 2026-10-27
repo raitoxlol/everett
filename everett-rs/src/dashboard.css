@@ -84,6 +84,15 @@ h3 { margin-bottom: 6px; font-size: .95rem; }
 .session-row summary:hover { background: #fffdf8; }
 .session-row details[open] > summary { background: #fcf5eb; border-bottom: 1px solid #ded6ca; }
 .session-main { min-width: 0; display: grid; grid-template-columns: 92px minmax(110px, .42fr) minmax(0, 1fr); align-items: center; gap: 13px; }
+.session-main .author-tags { grid-column: 1 / -1; grid-row: 2; }
+.author-tags { display: flex; flex-wrap: wrap; gap: 6px; }
+.author-tags span { max-width: 100%; padding: 4px 7px; border: 1px solid var(--line); border-radius: 5px; color: var(--ink-soft); background: var(--paper-muted); font: .68rem/1.4 ui-monospace, SFMono-Regular, Menlo, monospace; overflow-wrap: anywhere; }
+.author-cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 330px), 1fr)); gap: 14px; padding: 18px; }
+.author-card { min-width: 0; padding: 16px; border: 1px solid var(--line); border-radius: var(--radius); background: var(--paper-raised); }
+.author-card p { white-space: pre-wrap; overflow-wrap: anywhere; line-height: 1.5; }
+.author-card small { color: var(--ink-soft); }
+.author-card .command { margin: 14px 0 0; overflow-wrap: anywhere; }
+.author-card .command-note { margin-left: 0; }
 .harness { width: max-content; padding: 4px 7px; color: #4c453d; background: #ece4d8; border: 1px solid #d2c7b9; border-radius: 5px; font-size: .67rem; font-weight: 760; }
 .session-main strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: .86rem; }
 .summary-text { overflow: hidden; color: var(--ink-soft); font-size: .81rem; line-height: 1.45; white-space: nowrap; text-overflow: ellipsis; }

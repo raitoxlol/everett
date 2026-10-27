@@ -13,6 +13,123 @@ use std::path::Path;
 type SessionRow<'a> = (&'a str, &'a str, f64, &'a str, &'a str, Option<&'a str>, Option<&'a str>, i64, f64);
 type MessageRow<'a> = (&'a str, &'a str, &'a str, f64);
 
+const NATIVE_SESSION: &str = "1f57ab77-c669-4bb6-9ac8-f9a9073de8ea";
+
+fn native_ping_fixture(outcome: &str) -> common::Fixture {
+    let f = fixture();
+    f.write(".claude/projects/native/session.jsonl", &common::jsonl(&[json!({
+        "type":"user", "sessionId":NATIVE_SESSION, "cwd":f.home(),
+        "timestamp":chrono::Utc::now().to_rfc3339(),
+        "message":{"role":"user","content":"native ping test"}
+    })]));
+    f.write(&format!(".everett/inbox/live/{NATIVE_SESSION}.json"), &json!({
+        "pid":std::process::id(), "harness":"claude", "ts":now()
+    }).to_string());
+    f.write("claude-agents.json", &json!([{
+        "sessionId":NATIVE_SESSION, "kind":"background", "state":"done", "status":"busy",
+        "pid":std::process::id(), "cwd":f.home()
+    }]).to_string());
+    f.write("wake-outcome", outcome);
+    let binary = f.write("bin/claude", r#"#!/bin/sh
+printf '%s\n' "$1" >> "$HOME/claude-calls"
+case "$1" in
+  --version)
+    if [ "$(cat "$HOME/wake-outcome")" = prepare-failure ]; then echo '2.0.0 (Claude Code)';
+    else echo '2.1.285 (Claude Code)'; fi ;;
+  agents) cat "$HOME/claude-agents.json" ;;
+  --resume)
+    printf '%s\n' "$@" > "$HOME/attach-args"
+    if [ "$(cat "$HOME/wake-outcome")" = attach-failure ]; then
+      echo 'Your prompt was not sent'; exit 1
+    fi
+    echo 'Sent your prompt to the background session (1f57ab77)' ;;
+  *) exit 99 ;;
+esac
+"#);
+    std::fs::set_permissions(binary, std::fs::Permissions::from_mode(0o700)).unwrap();
+    f
+}
+
+fn native_ping_call(f: &common::Fixture, mcp: bool) -> (bool, Value) {
+    let path = format!("{}:{}", f.home().join("bin").display(), common::HERMETIC_PATH);
+    if mcp {
+        let results = common::mcp_calls(f, &[], &[("PATH", &path), ("EVERETT_SESSION_ID", "native-caller")],
+            &[("everett_send", json!({"to":NATIVE_SESSION,"text":"private native request"}))]);
+        (results[0]["isError"] != true, common::tool_json(&results[0]))
+    } else {
+        let out = f.run_stdin(&["send", "private native request", "--to", NATIVE_SESSION, "--json"], "", &[("PATH", &path)]);
+        let value = if out.status.success() { serde_json::from_slice(&out.stdout).unwrap() }
+            else { assert_eq!(out.status.code(), Some(4)); json!(String::from_utf8_lossy(&out.stderr)) };
+        (out.status.success(), value)
+    }
+}
+
+fn native_ping_inbox(f: &common::Fixture) -> Vec<Value> {
+    let messages: Vec<Value> = std::fs::read_to_string(f.home().join(format!(".everett/inbox/{NATIVE_SESSION}.jsonl")))
+        .unwrap().lines().map(|line| serde_json::from_str(line).unwrap()).collect();
+    assert!(messages.iter().all(|message| message["text"] == "private native request"));
+    messages
+}
+
+#[test]
+fn native_ping_cli_and_mcp_prompt_sent_without_interactive_stdin() {
+    for mcp in [false, true] {
+        let f = native_ping_fixture("success");
+        let (ok, result) = native_ping_call(&f, mcp);
+        assert!(ok, "{result}");
+        assert_eq!(result["wake"]["state"], "prompt_sent");
+        assert_eq!(result["wake"]["target_pid"], std::process::id());
+        assert_eq!(result["mode"], "ping");
+        assert_eq!(result["pinged"], true);
+        let inbox = native_ping_inbox(&f);
+        assert_eq!(inbox.len(), 1);
+        assert_eq!(result["message_id"], inbox[0]["id"]);
+        let argv = std::fs::read_to_string(f.home().join("attach-args")).unwrap();
+        assert!(argv.starts_with(&format!("--resume\n{NATIVE_SESSION}\n")));
+        assert!(!argv.contains("private native request"));
+        assert!(argv.contains(inbox[0]["id"].as_str().unwrap()));
+    }
+}
+
+#[test]
+fn native_ping_cli_and_mcp_prepare_failure_retains_inbox() {
+    for mcp in [false, true] {
+        let f = native_ping_fixture("prepare-failure");
+        let (ok, result) = native_ping_call(&f, mcp);
+        assert!(!ok, "{result}");
+        let inbox = native_ping_inbox(&f);
+        assert_eq!(inbox.len(), 1);
+        assert!(result.to_string().contains(inbox[0]["id"].as_str().unwrap()));
+        assert!(result.to_string().contains("remains recorded"));
+        assert!(!result.to_string().contains("Nothing was queued"));
+        assert!(!f.home().join("attach-args").exists());
+    }
+}
+
+#[test]
+fn native_ping_cli_and_mcp_attach_failure_retains_inbox() {
+    for mcp in [false, true] {
+        let f = native_ping_fixture("attach-failure");
+        let (ok, result) = native_ping_call(&f, mcp);
+        assert!(!ok, "{result}");
+        let inbox = native_ping_inbox(&f);
+        assert_eq!(inbox.len(), 1);
+        assert!(result.to_string().contains(inbox[0]["id"].as_str().unwrap()));
+        assert!(result.to_string().contains("remains recorded"));
+        assert!(f.home().join("attach-args").exists());
+    }
+}
+
+#[test]
+fn native_ping_does_not_relax_legacy_wake_terminal_requirement() {
+    let f = native_ping_fixture("success");
+    let out = f.run_stdin(&["send", "request", "--to", NATIVE_SESSION, "--wake"], "", &[]);
+    assert_eq!(out.status.code(), Some(2));
+    assert!(String::from_utf8_lossy(&out.stderr).contains("local interactive terminal"));
+    assert!(!f.home().join("claude-calls").exists());
+    assert!(!f.home().join(format!(".everett/inbox/{NATIVE_SESSION}.jsonl")).exists());
+}
+
 fn make_db(path: &Path, rows: &[SessionRow<'_>], messages: &[MessageRow<'_>]) {
     std::fs::create_dir_all(path.parent().unwrap()).unwrap();
     let con = rusqlite::Connection::open(path).unwrap();
@@ -156,6 +273,18 @@ fn cli_send_to_skips_routing_and_ambiguity_exits_2() {
     assert_eq!((result["router"].clone(), result["reply"].clone()), (json!("direct"), json!("done")));
     let args = std::fs::read_to_string(fx.home().join("claude-args")).unwrap();
     assert_eq!(args.lines().collect::<Vec<_>>(), ["--resume", "c-1", "--print", "ship it"]);
+    let out = fx.run_stdin(&["send", "--to", "c-1", "ping now", "--json"], "", &[("PATH", &path)]);
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let result: Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(result["mode"], "ping");
+    assert_eq!(result["pinged"], true);
+    assert_eq!(result["queued"], false);
+    assert_eq!(result["reply"], "done");
+    assert!(!fx.home().join(".everett/inbox/c-1.jsonl").exists());
+    let calls = common::mcp_calls(&fx, &[], &[("PATH", &path), ("EVERETT_SESSION_ID", "sender")],
+        &[("everett_send", json!({"to":"c-1","text":"mcp ping now"}))]);
+    assert_eq!(common::tool_json(&calls[0])["mode"], "ping");
+    assert_eq!(common::tool_json(&calls[0])["pinged"], true);
     let out = fx.run(&["send", "--to", "c-", "x"]);
     assert_eq!(out.status.code(), Some(2));
 }

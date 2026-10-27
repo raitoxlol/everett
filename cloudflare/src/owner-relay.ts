@@ -27,6 +27,7 @@ export class OwnerRelay extends DurableObject<Env> {
       CREATE TABLE IF NOT EXISTS credentials (agent_id TEXT PRIMARY KEY, subject TEXT NOT NULL, status TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS enrollments (event_id TEXT PRIMARY KEY, identity TEXT NOT NULL, role TEXT NOT NULL, agent_id TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS devices (agent_id TEXT PRIMARY KEY, bundle TEXT NOT NULL);
+      CREATE TABLE IF NOT EXISTS session_cards (seq INTEGER PRIMARY KEY AUTOINCREMENT, agent_id TEXT NOT NULL, session TEXT NOT NULL, harness TEXT NOT NULL, card TEXT NOT NULL, updated_at INTEGER NOT NULL, UNIQUE(agent_id,session));
       CREATE TABLE IF NOT EXISTS attempts (message_id TEXT PRIMARY KEY, from_device TEXT NOT NULL, idempotency_key TEXT NOT NULL, digest TEXT NOT NULL, state TEXT NOT NULL, expires_at INTEGER NOT NULL, to_device TEXT NOT NULL, metadata TEXT NOT NULL, UNIQUE(from_device, idempotency_key));
       CREATE INDEX IF NOT EXISTS attempt_recipient ON attempts(to_device, state, expires_at);
       CREATE TABLE IF NOT EXISTS messages (seq INTEGER PRIMARY KEY AUTOINCREMENT, message_id TEXT NOT NULL UNIQUE, to_device TEXT NOT NULL, expires_at INTEGER NOT NULL, envelope TEXT NOT NULL);
@@ -163,6 +164,31 @@ export class OwnerRelay extends DurableObject<Env> {
   #execute(p: Principal, op: Operation, args: unknown): unknown {
     const auth = this.#authorize(p), now = Date.now(), owner = namespace(p);
     switch (op) {
+      case 'exposeSession': {
+        this.#activeDevice(p.agentId);
+        const a = z.strictObject({ session: identifier, harness: identifier, card: z.string().max(640), remove: z.boolean().optional() }).parse(args);
+        if (a.remove) { this.ctx.storage.sql.exec('DELETE FROM session_cards WHERE agent_id=? AND session=?', p.agentId, a.session); return null; }
+        const old = this.#row('SELECT seq FROM session_cards WHERE agent_id=? AND session=?', p.agentId, a.session);
+        const count = this.#row<{ n: number }>('SELECT COUNT(*) AS n FROM session_cards WHERE agent_id=?', p.agentId)!.n;
+        if (!old && count >= 32) throw new RelayError('session_limit', 409);
+        this.ctx.storage.sql.exec('INSERT INTO session_cards(agent_id,session,harness,card,updated_at) VALUES(?,?,?,?,?) ON CONFLICT(agent_id,session) DO UPDATE SET harness=excluded.harness,card=excluded.card,updated_at=excluded.updated_at', p.agentId, a.session, a.harness, a.card, now);
+        return null;
+      }
+      case 'sessionDirectory': {
+        this.#activeDevice(p.agentId);
+        const { cursor } = z.strictObject({ cursor: z.string().regex(/^[0-9]{1,16}$/).nullable().optional() }).parse(args);
+        const rows = this.ctx.storage.sql.exec<{ seq: number; agent_id: string; session: string; harness: string; card: string; updated_at: number }>('SELECT * FROM session_cards WHERE seq>? ORDER BY seq LIMIT 33', Number(cursor ?? 0)).toArray();
+        const sessions = [];
+        for (const row of rows.slice(0, 32)) {
+          try { this.#activeDevice(row.agent_id); }
+          catch (error) { if (error instanceof RelayError) continue; throw error; }
+          const credential = this.#row<Credential>('SELECT * FROM credentials WHERE agent_id=?', row.agent_id)!;
+          sessions.push({ owner, author: credential.subject, agent: row.agent_id, session: row.session,
+            harness: row.harness, card: row.card, updated_at: row.updated_at,
+            target: `id:${row.agent_id}/${row.harness}/${row.session}` });
+        }
+        return { sessions, isDone: rows.length <= 32, continueCursor: rows.length ? String(rows[Math.min(rows.length, 32) - 1].seq) : cursor ?? '' };
+      }
       case 'whoami': empty.parse(args); return { owner, deviceId: p.agentId, role: auth.admin ? 'admin' : 'member' };
       case 'register': {
         const { device } = z.strictObject({ device: deviceSchema }).parse(args);

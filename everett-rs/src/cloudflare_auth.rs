@@ -792,6 +792,7 @@ impl Credential {
             "relay:enqueue" => "enqueue", "relay:pending" => "pending", "relay:accept" => "accept",
             "relay:observe" => "observe", "relay:status" => "status",
             "relay:deviceLabels" => "deviceLabels", "relay:renameDevice" => "renameDevice",
+            "relay:exposeSession" => "exposeSession", "relay:sessionDirectory" => "sessionDirectory",
             _ => return Err(fail(2, "this operation is not supported by the Cloudflare relay; registry/SSH publication and cross-owner grants require their supported transport")),
         };
         if crate::config::get("auth.provider", Some("EVERETT_AUTH_PROVIDER"), "oidc")
