@@ -11,6 +11,9 @@ Hark and Muse compatibility is unverified.
 Dots and Grok Bot can use owner-configured webhook nudges. Other harnesses use
 headless resume or inbox pickup. See [agent support and wake](docs/agent-support.md).
 
+Before cutting or announcing v2.2.0, complete the [live proof bar](docs/v2.2-proof-bar.md).
+See also [Grok Bot 0.77 reachability](docs/grok-bot.md#grok-bot-077-reachability).
+
 ## Quickstart
 
 Everett is one native binary for macOS and Linux. Have at least one harness CLI on your PATH.
