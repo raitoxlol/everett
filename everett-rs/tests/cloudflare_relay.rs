@@ -12,6 +12,22 @@ use std::time::{Duration, Instant};
 const TOKEN: &str = "evt_cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc";
 
 #[test]
+fn device_revocation_uses_cloudflare_and_doctor_leaves_ssh_authorizations_unchanged() {
+    let f = fixture();
+    let server = Server::new();
+    server.configure(&f);
+    let ssh = f.write(".ssh/authorized_keys", "# keep\nssh-ed25519 fixture # everett-peer:synthetic-agent\n");
+    let before = std::fs::read(&ssh).unwrap();
+    let out = f.run(&["devices", "revoke", "synthetic-agent"]);
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    assert!(server.calls.lock().unwrap().iter().any(|p| p == "/v2/relay/revokeAgent"));
+    let out = f.run(&["doctor"]);
+    assert!(out.status.success());
+    assert!(f.stdout(&out).contains("SSH authorizations unchanged"));
+    assert_eq!(std::fs::read(ssh).unwrap(), before);
+}
+
+#[test]
 fn authored_session_directory_and_exposure_use_native_authenticated_operations() {
     let f = fixture();
     let server = Server::new();
@@ -168,6 +184,10 @@ impl Server {
                             json!({"result":{"owner":"synthetic-owner","deviceId":"synthetic-agent","role":"member"}}),
                         ),
                         "/v2/relay/register" => (200, json!({"result":null})),
+                        "/v2/relay/revokeAgent" => {
+                            assert_eq!(args, json!({"deviceId":"synthetic-agent"}));
+                            (200, json!({"result":null}))
+                        }
                         "/v2/relay/exposeSession" => {
                             assert_eq!(args["session"], "c-1");
                             assert!(args.get("author").is_none());
@@ -434,14 +454,13 @@ fn relay_device_listing_shows_advisory_names_and_preserves_json_bundles() {
 }
 
 #[test]
-fn unsupported_registry_operation_never_falls_back_to_oidc() {
+fn device_listing_uses_cloudflare_without_a_registry_fallback() {
     let f = fixture();
     let server = Server::new();
     server.configure(&f);
     let out = f.run(&["devices", "--json"]);
-    assert!(!out.status.success());
-    assert!(String::from_utf8_lossy(&out.stderr).contains("requires OIDC/Convex"));
-    assert!(server.calls.lock().unwrap().is_empty());
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    assert!(server.calls.lock().unwrap().iter().any(|path| path == "/v2/relay/devices"));
 }
 
 #[test]

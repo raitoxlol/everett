@@ -57,7 +57,6 @@ fn doctor(f: &Fixture, provider: &str) -> String {
         .env("PATH", common::HERMETIC_PATH)
         .env_remove("EVERETT_AUTH_PROVIDER")
         .env_remove("EVERETT_AUTH_ISSUER")
-        .env_remove("EVERETT_CONVEX_URL")
         .env_remove("TYPESAFE_API_KEY")
         .output()
         .unwrap();
@@ -96,12 +95,12 @@ fn doctor_reports_missing_expired_and_invalid_cloudflare_credentials() {
 }
 
 #[test]
-fn doctor_uses_oidc_when_cloudflare_credentials_also_exist() {
+fn doctor_rejects_retired_provider_even_when_cloudflare_credentials_exist() {
     let f = fixture();
     cloudflare(&f, u64::MAX);
     oidc(&f);
     let text = doctor(&f, "oidc");
-    assert!(text.contains("account: oidc@example.com"), "{text}");
+    assert!(text.contains("account: auth.provider must be cloudflare"), "{text}");
     assert!(!text.contains("account: Cloudflare"), "{text}");
 }
 
@@ -110,7 +109,7 @@ fn doctor_does_not_treat_an_unknown_provider_as_oidc() {
     let f = fixture();
     oidc(&f);
     let text = doctor(&f, "unknown");
-    assert!(text.contains("account: auth.provider must be oidc or cloudflare"), "{text}");
+    assert!(text.contains("account: auth.provider must be cloudflare"), "{text}");
     assert!(!text.contains("account: oidc@example.com"), "{text}");
 }
 
@@ -128,7 +127,7 @@ fn cloudflare_diagnostics_do_not_fetch_oidc_revocations_or_modify_ssh() {
     let path = home.path().join(".ssh/authorized_keys");
     let before = b"ssh-ed25519 fixture # everett-peer:fixture\n";
     std::fs::write(&path, before).unwrap();
-    let checks = everett::doctor::device_revocation_checks(|| panic!("Cloudflare must not fetch OIDC revocations"));
+    let checks = everett::doctor::device_revocation_checks();
     assert_eq!(checks, vec![(None, "device revocations: Cloudflare SSH revocation check unavailable; SSH authorizations unchanged".into())]);
     assert_eq!(std::fs::read(path).unwrap(), before);
 }

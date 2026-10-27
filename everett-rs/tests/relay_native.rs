@@ -11,6 +11,75 @@ use everett::{
 use serde_json::{json, Value};
 use std::{fs, io::Write, path::Path, process::{Command, Stdio}};
 
+struct NativeFixture {
+    url: String,
+    revoked: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    running: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    worker: Option<std::thread::JoinHandle<()>>,
+}
+
+impl NativeFixture {
+    fn new(a: &Keys, b: &Keys) -> Self {
+        use std::io::{BufRead, BufReader, Read};
+        use std::sync::{Arc, atomic::{AtomicBool, Ordering}};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let url = format!("http://{}", listener.local_addr().unwrap());
+        let running = Arc::new(AtomicBool::new(true));
+        let revoked = Arc::new(AtomicBool::new(false));
+        let revoked_device = revoked.clone();
+        let active = running.clone();
+        let (a, b) = (a.device.clone(), b.device.clone());
+        let worker = std::thread::spawn(move || {
+            while active.load(Ordering::Relaxed) {
+                let Ok((mut stream, _)) = listener.accept() else {
+                    std::thread::sleep(std::time::Duration::from_millis(1));
+                    continue;
+                };
+                let mut reader = BufReader::new(stream.try_clone().unwrap());
+                let mut line = String::new();
+                reader.read_line(&mut line).unwrap();
+                let whoami = line.contains("/whoami");
+                let mut len = 0;
+                let mut caller_a = false;
+                loop {
+                    line.clear();
+                    reader.read_line(&mut line).unwrap();
+                    if line == "\r\n" { break; }
+                    if let Some(n) = line.to_ascii_lowercase().strip_prefix("content-length:") {
+                        len = n.trim().parse().unwrap();
+                    }
+                    if line.to_ascii_lowercase().starts_with("authorization:") {
+                        caller_a = line.contains(&"a".repeat(64));
+                    }
+                }
+                let mut body = vec![0; len];
+                reader.read_exact(&mut body).unwrap();
+                let args: Value = serde_json::from_slice(&body).unwrap();
+                let caller = if caller_a { &a } else { &b };
+                let result = if whoami {
+                    json!({"owner":caller.owner,"deviceId":caller.device_id})
+                } else if revoked_device.load(Ordering::Relaxed) {
+                    Value::Null
+                } else {
+                    assert!(args["deviceId"] == a.device_id || args["deviceId"] == b.device_id);
+                    json!(if args["deviceId"] == a.device_id { &a } else { &b })
+                };
+                let body = json!({"result":result}).to_string();
+                write!(stream, "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nContent-Type: application/json\r\nConnection: close\r\n\r\n{}", body.len(), body).unwrap();
+            }
+        });
+        Self { url, revoked, running, worker: Some(worker) }
+    }
+}
+
+impl Drop for NativeFixture {
+    fn drop(&mut self) {
+        self.running.store(false, std::sync::atomic::Ordering::Relaxed);
+        self.worker.take().unwrap().join().unwrap();
+    }
+}
+
 fn put(home: &Path, relative: &str, value: &impl serde::Serialize) {
     let path = home.join(relative);
     fs::create_dir_all(path.parent().unwrap()).unwrap();
@@ -24,7 +93,6 @@ fn select(home: &Path) {
 #[test]
 fn same_and_cross_org_offline_encrypted_inbox_pickup_reply_and_provenance_without_wake() {
     let guard = common::lib_home();
-    std::env::set_var("EVERETT_CONVEX_URL", "https://test.convex.cloud");
     for external in [false, true] {
         let a_home = guard.path().join(format!("a-{external}"));
         let b_home = guard.path().join(format!("b-{external}"));
@@ -36,12 +104,18 @@ fn same_and_cross_org_offline_encrypted_inbox_pickup_reply_and_provenance_withou
         };
         let a = Keys::new(owner.clone(), "agent-a".into(), [1; 32], [2; 32]);
         let b = Keys::new(remote_owner, "agent-b".into(), [3; 32], [4; 32]);
+        let fixture = NativeFixture::new(&a, &b);
         let grant = external.then(|| "grant-ab".to_string());
-        for (home, remote) in [(&a_home, &b), (&b_home, &a)] {
+        for (home, local, remote) in [(&a_home, &a, &b), (&b_home, &b, &a)] {
+            put(home, ".everett/cloudflare-auth.json", &json!({
+                "issuer":fixture.url,"agent_id":local.device.device_id,
+                "owner":local.device.owner,"device_name":"fixture",
+                "token":format!("evt_{}", if local.device.device_id == "agent-a" { "a" } else { "b" }.repeat(64)),"expires_at":u64::MAX
+            }));
             put(
                 home,
-                ".everett/relay/peers/remote.json",
-                &json!({"device":remote.device,"deployment":"https://test.convex.cloud","grant_id":grant}),
+                ".everett/relay-cloudflare/peers/remote.json",
+                &json!({"device":remote.device,"deployment":fixture.url,"grant_id":grant}),
             );
         }
         let transcript_path = b_home.join(".codex/sessions/2026/10/12/x-1.jsonl");
@@ -71,7 +145,7 @@ fn same_and_cross_org_offline_encrypted_inbox_pickup_reply_and_provenance_withou
             .unwrap();
         put(
             &a_home,
-            ".everett/relay/outgoing/request.json",
+            ".everett/relay-cloudflare/outgoing/request.json",
             &json!({"peer":"remote","envelope":request,"digest":"test","session":"c-1","harness":"claude","posted":true,"state":"queued"}),
         );
         select(&b_home);
@@ -198,7 +272,7 @@ fn same_and_cross_org_offline_encrypted_inbox_pickup_reply_and_provenance_withou
         relay::import(&a, &reply, now).unwrap();
         relay::import(&a, &reply, now).unwrap();
         let state: Value = serde_json::from_slice(
-            &fs::read(a_home.join(".everett/relay/outgoing/request.json")).unwrap(),
+            &fs::read(a_home.join(".everett/relay-cloudflare/outgoing/request.json")).unwrap(),
         )
         .unwrap();
         assert_eq!(state["state"], "replied");
@@ -247,23 +321,26 @@ fn same_and_cross_org_offline_encrypted_inbox_pickup_reply_and_provenance_withou
         assert!(relay::import(&a, &changed, now).is_err());
         if external {
             let mut revoked_pin: Value = serde_json::from_slice(
-                &fs::read(a_home.join(".everett/relay/peers/remote.json")).unwrap(),
+                &fs::read(a_home.join(".everett/relay-cloudflare/peers/remote.json")).unwrap(),
             )
             .unwrap();
             revoked_pin["grant_id"] = json!("other-grant");
-            put(&a_home, ".everett/relay/peers/remote.json", &revoked_pin);
+            put(&a_home, ".everett/relay-cloudflare/peers/remote.json", &revoked_pin);
             assert!(
                 relay::import(&a, &reply, now).is_err(),
                 "wrong grant must fail closed"
             );
         }
-        fs::remove_file(a_home.join(".everett/relay/peers/remote.json")).unwrap();
+        fs::remove_file(a_home.join(".everett/relay-cloudflare/peers/remote.json")).unwrap();
+        if !external {
+            relay::import(&a, &reply, now).unwrap();
+            fixture.revoked.store(true, std::sync::atomic::Ordering::Relaxed);
+        }
         assert!(
             relay::import(&a, &reply, now).is_err(),
-            "revoked local pin must fail closed"
+            "revoked device or missing external trust must fail closed"
         );
     }
-    std::env::remove_var("EVERETT_CONVEX_URL");
 }
 
 #[test]
@@ -271,10 +348,6 @@ fn relay_cli_admin_surface_is_explicit_and_local_peer_listing_needs_no_login() {
     let f = common::fixture();
     for args in [
         vec!["relay", "--help"],
-        vec!["relay", "grant", "--help"],
-        vec!["relay", "grant", "invite", "--help"],
-        vec!["relay", "grant", "accept", "--help"],
-        vec!["relay", "grant", "reconfirm", "--help"],
         vec!["relay", "revoke-agent", "--help"],
         vec!["relay", "rotate", "--help"],
         vec!["peer", "add-relay", "--help"],
@@ -290,6 +363,7 @@ fn relay_cli_admin_surface_is_explicit_and_local_peer_listing_needs_no_login() {
     let out = f.run(&["relay", "register"]);
     assert_eq!(out.status.code(), Some(2));
     assert!(String::from_utf8_lossy(&out.stderr).contains("login"));
+    assert!(!f.run(&["relay", "grant", "--help"]).status.success());
 }
 
 #[test]

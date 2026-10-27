@@ -1,13 +1,12 @@
 # Agent-facing encrypted relay MCP
 
-The four agent tools share the same hardened v2 protocol, credentials, key pins and
+The three agent tools share the same hardened v2 protocol, credentials, key pins and
 delivery observations as the CLI. There is one backend and one receiver, not separate
 account and agent transports. SSH remains independently paired.
 
-Deploy, configure issuer-controlled `everett_agent`/`everett_org`/`everett_role`, and
-provision authoritative identities using [the owner runbook](cross-device.md). The
-temporary `agent_id`/`jti` enrollment contract and v1 pins are incompatible; do not
-silently migrate an existing deployment or discard revocation/replay records.
+Sign in with [Cloudflare native device approval](auth.md), then register the device.
+Credentials bind the immutable agent to its server-derived account namespace.
+Retired credentials and relay trust state are never imported.
 
 ## Same-owner Cloudflare devices
 
@@ -23,8 +22,7 @@ not replace signed device identity. Existing SSH aliases retain their transport.
 
 The Cloudflare account service is the same-owner trust authority. It can authorize
 a new key bundle; a compromised service can substitute a same-owner identity.
-Different-owner traffic still requires explicit bilateral grants and confirmed
-fingerprints. OIDC/Convex retains the manual pairing flow below.
+Different-owner delivery and bilateral grants are unavailable. Manual SSH pairing remains separate.
 
 Receiver wake support is separate from device trust. See
 [agent support and wake](agent-support.md).
@@ -37,7 +35,7 @@ account peers with authenticated author, agent and session tags, card text, upda
 time, and an exact target selector. Discovery requires no pairing. Cards are
 plaintext account-visible metadata, not encrypted message bodies or live presence.
 `{"action":"withdraw"}` removes the caller's advertisement. Exposure is bounded
-to 32 sessions per agent. An updated Cloudflare Worker or Convex deployment is required.
+to 32 sessions per agent. An updated Cloudflare Worker is required.
 
 ## Register and pin
 
@@ -51,7 +49,7 @@ receiver policies control wake actions. Within the agent's Everett MCP connectio
 ```
 
 Call `everett_agent_relay` with each object. Identity/registration require the owner's
-OIDC login and deployment-side provisioning. `directory` lists registered, active agents
+Cloudflare device approval. `directory` lists registered, active agents
 only within the authenticated namespace (`devices` remains an alias). Exchange full public bundles and fingerprints
 out of band; a registry response alone is not trust. Pin the other agent:
 
@@ -59,30 +57,9 @@ out of band; a registry response alone is not trust. Pin the other agent:
 {"action":"pair","id":"machine-b","fingerprint":"B_CONFIRMED_64_CHARACTER_LOWERCASE_HEX"}
 ```
 
-The alias defaults to `id`; optional `name` selects another local alias. For cross-org
-pairing also supply `grant_id`, only after the grant is active. Existing aliases never
+The alias defaults to `id`; optional `name` selects another local alias. Existing aliases never
 change keys/transport silently. Unpair with `{"action":"unpair","id":"ALIAS"}`.
 
-## Bilateral cross-org grants
-
-Call `everett_agent_grants`. Org A admin invites one local and one remote agent, with
-both independently verified fingerprints and the remote's exact namespace:
-
-```json
-{"action":"invite","id":"org-a-org-b-1","device":"machine-a","peer_owner":"[\"https://login.example.com/realms/everett\",\"org\",\"org-b\"]","remote_agent":"machine-c","local_fingerprint":"A_CONFIRMED_HEX","peer_fingerprint":"C_CONFIRMED_HEX","rate_per_minute":30,"body_cap_bytes":65536}
-```
-
-Optional `expires_at` is an absolute Unix-millisecond timestamp. Org B admin reverses
-the fingerprint orientation and calls:
-
-```json
-{"action":"accept","id":"org-a-org-b-1","local_fingerprint":"C_CONFIRMED_HEX","peer_fingerprint":"A_CONFIRMED_HEX"}
-```
-
-Use `list` or `get` to inspect grants. `propose`/`approve` alias `invite`/`accept`, but
-still require the same explicit fingerprints. A key rotation blocks delivery until
-both admins `reconfirm` the new pair. Either side can `revoke` with the grant `id`;
-revocation is terminal. There is no wildcard org permission or automatic waking.
 
 ## Send, observe, reply
 
@@ -106,15 +83,13 @@ completion. Server ciphertext is deleted on delivery; local inbox retention is s
 ## Revoke and inspect
 
 `everett_agent_relay` actions `credentials` and `memberships` return scoped metadata,
-never JWTs or private keys. Admins see at most 256 own-org rows with a truncation flag;
-members see only their own credential and cannot list memberships.
+never bearer tokens or private keys. Authorization comes from the native credential.
 
-- `revoke-agent`, `id`: exact provisioned agent ID; self or org admin.
-- `revoke-credential`, `id`: alias for the same permanent per-agent revocation, **not**
-  a temporary JWT/`jti` block that later refresh can evade.
-- `revoke-membership`, `id`: exact provider subject/UUID; org admin only.
+- `revoke-agent`, `id`: exact active agent ID; self or account admin.
+- `revoke-credential`, `id`: alias for the same permanent per-agent revocation.
+- `revoke-membership`, `id`: exact subject; account admin only.
 
-Backend tombstones deny still-valid JWTs and future registration for those identities.
-Also revoke provider refresh/offline sessions after device compromise. See the
+Revocations deny still-valid native credentials. SSH authorizations are separate.
+See the
 [threat model](relay-threat-model.md) for visible metadata, endpoint-compromise and
-no-forward-secrecy limits. Live OIDC/Convex and physical-machine trials remain unverified.
+no-forward-secrecy limits. Physical-machine acceptance remains a separate verification gate.

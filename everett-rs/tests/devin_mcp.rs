@@ -220,7 +220,7 @@ fn devin_doctor_reports_missing_ready_stale_without_hooks() {
     success(&run(&fx, &["install-mcp", "--devin", "--apply"]));
     let text = fx.stdout(&run(&fx, &["doctor"]));
     assert!(
-        text.contains("[ok  ]   devin   14 tools over stdio (initialize + tools/list passed)"),
+        text.contains("[ok  ]   devin   13 tools over stdio (initialize + tools/list passed)"),
         "{text}"
     );
     assert!(!text.contains("everett install-mcp --devin"), "{text}");
