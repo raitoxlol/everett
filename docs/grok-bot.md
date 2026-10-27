@@ -150,6 +150,27 @@ stdio can explicitly pass a matching `session_id`; remote callers must use the i
 their authorized gateway connection supplies. These registration and queue
 operations do not require or invoke live Grok Bot services.
 
+## Grok Bot 0.77 reachability
+
+The 0.77 human-to-Bot channels discussed for calls, iMessage/RCS, Mac Messages,
+and bookings do not replace Everett's webhook wake. They do not establish an
+Everett message trigger or prove that a Bot can reach a private MCP endpoint.
+This note does not certify availability of those features.
+
+Everett's webhook wake still requires an enabled `receiver-webhook.json` rule
+for harness `grok-bot` or `openai-dot`. A successful webhook POST proves routine
+acceptance only. The Bot must poll `everett_inbox` through its identity-bound
+MCP connection and reply with `everett_send` and `reply_to` to prove consumption.
+
+The Tailscale teaser is the only plausible private-MCP reachability change in
+that 0.77 feature set. **It remains unproven for Everett.** Neither a teaser nor
+tailnet membership proves that a background routine can call the bound MCP
+endpoint. Until that exact path is tested, retain the existing reachable,
+authenticated [gateway setup](gateway.md). No OAuth or access-policy change is
+implied by 0.77.
+
+The [v2.2.0 proof bar](v2.2-proof-bar.md) tracks the required live evidence.
+
 ## Wake a Grok Bot with a webhook routine
 
 This is the supported wake path. Everett still does not resume a Bot. The owner
