@@ -187,7 +187,7 @@ fn delivery_mode_requires_explicit_queue_for_live_sessions() {
 #[test]
 fn inbox_round_trip_with_reply() {
     let h = lib_home();
-    let result = send_inbox(&session(&h.path(), "target-1"), "please review", 0.0, Some("sender-1"), 1.0).unwrap();
+    let result = send_inbox(&session(&h.path(), "target-1"), "please review", 0.0, Some("sender-1"), 1.0, None).unwrap();
     assert_eq!(result["reply_inbox"], "sender-1");
     let msg = inbox::pending("target-1", None).remove(0);
     assert_eq!((msg["from"].clone(), msg["hops"].clone()), (json!("sender-1"), json!(1)));
@@ -213,7 +213,7 @@ fn hop_limit_on_reply_chain() {
     let over = inbox::post("a", "x", "b", "message", "", 4, "", "", None).unwrap();
     assert_eq!(reply(over["id"].as_str().unwrap(), "again", None).unwrap_err().code, 7);
     std::env::set_var("EVERETT_HOPS", "3");
-    let looped = send_inbox(&session(&h.path(), "target-1"), "loop", 0.0, None, 1.0);
+    let looped = send_inbox(&session(&h.path(), "target-1"), "loop", 0.0, None, 1.0, None);
     std::env::remove_var("EVERETT_HOPS");
     assert!(looped.is_err());
     assert!(reply("mmissing", "x", None).is_err());

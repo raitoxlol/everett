@@ -666,6 +666,10 @@ enum ExternalCmd {
         title: String,
         #[arg(long, default_value = "")]
         cwd: String,
+        /// bind this inbox to a relay peer target (PEER/HARNESS/SESSION) so sends
+        /// travel the durable encrypted relay instead of the local inbox file
+        #[arg(long)]
+        device: Option<String>,
         /// update an existing registration of the same harness
         #[arg(long)]
         replace: bool,
@@ -841,8 +845,9 @@ fn main() {
                 harness,
                 title,
                 cwd,
+                device,
                 replace,
-            } => cli::cmd_external_add(&id, &harness, &title, &cwd, replace),
+            } => cli::cmd_external_add(&id, &harness, &title, &cwd, device.as_deref(), replace),
             ExternalCmd::List => cli::cmd_external_list(),
             ExternalCmd::Remove { id } => cli::cmd_external_remove(&id),
         },

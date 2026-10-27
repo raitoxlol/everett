@@ -766,9 +766,17 @@ fn tool_send(
             caller,
             caller_harness,
             1.0,
+            if idempotency_key.is_empty() {
+                None
+            } else {
+                Some(idempotency_key.as_str())
+            },
         )
         .map_err(ToolFailure::Tool)?;
-        let note = if result.get("delivered").and_then(Value::as_bool) == Some(true) {
+        let note = if result.get("transport").and_then(Value::as_str) == Some("relay") {
+            "Queued on the encrypted relay for the remote device; no wake-up or consumption is confirmed. Poll everett peer status or read replies with everett_inbox."
+                .to_string()
+        } else if result.get("delivered").and_then(Value::as_bool) == Some(true) {
             "Inbox pickup was observed. No ping or wake was sent. Read replies with everett_inbox."
                 .to_string()
         } else if crate::adapters::external::is_external(&session.harness) {
