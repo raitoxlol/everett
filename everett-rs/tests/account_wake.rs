@@ -4,6 +4,7 @@ use common::{fixture, Fixture};
 use fs2::FileExt;
 use serde_json::{json, Value};
 use std::os::unix::fs::OpenOptionsExt;
+use std::path::PathBuf;
 use std::{fs, os::unix::fs::PermissionsExt};
 
 const OWNER: &str = "[\"https://issuer.example\",\"account\",\"github:1\"]";
@@ -238,6 +239,7 @@ fn dry_run_changes_no_files_and_actual_change_retains_exact_private_backup() {
     assert_eq!(value["state"], "planned");
     assert_eq!(value["changed"], true);
     assert_eq!(value["backup_created"], false);
+    assert!(value["backup_path"].is_null());
     assert_eq!(
         fs::read(root.join("receiver-webhook.json")).unwrap(),
         original
@@ -252,6 +254,7 @@ fn dry_run_changes_no_files_and_actual_change_retains_exact_private_backup() {
     assert!(out.status.success());
     let value: Value = serde_json::from_str(&f.stdout(&out)).unwrap();
     assert_eq!(value["backup_created"], true);
+    let reported = PathBuf::from(value["backup_path"].as_str().unwrap());
     let backup = fs::read_dir(&root)
         .unwrap()
         .flatten()
@@ -264,6 +267,7 @@ fn dry_run_changes_no_files_and_actual_change_retains_exact_private_backup() {
         .unwrap()
         .path();
     assert_eq!(fs::read(&backup).unwrap(), original);
+    assert_eq!(reported, backup);
     assert_eq!(
         fs::metadata(&backup).unwrap().permissions().mode() & 0o777,
         0o600
@@ -272,7 +276,56 @@ fn dry_run_changes_no_files_and_actual_change_retains_exact_private_backup() {
     let value: Value = serde_json::from_str(&f.stdout(&out)).unwrap();
     assert_eq!(value["changed"], false);
     assert_eq!(value["backup_created"], false);
+    assert_eq!(value["backup_path"], reported.to_str().unwrap());
     assert_eq!(fs::read(&backup).unwrap(), original);
+}
+
+#[test]
+fn restoring_the_reported_backup_returns_the_pre_migration_policy() {
+    let f = setup();
+    let root = f.home().join(".everett/relay-cloudflare");
+    let policy_path = root.join("receiver-webhook.json");
+    let original = fs::read(&policy_path).unwrap();
+    let before: Value = serde_json::from_slice(&original).unwrap();
+    assert_eq!(before["rules"][0]["sender_device"], "agent-max");
+    assert_eq!(before["rules"][0]["sender_session"], "human");
+    assert_eq!(before["rules"][0]["sender_harness"], "");
+
+    let out = f.run(ARGS);
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let value: Value = serde_json::from_str(&f.stdout(&out)).unwrap();
+    let backup = PathBuf::from(value["backup_path"].as_str().unwrap());
+    assert!(backup.starts_with(&root));
+    let migrated: Value = serde_json::from_slice(&fs::read(&policy_path).unwrap()).unwrap();
+    assert!(migrated["rules"][0].get("sender_device").is_none());
+    assert!(migrated["rules"][0].get("sender_session").is_none());
+    assert!(migrated["rules"][0].get("sender_harness").is_none());
+    for secret in ["fake-private-key", "private-webhook-path"] {
+        assert!(!value["backup_path"].as_str().unwrap().contains(secret));
+    }
+
+    let restored_bytes = fs::read(&backup).unwrap();
+    fs::write(&policy_path, &restored_bytes).unwrap();
+    fs::set_permissions(&policy_path, fs::Permissions::from_mode(0o600)).unwrap();
+    let restored: Value = serde_json::from_slice(&fs::read(&policy_path).unwrap()).unwrap();
+    assert_eq!(restored, before);
+    assert_eq!(restored["rules"][0]["sender_device"], "agent-max");
+    assert_eq!(restored["rules"][0]["sender_session"], "human");
+    assert_eq!(restored["rules"][0]["sender_harness"], "");
+
+    let mut preview = ARGS.to_vec();
+    preview.push("--dry-run");
+    let out = f.run(&preview);
+    assert!(out.status.success());
+    let value: Value = serde_json::from_str(&f.stdout(&out)).unwrap();
+    assert_eq!(value["changed"], true);
+    assert_eq!(value["backup_created"], false);
+    assert_eq!(value["backup_path"], backup.to_str().unwrap());
+    assert_eq!(fs::read(&policy_path).unwrap(), original);
 }
 
 #[test]

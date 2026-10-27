@@ -263,11 +263,14 @@ pub fn trust_account_inbox(session: &str, harness: &str, dry_run: bool) -> Resul
             &serde_json::to_vec_pretty(&policy).map_err(|_| bad("policy could not be encoded"))?,
         )?;
     }
+    let backup_path = known_backup_path(&root, &identity.owner, session, harness)
+        .map(|path| path.display().to_string());
     Ok(json!({
         "state": if dry_run { "planned" } else { "configured" },
         "dry_run": dry_run,
         "changed": changed,
         "backup_created": backup_created,
+        "backup_path": backup_path,
         "session": session,
         "harness": harness,
         "senders": "same-owner",
@@ -281,10 +284,22 @@ pub fn trust_account_inbox(session: &str, harness: &str, dry_run: bool) -> Resul
     }))
 }
 
-fn backup_account_policy(root: &Path, owner: &str, session: &str, harness: &str) -> Result<bool> {
+fn account_backup_path(root: &Path, owner: &str, session: &str, harness: &str) -> PathBuf {
     let binding = json!([owner, session, harness]).to_string();
     let digest = hex::encode(Sha256::digest(binding.as_bytes()));
-    let path = root.join(format!("receiver-webhook.before-account-{}.json", &digest[..16]));
+    root.join(format!("receiver-webhook.before-account-{}.json", &digest[..16]))
+}
+
+fn known_backup_path(root: &Path, owner: &str, session: &str, harness: &str) -> Option<PathBuf> {
+    let path = account_backup_path(root, owner, session, harness);
+    match fs::symlink_metadata(&path) {
+        Ok(metadata) if metadata.file_type().is_file() => Some(path),
+        _ => None,
+    }
+}
+
+fn backup_account_policy(root: &Path, owner: &str, session: &str, harness: &str) -> Result<bool> {
+    let path = account_backup_path(root, owner, session, harness);
     match fs::symlink_metadata(&path) {
         Ok(metadata) => {
             if !metadata.file_type().is_file() || metadata.mode() & 0o077 != 0 || metadata.len() > 65_536 {
