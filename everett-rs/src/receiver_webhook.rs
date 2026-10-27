@@ -198,6 +198,7 @@ pub fn configure_inbox(
     validate_rule(&rule)?;
     read_bearer(bearer_file)?;
     let root = policy_dir();
+    crate::relay::receiver::require_account_policy(&root, &rule.owner, &identity.device_id)?;
     crate::peer::private_dir(&root.join(DIRECTORY))?;
     let _guard = crate::peer::lock(&root.join(DIRECTORY).join("ledger.lock"))?;
     let mut policy = load_policy(&root)?;
@@ -1450,6 +1451,49 @@ mod tests {
         arrival.sender_owner = "another-owner".into();
         assert!(matching(&policy, &arrival).is_none());
         IDENTITY_OVERRIDE.with(|slot| *slot.borrow_mut() = None);
+    }
+
+    #[test]
+    fn load_policy_accepts_a_valid_eleven_field_exact_filter_rule() {
+        let root = tempfile::tempdir().unwrap();
+        let arrival = fixture(root.path());
+        let raw: Value =
+            serde_json::from_slice(&fs::read(root.path().join(POLICY_FILE)).unwrap()).unwrap();
+        let rule = &raw["rules"][0];
+        assert_eq!(
+            rule.as_object().unwrap().len(),
+            11,
+            "an exact-filter rule keeps sender_device, sender_session, and sender_harness"
+        );
+        for field in [
+            "id",
+            "owner",
+            "recipient_device",
+            "session",
+            "harness",
+            "sender_device",
+            "sender_session",
+            "sender_harness",
+            "cooldown_seconds",
+            "url",
+            "bearer_file",
+        ] {
+            assert!(rule.get(field).is_some(), "{field}");
+        }
+        // Stopped receiver: setup is allowed, then the same load used by webhook setup reads the file.
+        crate::relay::receiver::require_account_policy(
+            root.path(),
+            &arrival.owner,
+            &arrival.recipient_device,
+        )
+        .unwrap();
+        let loaded = load_policy(root.path()).unwrap();
+        let saved = serde_json::to_value(&loaded.rules[0]).unwrap();
+        assert_eq!(saved.as_object().unwrap().len(), 11);
+        assert_eq!(saved["sender_device"], "agent-receiver");
+        assert_eq!(saved["sender_session"], "human");
+        assert_eq!(saved["sender_harness"], "");
+        assert_eq!(saved["recipient_device"], "agent-receiver");
     }
 
 }
