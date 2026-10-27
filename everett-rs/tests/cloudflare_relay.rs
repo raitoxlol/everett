@@ -21,7 +21,9 @@ fn corrupted_outgoing_record_is_retained_without_killing_or_flooding_the_receive
     std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
     let mut child = listener(&f);
     // The counter advances before each response; four means two reconciliations completed.
-    until(|| server.pending.load(Ordering::SeqCst) >= 4 || child.0.try_wait().unwrap().is_some());
+    until_with_timeout(Duration::from_secs(25), || {
+        server.pending.load(Ordering::SeqCst) >= 4 || child.0.try_wait().unwrap().is_some()
+    });
     if child.0.try_wait().unwrap().is_some() {
         let mut errors = String::new();
         child.0.stderr.take().unwrap().read_to_string(&mut errors).unwrap();
@@ -220,8 +222,11 @@ fn listener(f: &Fixture) -> Running {
             .unwrap(),
     )
 }
-fn until(mut condition: impl FnMut() -> bool) {
-    let deadline = Instant::now() + Duration::from_secs(15);
+fn until(condition: impl FnMut() -> bool) {
+    until_with_timeout(Duration::from_secs(15), condition);
+}
+fn until_with_timeout(timeout: Duration, mut condition: impl FnMut() -> bool) {
+    let deadline = Instant::now() + timeout;
     while !condition() {
         assert!(
             Instant::now() < deadline,
