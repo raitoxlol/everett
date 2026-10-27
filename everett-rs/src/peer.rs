@@ -1117,6 +1117,32 @@ pub fn send(value: &str, text: &str, key: Option<&str>, caller: Option<&str>) ->
     send_as(value, text, key, caller, None)
 }
 
+fn uses_relay(name: &str) -> Result<bool> {
+    if !peers()?.contains_key(name) && crate::relay::same_owner_enabled() {
+        return Ok(true);
+    }
+    assert_alias_unambiguous(name)?;
+    Ok(crate::relay::configured(name))
+}
+
+pub fn preview_send(value: &str) -> Result<Value> {
+    let (name, _, _) = target(value)?;
+    let relay = uses_relay(name)?;
+    Ok(json!({
+        "peer":name,
+        "target":value,
+        "mode":"inbox",
+        "dry_run":true,
+        "transport":if relay { crate::relay::selected_transport()? } else { "ssh" },
+        "recipient_verified":false,
+        "queued":false,
+        "delivered":false,
+        "wake":false,
+        "pickup":if relay { "recipient relay must import; agent must consume" } else { "status polling required" },
+        "note":"Preview only. No remote directory was queried and no message or wake was sent."
+    }))
+}
+
 pub fn send_as(
     value: &str,
     text: &str,
@@ -1125,11 +1151,7 @@ pub fn send_as(
     caller_harness: Option<&str>,
 ) -> Result<Value> {
     let (name, harness, session) = target(value)?;
-    if !peers()?.contains_key(name) && crate::relay::same_owner_enabled() {
-        return crate::relay::send_as(value, text, key, caller, caller_harness);
-    }
-    assert_alias_unambiguous(name)?;
-    if crate::relay::configured(name) {
+    if uses_relay(name)? {
         return crate::relay::send_as(value, text, key, caller, caller_harness);
     }
     let who = send::sender_info_as(caller, caller_harness);

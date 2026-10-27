@@ -3,12 +3,101 @@ use common::{fixture, Fixture};
 use serde_json::{json, Value};
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
+use std::os::unix::fs::PermissionsExt;
 use std::process::{Child, Command, Stdio};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 const TOKEN: &str = "evt_cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc";
+
+#[test]
+fn corrupted_outgoing_record_is_retained_without_killing_or_flooding_the_receiver() {
+    let f = fixture();
+    let server = Server::new();
+    server.configure(&f);
+    server.pending.store(1, Ordering::SeqCst);
+    let path = f.write(".everett/relay-cloudflare/outgoing/corrupted.json", "{private-corrupt-receipt");
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
+    let mut child = listener(&f);
+    until(|| server.pending.load(Ordering::SeqCst) >= 3 || child.0.try_wait().unwrap().is_some());
+    if child.0.try_wait().unwrap().is_some() {
+        let mut errors = String::new();
+        child.0.stderr.take().unwrap().read_to_string(&mut errors).unwrap();
+        panic!("corrupted local receipt killed receiver: {errors}");
+    }
+    assert_eq!(std::fs::read_to_string(path).unwrap(), "{private-corrupt-receipt");
+    let out = f.run(&["relay", "status"]);
+    let status: Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(status["outgoing"]["unreadable"], 1);
+    child.0.kill().unwrap();
+    child.0.wait().unwrap();
+    let mut errors = String::new();
+    child.0.stderr.take().unwrap().read_to_string(&mut errors).unwrap();
+    assert_eq!(errors.matches("local outgoing record is unreadable").count(), 1);
+    assert!(!errors.contains("private-corrupt-receipt"));
+}
+
+#[test]
+fn status_reports_the_actual_running_receiver_and_releases_lease_on_exit() {
+    let f = fixture();
+    let server = Server::new();
+    server.configure(&f);
+    server.pending.store(1, Ordering::SeqCst);
+    let mut child = listener(&f);
+    let record = f.home().join(".everett/relay-cloudflare/receiver-status.json");
+    until(|| std::fs::read(&record).ok().and_then(|bytes| serde_json::from_slice::<Value>(&bytes).ok())
+        .is_some_and(|value| value["connection"] == "healthy"));
+    let whoami_before = server.calls.lock().unwrap().iter().filter(|path| path.ends_with("/whoami")).count();
+    let out = f.run(&["relay", "status"]);
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let status: Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(status["receiver"]["state"], "running");
+    assert_eq!(status["receiver"]["connection"], "healthy");
+    assert_eq!(status["receiver"]["pid"], child.0.id());
+    assert!(status["receiver"]["capabilities"].as_array().unwrap().iter()
+        .any(|value| value == "same-owner-webhook-v1"));
+    assert_eq!(status["network_checked"], false);
+    assert!(!String::from_utf8_lossy(&out.stdout).contains(TOKEN));
+    assert_eq!(server.calls.lock().unwrap().iter().filter(|path| path.ends_with("/whoami")).count(), whoami_before);
+    child.0.kill().unwrap();
+    child.0.wait().unwrap();
+    let out = f.run(&["relay", "status"]);
+    assert_eq!(serde_json::from_slice::<Value>(&out.stdout).unwrap()["receiver"]["state"], "stopped");
+    assert!(record.exists(), "stale evidence is retained but must not mean running");
+}
+
+#[test]
+fn reconciliation_skips_local_and_incomplete_inbox_messages() {
+    let f = fixture();
+    let server = Server::new();
+    server.configure(&f);
+    server.pending.store(1, Ordering::SeqCst);
+    let messages = [
+        json!({}),
+        json!({"id":"local","text":"ordinary local message"}),
+        json!({"id":"no-recipient","relay_owner":"synthetic-owner"}),
+        json!({"id":"no-sender","relay_owner":"synthetic-owner","relay_recipient_device":"synthetic-agent"}),
+        json!({"id":"no-remote-id","relay_owner":"synthetic-owner","relay_recipient_device":"synthetic-agent","relay_sender_owner":"synthetic-owner"}),
+    ];
+    f.write(
+        ".everett/inbox/receiver-regression.jsonl",
+        &messages.iter().map(Value::to_string).collect::<Vec<_>>().join("\n"),
+    );
+    f.write(
+        ".everett/inbox/receiver-regression.done",
+        "local\nno-recipient\nno-sender\nno-remote-id\n",
+    );
+    let mut child = listener(&f);
+    until(|| server.pending.load(Ordering::SeqCst) >= 3 || child.0.try_wait().unwrap().is_some());
+    if child.0.try_wait().unwrap().is_some() {
+        let mut errors = String::new();
+        child.0.stderr.take().unwrap().read_to_string(&mut errors).unwrap();
+        panic!("receiver exited while reconciling unrelated inbox rows: {errors}");
+    }
+    assert!(!server.calls.lock().unwrap().iter().any(|path| path == "/v2/relay/observe"));
+}
+
 struct Server {
     url: String,
     pending: Arc<AtomicUsize>,

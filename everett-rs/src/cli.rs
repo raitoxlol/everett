@@ -454,9 +454,9 @@ fn cmd_remote_send(args: &Args, to: &str) -> i32 {
         return 2;
     }
     if args.dry_run {
-        return match crate::peer::target(to) {
-            Ok((peer, _, _)) => {
-                println!("{}", json!({"peer":peer,"target":to,"mode":"inbox","dry_run":true,"pickup":if crate::relay::configured(peer) {"live Convex relay"} else {"status polling"}}));
+        return match crate::peer::preview_send(to) {
+            Ok(value) => {
+                println!("{}", value);
                 0
             }
             Err(e) => { eprintln!("everett: {e}"); e.code }

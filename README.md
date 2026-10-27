@@ -297,6 +297,38 @@ On the computer that holds the inbox:
 4. Bind the routine's MCP to that inbox through a reachable Remote HTTPS [`everett gateway`](docs/gateway.md). Tell it to call `everett_inbox`, then `everett_send` with `reply_to`.
 5. Send `everett send 'check inbox' --to ext-grok-acceptance --mode inbox --json`. Expect `"wake":false` and webhook `"state":"accepted"` with HTTP 200, then verify the routine calls `everett_inbox`.
 
+New webhook rules accept verified senders from the same owner account without a
+per-device or per-session sender allowlist. To upgrade an existing restricted
+rule, run this on the computer that holds the inbox:
+
+First update and restart the actual receiving `everett relay` process with the
+same updated binary. Older exact-filter-only receivers reject omitted sender
+filters. The command below does not upgrade or restart a running receiver.
+
+```sh
+everett relay trust-account ext-grok-acceptance --harness grok-bot --dry-run
+everett relay trust-account ext-grok-acceptance --harness grok-bot
+```
+
+The preview writes nothing. Applying saves a private, non-overwriting backup
+before the first change. An active receiver must prove support for the policy
+format; a matching version string alone is not sufficient.
+
+This removes only that inbox's sender filters. It keeps the owner, current
+recipient device, webhook credentials, cooldown and delivery ledger. It does not
+enable a disabled policy or call the webhook. Other accounts, untrusted external
+messages and replies still cannot trigger a wake. The inbox must be registered
+under the receiver's actual `HOME`, and cross-device messages still require a
+running relay. Account trust does not make an offline bot instantly available.
+
+`everett relay status --json` reports local receiver capabilities, polling health,
+inbox registrations, sanitized webhook issues and bounded cached outgoing
+receipts without network calls or inbox consumption. Expired queued requests
+are reported as expired, not still pending. MCP exposes this as
+`everett_agent_relay` action `status`.
+See [messaging troubleshooting](docs/messaging-troubleshooting.md) for the
+stage-by-stage checks and private-backup recovery precautions.
+
 ## Cloudflare native relay
 
 With `[auth] provider = "cloudflare"`, native account approval and encrypted relay use

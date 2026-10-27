@@ -6,6 +6,7 @@
 
 use std::collections::BTreeMap;
 use std::fs;
+use std::io::Write;
 use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -198,6 +199,7 @@ pub fn configure_inbox(
     validate_rule(&rule)?;
     read_bearer(bearer_file)?;
     let root = policy_dir();
+    crate::relay::receiver::require_account_policy(&root, &rule.owner, &identity.device_id)?;
     crate::peer::private_dir(&root.join(DIRECTORY))?;
     let _guard = crate::peer::lock(&root.join(DIRECTORY).join("ledger.lock"))?;
     let mut policy = load_policy(&root)?;
@@ -231,6 +233,114 @@ pub fn configure_inbox(
     )
 }
 
+pub fn trust_account_inbox(session: &str, harness: &str, dry_run: bool) -> Result<Value> {
+    let identity = local_identity()?.ok_or_else(|| bad("sign in on this device first"))?;
+    if !crate::adapters::external::records()
+        .iter()
+        .any(|record| record.id == session && record.harness == harness)
+    {
+        return Err(bad("register this external inbox with everett external add first"));
+    }
+    let root = policy_dir();
+    crate::relay::receiver::require_account_policy(&root, &identity.owner, &identity.device_id)?;
+    // A preview must not create a ledger directory or even a lock file.
+    let _guard = if dry_run {
+        None
+    } else {
+        crate::peer::private_dir(&root.join(DIRECTORY))?;
+        Some(crate::peer::lock(&root.join(DIRECTORY).join("ledger.lock"))?)
+    };
+    let mut policy = load_policy(&root)?;
+    let before = serde_json::to_vec(&policy).map_err(|_| bad("policy could not be encoded"))?;
+    trust_account_rule(&mut policy, &identity, session, harness)?;
+    let changed = before != serde_json::to_vec(&policy).map_err(|_| bad("policy could not be encoded"))?;
+    let mut backup_created = false;
+    if changed && !dry_run {
+        crate::relay::receiver::require_account_policy(&root, &identity.owner, &identity.device_id)?;
+        backup_created = backup_account_policy(&root, &identity.owner, session, harness)?;
+        crate::peer::save(
+            &root.join(POLICY_FILE),
+            &serde_json::to_vec_pretty(&policy).map_err(|_| bad("policy could not be encoded"))?,
+        )?;
+    }
+    Ok(json!({
+        "state": if dry_run { "planned" } else { "configured" },
+        "dry_run": dry_run,
+        "changed": changed,
+        "backup_created": backup_created,
+        "session": session,
+        "harness": harness,
+        "senders": "same-owner",
+        "recipient": "this-device",
+        "note": if dry_run {
+            "Preview only. No files were written and no webhook was called."
+        } else {
+            "Sender allowlists removed for this inbox only. Other accounts remain blocked. No webhook was called."
+        },
+        "receiver_requirement": "Run the receiver with this updated binary. Older exact-filter-only receivers reject this policy; this command does not upgrade or restart them."
+    }))
+}
+
+fn backup_account_policy(root: &Path, owner: &str, session: &str, harness: &str) -> Result<bool> {
+    let binding = json!([owner, session, harness]).to_string();
+    let digest = hex::encode(Sha256::digest(binding.as_bytes()));
+    let path = root.join(format!("receiver-webhook.before-account-{}.json", &digest[..16]));
+    match fs::symlink_metadata(&path) {
+        Ok(metadata) => {
+            if !metadata.file_type().is_file() || metadata.mode() & 0o077 != 0 || metadata.len() > 65_536 {
+                return Err(bad("existing account-policy backup is unsafe; policy unchanged"));
+            }
+            let bytes = fs::read(&path).map_err(|_| bad("existing policy backup could not be read"))?;
+            let policy: Policy = serde_json::from_slice(&bytes)
+                .map_err(|_| bad("existing policy backup is invalid; policy unchanged"))?;
+            if policy.version != 1 || !policy.rules.iter().any(|rule| {
+                rule.owner == owner && rule.session == session && rule.harness == harness
+            }) {
+                return Err(bad("existing policy backup belongs to another inbox; policy unchanged"));
+            }
+            return Ok(false);
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => (),
+        Err(_) => return Err(bad("policy backup could not be inspected")),
+    }
+    let bytes = fs::read(root.join(POLICY_FILE)).map_err(|_| bad("policy could not be backed up"))?;
+    let mut temporary = tempfile::NamedTempFile::new_in(root)
+        .map_err(|_| bad("private policy backup could not be created"))?;
+    temporary.write_all(&bytes).and_then(|_| temporary.as_file().sync_all())
+        .map_err(|_| bad("policy backup could not be written; policy unchanged"))?;
+    temporary.persist_noclobber(path).map_err(|_| bad("policy backup could not be saved; policy unchanged"))?;
+    fs::File::open(root).and_then(|directory| directory.sync_all())
+        .map_err(|_| bad("policy backup could not be synced; policy unchanged"))?;
+    Ok(true)
+}
+
+fn trust_account_rule(
+    policy: &mut Policy,
+    identity: &Identity,
+    session: &str,
+    harness: &str,
+) -> Result<()> {
+    if !policy.enabled {
+        return Err(bad("configure and enable this inbox webhook first; no policy changed"));
+    }
+    let candidates: Vec<_> = policy.rules.iter_mut().filter(|rule| {
+        rule.owner == identity.owner
+            && rule.session == session
+            && rule.harness == harness
+            && filter_matches(&rule.recipient_device, &identity.device_id)
+    }).collect();
+    if candidates.len() != 1 {
+        return Err(bad("expected one enabled webhook rule for this account, device and inbox; no policy changed"));
+    }
+    let rule = candidates.into_iter().next().unwrap();
+    rule.sender_device = None;
+    rule.sender_session = None;
+    rule.sender_harness = None;
+    // Bind a legacy explicit rule to the current device before widening senders.
+    rule.recipient_device = Some(identity.device_id.clone());
+    validate_rule(rule)
+}
+
 pub fn on_imported(arrival: &Arrival) -> Result<Outcome> {
     evaluate(
         &policy_dir(),
@@ -242,6 +352,78 @@ pub fn on_imported(arrival: &Arrival) -> Result<Outcome> {
 
 pub fn poll() -> Result<Outcome> {
     evaluate(&policy_dir(), None, unix_secs(), &mut default_poster)
+}
+
+pub(crate) fn diagnostics() -> Value {
+    let records = crate::adapters::external::records();
+    let registrations: Vec<_> = records.iter()
+        .map(|record| (record.id.as_str(), record.harness.as_str()))
+        .collect();
+    let identity = local_identity().ok().flatten();
+    describe_policy(&policy_dir(), identity.as_ref(), &registrations)
+}
+
+fn describe_policy(root: &Path, identity: Option<&Identity>, registrations: &[(&str, &str)]) -> Value {
+    let policy = match load_policy(root) {
+        Ok(policy) => policy,
+        Err(error) => return json!({"state":"invalid","reason":error.message,"rules":[]}),
+    };
+    let rules: Vec<_> = policy.rules.iter().map(|rule| {
+        let registered = registrations.contains(&(rule.session.as_str(), rule.harness.as_str()));
+        let owner_matches = identity.is_some_and(|identity| identity.owner == rule.owner);
+        let recipient_matches = identity.is_some_and(|identity| {
+            filter_matches(&rule.recipient_device, &identity.device_id)
+        });
+        let restricted = [
+            rule.sender_device.as_deref(),
+            rule.sender_session.as_deref(),
+            rule.sender_harness.as_deref(),
+        ].iter().any(|filter| filter.is_some_and(|value| value != "*"));
+        let credential_ready = read_bearer(Path::new(&rule.bearer_file)).is_ok();
+        let mut issues = Vec::new();
+        if !registered { issues.push("inbox-not-registered-under-this-home"); }
+        if !owner_matches { issues.push("account-does-not-match-rule"); }
+        if !recipient_matches { issues.push("recipient-device-does-not-match-rule"); }
+        if restricted { issues.push("sender-allowlist-restricts-account-delivery"); }
+        if !credential_ready { issues.push("webhook-credential-unavailable-or-unsafe"); }
+        json!({
+            "id":rule.id,
+            "session":rule.session,
+            "harness":rule.harness,
+            "registered":registered,
+            "owner_matches":owner_matches,
+            "recipient_matches":recipient_matches,
+            "sender_scope":if restricted { "restricted" } else { "same-owner" },
+            "sender_filters":{
+                "device":rule.sender_device,
+                "session":rule.sender_session,
+                "harness":rule.sender_harness
+            },
+            "credential_ready":credential_ready,
+            "cooldown_seconds":rule.cooldown_seconds,
+            "issues":issues
+        })
+    }).collect();
+    let ledger = match load_ledger(&root.join(DIRECTORY).join("ledger.json")) {
+        Ok(ledger) => {
+            let count = |state| ledger.messages.values().filter(|saved| saved.state == state).count();
+            json!({
+                "state":"readable",
+                "accepted":count("posted"),
+                "pending":count("pending"),
+                "rejected":count("rejected"),
+                "last_attempt_at":ledger.messages.values().map(|saved| saved.at).max(),
+                "note":"Accepted means HTTP acceptance only, not agent execution or inbox consumption."
+            })
+        }
+        Err(error) => json!({"state":"invalid","reason":error.message}),
+    };
+    json!({
+        "state":if !root.join(POLICY_FILE).exists() { "missing" } else if policy.enabled { "enabled" } else { "disabled" },
+        "rules":rules,
+        "ledger":ledger,
+        "note":"Read-only local diagnostics. Webhook URL, bearer paths, keys and message text are omitted. No webhook was called."
+    })
 }
 
 pub fn after_local_queue(
@@ -1450,6 +1632,139 @@ mod tests {
         arrival.sender_owner = "another-owner".into();
         assert!(matching(&policy, &arrival).is_none());
         IDENTITY_OVERRIDE.with(|slot| *slot.borrow_mut() = None);
+    }
+
+    #[test]
+    fn trust_account_removes_sender_allowlists_without_changing_other_policy() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut arrival = fixture(dir.path());
+        let identity = Identity {
+            owner: arrival.owner.clone(),
+            device_id: arrival.recipient_device.clone(),
+        };
+        let _guard = OverrideGuard::set(dir.path().into(), identity.clone());
+        let mut policy = load_policy(dir.path()).unwrap();
+        let original = serde_json::to_value(&policy).unwrap();
+        arrival.sender_device = "agent-new-mac".into();
+        arrival.sender_session = "quilled-house".into();
+        arrival.sender_harness = "devin".into();
+        assert!(matching(&policy, &arrival).is_none());
+
+        trust_account_rule(&mut policy, &identity, &arrival.session, &arrival.harness).unwrap();
+        assert!(matching(&policy, &arrival).is_some());
+        let mut expected = original;
+        for field in ["sender_device", "sender_session", "sender_harness"] {
+            expected["rules"][0].as_object_mut().unwrap().remove(field);
+        }
+        assert_eq!(serde_json::to_value(&policy).unwrap(), expected);
+
+        private(&dir.path().join(POLICY_FILE), &serde_json::to_vec(&policy).unwrap());
+        let mut posts = Posts(vec![Response::Status(200)]);
+        let outcome = deliver(dir.path(), &arrival, 1_700_000_001, &mut posts);
+        assert_eq!(outcome.value.unwrap()["state"], "accepted");
+        assert!(posts.0.is_empty(), "same-account sender should trigger the webhook");
+
+        arrival.sender_owner = "[\"https://evil.example\",\"account\",\"github:1\"]".into();
+        assert!(matching(&policy, &arrival).is_none());
+        arrival.sender_owner = identity.owner;
+        arrival.external = true;
+        assert!(gate(&policy, &arrival).is_some());
+        arrival.external = false;
+        arrival.is_reply = true;
+        assert!(gate(&policy, &arrival).is_some());
+    }
+
+    #[test]
+    fn trust_account_fails_closed_for_disabled_foreign_wrong_device_or_ambiguous_rules() {
+        let dir = tempfile::tempdir().unwrap();
+        let arrival = fixture(dir.path());
+        let identity = Identity {
+            owner: arrival.owner.clone(),
+            device_id: arrival.recipient_device.clone(),
+        };
+        for case in ["disabled", "owner", "device", "session", "harness", "duplicate", "missing"] {
+            let mut policy = load_policy(dir.path()).unwrap();
+            match case {
+                "disabled" => policy.enabled = false,
+                "owner" => policy.rules[0].owner = "another-owner".into(),
+                "device" => policy.rules[0].recipient_device = Some("another-device".into()),
+                "session" => policy.rules[0].session = "another-session".into(),
+                "harness" => policy.rules[0].harness = "openai-dot".into(),
+                "duplicate" => policy.rules.push(policy.rules[0].clone()),
+                "missing" => policy.rules.clear(),
+                _ => unreachable!(),
+            }
+            let before = serde_json::to_value(&policy).unwrap();
+            assert!(trust_account_rule(&mut policy, &identity, &arrival.session, &arrival.harness).is_err(), "{case}");
+            assert_eq!(serde_json::to_value(&policy).unwrap(), before, "{case}");
+        }
+    }
+
+    #[test]
+    fn trust_account_binds_implicit_recipient_and_is_idempotent() {
+        let dir = tempfile::tempdir().unwrap();
+        let arrival = fixture(dir.path());
+        let identity = Identity { owner: arrival.owner, device_id: arrival.recipient_device };
+        let mut policy = load_policy(dir.path()).unwrap();
+        policy.rules[0].recipient_device = None;
+        trust_account_rule(&mut policy, &identity, &arrival.session, &arrival.harness).unwrap();
+        assert_eq!(policy.rules[0].recipient_device.as_deref(), Some(identity.device_id.as_str()));
+        let before = serde_json::to_value(&policy).unwrap();
+        trust_account_rule(&mut policy, &identity, &arrival.session, &arrival.harness).unwrap();
+        assert_eq!(serde_json::to_value(&policy).unwrap(), before);
+    }
+
+    #[test]
+    fn diagnostics_explain_registration_and_sender_filters_without_exposing_secrets() {
+        let dir = tempfile::tempdir().unwrap();
+        let arrival = fixture(dir.path());
+        let identity = Identity { owner: arrival.owner, device_id: arrival.recipient_device };
+        let report = describe_policy(dir.path(), Some(&identity), &[]);
+        let rule = &report["rules"][0];
+        assert_eq!(report["state"], "enabled");
+        assert_eq!(rule["registered"], false);
+        assert_eq!(rule["sender_scope"], "restricted");
+        assert_eq!(rule["sender_filters"]["session"], "human");
+        assert_eq!(rule["credential_ready"], true);
+        assert!(rule["issues"].as_array().unwrap().iter()
+            .any(|issue| issue == "inbox-not-registered-under-this-home"));
+        assert!(rule["issues"].as_array().unwrap().iter()
+            .any(|issue| issue == "sender-allowlist-restricts-account-delivery"));
+        let text = report.to_string();
+        assert!(!text.contains(SECRET));
+        assert!(!text.contains("api2.cursor.sh"));
+        assert!(!text.contains("webhook.key"));
+        assert!(!dir.path().join(DIRECTORY).exists(), "diagnostics created ledger state");
+    }
+
+    #[test]
+    fn diagnostics_show_same_owner_scope_and_wrong_account_without_posting() {
+        let dir = tempfile::tempdir().unwrap();
+        let arrival = fixture(dir.path());
+        let identity = Identity { owner: arrival.owner, device_id: arrival.recipient_device };
+        let mut policy = load_policy(dir.path()).unwrap();
+        trust_account_rule(&mut policy, &identity, &arrival.session, &arrival.harness).unwrap();
+        private(&dir.path().join(POLICY_FILE), &serde_json::to_vec(&policy).unwrap());
+        let registrations = [(arrival.session.as_str(), arrival.harness.as_str())];
+        let report = describe_policy(dir.path(), Some(&identity), &registrations);
+        assert_eq!(report["rules"][0]["sender_scope"], "same-owner");
+        assert_eq!(report["rules"][0]["issues"], json!([]));
+        let other = Identity { owner:"another-owner".into(), device_id:"another-device".into() };
+        let report = describe_policy(dir.path(), Some(&other), &registrations);
+        assert_eq!(report["rules"][0]["owner_matches"], false);
+        assert_eq!(report["rules"][0]["recipient_matches"], false);
+    }
+
+    #[test]
+    fn diagnostics_handle_missing_and_invalid_policy_without_writes_or_raw_errors() {
+        let dir = tempfile::tempdir().unwrap();
+        let missing = dir.path().join("missing");
+        assert_eq!(describe_policy(&missing, None, &[])["state"], "missing");
+        assert!(!missing.exists());
+        private(&dir.path().join(POLICY_FILE), b"{secret-canary");
+        let report = describe_policy(dir.path(), None, &[]);
+        assert_eq!(report["state"], "invalid");
+        assert!(!report.to_string().contains("secret-canary"));
     }
 
 }
