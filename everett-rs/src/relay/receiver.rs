@@ -88,10 +88,15 @@ impl Lease {
             device: device.into(),
             capabilities: vec![SAME_OWNER_WEBHOOK.into()],
         };
-        crate::peer::save(
-            &root.join(RECORD),
-            &serde_json::to_vec(&record).map_err(|_| failure("status encoding failed"))?,
-        )?;
+        let bytes = serde_json::to_vec(&record).map_err(|_| failure("status encoding failed"))?;
+        // The capability record is advisory. A failed write must not release the
+        // lease or stop the receiver from delivering.
+        if let Err(error) = crate::peer::save(&root.join(RECORD), &bytes) {
+            eprintln!(
+                "everett relay: receiver status could not be written; delivery continues: {}",
+                error.message
+            );
+        }
         Ok(Self { _lock: lock })
     }
 }
@@ -266,5 +271,26 @@ mod tests {
         fs::set_permissions(dir.path().join(RECORD), fs::Permissions::from_mode(0o644)).unwrap();
         assert!(snapshot(dir.path(), Some(("owner", "device"))).is_err());
         drop(lease);
+    }
+
+    #[test]
+    fn failed_status_write_does_not_abort_delivery_or_drop_the_lease() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("receiver");
+        fs::create_dir(&root).unwrap();
+        let _daemon = daemon(&root);
+        fs::create_dir(root.join(RECORD)).unwrap();
+        let lease = Lease::start(&root, "owner", "device").unwrap();
+        assert!(
+            root.join(RECORD).is_dir(),
+            "failed status write must leave the existing path in place"
+        );
+        assert!(Lease::start(&root, "owner", "device").is_err());
+        assert!(snapshot(&root, Some(("owner", "device"))).is_err());
+        assert!(require_account_policy(&root, "owner", "device").is_err());
+        drop(lease);
+        let restarted = Lease::start(&root, "owner", "device").unwrap();
+        assert!(root.join(RECORD).is_dir());
+        drop(restarted);
     }
 }
