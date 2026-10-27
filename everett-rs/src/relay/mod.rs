@@ -1,5 +1,6 @@
 pub mod crypto;
 mod queue;
+pub(crate) mod receiver;
 mod transport;
 
 #[cfg(test)]
@@ -2271,6 +2272,7 @@ pub fn run() -> Result<Value> {
     let keys = verified_keys(&owner)?;
     let register = register_args(&keys.device)?;
     let _guard = daemon_lock()?;
+    let _lease = receiver::Lease::start(&root(), &owner, &keys.device.device_id)?;
     let ingress = root().join("ingress");
     peer::private_dir(&ingress)?;
     let outcome = tokio::runtime::Runtime::new().map_err(bad)?.block_on(async {
