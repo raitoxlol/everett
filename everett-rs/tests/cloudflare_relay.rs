@@ -3,12 +3,76 @@ use common::{fixture, Fixture};
 use serde_json::{json, Value};
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
+use std::os::unix::fs::PermissionsExt;
 use std::process::{Child, Command, Stdio};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 const TOKEN: &str = "evt_cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc";
+
+#[test]
+fn corrupted_outgoing_record_is_retained_without_killing_or_flooding_the_receiver() {
+    let f = fixture();
+    let server = Server::new();
+    server.configure(&f);
+    server.pending.store(1, Ordering::SeqCst);
+    let path = f.write(".everett/relay-cloudflare/outgoing/corrupted.json", "{private-corrupt-receipt");
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
+    let mut child = listener(&f);
+    // The counter advances before each response; four means two reconciliations completed.
+    until_with_timeout(Duration::from_secs(25), || {
+        server.pending.load(Ordering::SeqCst) >= 4 || child.0.try_wait().unwrap().is_some()
+    });
+    if child.0.try_wait().unwrap().is_some() {
+        let mut errors = String::new();
+        child.0.stderr.take().unwrap().read_to_string(&mut errors).unwrap();
+        panic!("corrupted local receipt killed receiver: {errors}");
+    }
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), "{private-corrupt-receipt");
+    child.0.kill().unwrap();
+    child.0.wait().unwrap();
+    let mut errors = String::new();
+    child.0.stderr.take().unwrap().read_to_string(&mut errors).unwrap();
+    assert_eq!(errors.matches("local outgoing record is unreadable").count(), 1);
+    assert!(!errors.contains("private-corrupt-receipt"));
+}
+
+#[test]
+fn incomplete_inbox_row_is_retained_and_does_not_panic_the_receiver() {
+    let f = fixture();
+    let server = Server::new();
+    server.configure(&f);
+    server.pending.store(1, Ordering::SeqCst);
+    // inbox::read yields only objects with id and text. Missing relay fields used
+    // to panic Map indexing inside reconcile and kill the process.
+    let body = "\
+{\"id\":\"local-only\",\"text\":\"ordinary local message\"}\n\
+{\"id\":\"missing-sender\",\"text\":\"kept\",\"relay_owner\":\"synthetic-owner\",\"relay_recipient_device\":\"synthetic-agent\"}\n\
+not-json\n\
+{\"id\":\"no-text\",\"relay_owner\":\"synthetic-owner\"}\n";
+    let path = f.write(".everett/inbox/receiver-regression.jsonl", body);
+    f.write(
+        ".everett/inbox/receiver-regression.done",
+        "local-only\nmissing-sender\nno-text\n",
+    );
+    let mut child = listener(&f);
+    until(|| server.pending.load(Ordering::SeqCst) >= 3 || child.0.try_wait().unwrap().is_some());
+    if child.0.try_wait().unwrap().is_some() {
+        let mut errors = String::new();
+        child.0.stderr.take().unwrap().read_to_string(&mut errors).unwrap();
+        panic!("incomplete inbox row killed receiver: {errors}");
+    }
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), body);
+    assert!(!server.calls.lock().unwrap().iter().any(|call| call == "/v2/relay/observe"));
+    child.0.kill().unwrap();
+    child.0.wait().unwrap();
+    let mut errors = String::new();
+    child.0.stderr.take().unwrap().read_to_string(&mut errors).unwrap();
+    assert!(!errors.contains("panicked"), "{errors}");
+    assert!(!errors.contains("no entry found for key"), "{errors}");
+}
+
 struct Server {
     url: String,
     pending: Arc<AtomicUsize>,
@@ -158,8 +222,11 @@ fn listener(f: &Fixture) -> Running {
             .unwrap(),
     )
 }
-fn until(mut condition: impl FnMut() -> bool) {
-    let deadline = Instant::now() + Duration::from_secs(15);
+fn until(condition: impl FnMut() -> bool) {
+    until_with_timeout(Duration::from_secs(15), condition);
+}
+fn until_with_timeout(timeout: Duration, mut condition: impl FnMut() -> bool) {
+    let deadline = Instant::now() + timeout;
     while !condition() {
         assert!(
             Instant::now() < deadline,

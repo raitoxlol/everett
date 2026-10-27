@@ -1,4 +1,5 @@
 pub mod crypto;
+mod queue;
 pub(crate) mod receiver;
 mod transport;
 
@@ -1934,24 +1935,25 @@ async fn signed_observation(
     Ok(())
 }
 
-async fn reconcile(client: &mut RelayClient, keys: &Keys) -> Result<()> {
+async fn reconcile(client: &mut RelayClient, keys: &Keys, rejected: &mut RejectedCache) -> Result<()> {
     for path in crate::paths::glob(&inbox::inbox_dir(), "*.jsonl") {
         let session = path.file_stem().unwrap_or_default().to_string_lossy();
         let done = inbox::done_ids(&session);
         for message in inbox::read(&session) {
-            let Some(mid) = message["id"].as_str() else {
+            let Some(mid) = message.get("id").and_then(Value::as_str) else {
                 continue;
             };
-            if message["relay_owner"] != keys.device.owner
-                || message["relay_recipient_device"] != keys.device.device_id
+            if message.get("relay_owner").and_then(Value::as_str) != Some(keys.device.owner.as_str())
+                || message.get("relay_recipient_device").and_then(Value::as_str)
+                    != Some(keys.device.device_id.as_str())
                 || !done.contains(mid)
             {
                 continue;
             }
-            let Some(sender_owner) = message["relay_sender_owner"].as_str() else {
+            let Some(sender_owner) = message.get("relay_sender_owner").and_then(Value::as_str) else {
                 continue;
             };
-            let Some(remote_mid) = message["relay_message_id"].as_str() else {
+            let Some(remote_mid) = message.get("relay_message_id").and_then(Value::as_str) else {
                 continue;
             };
             let marker = root().join(format!(
@@ -1980,7 +1982,14 @@ async fn reconcile(client: &mut RelayClient, keys: &Keys) -> Result<()> {
         }
     }
     for path in crate::paths::glob(&root().join("outgoing"), "*.json") {
-        let out: Outgoing = read(&path)?;
+        let Some(out) = queue::read_record::<Outgoing>(&path) else {
+            let now = milliseconds();
+            let id = format!("local-outgoing:{:x}", Sha256::digest(path.as_os_str().as_encoded_bytes()));
+            if rejected.insert(id, now.saturating_add(60_000), now) {
+                eprintln!("everett relay: local outgoing record is unreadable; retained and skipped until repaired");
+            }
+            continue;
+        };
         if out.envelope.owner == keys.device.owner
             && out.envelope.from_device == keys.device.device_id
             && out.envelope.sender_fingerprint == keys.device.fingerprint()
@@ -2208,7 +2217,7 @@ async fn receive(
         }
         cursor = Some(page.continue_cursor);
     }
-    reconcile(client, keys).await?;
+    reconcile(client, keys, rejected).await?;
     drain_receiver_wakes(keys)?;
     note_receiver_webhook(crate::receiver_webhook::poll());
     Ok(cursor)
