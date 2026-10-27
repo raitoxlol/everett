@@ -643,9 +643,9 @@ pub fn spawn_for(
     })
 }
 
-// ---- live delivery: running sessions get an inbox message instead of a resume ----
+// ---- immediate ping and legacy inbox delivery ----
 
-pub const MODES: &[&str] = &["auto", "resume", "inbox"];
+pub const MODES: &[&str] = &["ping", "auto", "resume", "inbox"];
 pub const INBOX_HARNESSES: &[&str] = &["claude", "codex", "grok", "omp"];
 
 /// A harness process is attached to this session right now (its TUI is open or it is mid-run).
@@ -676,6 +676,14 @@ pub fn delivery_mode_for(
     guard_delivery(mode, false, caller)?;
     let sid = caller.map(str::to_string).unwrap_or_else(caller_session_id);
     let remote_derived = inbox::relay_context(&sid).is_some();
+    if mode == "ping" {
+        require_local_prompt(caller)?;
+        if external::is_external(&session.harness) || session.source == "t3code"
+            || (session.harness != "claude" && attached(session, ps_out)) {
+            return Err(EverettError::new(4, "No immediate ping transport for this session. Nothing was queued. Use --mode inbox only for legacy hooks/polling."));
+        }
+        return Ok("ping".into());
+    }
     if external::is_external(&session.harness) && mode == "resume" {
         return Err(EverettError::new(
             2,
@@ -702,6 +710,45 @@ pub fn delivery_mode_for(
         ));
     }
     Ok("resume".to_string())
+}
+
+pub fn ping_as(
+    session: &Session,
+    text: &str,
+    timeout: f64,
+    caller: Option<&str>,
+    caller_harness: Option<&str>,
+) -> Result<Map<String, Value>> {
+    require_local_prompt(caller)?;
+    refuse_self(session, caller)?;
+    if text.trim().is_empty() || text.len() > crate::peer::BODY_CAP || !timeout.is_finite() || timeout <= 0.0 {
+        return Err(EverettError::new(2, "Ping requires non-empty text within 64 KiB and a positive finite timeout"));
+    }
+    delivery_mode_for(session, "ping", None, caller)?;
+    if attached(session, None) {
+        let prepared = crate::claude_wake::prepare(session).map_err(|error| EverettError::new(4,
+            format!("Ping unavailable for {}: {}. Nothing was queued. Use --mode inbox for legacy delivery.", session.id, error.message)))?;
+        let mut out = send_inbox_as(session, text, 0.0, caller, caller_harness, 1.0, None)?;
+        let mid = out.get("message_id").and_then(Value::as_str).unwrap_or("");
+        match crate::claude_wake::wake(&prepared, mid) {
+            crate::claude_wake::WakeOutcome::PromptSent { client_pid, target_pid } => {
+                out.insert("wake".into(), json!({"state":"prompt_sent","client_pid":client_pid,"target_pid":target_pid}));
+                out.insert("mode".into(), json!("ping"));
+                out.insert("pinged".into(), json!(true));
+                out.insert("note".into(), json!("Immediate native nudge sent. The durable inbox is retained; consumption and reply are not confirmed."));
+                Ok(out)
+            }
+            outcome => Err(EverettError::new(
+                if matches!(outcome, crate::claude_wake::WakeOutcome::Cancelled { .. }) { 130 } else { 4 },
+                format!("Immediate ping not confirmed ({outcome:?}); inbox message {mid} remains recorded and may have been read. Do not blindly retry."),
+            )),
+        }
+    } else {
+        let env = hop_env_for(caller)?;
+        let result = send_for(session, text, timeout, 0.0, Some(&env), caller)?;
+        Ok(serde_json::from_value(json!({"mode":"ping","pinged":true,"queued":false,
+            "delivered":true,"command":result.command,"reply":result.reply})).unwrap())
+    }
 }
 
 /// Who is sending: the calling session (with its card), else the human at a terminal.

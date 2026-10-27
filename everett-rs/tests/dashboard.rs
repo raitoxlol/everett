@@ -7,6 +7,27 @@ use std::time::Duration;
 
 struct Dashboard(Child);
 
+#[test]
+fn authored_cards_show_separate_identity_tags_and_escape_untrusted_metadata() {
+    let card = everett::messaging::AuthorCard {
+        owner: "account".into(), author: "alice<&>".into(), agent: "agent-1".into(),
+        session: "session-1".into(), harness: "codex".into(),
+        card: "Repair login\n<script>alert(1)</script>".into(), updated_at: 1_000.0,
+        target: "id:agent-1/codex/session-1".into(),
+    };
+    let local = everett::session::Session::new("claude", "local-1", "", "local task", "", 0.0);
+    let page = everett::dashboard::render_with_authors(&[local], &[card], "", 72.0, 10.0);
+    for text in ["Author: alice&lt;&amp;&gt;", "Agent: agent-1", "Session: session-1",
+        "Agent: local", "Session: local-1", "Repair login\n&lt;script&gt;alert(1)&lt;/script&gt;",
+        "id:agent-1/codex/session-1", "Copy ping command", "No queue fallback"] {
+        assert!(page.contains(text), "missing {text}");
+    }
+    assert!(!page.contains("<script>alert(1)</script>"));
+    assert!(!page.contains("--mode inbox</code>"));
+    let unavailable = everett::dashboard::render_with_authors(&[], &[], "Directory unavailable <error>", 72.0, 10.0);
+    assert!(unavailable.contains("Directory unavailable &lt;error&gt;"));
+}
+
 impl Drop for Dashboard {
     fn drop(&mut self) {
         let _ = self.0.kill();

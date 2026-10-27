@@ -21,6 +21,11 @@ export const roleValidator = v.union(v.literal("admin"), v.literal("member"));
 const status = v.union(v.literal("active"), v.literal("revoked"));
 
 export default defineSchema({
+  sessionCards: defineTable({
+    owner: v.string(), agentId: v.string(), session: v.string(), harness: v.string(),
+    card: v.string(), updatedAt: v.number(),
+  }).index("by_owner", ["owner"]).index("by_session", ["owner", "agentId", "session"])
+    .index("by_agent", ["owner", "agentId"]),
   memberships: defineTable({
     owner: v.string(), issuer: v.string(), subject: v.string(), role: roleValidator, status,
   }).index("by_identity", ["owner", "issuer", "subject"]),

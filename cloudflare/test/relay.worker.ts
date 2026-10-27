@@ -68,6 +68,42 @@ function observe(b: Awaited<ReturnType<typeof agent>>, e: Envelope, state: Obser
 const request = (op: string, body: unknown = {}, headers: Record<string, string> = {}) => new Request(`https://everett.test/v2/relay/${op}`, { method: 'POST', headers: { 'Content-Type': 'application/json', ...headers }, body: JSON.stringify(body) });
 afterEach(async () => { vi.restoreAllMocks(); await reset(); });
 
+describe('authenticated author/session directory', () => {
+  it('exposes only opt-in cards with server-accounted authors, without pairing', async () => {
+    const space = org(), a = await agent(space), b = await agent(space, 'bob', 'member', 3), other = await agent(org());
+    const card = { session: 'session-b', harness: 'codex', card: 'Reviewing messaging' };
+    expect((await call(a.p, 'sessionDirectory')).sessions).toEqual([]);
+    await call(b.p, 'exposeSession', card);
+    const list = await call(a.p, 'sessionDirectory');
+    expect(list.sessions).toEqual([expect.objectContaining({ author: 'bob', agent: b.p.agentId, ...card,
+      owner: namespace(a.p), target: `id:${b.p.agentId}/codex/session-b` })]);
+    expect((await call(other.p, 'sessionDirectory')).sessions).toEqual([]);
+    await expect(call(b.p, 'exposeSession', { ...card, author: 'alice' })).rejects.toThrow('invalid_request');
+    await call(a.p, 'exposeSession', { ...card, remove: true });
+    expect((await call(a.p, 'sessionDirectory')).sessions).toHaveLength(1);
+    await call(b.p, 'exposeSession', { ...card, card: 'updated' });
+    expect((await call(a.p, 'sessionDirectory')).sessions[0].card).toBe('updated');
+    await call(b.p, 'exposeSession', { ...card, remove: true });
+    expect((await call(a.p, 'sessionDirectory')).sessions).toEqual([]);
+  });
+  it('paginates bounded cards and filters revoked authors and callers', async () => {
+    const space = org(), a = await agent(space), b = await agent(space, 'bob', 'member', 3);
+    for (let i = 0; i < 32; i++) await call(b.p, 'exposeSession', { session: `s-${i}`, harness: 'codex', card: '' });
+    await expect(call(b.p, 'exposeSession', { session: 'overflow', harness: 'codex', card: '' })).rejects.toThrow('session_limit');
+    await expect(call(b.p, 'exposeSession', { session: 's-0', harness: 'codex', card: 'x'.repeat(641) })).rejects.toThrow('invalid_request');
+    await call(a.p, 'exposeSession', { session: 'admin', harness: 'claude', card: '' });
+    const first = await call(a.p, 'sessionDirectory');
+    expect(first.sessions).toHaveLength(32); expect(first.isDone).toBe(false);
+    const second = await call(a.p, 'sessionDirectory', { cursor: first.continueCursor });
+    expect(second.sessions).toHaveLength(1); expect(second.isDone).toBe(true);
+    await call(a.p, 'revokeAgent', { deviceId: b.p.agentId });
+    expect((await call(a.p, 'sessionDirectory')).sessions).toEqual([]);
+    expect((await call(a.p, 'sessionDirectory', { cursor: first.continueCursor })).sessions).toHaveLength(1);
+    await expect(call(b.p, 'sessionDirectory')).rejects.toThrow('revoked');
+    await expect(call(b.p, 'exposeSession', { session: 'revoked', harness: 'codex', card: '' })).rejects.toThrow('revoked');
+  });
+});
+
 describe('Workers boundary', () => {
   it('fails closed without authentication and has no public enrollment or principal-header bypass', async () => {
     const result = await workerExports.default.fetch(request('whoami', {}, { 'X-Everett-User': 'alice', Authorization: 'Bearer synthetic' }));

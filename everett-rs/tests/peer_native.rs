@@ -199,6 +199,7 @@ impl Pair {
     fn send(&self, key: &str) -> Value {
         checked(self.run(&[
             "send",
+            "--mode", "inbox",
             "--to",
             "linux/openai-dot/worker",
             "--json",
@@ -748,6 +749,7 @@ fn queued_delivered_replied_and_deduplicated() {
             p.command(false)
                 .args([
                     "send",
+                    "--mode", "inbox",
                     "--to",
                     "linux/openai-dot/worker",
                     "--json",
@@ -799,6 +801,7 @@ fn queued_delivered_replied_and_deduplicated() {
     assert_eq!(p.status(mid)["local_reply_id"], status["local_reply_id"]);
     let collision = p.run(&[
         "send",
+        "--mode", "inbox",
         "--to",
         "linux/openai-dot/worker",
         "--idempotency-key",
@@ -815,7 +818,7 @@ fn body_hops_authorization_and_offline_are_bounded() {
     checked(p.add());
     let oversized = "x".repeat(everett::peer::BODY_CAP);
     assert_eq!(
-        p.run(&["send", "--to", "linux/openai-dot/worker", &oversized])
+        p.run(&["send", "--mode", "inbox", "--to", "linux/openai-dot/worker", &oversized])
             .status
             .code(),
         Some(2)
@@ -828,7 +831,7 @@ fn body_hops_authorization_and_offline_are_bounded() {
     let out = p
         .command(false)
         .env("EVERETT_HOPS", "3")
-        .args(["send", "--to", "linux/openai-dot/worker", "hop"])
+        .args(["send", "--mode", "inbox", "--to", "linux/openai-dot/worker", "hop"])
         .output()
         .unwrap();
     assert_eq!(out.status.code(), Some(7));
@@ -836,7 +839,7 @@ fn body_hops_authorization_and_offline_are_bounded() {
     let forwarded = p
         .command(false)
         .env("EVERETT_HOPS", "2")
-        .args(["send", "--to", "linux/openai-dot/worker", "hop 3", "--json"])
+        .args(["send", "--mode", "inbox", "--to", "linux/openai-dot/worker", "hop 3", "--json"])
         .output()
         .unwrap();
     let mid = checked(forwarded)["message_id"]
@@ -858,7 +861,7 @@ fn body_hops_authorization_and_offline_are_bounded() {
         .command(true)
         .env("EVERETT_SESSION_ID", "worker")
         .env("EVERETT_HARNESS_NAME", "openai-dot")
-        .args(["send", "--to", "anything/openai-dot/worker", "hop 4"])
+        .args(["send", "--mode", "inbox", "--to", "anything/openai-dot/worker", "hop 4"])
         .output()
         .unwrap();
     assert_eq!(inherited.status.code(), Some(7));
@@ -874,7 +877,7 @@ fn body_hops_authorization_and_offline_are_bounded() {
     assert!(p.rpc(json!({"op":"exec","command":"cat /etc/passwd"}))["error"].is_object());
     write(p.remote.path().join("offline"), "");
     let before = Instant::now();
-    let out = p.run(&["send", "--to", "linux/openai-dot/worker", "offline"]);
+    let out = p.run(&["send", "--mode", "inbox", "--to", "linux/openai-dot/worker", "offline"]);
     assert_eq!(out.status.code(), Some(7));
     assert!(before.elapsed() < Duration::from_secs(5));
     assert!(String::from_utf8_lossy(&out.stderr).contains("no local queue"));
@@ -892,7 +895,7 @@ fn transport_and_server_time_out() {
     checked(p.add());
     write(p.remote.path().join("hang"), "");
     let before = Instant::now();
-    let out = p.run(&["send", "--to", "linux/openai-dot/worker", "timeout"]);
+    let out = p.run(&["send", "--mode", "inbox", "--to", "linux/openai-dot/worker", "timeout"]);
     assert_eq!(out.status.code(), Some(7));
     assert!(before.elapsed() >= Duration::from_secs(20));
     assert!(before.elapsed() < Duration::from_secs(25));
@@ -1082,7 +1085,7 @@ fn serve_optional_publication_does_not_bypass_authorization() {
 fn mcp_new_remote_send_is_idempotent_and_never_wakes() {
     let p = Pair::new();
     checked(p.add());
-    let calls: String = (1..=2).map(|id| json!({"jsonrpc":"2.0","id":id,"method":"tools/call","params":{"name":"everett_send","arguments":{"to":"linux/openai-dot/worker","text":MESSAGE,"idempotency_key":"mcp-new","session_id":"local-sender"}}}).to_string() + "\n").collect();
+    let calls: String = (1..=2).map(|id| json!({"jsonrpc":"2.0","id":id,"method":"tools/call","params":{"name":"everett_send","arguments":{"to":"linux/openai-dot/worker","mode":"inbox","text":MESSAGE,"idempotency_key":"mcp-new","session_id":"local-sender"}}}).to_string() + "\n").collect();
     let mut child = p
         .command(false)
         .arg("mcp")

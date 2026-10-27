@@ -12,6 +12,28 @@ use std::time::{Duration, Instant};
 const TOKEN: &str = "evt_cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc";
 
 #[test]
+fn authored_session_directory_and_exposure_use_native_authenticated_operations() {
+    let f = fixture();
+    let server = Server::new();
+    server.configure(&f);
+    common::plant(&f, "claude.jsonl", ".claude/projects/app/c-1.jsonl");
+    f.write(".everett/cards/c-1.md", "Shared session card");
+    let out = f.run(&["relay", "expose", "c-1", "--harness", "claude"]);
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let out = f.run(&["relay", "directory"]);
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let rows: Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(rows["sessions"][0]["author"], "account-author");
+    assert_eq!(rows["sessions"][0]["target"], "id:synthetic-agent/claude/c-1");
+    assert_eq!(rows["sessions"].as_array().unwrap().len(), 1);
+    assert!(f.run(&["relay", "expose", "c-1", "--remove"]).status.success());
+    let calls = server.calls.lock().unwrap();
+    assert_eq!(calls.iter().filter(|path| path.as_str() == "/v2/relay/sessionDirectory").count(), 2);
+    assert_eq!(calls.iter().filter(|path| path.as_str() == "/v2/relay/exposeSession").count(), 2);
+    assert!(!calls.iter().any(|path| path == "/v2/relay/devices"));
+}
+
+#[test]
 fn corrupted_outgoing_record_is_retained_without_killing_or_flooding_the_receiver() {
     let f = fixture();
     let server = Server::new();
@@ -107,6 +129,22 @@ impl Server {
                             json!({"result":{"owner":"synthetic-owner","deviceId":"synthetic-agent","role":"member"}}),
                         ),
                         "/v2/relay/register" => (200, json!({"result":null})),
+                        "/v2/relay/exposeSession" => {
+                            assert_eq!(args["session"], "c-1");
+                            assert!(args.get("author").is_none());
+                            if args["remove"] != true {
+                                assert_eq!(args["harness"], "claude");
+                                assert_eq!(args["card"], "Shared session card");
+                            }
+                            (200, json!({"result":null}))
+                        }
+                        "/v2/relay/sessionDirectory" => {
+                            let first = args["cursor"].is_null();
+                            let sessions = if first { json!([{"owner":"synthetic-owner","author":"account-author",
+                                "agent":"synthetic-agent","session":"c-1","harness":"claude","card":"Shared session card",
+                                "updated_at":1000.0,"target":"id:synthetic-agent/claude/c-1"}]) } else { json!([]) };
+                            (200, json!({"result":{"sessions":sessions,"isDone":!first,"continueCursor":"next"}}))
+                        }
                         "/v2/relay/devices" if denial.lock().unwrap().is_some() => {
                             (403, json!({"error":denial.lock().unwrap().clone().unwrap(),"detail":TOKEN}))
                         }

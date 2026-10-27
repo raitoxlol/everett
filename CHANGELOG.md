@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Make `ping` the CLI and MCP send default. Idle local sessions run headless; verified local Claude background sessions receive an immediate native inbox nudge. Unsupported immediate transports fail instead of silently queueing. `inbox`, `auto`, and `resume` remain explicit compatibility modes.
+- Add opt-in authenticated author/session cards on Cloudflare and Convex. `relay expose SESSION`, `relay directory`, and MCP relay `expose`/`withdraw`/`directory` use credential-derived authors and agents, without device pairing for discovery. Revoked credentials and memberships disappear from directory results.
+- Show authenticated peer cards and separate agent/session tags in the local dashboard. Cards are shared plaintext metadata only after explicit exposure; message encryption, remote provenance, cross-owner grants, and read-only provider stores are unchanged. Backend deployment is required for the new directory APIs.
+
 - Add `relay devices --names` to show hosted enrollment names beside device IDs and verified fingerprints, and `relay rename NAME` to update only this device's advisory label. Original JSON bundle output and pairing/pin semantics are unchanged. Hosted metadata requires a backend update; missing labels remain explicitly unnamed.
 
 - Add an owner `receiver-webhook.json` policy. When a rule matches a registered `grok-bot` or `openai-dot` inbox message, Everett POSTs a wake nudge to the owner's HTTPS URL. The POST omits message text. HTTP 200 means the endpoint accepted a routine run, not that the bot consumed the inbox. A missing or disabled policy leaves send behavior unchanged.
