@@ -29,6 +29,10 @@ pub struct Registration {
     pub title: String,
     pub cwd: String,
     pub updated: f64,
+    /// Optional relay target `PEER/HARNESS/SESSION`: sends ride the durable
+    /// encrypted relay instead of the local inbox file.
+    #[serde(default)]
+    pub device: Option<String>,
 }
 
 fn directory() -> PathBuf {
@@ -52,6 +56,10 @@ pub fn load(path: &Path) -> Option<Registration> {
         || !record.updated.is_finite()
         || record.updated < 0.0
         || path.file_stem()?.to_str()? != record.id
+        || record
+            .device
+            .as_deref()
+            .is_some_and(|d| crate::peer::target(d).is_err())
     {
         return None;
     }
@@ -77,13 +85,24 @@ pub fn records() -> Vec<Registration> {
     records
 }
 
+/// The bound relay target (`PEER/HARNESS/SESSION`) for a registered external
+/// inbox, if any. Sends to bound registrations leave this device through the
+/// encrypted relay and stay queued server-side until the remote peer picks up.
+pub fn device_target(id: &str) -> Option<String> {
+    path(id).ok().and_then(|p| load(&p)).and_then(|r| r.device)
+}
+
 pub fn register(
     id: &str,
     harness: &str,
     title: &str,
     cwd: &str,
+    device: Option<&str>,
     replace: bool,
 ) -> Result<Registration, String> {
+    if let Some(d) = device {
+        crate::peer::target(d).map_err(|e| e.to_string())?;
+    }
     let target = path(id)?;
     if !is_external(harness) {
         return Err(format!("External harness must be one of {}.", HARNESSES.join(", ")));
@@ -100,6 +119,7 @@ pub fn register(
         title: title.into(),
         cwd: cwd.into(),
         updated: now(),
+        device: device.map(|d| d.to_string()),
     };
     let folder = directory();
     fs::DirBuilder::new().recursive(true).mode(0o700).create(&folder).map_err(|e| e.to_string())?;

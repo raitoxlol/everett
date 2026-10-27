@@ -210,6 +210,81 @@ fn native_registration_roundtrip_preserves_the_shared_store_and_inbox() {
 }
 
 #[test]
+fn device_binding_roundtrips_and_validates_the_relay_target() {
+    let fx = fixture();
+    let path = fx.home().join(".everett/external/ext-hugo.json");
+    let add = run(
+        &fx,
+        &[
+            "external", "add", "--id", "ext-hugo", "--harness", "grok-bot",
+            "--device", "hugo/grok-bot/hugo",
+        ],
+        None,
+        "fixture-owner",
+        "",
+    );
+    assert!(add.status.success(), "{}", String::from_utf8_lossy(&add.stderr));
+    assert_eq!(serde_json::from_slice::<Value>(&add.stdout).unwrap()["device"], "hugo/grok-bot/hugo");
+    assert_eq!(external::load(&path).unwrap().device.as_deref(), Some("hugo/grok-bot/hugo"));
+
+    for bad in ["hugo", "hugo/grok-bot", "hugo/grok-bot/hugo/extra", "../x/y/z", "a b/c d/e f", ""] {
+        let out = run(
+            &fx,
+            &["external", "add", "--id", "ext-bad", "--harness", "grok-bot", "--device", bad],
+            None,
+            "fixture-owner",
+            "",
+        );
+        assert_eq!(out.status.code(), Some(2), "{bad}");
+    }
+    assert!(!fx.home().join(".everett/external/ext-bad.json").exists());
+
+    // A record persisted with a malformed device must not load.
+    let mut record: Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+    record["device"] = json!("hugo");
+    std::fs::write(&path, record.to_string()).unwrap();
+    assert!(external::load(&path).is_none());
+}
+
+#[test]
+fn bound_external_send_uses_the_relay_and_never_writes_a_local_inbox() {
+    let fx = fixture();
+    let add = run(
+        &fx,
+        &[
+            "external", "add", "--id", "ext-hugo", "--harness", "grok-bot",
+            "--device", "hugo/grok-bot/hugo",
+        ],
+        None,
+        "fixture-owner",
+        "",
+    );
+    assert!(add.status.success());
+    // The peer alias exists but has no relay binding in this fixture: the send
+    // must fail through the peer/relay path with a clear error, not silently
+    // fall back to a local inbox file.
+    let send = run(
+        &fx,
+        &["send", "Report status", "--to", "ext-hugo", "--mode", "inbox", "--json"],
+        None,
+        "fixture-owner",
+        "",
+    );
+    assert!(!send.status.success());
+    assert!(String::from_utf8_lossy(&send.stderr).contains("everett:"));
+    assert!(!fx.home().join(".everett/inbox/ext-hugo.jsonl").exists());
+    // MCP delivery goes through the same path.
+    let results = mcp(
+        &fx,
+        &[("everett_send", json!({"to": "ext-hugo", "text": "Ping", "mode": "inbox"}))],
+        "fixture-owner",
+        "",
+    );
+    assert_eq!(results[0]["isError"], true);
+    assert!(!fx.home().join(".everett/inbox/ext-hugo.jsonl").exists());
+}
+
+#[test]
 fn registration_refuses_unsafe_ids_and_existing_symlinks() {
     let fx = fixture();
     for id in ["human", "HUMAN", "live", "../outside", "x/y", "a.b", "é", ""] {
