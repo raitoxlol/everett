@@ -1985,7 +1985,7 @@ async fn reconcile(client: &mut RelayClient, keys: &Keys, rejected: &mut Rejecte
             let now = milliseconds();
             let id = format!("local-outgoing:{:x}", Sha256::digest(path.as_os_str().as_encoded_bytes()));
             if rejected.insert(id, now.saturating_add(60_000), now) {
-                eprintln!("everett relay: local outgoing record is unreadable; retained and skipped until repaired; see relay status diagnostics");
+                eprintln!("everett relay: local outgoing record is unreadable; retained and skipped until repaired");
             }
             continue;
         };

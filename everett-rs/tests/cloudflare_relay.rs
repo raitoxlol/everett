@@ -36,36 +36,38 @@ fn corrupted_outgoing_record_is_retained_without_killing_or_flooding_the_receive
 }
 
 #[test]
-fn reconciliation_skips_local_and_incomplete_inbox_messages() {
+fn incomplete_inbox_row_is_retained_and_does_not_panic_the_receiver() {
     let f = fixture();
     let server = Server::new();
     server.configure(&f);
     server.pending.store(1, Ordering::SeqCst);
-    let messages = [
-        json!({}),
-        json!({"id":"local","text":"ordinary local message"}),
-        json!({"id":"no-recipient","relay_owner":"synthetic-owner"}),
-        json!({"id":"no-sender","relay_owner":"synthetic-owner","relay_recipient_device":"synthetic-agent"}),
-        json!({"id":"no-remote-id","relay_owner":"synthetic-owner","relay_recipient_device":"synthetic-agent","relay_sender_owner":"synthetic-owner"}),
-    ];
-    f.write(
-        ".everett/inbox/receiver-regression.jsonl",
-        &messages.iter().map(Value::to_string).collect::<Vec<_>>().join("\n"),
-    );
+    // inbox::read yields only objects with id and text. Missing relay fields used
+    // to panic Map indexing inside reconcile and kill the process.
+    let body = "\
+{\"id\":\"local-only\",\"text\":\"ordinary local message\"}\n\
+{\"id\":\"missing-sender\",\"text\":\"kept\",\"relay_owner\":\"synthetic-owner\",\"relay_recipient_device\":\"synthetic-agent\"}\n\
+not-json\n\
+{\"id\":\"no-text\",\"relay_owner\":\"synthetic-owner\"}\n";
+    let path = f.write(".everett/inbox/receiver-regression.jsonl", body);
     f.write(
         ".everett/inbox/receiver-regression.done",
-        "local\nno-recipient\nno-sender\nno-remote-id\n",
+        "local-only\nmissing-sender\nno-text\n",
     );
     let mut child = listener(&f);
     until(|| server.pending.load(Ordering::SeqCst) >= 3 || child.0.try_wait().unwrap().is_some());
     if child.0.try_wait().unwrap().is_some() {
         let mut errors = String::new();
         child.0.stderr.take().unwrap().read_to_string(&mut errors).unwrap();
-        panic!("receiver exited while reconciling unrelated inbox rows: {errors}");
+        panic!("incomplete inbox row killed receiver: {errors}");
     }
-    assert!(!server.calls.lock().unwrap().iter().any(|path| path == "/v2/relay/observe"));
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), body);
+    assert!(!server.calls.lock().unwrap().iter().any(|call| call == "/v2/relay/observe"));
     child.0.kill().unwrap();
     child.0.wait().unwrap();
+    let mut errors = String::new();
+    child.0.stderr.take().unwrap().read_to_string(&mut errors).unwrap();
+    assert!(!errors.contains("panicked"), "{errors}");
+    assert!(!errors.contains("no entry found for key"), "{errors}");
 }
 
 struct Server {
