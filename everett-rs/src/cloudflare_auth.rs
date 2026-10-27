@@ -1,4 +1,4 @@
-//! Native Cloudflare enrollment. OAuth gateway grants and Convex OIDC stay separate.
+//! Native Cloudflare enrollment. OAuth gateway grants stay separate.
 use crate::cli::Args;
 use crate::error::{EverettError, Result};
 use crate::{auth, peer, session};
@@ -57,13 +57,19 @@ fn pending_path() -> PathBuf {
     root().join("cloudflare-pending.json")
 }
 
+pub fn require_provider() -> Result<()> {
+    if crate::config::get("auth.provider", Some("EVERETT_AUTH_PROVIDER"), "cloudflare") != "cloudflare" {
+        return Err(fail(2, "auth.provider must be cloudflare; run everett login --provider cloudflare"));
+    }
+    Ok(())
+}
+
 pub const PUBLIC_ISSUER: &str = "https://everett.raitox.tech";
 
 pub fn onboarding_issuer() -> Option<String> {
     crate::config::values().ok()?;
     let provider = crate::config::get("auth.provider", Some("EVERETT_AUTH_PROVIDER"), "");
-    if (!provider.is_empty() && provider != "cloudflare")
-        || (provider.is_empty() && (auth::auth_path().exists() || !auth::client_id().is_empty()))
+    if !provider.is_empty() && provider != "cloudflare"
     {
         return None;
     }
@@ -612,7 +618,7 @@ pub fn sign_in(args: &Args) -> Result<Value> {
     let stored = load()?;
     let mut pending = read::<Pending>(&pending_path())?;
     let configured_issuer = args.auth_issuer.clone().unwrap_or_else(|| {
-        let provider = crate::config::get("auth.provider", Some("EVERETT_AUTH_PROVIDER"), "oidc");
+        let provider = crate::config::get("auth.provider", Some("EVERETT_AUTH_PROVIDER"), "cloudflare");
         if provider == "cloudflare"
             || std::env::var_os("EVERETT_AUTH_ISSUER").is_some()
             || (stored.is_none() && pending.is_none())
@@ -793,9 +799,9 @@ impl Credential {
             "relay:observe" => "observe", "relay:status" => "status",
             "relay:deviceLabels" => "deviceLabels", "relay:renameDevice" => "renameDevice",
             "relay:exposeSession" => "exposeSession", "relay:sessionDirectory" => "sessionDirectory",
-            _ => return Err(fail(2, "this operation is not supported by the Cloudflare relay; registry/SSH publication and cross-owner grants require their supported transport")),
+            _ => return Err(fail(2, "this operation is not supported by the Cloudflare relay; SSH publication and cross-owner grants are unavailable")),
         };
-        if crate::config::get("auth.provider", Some("EVERETT_AUTH_PROVIDER"), "oidc")
+        if crate::config::get("auth.provider", Some("EVERETT_AUTH_PROVIDER"), "cloudflare")
             != "cloudflare"
         {
             return Err(fail(

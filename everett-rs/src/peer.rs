@@ -146,7 +146,7 @@ pub(crate) fn lock(path: &Path) -> Result<File> {
     Ok(file)
 }
 
-/// One ownership lock covers the SSH and Convex alias registries. Holding it
+/// One ownership lock covers the SSH and Cloudflare alias registries. Holding it
 /// across the final conflict check and commit prevents either transport from
 /// silently shadowing the other.
 fn alias_lock_at(shared: &Path) -> Result<File> {
@@ -159,7 +159,7 @@ pub(crate) fn alias_lock() -> Result<File> {
 }
 
 /// Atomically check the other transport and commit this transport's alias.
-/// Both SSH and Convex use this path so neither can win a check-then-write race.
+/// Both SSH and Cloudflare use this path so neither can win a check-then-write race.
 pub(crate) fn claim_alias<T>(
     name: &str,
     transport: &str,
@@ -196,7 +196,7 @@ pub(crate) fn assert_alias_unambiguous(name: &str) -> Result<()> {
     valid(name)?;
     if config_path(name)?.exists() && crate::relay::configured(name) {
         return Err(bad(
-            "alias is configured for both SSH and Convex; remove one binding explicitly before use",
+            "alias is configured for both SSH and Cloudflare; remove one binding explicitly before use",
         ));
     }
     Ok(())
@@ -257,7 +257,7 @@ pub fn listing() -> Result<Value> {
         .clone();
     for name in relay.keys() {
         if list.contains_key(name) {
-            return Err(bad("alias is configured for both SSH and Convex; remove one binding explicitly before use"));
+            return Err(bad("alias is configured for both SSH and Cloudflare; remove one binding explicitly before use"));
         }
     }
     list.extend(relay);
@@ -385,55 +385,15 @@ fn address_valid(address: &str) -> Result<()> {
     Ok(())
 }
 
-pub(crate) fn parse_registry_address(value: &str) -> Result<(String, u16)> {
-    let pattern = regex::Regex::new(
-        r"^([A-Za-z0-9_.-]+@(?:[A-Za-z0-9_.-]+|\[[0-9a-fA-F:]+\]))(?::([0-9]{1,5}))?$",
-    )
-    .unwrap();
-    let parts = pattern
-        .captures(value)
-        .filter(|_| value.len() <= 512)
-        .ok_or_else(|| bad("SSH registry address must be user@host[:port]; bracket IPv6 hosts"))?;
-    let address = parts[1].to_string();
-    address_valid(&address)?;
-    let port = parts
-        .get(2)
-        .map_or(Ok(22), |p| p.as_str().parse::<u16>())
-        .map_err(|_| bad("SSH registry port must be between 1 and 65535"))?;
-    if port == 0 {
-        return Err(bad("SSH registry port must be between 1 and 65535"));
-    }
-    Ok((address, port))
-}
-
 pub fn discover_address(name: &str, ssh: Option<&str>, port: Option<u16>) -> Result<(String, u16)> {
     valid(name)?;
-    let configured = crate::auth::load().is_some()
-        && !crate::config::get("relay.url", Some("EVERETT_CONVEX_URL"), "").is_empty();
-    let discovered = if ssh.is_none() || configured {
-        crate::device_registry::resolve(name)?
-            .map(|address| parse_registry_address(&address))
-            .transpose()?
-    } else {
-        None
-    };
-    if let Some(address) = ssh {
-        address_valid(address)?;
-        let port = port.unwrap_or(22);
-        if discovered
-            .as_ref()
-            .is_some_and(|(found, found_port)| found != address || *found_port != port)
-        {
-            return Err(bad("explicit --ssh/--port conflicts with the registry address; verify the device address before pairing"));
-        }
-        return Ok((address.into(), port));
+    let address = ssh.ok_or_else(|| bad("SSH pairing requires --ssh user@host"))?;
+    address_valid(address)?;
+    let port = port.unwrap_or(22);
+    if port == 0 {
+        return Err(bad("SSH port must be between 1 and 65535"));
     }
-    let (address, found_port) = discovered
-        .ok_or_else(|| bad("device has no published SSH address; use --ssh user@host"))?;
-    if port.is_some_and(|port| port != found_port) {
-        return Err(bad("--port conflicts with the registry address"));
-    }
-    Ok((address, found_port))
+    Ok((address.into(), port))
 }
 
 fn ssh(peer: &Peer, pin: &Path, restricted: bool, first: bool) -> Command {
@@ -537,7 +497,7 @@ pub fn add(
     }
     // Claim the alias before generating identity, probing/pinning hosts or
     // installing a remote key. The same lock remains held through commit.
-    claim_alias(name, "Convex", || Ok(crate::relay::configured(name)), || {
+    claim_alias(name, "Cloudflare", || Ok(crate::relay::configured(name)), || {
     let ident = identity()?;
     let _guard = lock(&root().join("pairing.lock"))?;
     let pin = known_hosts(name)?;
@@ -702,46 +662,6 @@ fn rewrite_authorized(client: &str, key: Option<&str>, replacement: Option<&str>
     Ok(true)
 }
 
-pub fn prune_revoked(client: &str) -> Result<bool> {
-    edit_authorized(client, None)
-}
-
-/// Prunes `client`'s authorization only where it holds this exact SSH key.
-pub fn prune_revoked_key(client: &str, key: &str) -> Result<bool> {
-    rewrite_authorized(client, Some(key), None)
-}
-
-/// This machine's SSH peer id, the base64 field of its public key, and its signing key.
-pub fn local_ssh_key() -> Result<Option<(String, String, ed25519_dalek::SigningKey)>> {
-    let Some(id) = local_device_id()? else {
-        return Ok(None);
-    };
-    let path = root().join("id_ed25519");
-    if !path.exists() {
-        return Ok(None);
-    }
-    let private =
-        ssh_key::PrivateKey::read_openssh_file(&path).map_err(|e| bad(format!("SSH identity: {e}")))?;
-    let pair = private
-        .key_data()
-        .ed25519()
-        .ok_or_else(|| bad("SSH identity is not Ed25519"))?;
-    let public = private
-        .public_key()
-        .to_openssh()
-        .map_err(|e| bad(format!("SSH identity: {e}")))?;
-    let field = public
-        .split_whitespace()
-        .nth(1)
-        .ok_or_else(|| bad("invalid SSH public key"))?
-        .to_string();
-    Ok(Some((
-        id,
-        field,
-        ed25519_dalek::SigningKey::from_bytes(&pair.private.to_bytes()),
-    )))
-}
-
 pub fn revoke(client: &str) -> Result<Value> {
     edit_authorized(client, None)?;
     Ok(json!({"revoked": client}))
@@ -797,40 +717,7 @@ fn read_frame(reader: impl Read) -> Result<Vec<u8>> {
     Ok(bytes)
 }
 
-/// Publishing waits on Convex (up to 3 s), so only the first RPC after a change or REPUBLISH_MS pays it.
-fn publish_address_if_due(address: Option<&str>) {
-    use crate::device_registry::{declared_address, publication_due, record_publication};
-    let address = match declared_address(address) {
-        Ok(Some(address)) => address,
-        Ok(None) => return,
-        Err(error) => return eprintln!("everett: SSH address publication failed: {}", error.message),
-    };
-    let stamp = root().join("address-published.json");
-    let now = chrono::Utc::now().timestamp_millis();
-    if !publication_due(&stamp, &address, now) {
-        return;
-    }
-    let (published, publication) = std::sync::mpsc::channel();
-    let sent = address.clone();
-    std::thread::spawn(move || {
-        let _ = published.send(crate::relay::register_with_address(Some(&sent)).map(|_| ()));
-    });
-    match publication.recv_timeout(Duration::from_secs(3)) {
-        Ok(Ok(())) => {
-            if let Err(error) = record_publication(&stamp, &address, now) {
-                eprintln!("everett: {}", error.message);
-            }
-        }
-        Ok(Err(error)) => eprintln!("everett: SSH address publication failed: {}", error.message),
-        Err(_) => eprintln!("everett: SSH address publication timed out; retry everett relay register"),
-    }
-}
-
 pub fn serve(client: Option<&str>, setup: bool) -> i32 {
-    serve_with_address(client, setup, None)
-}
-
-pub fn serve_with_address(client: Option<&str>, setup: bool, address: Option<&str>) -> i32 {
     let (finished, timeout) = std::sync::mpsc::channel();
     std::thread::spawn(move || {
         if timeout.recv_timeout(TIMEOUT) == Err(std::sync::mpsc::RecvTimeoutError::Timeout) {
@@ -843,9 +730,6 @@ pub fn serve_with_address(client: Option<&str>, setup: bool, address: Option<&st
             authorized(client.ok_or_else(|| {
                 bad("peer serve requires the forced command's --client identity")
             })?)?;
-            if crate::auth::load().is_some() {
-                publish_address_if_due(address);
-            }
         }
         let bytes = read_frame(std::io::stdin().lock())?;
         if setup {
@@ -1038,7 +922,7 @@ pub fn ls(name: &str, hours: f64, all: bool, harness: &str) -> Result<Value> {
     assert_alias_unambiguous(name)?;
     if crate::relay::configured(name) {
         return Err(bad(
-            "Convex peers use explicit session IDs; remote ls/card are SSH-only",
+            "Cloudflare peers use explicit session IDs; remote ls/card are SSH-only",
         ));
     }
     let mut rows = rpc(
@@ -1093,7 +977,7 @@ pub fn card(value: &str) -> Result<Value> {
     assert_alias_unambiguous(name)?;
     if crate::relay::configured(name) {
         return Err(bad(
-            "Convex peers use explicit session IDs; remote ls/card are SSH-only",
+            "Cloudflare peers use explicit session IDs; remote ls/card are SSH-only",
         ));
     }
     rpc(
@@ -1273,16 +1157,16 @@ pub(crate) fn forget_device_locked(device_id: &str) -> Result<Vec<String>> {
 }
 
 /// Removing a duplicate alias is fail-closed unless a transport is named.
-/// SSH removal keeps its remote key-revocation step; Convex removal is local
+/// SSH removal keeps its remote key-revocation step; Cloudflare removal is local
 /// trust only, with permanent backend revocation remaining an explicit action.
 pub fn remove_scoped(name: &str, transport: Option<&str>) -> Result<Value> {
     valid(name)?;
     let _alias_guard = alias_lock()?;
     let ssh = config_path(name)?.exists();
-    let convex = crate::relay::configured(name);
+    let cloudflare = crate::relay::configured(name);
     remove_alias_binding(
         ssh,
-        convex,
+        cloudflare,
         transport,
         || remove_ssh_locked(name),
         || crate::relay::remove_locked(name),
@@ -1291,23 +1175,23 @@ pub fn remove_scoped(name: &str, transport: Option<&str>) -> Result<Value> {
 
 fn remove_alias_binding<T>(
     ssh: bool,
-    convex: bool,
+    cloudflare: bool,
     transport: Option<&str>,
     remove_ssh: impl FnOnce() -> Result<T>,
-    remove_convex: impl FnOnce() -> Result<T>,
+    remove_cloudflare: impl FnOnce() -> Result<T>,
 ) -> Result<T> {
     match transport {
-        None if ssh && convex => Err(bad(
-            "alias is configured for both SSH and Convex; remove one binding explicitly before use",
+        None if ssh && cloudflare => Err(bad(
+            "alias is configured for both SSH and Cloudflare; remove one binding explicitly before use",
         )),
-        None if convex => remove_convex(),
+        None if cloudflare => remove_cloudflare(),
         None if ssh => remove_ssh(),
         None => Err(bad("unknown peer; use everett peer add")),
         Some("ssh") if ssh => remove_ssh(),
-        Some("convex") if convex => remove_convex(),
+        Some("cloudflare") if cloudflare => remove_cloudflare(),
         Some("ssh") => Err(bad("alias has no SSH binding")),
-        Some("convex") => Err(bad("alias has no Convex binding")),
-        Some(_) => Err(bad("transport must be ssh or convex")),
+        Some("cloudflare") => Err(bad("alias has no Cloudflare binding")),
+        Some(_) => Err(bad("transport must be ssh or cloudflare")),
     }
 }
 
@@ -1346,7 +1230,7 @@ mod tests {
         let claims = std::sync::Arc::new(std::sync::Mutex::new(std::collections::BTreeSet::new()));
         let start = std::sync::Arc::new(std::sync::Barrier::new(2));
         let mut contenders = Vec::new();
-        for (transport, other) in [("ssh", "convex"), ("convex", "ssh")] {
+        for (transport, other) in [("ssh", "cloudflare"), ("cloudflare", "ssh")] {
             let shared = shared.clone();
             let claims = claims.clone();
             let start = start.clone();
@@ -1377,7 +1261,7 @@ mod tests {
     #[test]
     fn duplicate_alias_removal_is_fail_closed_but_scope_repairs_one_binding() {
         let bindings = std::sync::Arc::new(std::sync::Mutex::new(
-            ["ssh", "convex"]
+            ["ssh", "cloudflare"]
                 .into_iter()
                 .collect::<std::collections::BTreeSet<_>>(),
         ));
@@ -1388,22 +1272,22 @@ mod tests {
                 Ok("ssh")
             }
         };
-        let convex = || {
+        let cloudflare = || {
             let bindings = bindings.clone();
             move || {
-                bindings.lock().unwrap().remove("convex");
-                Ok("convex")
+                bindings.lock().unwrap().remove("cloudflare");
+                Ok("cloudflare")
             }
         };
-        assert!(remove_alias_binding(true, true, None, ssh(), convex()).is_err());
+        assert!(remove_alias_binding(true, true, None, ssh(), cloudflare()).is_err());
         assert_eq!(bindings.lock().unwrap().len(), 2);
         assert_eq!(
-            remove_alias_binding(true, true, Some("ssh"), ssh(), convex()).unwrap(),
+            remove_alias_binding(true, true, Some("ssh"), ssh(), cloudflare()).unwrap(),
             "ssh"
         );
         assert_eq!(
             bindings.lock().unwrap().iter().copied().collect::<Vec<_>>(),
-            ["convex"]
+            ["cloudflare"]
         );
     }
 }

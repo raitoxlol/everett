@@ -65,7 +65,7 @@ See [dots setup](openai-dots.md) and [Grok Bot webhook wake](grok-bot.md#wake-a-
 
 Cloudflare is the active hosted transport. Device names and same-owner trust
 select and authenticate a destination. They do not grant wake permission.
-SSH and Convex deliver inbox messages without receiver wake.
+SSH and Cloudflare deliver inbox messages without receiver wake.
 
 ## Receipts and verification
 

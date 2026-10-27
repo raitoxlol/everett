@@ -23,7 +23,7 @@ npm --prefix cloudflare run dev
 
 ## Auth integration interface
 
-The public Worker accepts only `POST /v2/relay/<operation>` with JSON arguments. Responses are `{result:...}` or non-2xx `{error:code}`. This is **not Convex's wire transport**.
+The public Worker accepts only `POST /v2/relay/<operation>` with JSON arguments. Responses are `{result:...}` or non-2xx `{error:code}`. The native client uses authenticated HTTP requests and outbound polling.
 
 Hosted auth uses the private `AUTH_STATE` Durable Object. An optional alternative is an operator-controlled private `AUTHENTICATOR` service binding. It receives `POST https://everett-auth.internal/verify-agent` with only the Authorization header forwarded. The host is a binding-routing label, not public DNS. Redirects are not followed. Success must return:
 
@@ -55,9 +55,8 @@ The namespace binding is privileged; only trusted relay/enrollment Workers may h
 | `provisionIdentity` | Internal `enroll` RPC | Generates immutable ID instead of accepting issuer-selected ID. |
 | `grants:*` | Not implemented | All external routes fail closed. |
 | Browser auth, native enrollment, OAuth | Implemented in HostedAuth | Native GitHub approval verified; live ChatGPT OAuth remains unverified. See CLI-CONTRACT.md. |
-| Native Convex SDK/subscriptions | Unchanged | Native Cloudflare uses a separate HTTP polling adapter; no WebSocket invalidation channel. |
 
-Canonical v2 device/envelope/observation arrays and fingerprints follow `../convex/CONTRACT.md`. Strict RFC8032 Ed25519 verification uses `zip215:false`. The fixture is copied unchanged from the existing **public test-only** vector; deterministic seeds are test material. Tests decrypt its ciphertext plus a synthetic queued X25519/HKDF-SHA256/ChaCha20Poly1305 round trip. Server stores ciphertext and cannot verify plaintext/AEAD tags; client validation remains mandatory.
+Canonical v2 device/envelope/observation arrays and fingerprints follow `PROTOCOL.md`. Strict RFC8032 Ed25519 verification uses `zip215:false`. The fixture is copied unchanged from the existing **public test-only** vector; deterministic seeds are test material. Tests decrypt its ciphertext plus a synthetic queued X25519/HKDF-SHA256/ChaCha20Poly1305 round trip. Server stores ciphertext and cannot verify plaintext/AEAD tags; client validation remains mandatory.
 
 New envelopes require current endpoint fingerprints and permissions, valid signatures, absolute clock skew <=5 minutes, positive TTL <=24 hours, expiry after server time and signed hop/observed-parent lineage <=3. Message IDs and sender/idempotency pairs have permanent replay rows. Exact retries run authorization/key checks first and consume no rate/queue budget; changed signed bytes conflict. Attempt rows deliberately omit ciphertext and large crypto fields.
 
@@ -83,7 +82,7 @@ Official references checked: [SQLite transactions and alarms](https://developers
 
 2026-10-21: final typecheck and **37 Workers runtime checks passed** (18 relay, 19 hosted auth). Independent review found anonymous body reads could hold the issuer state gate; the body is now bounded before entering that gate, with a responsiveness regression check. The regression verifies agent validation and owner revocation complete within one second while an anonymous body remains open; timeout and 413 limits pass. Simultaneous code exchanges and refresh replay tests also pass. Tests are synthetic provider evidence, not live browser proof. Development Worker upload and public HTTPS health are verified; auth is deliberately unconfigured until private credentials are supplied.
 
-The root Convex test runner uses Node; Workers test filenames end in `.worker.ts` and are included explicitly only by their package configs. Root typecheck and all46 Convex tests also pass after this isolation fix. Native browser approval now displays explicit waiting/approved/denied/cancelled/expired/revoked guidance; close-page success requires authoritative approval plus active credential. Runtime tests confirm no native token is rendered. Live provider/browser proof remains pending.
+Workers test filenames end in `.worker.ts` and are included explicitly by their package configs. Native browser approval now displays explicit waiting/approved/denied/cancelled/expired/revoked guidance; close-page success requires authoritative approval plus active credential. Runtime tests confirm no native token is rendered. Live provider/browser proof remains pending.
 
 ## Native CLI acceptance fixture
 
