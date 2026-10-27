@@ -462,7 +462,13 @@ enum PeerCmd {
     /// fetch one remote session card
     Card { target: String },
     /// poll observed delivery state and import any reply into the original sender's inbox
-    Status { name: String, message_id: String },
+    Status {
+        name: String,
+        message_id: String,
+        /// machine-readable output (also the default)
+        #[arg(long)]
+        json: bool,
+    },
     /// serve one bounded stdin/stdout RPC (invoked by sshd's forced command)
     Serve {
         #[arg(long)]
@@ -490,6 +496,12 @@ fn peer_output(result: everett::error::Result<serde_json::Value>) -> i32 {
 
 #[derive(Subcommand)]
 enum RelayCmd {
+    /// inspect local receiver health and capabilities without network requests
+    Status {
+        /// machine-readable output (also the default)
+        #[arg(long)]
+        json: bool,
+    },
     /// register this device and print its public bundle and fingerprint
     Register,
     /// list signed bundles; use --names for advisory hosted device labels
@@ -515,6 +527,15 @@ enum RelayCmd {
         bearer_file: std::path::PathBuf,
         #[arg(long, default_value_t = 30)]
         cooldown_seconds: u64,
+    },
+    /// let all verified same-account senders wake an already configured external inbox
+    TrustAccount {
+        session: String,
+        #[arg(long)]
+        harness: String,
+        /// preview the exact change without writing policy, backup or ledger files
+        #[arg(long)]
+        dry_run: bool,
     },
     /// verified namespace, agent credential ID and authoritative role
     Whoami,
@@ -737,6 +758,7 @@ fn main() {
         Cmd::Relay { action } => match action {
             None => peer_output(everett::relay::run()),
             Some(RelayCmd::Register) => peer_output(everett::relay::register()),
+            Some(RelayCmd::Status { .. }) => peer_output(everett::relay::receiver_status()),
             Some(RelayCmd::Devices { names: true, .. }) => match everett::relay::device_names() {
                 Ok(text) => {
                     print!("{text}");
@@ -751,6 +773,9 @@ fn main() {
             Some(RelayCmd::Rename { name }) => peer_output(everett::relay::rename_device(&name)),
             Some(RelayCmd::Webhook { session, harness, url_file, bearer_file, cooldown_seconds }) => peer_output(
                 everett::receiver_webhook::configure_inbox(&session, &harness, &url_file, &bearer_file, cooldown_seconds)
+            ),
+            Some(RelayCmd::TrustAccount { session, harness, dry_run }) => peer_output(
+                everett::receiver_webhook::trust_account_inbox(&session, &harness, dry_run)
             ),
             Some(RelayCmd::Whoami) => peer_output(everett::relay::admin_call(
                 "relay:whoami",
@@ -803,7 +828,7 @@ fn main() {
             }
             PeerCmd::Revoke { client } => peer_output(everett::peer::revoke(&client)),
             PeerCmd::Card { target } => peer_output(everett::peer::card(&target)),
-            PeerCmd::Status { name, message_id } => {
+            PeerCmd::Status { name, message_id, .. } => {
                 peer_output(everett::peer::status(&name, &message_id))
             }
             PeerCmd::Serve { client, address } => {

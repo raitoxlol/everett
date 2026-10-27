@@ -880,11 +880,11 @@ fn sdk_transport_denied_row_does_not_block_allowed_and_own_revocation_stops() {
     // independently generated local inbox ID. Reconcile retries idempotently.
     inbox::take("x-1");
     let mut claims = ConvexClient::fake(vec![("relay:observe", Ok(json!({})))]);
-    rt.block_on(reconcile(&mut claims, &b)).unwrap();
+    rt.block_on(reconcile(&mut claims, &b, &mut RejectedCache::new())).unwrap();
     assert_eq!(claims.calls[0].1["state"], "claimed");
     assert_eq!(claims.calls[0].1["messageId"], blocked.message_id);
     assert_eq!(claims.calls[0].1["senderOwner"], a.device.owner);
-    rt.block_on(reconcile(&mut claims, &b)).unwrap();
+    rt.block_on(reconcile(&mut claims, &b, &mut RejectedCache::new())).unwrap();
     assert!(claims.responses.is_empty());
     let mut replies = ConvexClient::fake(vec![("relay:observe", Ok(json!({})))]);
     rt.block_on(signed_observation(
@@ -956,16 +956,16 @@ fn sdk_transport_denied_row_does_not_block_allowed_and_own_revocation_stops() {
         ("relay:enqueue", Ok(json!({}))),
         ("relay:observe", Err("network")),
     ]);
-    rt.block_on(reconcile(&mut lost_observation, &b)).unwrap();
+    rt.block_on(reconcile(&mut lost_observation, &b, &mut RejectedCache::new())).unwrap();
     let persisted: Outgoing = read(&path).unwrap();
     assert!(persisted.posted && persisted.reply_pending.is_some());
     let mut recovered = ConvexClient::fake(vec![("relay:observe", Ok(json!({})))]);
-    rt.block_on(reconcile(&mut recovered, &b)).unwrap();
+    rt.block_on(reconcile(&mut recovered, &b, &mut RejectedCache::new())).unwrap();
     assert_eq!(recovered.calls[0].1["state"], "replied");
     assert_eq!(recovered.calls[0].1["messageId"], blocked.message_id);
     assert_eq!(recovered.calls[0].1["senderOwner"], a.device.owner);
     assert!(read::<Outgoing>(&path).unwrap().reply_pending.is_none());
-    rt.block_on(reconcile(&mut recovered, &b)).unwrap();
+    rt.block_on(reconcile(&mut recovered, &b, &mut RejectedCache::new())).unwrap();
     assert_eq!(recovered.calls.len(), 1);
 }
 

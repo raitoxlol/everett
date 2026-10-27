@@ -96,6 +96,21 @@ fn text(result: &Value) -> String {
         .to_string()
 }
 
+#[test]
+fn local_receiver_status_is_available_through_mcp_without_login_or_refresh() {
+    let fx = fixture();
+    let mut server = Server::start(&fx, &[]);
+    let result = server.call("everett_agent_relay", json!({"action":"status"}));
+    assert_ne!(result["isError"], true, "{result}");
+    let status = &result["structuredContent"];
+    assert_eq!(status["receiver"]["state"], "stopped");
+    assert_eq!(status["network_checked"], false);
+    assert_eq!(status["webhook"]["state"], "missing");
+    assert_eq!(status["registered_inboxes"], json!([]));
+    assert!(!fx.home().join(".everett/relay").exists(), "status initialized relay or refreshed credentials");
+    server.close();
+}
+
 fn home_with_claude_session() -> Fixture {
     let fx = fixture();
     plant(&fx, "claude.jsonl", ".claude/projects/-work-app/c-1.jsonl");

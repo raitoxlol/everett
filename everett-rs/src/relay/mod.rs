@@ -1,4 +1,6 @@
 pub mod crypto;
+mod queue;
+pub(crate) mod receiver;
 mod transport;
 
 #[cfg(test)]
@@ -282,6 +284,10 @@ pub fn configured(name: &str) -> bool {
 
 pub(crate) fn same_owner_enabled() -> bool {
     Provider::selected().is_ok_and(|provider| provider == Provider::Cloudflare)
+}
+
+pub(crate) fn selected_transport() -> Result<&'static str> {
+    Ok(Provider::selected()?.transport())
 }
 
 fn deployment() -> Result<String> {
@@ -1933,24 +1939,25 @@ async fn signed_observation(
     Ok(())
 }
 
-async fn reconcile(client: &mut RelayClient, keys: &Keys) -> Result<()> {
+async fn reconcile(client: &mut RelayClient, keys: &Keys, rejected: &mut RejectedCache) -> Result<()> {
     for path in crate::paths::glob(&inbox::inbox_dir(), "*.jsonl") {
         let session = path.file_stem().unwrap_or_default().to_string_lossy();
         let done = inbox::done_ids(&session);
         for message in inbox::read(&session) {
-            let Some(mid) = message["id"].as_str() else {
+            let Some(mid) = message.get("id").and_then(Value::as_str) else {
                 continue;
             };
-            if message["relay_owner"] != keys.device.owner
-                || message["relay_recipient_device"] != keys.device.device_id
+            if message.get("relay_owner").and_then(Value::as_str) != Some(keys.device.owner.as_str())
+                || message.get("relay_recipient_device").and_then(Value::as_str)
+                    != Some(keys.device.device_id.as_str())
                 || !done.contains(mid)
             {
                 continue;
             }
-            let Some(sender_owner) = message["relay_sender_owner"].as_str() else {
+            let Some(sender_owner) = message.get("relay_sender_owner").and_then(Value::as_str) else {
                 continue;
             };
-            let Some(remote_mid) = message["relay_message_id"].as_str() else {
+            let Some(remote_mid) = message.get("relay_message_id").and_then(Value::as_str) else {
                 continue;
             };
             let marker = root().join(format!(
@@ -1979,7 +1986,14 @@ async fn reconcile(client: &mut RelayClient, keys: &Keys) -> Result<()> {
         }
     }
     for path in crate::paths::glob(&root().join("outgoing"), "*.json") {
-        let out: Outgoing = read(&path)?;
+        let Some(out) = queue::read_record::<Outgoing>(&path) else {
+            let now = milliseconds();
+            let id = format!("local-outgoing:{:x}", Sha256::digest(path.as_os_str().as_encoded_bytes()));
+            if rejected.insert(id, now.saturating_add(60_000), now) {
+                eprintln!("everett relay: local outgoing record is unreadable; retained and skipped until repaired; see relay status diagnostics");
+            }
+            continue;
+        };
         if out.envelope.owner == keys.device.owner
             && out.envelope.from_device == keys.device.device_id
             && out.envelope.sender_fingerprint == keys.device.fingerprint()
@@ -2207,7 +2221,7 @@ async fn receive(
         }
         cursor = Some(page.continue_cursor);
     }
-    reconcile(client, keys).await?;
+    reconcile(client, keys, rejected).await?;
     drain_receiver_wakes(keys)?;
     note_receiver_webhook(crate::receiver_webhook::poll());
     Ok(cursor)
@@ -2231,6 +2245,7 @@ async fn run_native(
     keys: &Keys,
     ingress: &Path,
     register: &Value,
+    lease: &mut receiver::Lease,
 ) -> Result<Value> {
     eprintln!(
         "everett relay: Cloudflare outbound polling; receiver wake and webhook follow the local owner policy"
@@ -2240,10 +2255,12 @@ async fn run_native(
     loop {
         match receive(&mut client, keys, ingress, register, &mut rejected).await {
             Ok(_) => {
+                lease.observe(true);
                 delay = 5;
             }
             Err(error) if denied(&error) || !matches!(error.code, 5 | 6) => return Err(error),
             Err(error) => {
+                lease.observe(false);
                 eprintln!(
                     "everett relay: {}; retrying in {delay}s; encrypted staging kept",
                     error.message
@@ -2262,11 +2279,12 @@ pub fn run() -> Result<Value> {
     let keys = verified_keys(&owner)?;
     let register = register_args(&keys.device)?;
     let _guard = daemon_lock()?;
+    let mut lease = receiver::Lease::start(&root(), &owner, &keys.device.device_id)?;
     let ingress = root().join("ingress");
     peer::private_dir(&ingress)?;
     let outcome = tokio::runtime::Runtime::new().map_err(bad)?.block_on(async {
         let mut client = client(&owner).await?;
-        if client.is_native() { return run_native(client, &keys, &ingress, &register).await; }
+        if client.is_native() { return run_native(client, &keys, &ingress, &register, &mut lease).await; }
         mutation(&mut client,"relay:register",register.clone()).await?;
         let mut final_cursor: Option<String> = None;
         let mut subscription = client.subscribe("relay:pending",args(json!({"deviceId":keys.device.device_id,"cursor":final_cursor}))?).await.map_err(|_| bad("Convex subscription failed"))?;
@@ -2285,6 +2303,7 @@ pub fn run() -> Result<Value> {
                     let (stored,current) = account()?;
                     if current != owner || claims(&stored.id_token)?["everett_agent"] != keys.device.device_id { return Err(bad("signed-in identity changed; restart the relay")); }
                     let cursor = receive(&mut client, &keys, &ingress, &register, &mut rejected).await?;
+                    lease.observe(true);
                     if final_cursor != cursor {
                         subscription = client.subscribe("relay:pending",args(json!({"deviceId":keys.device.device_id,"cursor":cursor}))?).await.map_err(|_| bad("Convex subscription failed"))?;
                         final_cursor = cursor;
@@ -2304,6 +2323,35 @@ pub fn run() -> Result<Value> {
         }
     }
     outcome
+}
+
+pub fn receiver_status() -> Result<Value> {
+    let provider = Provider::selected()?;
+    // Diagnostics must not refresh credentials, create auth locks or contact an issuer.
+    let identity = match provider {
+        Provider::Cloudflare => native_credential().ok().map(|stored| (stored.owner, stored.agent_id)),
+        Provider::Oidc => auth::load().and_then(|stored| {
+            let claim = claims(&stored.id_token).ok()?;
+            let owner = checked_identity(&stored, &claim, session::now()).ok()?;
+            Some((owner, claim["everett_agent"].as_str()?.to_string()))
+        }),
+    };
+    let selected = identity.as_ref().map(|(owner, device)| (owner.as_str(), device.as_str()));
+    let receiver = receiver::snapshot(&root(), selected).unwrap_or_else(|error| {
+        json!({"state":"invalid","reason":error.message})
+    });
+    Ok(json!({
+        "transport": provider.transport(),
+        "network_checked": false,
+        "identity_source": "local-credentials-only",
+        "home": session::home(),
+        "receiver": receiver,
+        "outgoing": queue::summary(&root(), selected, milliseconds()),
+        "webhook": crate::receiver_webhook::diagnostics(),
+        "registered_inboxes": crate::adapters::external::records().iter().map(|record| {
+            json!({"session":record.id,"harness":record.harness})
+        }).collect::<Vec<_>>(),
+    }))
 }
 
 #[cfg(test)]

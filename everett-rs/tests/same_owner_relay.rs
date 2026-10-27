@@ -270,6 +270,7 @@ fn unpaired_same_owner_names_deliver_encrypted_inbox_and_retry_once() {
             "status",
             "Hugo Box",
             first["message_id"].as_str().unwrap(),
+            "--json",
         ],
     );
     let names = run(&a, &["relay", "devices", "--names"]);
@@ -457,6 +458,37 @@ fn webhook_cli_binds_registered_inbox_without_device_or_sender_filters() {
         std::fs::metadata(&path).unwrap().permissions().mode() & 0o777,
         0o600
     );
+    assert!(server.state.lock().unwrap().messages.is_empty());
+
+    let _receiver = listen(&f);
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        let status = success(&f, &["relay", "status", "--json"]);
+        if status["receiver"]["state"] == "running" { break; }
+        assert!(Instant::now() < deadline, "compatible receiver did not publish its lease: {status}");
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    let mut restricted = policy;
+    restricted["rules"][0]["sender_device"] = json!("agent-max");
+    restricted["rules"][0]["sender_session"] = json!("human");
+    restricted["rules"][0]["sender_harness"] = json!("");
+    let before = serde_json::to_vec(&restricted).unwrap();
+    std::fs::write(&path, &before).unwrap();
+    let preview = success(&f, &[
+        "relay", "trust-account", "ext-hugo", "--harness", "grok-bot", "--dry-run",
+    ]);
+    assert_eq!(preview["state"], "planned");
+    assert_eq!(std::fs::read(&path).unwrap(), before);
+    let changed = success(&f, &[
+        "relay", "trust-account", "ext-hugo", "--harness", "grok-bot",
+    ]);
+    assert_eq!(changed["changed"], true);
+    assert_eq!(changed["backup_created"], true);
+    let migrated: Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+    assert_eq!(migrated["rules"][0]["recipient_device"], "agent-hugo");
+    assert!(migrated["rules"][0].get("sender_device").is_none());
+    assert_eq!(migrated["rules"][0]["url"], restricted["rules"][0]["url"]);
+    assert_eq!(migrated["rules"][0]["bearer_file"], restricted["rules"][0]["bearer_file"]);
     assert!(server.state.lock().unwrap().messages.is_empty());
 }
 
