@@ -516,6 +516,15 @@ enum RelayCmd {
         #[arg(long, default_value_t = 30)]
         cooldown_seconds: u64,
     },
+    /// let all verified same-account senders wake an already configured external inbox
+    TrustAccount {
+        session: String,
+        #[arg(long)]
+        harness: String,
+        /// preview the exact change without writing policy, backup or ledger files
+        #[arg(long)]
+        dry_run: bool,
+    },
     /// verified namespace, agent credential ID and authoritative role
     Whoami,
     /// permanently revoke this or an admin-selected agent/device credential
@@ -751,6 +760,9 @@ fn main() {
             Some(RelayCmd::Rename { name }) => peer_output(everett::relay::rename_device(&name)),
             Some(RelayCmd::Webhook { session, harness, url_file, bearer_file, cooldown_seconds }) => peer_output(
                 everett::receiver_webhook::configure_inbox(&session, &harness, &url_file, &bearer_file, cooldown_seconds)
+            ),
+            Some(RelayCmd::TrustAccount { session, harness, dry_run }) => peer_output(
+                everett::receiver_webhook::trust_account_inbox(&session, &harness, dry_run)
             ),
             Some(RelayCmd::Whoami) => peer_output(everett::relay::admin_call(
                 "relay:whoami",

@@ -458,6 +458,52 @@ fn webhook_cli_binds_registered_inbox_without_device_or_sender_filters() {
         0o600
     );
     assert!(server.state.lock().unwrap().messages.is_empty());
+
+    let _receiver = listen(&f);
+    let record = f
+        .home()
+        .join(".everett/relay-cloudflare/receiver-status.json");
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        let ready = std::fs::read(&record)
+            .ok()
+            .and_then(|bytes| serde_json::from_slice::<Value>(&bytes).ok())
+            .is_some_and(|value| {
+                value["capabilities"]
+                    .as_array()
+                    .is_some_and(|items| items.iter().any(|item| item == "same-owner-webhook-v1"))
+            });
+        if ready {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "compatible receiver did not publish its lease"
+        );
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    let mut restricted = policy;
+    restricted["rules"][0]["sender_device"] = json!("agent-max");
+    restricted["rules"][0]["sender_session"] = json!("human");
+    restricted["rules"][0]["sender_harness"] = json!("");
+    let before = serde_json::to_vec(&restricted).unwrap();
+    std::fs::write(&path, &before).unwrap();
+    let preview = success(&f, &[
+        "relay", "trust-account", "ext-hugo", "--harness", "grok-bot", "--dry-run",
+    ]);
+    assert_eq!(preview["state"], "planned");
+    assert_eq!(std::fs::read(&path).unwrap(), before);
+    let changed = success(&f, &[
+        "relay", "trust-account", "ext-hugo", "--harness", "grok-bot",
+    ]);
+    assert_eq!(changed["changed"], true);
+    assert_eq!(changed["backup_created"], true);
+    let migrated: Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+    assert_eq!(migrated["rules"][0]["recipient_device"], "agent-hugo");
+    assert!(migrated["rules"][0].get("sender_device").is_none());
+    assert_eq!(migrated["rules"][0]["url"], restricted["rules"][0]["url"]);
+    assert_eq!(migrated["rules"][0]["bearer_file"], restricted["rules"][0]["bearer_file"]);
+    assert!(server.state.lock().unwrap().messages.is_empty());
 }
 
 #[test]
