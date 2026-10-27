@@ -198,6 +198,7 @@ pub fn configure_inbox(
     validate_rule(&rule)?;
     read_bearer(bearer_file)?;
     let root = policy_dir();
+    crate::relay::receiver::require_account_policy(&root, &rule.owner, &identity.device_id)?;
     crate::peer::private_dir(&root.join(DIRECTORY))?;
     let _guard = crate::peer::lock(&root.join(DIRECTORY).join("ledger.lock"))?;
     let mut policy = load_policy(&root)?;
