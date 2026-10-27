@@ -156,6 +156,18 @@ fn cli_send_to_skips_routing_and_ambiguity_exits_2() {
     assert_eq!((result["router"].clone(), result["reply"].clone()), (json!("direct"), json!("done")));
     let args = std::fs::read_to_string(fx.home().join("claude-args")).unwrap();
     assert_eq!(args.lines().collect::<Vec<_>>(), ["--resume", "c-1", "--print", "ship it"]);
+    let out = fx.run_stdin(&["send", "--to", "c-1", "ping now", "--json"], "", &[("PATH", &path)]);
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let result: Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(result["mode"], "ping");
+    assert_eq!(result["pinged"], true);
+    assert_eq!(result["queued"], false);
+    assert_eq!(result["reply"], "done");
+    assert!(!fx.home().join(".everett/inbox/c-1.jsonl").exists());
+    let calls = common::mcp_calls(&fx, &[], &[("PATH", &path), ("EVERETT_SESSION_ID", "sender")],
+        &[("everett_send", json!({"to":"c-1","text":"mcp ping now"}))]);
+    assert_eq!(common::tool_json(&calls[0])["mode"], "ping");
+    assert_eq!(common::tool_json(&calls[0])["pinged"], true);
     let out = fx.run(&["send", "--to", "c-", "x"]);
     assert_eq!(out.status.code(), Some(2));
 }

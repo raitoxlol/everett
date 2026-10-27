@@ -208,6 +208,8 @@ Done. MAX_RETRIES is now 5 and the backoff test covers the cap.
 | `everett relay` | Listen through the selected relay: Convex WebSocket or Cloudflare outbound polling. Claude session wake and external webhook posts follow the local owner policy. |
 | `everett relay register / devices / whoami` | Register this provisioned agent's keys and publish its display name/declared SSH address, list active key bundles (maximum 256), or verify agent/org authorization. |
 | `everett relay devices --names` | Hosted Cloudflare enrollment labels beside device IDs and fingerprints. Advisory only; the default JSON bundle list is unchanged. |
+| `everett relay expose SESSION [--harness H] [--remove]` | Opt in to sharing this exact local session's card, or withdraw it. The backend derives its authenticated author and agent. |
+| `everett relay directory` | List exposed authenticated author/session cards across the account, without device pairing. |
 | `everett relay rename NAME` | Update this Cloudflare device's hosted label. Device ID, keys, and pins stay the same. |
 | `everett relay revoke-agent ID / revoke-member SUBJECT / rotate` | Revoke this or an admin-selected agent, remove org membership (admin), or rotate this agent's relay keys using its old signing key. |
 | `everett relay grant invite / accept / reconfirm / revoke / get / list` | Bilateral org-admin consent for named cross-org agents; [exact flags and journey](docs/cross-device.md#convex-relay-two-org-trial). |
@@ -215,8 +217,8 @@ Done. MAX_RETRIES is now 5 and the backoff test covers the cap.
 | `everett peer identity / list / remove <name> / revoke <client-id>` | Inspect device keys/peers; remove a remote authorization or revoke a local tagged client key. |
 | `everett dashboard [--port 7347] [--no-open]` | Native Rust binary only: read-only local browser dashboard with session cards, filters, activity state, and copyable CLI actions. |
 | `everett route "<text>" [--router local\|jev] [--json]` | Picks the session a request continues: `SESSION`, `NEW`, or `ASK`, with a confidence and the resume command. It never sends. |
-| `everett send "<text>" [--dry-run] [--timeout S] [--router …]` | Routes the request (jev when a key is configured, else local). An idle local session is resumed headless after it goes quiet (up to 2 min), and the reply is printed. Automatic delivery refuses passive inbox targets without queueing. `NEW` and `ASK` send nothing (`ASK` prints its candidates; resend with `--to`). See [Live delivery](#live-delivery). |
-| `everett send … [--mode auto\|resume\|inbox] [--wait S]` | Default `auto` resumes when safe or fails without queueing. `--mode inbox` explicitly queues for hooks or polling. It does not send a Claude wake. A matching owner `receiver-webhook.json` rule can POST a nudge for `grok-bot` or `openai-dot`; `wake` stays false. `--wait S` waits for an inbox reply; a timeout leaves the explicit queue intact. |
+| `everett send "<text>" [--dry-run] [--timeout S] [--router …]` | Routes and pings immediately. Idle local sessions run headless; verified local Claude background sessions receive a native inbox nudge. Unsupported transports fail without queue fallback. `NEW` and `ASK` send nothing unless explicitly resolved. See [Live delivery](#live-delivery). |
+| `everett send … [--mode ping\|auto\|resume\|inbox] [--wait S]` | Default `ping` dispatches immediately or fails. Explicit `inbox` is legacy queue delivery for hooks, polling, or remote transports. `auto` and `resume` retain compatibility behavior. `--wait S` applies to explicit inbox delivery. |
 | `everett send --to <full-Claude-session-UUID> --wake [--wait S] "<request>"` | Queues the request, then explicitly wakes an existing local Claude Code background session through a PTY and waits for a reply linked to that inbox message. Requires an interactive local terminal and Claude Code 2.1.285 or newer. The sender cannot request this native wake through `auto`, MCP, gateway, remote, or T3 Code sends. A separately enabled receiver policy can wake Claude after a relay import. |
 | `everett reply <message-id> "<text>"` | Answers an Everett message; the reply goes to the sender's inbox. |
 | `everett inbox [--session S] [--peek] [--message ID] [--json]` | Shows the messages waiting for this session (or the human inbox when run outside a session) and marks them delivered; `--message` shows and marks only that message. |
@@ -308,7 +310,8 @@ the same separately approved device identity. Register both computers and run
 automatically. Use `everett relay devices --names`, then send to a unique name such as
 `--to 'Max NUC/codex/SESSION_ID'`. No fingerprint exchange or `peer add-relay` is required
 for same-owner Cloudflare messaging.
-The listener polls outbound HTTPS, stages ciphertext durably, reauthorizes before inbox
+Those remote sends now require explicit `--mode inbox`; there is no synchronous remote
+ping receipt. The listener polls outbound HTTPS, stages ciphertext durably, reauthorizes before inbox
 publication and retries temporary failures. Receiver-side Claude wake is disabled by
 default. An owner can opt in through the provider-local `receiver-wake.json` policy described
 in [the native relay guide](docs/cloudflare-native.md). A registered Grok Bot or OpenAI dot
@@ -380,7 +383,9 @@ deletes the live ciphertext row; undelivered messages/replies have one-hour clie
 and bounded cron cleanup. Replay, revocation and grant metadata are retained permanently.
 `delivered` means authorized device ingress, `claimed` means observed inbox pickup,
 `replied` means acknowledged reply enqueue/observation—not sender pickup or task completion.
-There is no session sync, incoming agent port, Tailscale requirement or remote session listing.
+There is no session sync, incoming agent port, or Tailscale requirement. Opted-in
+author/session metadata is available through `everett relay directory`; it is not a
+remote transcript listing.
 See [exact cloud/self-hosted deployment and two-machine steps](docs/cross-device.md#convex-relay-owner-deployment),
 [two-org invite/accept/revoke trial](docs/cross-device.md#convex-relay-two-org-trial),
 [OIDC/Keycloak setup](docs/auth.md) and [metadata, retention and crypto limits](docs/relay-threat-model.md).
@@ -409,13 +414,15 @@ SSH needs no registry, account sign-in, Convex relay, or Everett listener. See
 
 ## Live delivery
 
-Default sends must run the recipient or fail without leaving a queued request.
-Headless resume is used for an idle local session. Everett has no general wake mechanism
-for an attached, T3 Code, or registered external session, so `auto` refuses those targets.
+Default sends use `ping`: an immediate headless run for an idle local session or a
+verified same-session native Claude background nudge. Unsupported immediate transports
+fail explicitly rather than silently queueing. A native nudge uses a durable inbox item;
+if attachment fails afterward, the error identifies that retained item. Dispatch is not
+inbox consumption or task completion.
 See [agent support and wake](docs/agent-support.md) and the
 [delivery policy and explicit queue exceptions](docs/message-delivery.md).
 
-1. **Which path.** `send --mode auto` (the default) resumes an idle local session and returns its reply. When the target requires passive inbox delivery, it fails before writing a message. `--mode inbox` explicitly accepts queueing for hooks or polling. It does not send a Claude wake. A matching owner webhook can nudge a registered Grok Bot or OpenAI dot; see [Wake a Grok Bot](#wake-a-grok-bot). `--mode resume` forces headless resume except where existing T3, external-agent, or remote-provenance rules refuse it.
+1. **Which path.** `send --mode ping` is the default in CLI and MCP. Native Claude dispatch requires a full UUID, supported version, and verified background state. T3, external agents, attached non-Claude sessions, and remote transports currently require explicit legacy `--mode inbox`. `auto` and `resume` are compatibility options, not defaults. Remote provenance never permits a local provider wake or resume.
 2. **Explicit Claude wake.** `send --to <full-session-UUID> --wake` is a separate local CLI opt-in. Everett verifies the Claude version and exact background-session state, queues the original request, then attaches to that same session in a PTY with a fixed nudge to read and answer the queued inbox item. It reports the native prompt receipt separately from a real Everett reply. `--wake` rejects prefixes, routed destinations, remote sessions, T3 Code, relay-derived callers, and non-Claude sessions. The request remains recorded if the attach or reply wait fails, but Claude may already have read it. A timeout does not mean the request is still pending. MCP, gateway, and ordinary `auto` sends cannot request wake.
 3. **Inbox.** `~/.everett/inbox/<session-id>.jsonl`, one message per line: `id`, `from` (the sender's session id, or `human` from a terminal), `from_harness`, `from_card`, `text`, `ts`, `reply_to`, `hops`, `kind` (`message`, `reply`, or `event`). Delivered ids go to `<session-id>.done`. Undelivered messages expire after 7 days.
 4. **Injection.** The hook adds at most 5 messages (2,000 characters each, 6,000 in total) as context, marked as coming from Everett with the sender's session and card, and marks exactly those delivered. The rest arrive at the next hook. The hook reads local files only, takes about 40 ms, and prints nothing on any error.
@@ -432,7 +439,7 @@ See [agent support and wake](docs/agent-support.md) and the
 
 Grok also runs the hooks in `~/.claude/settings.json`. Everett's Claude delivery hook recognizes Grok's camelCase input and leaves a Grok session's messages alone on `UserPromptSubmit`, so nothing is marked delivered that Grok would drop.
 
-Claude Code has its own cross-session messages (`<cross-session-message>` over sockets in `/tmp/cc-socks/`). It has no public or documented way to send one, so Everett does not use it; hooks are the supported path. This is future work if Anthropic documents a sender.
+Claude Code has its own cross-session messages (`<cross-session-message>` over sockets in `/tmp/cc-socks/`). Everett does not use that private sender protocol. Native Claude ping uses a verified same-session PTY attachment and a fixed inbox nudge instead.
 
 ## Events
 
@@ -539,7 +546,7 @@ Everett is mostly used by agents. `everett mcp` is a stdio MCP server (JSON-RPC 
 |---|---|---|
 | `everett_ls` | `hours?`, `harness?` | Sessions with their cards (and `source`, such as `t3code`); your own session is marked `you`. Overview only -- not for picking a send target. |
 | `everett_route` | `text`, `router?`, `hours?` | `SESSION` / `NEW` / `ASK`, confidence, router used, candidates. Never sends; excludes the caller when known. |
-| `everett_send` | `text`, `to?`, `hours?`, `spawn?`, `dir?`, `harness?`, `timeout?`, `mode?`, `wait?`, `reply_to?` | Routes then resumes when safe. Automatic passive delivery fails without queueing. Explicit `mode: "inbox"` returns a message id and truthful `queued`/`delivered` pickup fields (plus a reply when `wait` observes one). `reply_to` durably queues an answer for the sender. |
+| `everett_send` | `text`, `to?`, `hours?`, `spawn?`, `dir?`, `harness?`, `timeout?`, `mode?`, `wait?`, `reply_to?` | Routes then pings by default. Dispatch is separate from inbox pickup. Unsupported immediate paths fail explicitly; `mode: "inbox"` opts into legacy hooks/polling/remote queues. `reply_to` queues a correlated answer. |
 | `everett_learn` | `fact`, `project?`, `scope?`, `ttl_seconds?` | Stores a secret-filtered fact. Durable facts queue for shared core; temporary facts stay in local search until expiry. |
 | `everett_core` | `action?`, `project?`, `query?`, `limit?`, `fact?`, `replacement?`, `scope?` | Reads the latest core by default. Local `search` ranks original learnings beyond the core cap. `forget` and `correct` update exact facts in active, pending, and searchable memory. |
 | `everett_card` | `what`, `state`, `next` | Writes the calling session's card. |

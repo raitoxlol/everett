@@ -453,6 +453,10 @@ fn cmd_remote_send(args: &Args, to: &str) -> i32 {
         eprintln!("everett: remote sends are inbox-only; no --spawn, --mode resume, or --wait. Poll everett peer status.");
         return 2;
     }
+    if args.mode == "ping" {
+        eprintln!("everett: No immediate remote ping transport. Nothing was queued. Use --mode inbox only for legacy relay/hooks/polling.");
+        return 4;
+    }
     if args.dry_run {
         return match crate::peer::target(to) {
             Ok((peer, _, _)) => {
@@ -618,6 +622,12 @@ pub fn cmd_send(args: &Args) -> i32 {
             return send_wake_cmd(args, &r, &session, &label, routed_line);
         }
         return send_inbox_cmd(args, &r, &session, &label, routed_line);
+    }
+    if mode == "ping" && !args.dry_run {
+        return match crate::send::ping_as(&session, args.text.as_deref().unwrap_or(""), args.timeout, None, None) {
+            Ok(result) => { let mut payload = r.clone(); payload.extend(result); emit(args.json, &payload, vec![routed_line, Some(format!("PINGED  {label}")), payload.get("reply").and_then(Value::as_str).map(str::to_string)]); 0 },
+            Err(error) => { eprintln!("everett: {}", error.message); error.code },
+        };
     }
     let command = match crate::send::command_for(&session, args.text.as_deref().unwrap_or("")) {
         Ok(c) => c,
