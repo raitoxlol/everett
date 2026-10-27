@@ -88,12 +88,37 @@ impl Lease {
             device: device.into(),
             capabilities: vec![SAME_OWNER_WEBHOOK.into()],
         };
-        crate::peer::save(
-            &root.join(RECORD),
-            &serde_json::to_vec(&record).map_err(|_| failure("status encoding failed"))?,
-        )?;
+        let bytes = serde_json::to_vec(&record).map_err(|_| failure("status encoding failed"))?;
+        let status = root.join(RECORD);
+        // The capability record is advisory. A failed write must not release the
+        // lease or stop delivery, and it must not leave an older owner/device
+        // looking like the live receiver.
+        if let Err(error) = crate::peer::save(&status, &bytes) {
+            discard_status(&status);
+            eprintln!(
+                "everett relay: receiver status could not be written; delivery continues: {}",
+                error.message
+            );
+        }
         Ok(Self { _lock: lock })
     }
+}
+
+fn discard_status(path: &Path) {
+    if std::fs::remove_file(path).is_ok() {
+        return;
+    }
+    // Unlink fails when the directory is not writable. Wipe a regular file in
+    // place, without following a symlink, so the previous identity is gone.
+    let Ok(file) = OpenOptions::new()
+        .write(true)
+        .truncate(true)
+        .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
+        .open(path)
+    else {
+        return;
+    };
+    let _ = file.sync_all();
 }
 
 fn capability_record(root: &Path) -> Result<Option<Record>> {
@@ -266,5 +291,77 @@ mod tests {
         fs::set_permissions(dir.path().join(RECORD), fs::Permissions::from_mode(0o644)).unwrap();
         assert!(snapshot(dir.path(), Some(("owner", "device"))).is_err());
         drop(lease);
+    }
+
+    #[test]
+    fn failed_status_write_does_not_abort_delivery_or_drop_the_lease() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("receiver");
+        fs::create_dir(&root).unwrap();
+        let _daemon = daemon(&root);
+        fs::create_dir(root.join(RECORD)).unwrap();
+        let lease = Lease::start(&root, "owner", "device").unwrap();
+        assert!(
+            root.join(RECORD).is_dir(),
+            "failed status write must leave the existing path in place"
+        );
+        assert!(Lease::start(&root, "owner", "device").is_err());
+        assert!(snapshot(&root, Some(("owner", "device"))).is_err());
+        assert!(require_account_policy(&root, "owner", "device").is_err());
+        drop(lease);
+        let restarted = Lease::start(&root, "owner", "device").unwrap();
+        assert!(root.join(RECORD).is_dir());
+        drop(restarted);
+    }
+
+    #[test]
+    fn failed_status_write_rejects_a_stale_identity_record() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("receiver");
+        fs::create_dir(&root).unwrap();
+        let _daemon = daemon(&root);
+        let status = root.join(RECORD);
+        fs::write(
+            &status,
+            json!({
+                "schema": 1,
+                "owner": "previous-owner",
+                "device": "previous-device",
+                "capabilities": ["same-owner-webhook-v1"]
+            })
+            .to_string(),
+        )
+        .unwrap();
+        fs::set_permissions(&status, fs::Permissions::from_mode(0o600)).unwrap();
+        OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .mode(0o600)
+            .open(root.join(LEASE))
+            .unwrap();
+        // The lease file can still be locked, but a replacement status file
+        // cannot be created. The previous record must not survive that failure.
+        fs::set_permissions(&root, fs::Permissions::from_mode(0o500)).unwrap();
+        let _restore = RestoreWrite(&root);
+        let lease = Lease::start(&root, "current-owner", "current-device").unwrap();
+        let reported = snapshot(&root, Some(("previous-owner", "previous-device"))).unwrap();
+        assert_eq!(reported["state"], "unknown");
+        assert!(!reported.to_string().contains("previous-owner"));
+        assert!(!reported.to_string().contains("previous-device"));
+        assert!(require_account_policy(&root, "previous-owner", "previous-device").is_err());
+        assert!(require_account_policy(&root, "current-owner", "current-device").is_err());
+        let left = fs::read_to_string(&status).unwrap_or_default();
+        assert!(!left.contains("previous-owner"));
+        assert!(Lease::start(&root, "current-owner", "current-device").is_err());
+        drop(lease);
+    }
+
+    struct RestoreWrite<'a>(&'a Path);
+
+    impl Drop for RestoreWrite<'_> {
+        fn drop(&mut self) {
+            let _ = fs::set_permissions(self.0, fs::Permissions::from_mode(0o700));
+        }
     }
 }
