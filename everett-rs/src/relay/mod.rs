@@ -2232,7 +2232,6 @@ async fn run_native(
     keys: &Keys,
     ingress: &Path,
     register: &Value,
-    lease: &mut receiver::Lease,
 ) -> Result<Value> {
     eprintln!(
         "everett relay: Cloudflare outbound polling; receiver wake and webhook follow the local owner policy"
@@ -2242,12 +2241,10 @@ async fn run_native(
     loop {
         match receive(&mut client, keys, ingress, register, &mut rejected).await {
             Ok(_) => {
-                lease.observe(true)?;
                 delay = 5;
             }
             Err(error) if denied(&error) || !matches!(error.code, 5 | 6) => return Err(error),
             Err(error) => {
-                lease.observe(false)?;
                 eprintln!(
                     "everett relay: {}; retrying in {delay}s; encrypted staging kept",
                     error.message
@@ -2266,12 +2263,12 @@ pub fn run() -> Result<Value> {
     let keys = verified_keys(&owner)?;
     let register = register_args(&keys.device)?;
     let _guard = daemon_lock()?;
-    let mut lease = receiver::Lease::start(&root(), &owner, &keys.device.device_id)?;
+    let _lease = receiver::Lease::start(&root(), &owner, &keys.device.device_id)?;
     let ingress = root().join("ingress");
     peer::private_dir(&ingress)?;
     let outcome = tokio::runtime::Runtime::new().map_err(bad)?.block_on(async {
         let mut client = client(&owner).await?;
-        if client.is_native() { return run_native(client, &keys, &ingress, &register, &mut lease).await; }
+        if client.is_native() { return run_native(client, &keys, &ingress, &register).await; }
         mutation(&mut client,"relay:register",register.clone()).await?;
         let mut final_cursor: Option<String> = None;
         let mut subscription = client.subscribe("relay:pending",args(json!({"deviceId":keys.device.device_id,"cursor":final_cursor}))?).await.map_err(|_| bad("Convex subscription failed"))?;
@@ -2290,7 +2287,6 @@ pub fn run() -> Result<Value> {
                     let (stored,current) = account()?;
                     if current != owner || claims(&stored.id_token)?["everett_agent"] != keys.device.device_id { return Err(bad("signed-in identity changed; restart the relay")); }
                     let cursor = receive(&mut client, &keys, &ingress, &register, &mut rejected).await?;
-                    lease.observe(true)?;
                     if final_cursor != cursor {
                         subscription = client.subscribe("relay:pending",args(json!({"deviceId":keys.device.device_id,"cursor":cursor}))?).await.map_err(|_| bad("Convex subscription failed"))?;
                         final_cursor = cursor;
