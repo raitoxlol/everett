@@ -491,7 +491,7 @@ fn peer_output(result: everett::error::Result<serde_json::Value>) -> i32 {
 #[derive(Subcommand)]
 enum RelayCmd {
     /// list exposed, authenticated author/session cards in this account (no pairing)
-    Directory,
+    Authors,
     /// expose one exact local session and its card to authenticated account peers
     Expose {
         session: String,
@@ -503,7 +503,7 @@ enum RelayCmd {
     /// register this device and print its public bundle and fingerprint
     Register,
     /// list signed bundles; use --names for advisory hosted device labels
-    #[command(alias = "credentials")]
+    #[command(aliases = ["credentials", "directory"])]
     Devices {
         /// readable labels with IDs/fingerprints; never changes pairing selectors
         #[arg(long, conflicts_with = "json")]
@@ -758,7 +758,7 @@ fn main() {
             }
         },
         Cmd::Relay { action } => match action {
-            Some(RelayCmd::Directory) => peer_output(everett::messaging::directory().map(|sessions| serde_json::json!({"sessions":sessions}))),
+            Some(RelayCmd::Authors) => peer_output(everett::messaging::authors().map(|sessions| serde_json::json!({"sessions":sessions}))),
             Some(RelayCmd::Expose { session, harness, remove }) => peer_output(everett::messaging::expose_id(&session, harness.as_deref(), remove)),
             None => peer_output(everett::relay::run()),
             Some(RelayCmd::Register) => peer_output(everett::relay::register()),

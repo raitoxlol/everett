@@ -5,7 +5,7 @@ import {
 import { v } from "convex/values";
 import { deviceValidator, envelopeValidator, observationValidator, roleValidator } from "./schema";
 import {
-  authorize, ownAgent, requireAdmin, activeDevice, bundle, namespace,
+  authorize, ownAgent, requireAdmin, activeDevice, InactiveDeviceError, bundle, namespace,
   type Context, type WriteContext,
 } from "./authorization";
 import {
@@ -52,7 +52,7 @@ export const sessionDirectory = query({
     const sessions = [];
     for (const row of page.page) {
       try { await activeDevice(ctx, row.owner, row.agentId); }
-      catch { continue; }
+      catch (error) { if (error instanceof InactiveDeviceError) continue; throw error; }
       const credential = await ctx.db.query("credentials").withIndex("by_agent", q =>
         q.eq("issuer", p.credential.issuer).eq("agentId", row.agentId)).unique();
       if (!credential) continue;

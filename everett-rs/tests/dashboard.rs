@@ -19,7 +19,7 @@ fn authored_cards_show_separate_identity_tags_and_escape_untrusted_metadata() {
     let page = everett::dashboard::render_with_authors(&[local], &[card], "", 72.0, 10.0);
     for text in ["Author: alice&lt;&amp;&gt;", "Agent: agent-1", "Session: session-1",
         "Agent: local", "Session: local-1", "Repair login\n&lt;script&gt;alert(1)&lt;/script&gt;",
-        "id:agent-1/codex/session-1", "Copy ping command", "No queue fallback"] {
+        "id:agent-1/codex/session-1", "Copy ping command", "No queue fallback", "everett relay authors"] {
         assert!(page.contains(text), "missing {text}");
     }
     assert!(!page.contains("<script>alert(1)</script>"));

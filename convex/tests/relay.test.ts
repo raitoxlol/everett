@@ -4,6 +4,7 @@ import { afterEach, describe, expect, test, vi } from "vitest";
 import nacl from "tweetnacl";
 import schema from "../schema";
 import { namespace } from "../authorization";
+import * as authorization from "../authorization";
 import { queuedAttemptCount } from "../relay";
 import { metadataBytes } from "../registry";
 import { aadBytes, deviceBytes, sshBindingBytes, envelopeBytes, fingerprint, observationBytes, rotationBytes, hexString, type Envelope } from "../protocol";
@@ -83,6 +84,16 @@ async function expectRoutingDenied(f: Fixture, client: Fixture["a"] | Fixture["b
 }
 
 describe("actual Convex functions, offline", () => {
+  test("author directory propagates unexpected active-device failures", async () => {
+    const f = await fixture();
+    await f.c.mutation(ref("exposeSession"), { session: "session-c", harness: "claude", card: "available" });
+    const activeDevice = authorization.activeDevice;
+    vi.spyOn(authorization, "activeDevice").mockImplementation(async (ctx, owner, agent) => {
+      if (agent === "agent-c") throw new Error("device database unavailable");
+      return activeDevice(ctx, owner, agent);
+    });
+    await expect(f.a.query(query("sessionDirectory"), {})).rejects.toThrow("device database unavailable");
+  });
   test("session cards expose authenticated authors without pairings and isolate owners", async () => {
     const f = await fixture();
     const card = { session: "session-c", harness: "codex", card: "reviewing messaging" };

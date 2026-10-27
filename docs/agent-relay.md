@@ -32,7 +32,7 @@ Receiver wake support is separate from device trust. See
 ## Discover authors and session cards
 
 After registration, `everett_agent_relay` with `{"action":"expose"}` shares only
-the host-bound caller's session and card. `{"action":"directory"}` lists opted-in
+the host-bound caller's session and card. `{"action":"authors"}` lists opted-in
 account peers with authenticated author, agent and session tags, card text, update
 time, and an exact target selector. Discovery requires no pairing. Cards are
 plaintext account-visible metadata, not encrypted message bodies or live presence.
@@ -47,12 +47,12 @@ receiver policies control wake actions. Within the agent's Everett MCP connectio
 ```json
 {"action":"identity"}
 {"action":"register"}
-{"action":"devices"}
+{"action":"directory"}
 ```
 
 Call `everett_agent_relay` with each object. Identity/registration require the owner's
-OIDC login and deployment-side provisioning. `devices` lists registered, active agents
-only within the authenticated namespace. Exchange full public bundles and fingerprints
+OIDC login and deployment-side provisioning. `directory` lists registered, active agents
+only within the authenticated namespace (`devices` remains an alias). Exchange full public bundles and fingerprints
 out of band; a registry response alone is not trust. Pin the other agent:
 
 ```json

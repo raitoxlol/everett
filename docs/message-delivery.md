@@ -34,15 +34,15 @@ derives the author and agent from active credentials. It does not accept author
 claims from the caller. Cards are plaintext account-visible metadata; do not put
 secrets in an exposed card. Exposure is opt-in, with a limit of 32 cards per agent.
 
-`everett relay directory` lists exposed cards across all pages without pairing.
+`everett relay authors` lists exposed cards across all pages without pairing.
 The dashboard shows the same authenticated cards separately from local stores,
 with author, agent, and session tags. Only active account peers are visible;
 revoked credentials or memberships are filtered on every read. Cross-owner grants
 still govern remote transport and do not publish cross-owner cards.
 
 MCP `everett_agent_relay` actions `expose` and `withdraw` affect only the
-host-bound caller's session. `directory` returns author cards; `devices` retains
-the old key-bundle listing. To update a shared card, expose the session again.
+host-bound caller's session. `authors` returns author cards; `directory` retains
+the old key-bundle listing (`devices` is an alias). To update a shared card, expose the session again.
 To withdraw it, run `everett relay expose SESSION --remove`. Existing exposure
 persists until withdrawal or revocation; its update time is not live presence.
 Cloudflare and Convex both require the new backend APIs to be deployed. An old
@@ -65,6 +65,12 @@ absolute working directory, and verified background state. CLI and host-bound
 local MCP sends can use it. The older `--wake` compatibility command retains its
 exact-target, interactive-human restrictions. Neither path allows remote-derived
 callers to promote agent data into owner prompts.
+
+Default ping does not require an interactive stdin: CLI automation and local MCP
+callers use the same private PTY connector. After target validation, the request is
+recorded before native preflight/attach. A preflight or attach failure returns an
+explicit error with the retained message ID, not a successful ping; do not blindly
+retry. Invalid or unsupported targets are rejected before an inbox item is created.
 
 ## Local send receipts
 

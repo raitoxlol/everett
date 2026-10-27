@@ -726,10 +726,12 @@ pub fn ping_as(
     }
     delivery_mode_for(session, "ping", None, caller)?;
     if attached(session, None) {
-        let prepared = crate::claude_wake::prepare(session).map_err(|error| EverettError::new(4,
+        crate::claude_wake::validate_target(session).map_err(|error| EverettError::new(4,
             format!("Ping unavailable for {}: {}. Nothing was queued. Use --mode inbox for legacy delivery.", session.id, error.message)))?;
         let mut out = send_inbox_as(session, text, 0.0, caller, caller_harness, 1.0, None)?;
         let mid = out.get("message_id").and_then(Value::as_str).unwrap_or("");
+        let prepared = crate::claude_wake::prepare(session).map_err(|error| EverettError::new(4,
+            format!("Immediate ping unavailable for {}: {}. Inbox message {mid} remains recorded; no native nudge was sent. Do not blindly retry.", session.id, error.message)))?;
         match crate::claude_wake::wake(&prepared, mid) {
             crate::claude_wake::WakeOutcome::PromptSent { client_pid, target_pid } => {
                 out.insert("wake".into(), json!({"state":"prompt_sent","client_pid":client_pid,"target_pid":target_pid}));

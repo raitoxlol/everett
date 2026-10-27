@@ -209,7 +209,7 @@ Done. MAX_RETRIES is now 5 and the backoff test covers the cap.
 | `everett relay register / devices / whoami` | Register this provisioned agent's keys and publish its display name/declared SSH address, list active key bundles (maximum 256), or verify agent/org authorization. |
 | `everett relay devices --names` | Hosted Cloudflare enrollment labels beside device IDs and fingerprints. Advisory only; the default JSON bundle list is unchanged. |
 | `everett relay expose SESSION [--harness H] [--remove]` | Opt in to sharing this exact local session's card, or withdraw it. The backend derives its authenticated author and agent. |
-| `everett relay directory` | List exposed authenticated author/session cards across the account, without device pairing. |
+| `everett relay authors` | List exposed authenticated author/session cards across the account, without device pairing. |
 | `everett relay rename NAME` | Update this Cloudflare device's hosted label. Device ID, keys, and pins stay the same. |
 | `everett relay revoke-agent ID / revoke-member SUBJECT / rotate` | Revoke this or an admin-selected agent, remove org membership (admin), or rotate this agent's relay keys using its old signing key. |
 | `everett relay grant invite / accept / reconfirm / revoke / get / list` | Bilateral org-admin consent for named cross-org agents; [exact flags and journey](docs/cross-device.md#convex-relay-two-org-trial). |
@@ -384,7 +384,7 @@ and bounded cron cleanup. Replay, revocation and grant metadata are retained per
 `delivered` means authorized device ingress, `claimed` means observed inbox pickup,
 `replied` means acknowledged reply enqueue/observation—not sender pickup or task completion.
 There is no session sync, incoming agent port, or Tailscale requirement. Opted-in
-author/session metadata is available through `everett relay directory`; it is not a
+author/session metadata is available through `everett relay authors`; it is not a
 remote transcript listing.
 See [exact cloud/self-hosted deployment and two-machine steps](docs/cross-device.md#convex-relay-owner-deployment),
 [two-org invite/accept/revoke trial](docs/cross-device.md#convex-relay-two-org-trial),
