@@ -18,12 +18,59 @@ The native path retains `queued` and `delivered` as independent inbox-pickup
 observations. If native attachment fails after the inbox write, the error names
 the retained message. The request may already have been read; do not blindly retry.
 
-T3 Code, external agents, attached non-Claude sessions, and remote transports
+T3 Code, external agents, attached sessions without a supported wake transport, and remote transports
 currently have no synchronous ping path. They fail explicitly without queueing.
 Remote-derived callers cannot resume, spawn, or wake local providers. A process
 being alive does not prove it can receive a prompt. Legacy queue delivery requires
 an explicit `--mode inbox` or MCP `mode: "inbox"`; `auto` and `resume` retain their
 previous behavior only when explicitly selected.
+
+## Attached OMP sessions
+
+On OMP 18.12.2, the running Everett extension watches its session's inbox and
+polls every five seconds as a fallback. A fresh capability marker must match the
+live OMP session, PID, and kernel process start and boot identity. The heartbeat
+refreshes only that existing binding's liveness timestamp, preserving activity
+state and inbox receipts even after more than 24 hours idle. Unknown process
+identity fails closed. Local CLI and MCP `ping` or `auto` sends then return
+`mode: "ping"`, `transport: "omp-extension"`, and
+`wake: {"state": "extension_pending"}`. This confirms inbox acceptance by the
+watcher transport. It does not confirm a nudge, pickup, or reply; `pinged` remains
+false. Missing, expired, malformed, or mismatched capabilities retain the refusal
+for attached OMP sessions, without queueing a request.
+
+The idle watcher calls `pi.sendMessage` with `triggerTurn: true`,
+`deliverAs: "nextTurn"`, and agent attribution. Its fixed text names only the
+message ID and the commands `everett inbox --session <sid> --message <id>` and
+`everett reply <id> '<your concise result>'`. Both commands use the resolved
+absolute executable with shell quoting and explicit `EVERETT_HOME` and
+`EVERETT_AUTH_PROVIDER` values. The reply also carries the destination session's
+OMP identity. Sender text never enters the nudge.
+A durable exclusive reservation allows at most one nudge attempt per message ID,
+including overlapping watchers and extension reloads. The optional journal is
+best effort; journal failure cannot prevent the claimed nudge attempt. Reserving does not mark the
+message consumed. Nudged messages bypass passive injection so the explicit inbox
+read records the receipt. An ambiguous or failed send is never retried
+automatically; the message remains available to an explicit reader.
+
+Busy sessions receive no watcher nudge. Existing tool-result steering handles
+their pending inbox data. The watcher closes on session shutdown and is replaced
+on session switch or branch. Initial lease publication precedes watcher and
+timer allocation, so a publication failure leaves no unmanaged watcher.
+Capability leases expire after 20 seconds without a heartbeat.
+
+The trust boundary remains local. Remote-derived callers and external harnesses
+cannot use this ping transport. Wake candidates exclude external/untrusted
+messages, relay provenance, and senders with durable relay context. Those
+messages retain passive hook or explicit inbox pickup with existing provenance
+handling. A local capability file is evidence from a cooperating extension, not
+authentication against another process with write access to the same home.
+
+The API is defined by OMP's [v18.12.2 extension types](https://github.com/can1357/oh-my-pi/blob/v18.12.2/packages/coding-agent/src/extensibility/extensions/types.ts#L1836)
+and [message delivery guide](https://github.com/can1357/oh-my-pi/blob/v18.12.2/docs/extensions.md#message-delivery-semantics).
+The [session implementation](https://github.com/can1357/oh-my-pi/blob/v18.12.2/packages/coding-agent/src/session/agent-session.ts#L9203)
+starts an idle turn for `nextTurn` plus `triggerTurn`. ACP clients may defer
+agent-initiated turns; this transport does not override that policy.
 
 ## Authenticated author cards
 
