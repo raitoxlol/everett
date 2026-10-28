@@ -879,11 +879,21 @@ fn hook_main_inner(stem: &str, args: &[String]) -> i32 {
                 }
             }
         }
+        "omp_wake_heartbeat" => {
+            if let Some(binding) = args.first().and_then(|sid| crate::omp_wake::heartbeat(sid)) {
+                emit(&binding.to_string());
+            }
+        }
+        "omp_wake_pending" => {
+            if let Some(sid) = args.first() {
+                emit(&serde_json::to_string(&crate::omp_wake::pending_ids(sid)).unwrap_or_default());
+            }
+        }
         "omp_inbox" => {
             if let Some(sid) = args.first() {
                 if crate::inbox::valid_id(sid) {
                     crate::inbox::touch_live(sid, "omp", "turn");
-                    let text = crate::inbox::take(sid);
+                    let text = crate::inbox::take_excluding(sid, &crate::omp_wake::nudged_ids(sid));
                     if !text.is_empty() {
                         emit(&text);
                     }

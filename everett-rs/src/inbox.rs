@@ -609,6 +609,7 @@ fn reap_stale(now: f64) {
             continue;
         }
         for file in paths::glob(&folder, "*.json") {
+            let Ok(_guard) = lock_file(&file) else { continue };
             let stale = file
                 .metadata()
                 .and_then(|m| m.modified())
@@ -627,13 +628,20 @@ fn reap_stale(now: f64) {
 /// Select-and-mark is atomic under the session lock so two hooks on the same
 /// session can't inject the same message twice.
 pub fn take(session_id: &str) -> String {
+    take_excluding(session_id, &HashSet::new())
+}
+
+pub fn take_excluding(session_id: &str, excluded: &HashSet<String>) -> String {
     let Ok(target) = path(session_id) else {
         return String::new();
     };
     let Ok(_guard) = lock_file(&target) else {
         return String::new();
     };
-    let pending_msgs = pending(session_id, None);
+    let pending_msgs: Vec<_> = pending(session_id, None)
+        .into_iter()
+        .filter(|m| !m.get("id").and_then(Value::as_str).is_some_and(|id| excluded.contains(id)))
+        .collect();
     let (text, ids) = render(&pending_msgs, None);
     if !ids.is_empty() {
         if persist_relay_context(
@@ -666,6 +674,14 @@ pub fn live_path(session_id: &str) -> PathBuf {
     inbox_dir().join("live").join(format!("{}.json", session_id))
 }
 
+/// All live-record updates and removals share this lock, including OMP heartbeat.
+pub(crate) fn lock_live(session_id: &str) -> Result<fs::File> {
+    if !valid_id(session_id) {
+        return Err(EverettError::new(2, "not a valid live session id"));
+    }
+    lock_file(&live_path(session_id))
+}
+
 /// The highest message hop count take() has delivered to this session (0 if none).
 /// A live session inherits received hop counts for 15 minutes, not forever.
 pub const HOP_MEMORY_SECONDS: f64 = 900.0;
@@ -689,9 +705,7 @@ pub fn session_hops(session_id: &str) -> i64 {
 
 /// Remember the highest hops delivered to this session in its live record (best effort).
 pub fn record_hops(session_id: &str, hops: i64) {
-    if !valid_id(session_id) {
-        return;
-    }
+    let Ok(_guard) = lock_live(session_id) else { return };
     let target = live_path(session_id);
     let mut current: Map<String, Value> = fs::read_to_string(&target)
         .ok()
@@ -746,6 +760,13 @@ pub fn bind_live(session_id: &str, harness: &str) {
 }
 
 fn write_live(session_id: &str, harness: &str, state: &str, rebind: bool) {
+    let caller_pid = harness_pid();
+    // Lock order: caller PID, then one session at a time. Keep the PID guard through
+    // publication and cleanup so overlapping claims cannot delete each other.
+    // Keying by PID also serializes any operations spanning process reincarnations.
+    let binding = inbox_dir().join("bindings").join(format!("{caller_pid}.json"));
+    let Ok(_binding_guard) = lock_file(&binding) else { return };
+    let Ok(guard) = lock_live(session_id) else { return };
     let target = live_path(session_id);
     let current: Map<String, Value> = fs::read_to_string(&target)
         .ok()
@@ -756,13 +777,18 @@ fn write_live(session_id: &str, harness: &str, state: &str, rebind: bool) {
     let now = now();
     let cur_state = current.get("state").and_then(|v| v.as_str()).unwrap_or("");
     let cur_ts = current.get("ts").and_then(|v| v.as_f64()).unwrap_or(0.0);
-    let caller = if rebind { harness_pid() } else { pid };
-    if pid != 0 && pid == caller && pid_alive(pid) && cur_state == state && now - cur_ts < 30.0 {
+    let caller = if rebind { caller_pid } else { pid };
+    let identity_matches = harness != "omp" || (
+        current.get("harness").and_then(Value::as_str) == Some(harness)
+            && crate::proc::process_identity(caller).is_some_and(|identity|
+                current.get("process_identity").and_then(Value::as_str) == Some(identity.as_str()))
+    );
+    if pid != 0 && pid == caller && pid_alive(pid) && cur_state == state && now - cur_ts < 30.0 && identity_matches {
         return;
     }
-    if rebind || pid == 0 || !pid_alive(pid) {
-        pid = if rebind { caller } else { harness_pid() };
-        release_pid(pid, session_id);
+    let claimed = rebind || pid == 0 || !pid_alive(pid);
+    if claimed {
+        pid = caller_pid;
     }
     if let Some(parent) = target.parent() {
         let _ = fs::create_dir_all(parent);
@@ -777,13 +803,21 @@ fn write_live(session_id: &str, harness: &str, state: &str, rebind: bool) {
     body.insert("harness".into(), json!(harness));
     body.insert("state".into(), json!(state));
     body.insert("ts".into(), json!(now));
+    if harness == "omp" {
+        body.insert("process_identity".into(), json!(crate::proc::process_identity(pid)));
+    }
     if fs::write(&tmp, serde_json::to_string(&Value::Object(body)).unwrap()).is_ok() {
         let _ = fs::rename(&tmp, &target);
+    }
+    // Never hold two session locks while dropping another binding.
+    drop(guard);
+    if claimed {
+        release_pid(pid, session_id);
     }
 }
 
 /// A harness process holds one session at a time: after /clear or /resume, the old session's
-/// live record for the same process is stale, so drop it.
+/// live record for the same process is stale, so drop it. The caller holds its PID lock.
 fn release_pid(pid: i32, keep: &str) {
     let folder = inbox_dir().join("live");
     if !folder.is_dir() {
@@ -793,6 +827,7 @@ fn release_pid(pid: i32, keep: &str) {
         if file.file_stem().map(|s| s.to_string_lossy().to_string()) == Some(keep.to_string()) {
             continue;
         }
+        let Ok(_guard) = lock_file(&file) else { continue };
         let Ok(text) = fs::read_to_string(&file) else { continue };
         let file_pid = serde_json::from_str::<Value>(&text)
             .ok()

@@ -446,19 +446,34 @@ pub(crate) fn nudge_commands(
     message_id: &str,
     harness: &str,
 ) -> Result<(String, String)> {
-    let executable = std::env::current_exe()
-        .map_err(|e| reject(format!("cannot resolve Everett executable: {e}")))?;
-    let executable = shell_quote(&executable.to_string_lossy());
-    let home = std::path::absolute(crate::session::home())
-        .map_err(|e| reject(format!("cannot resolve Everett profile against sender cwd: {e}")))?;
-    let command_env = command_env_prefix(
-        &home.to_string_lossy(),
-        &crate::config::get("auth.provider", Some("EVERETT_AUTH_PROVIDER"), "cloudflare"),
-    );
+    let command = NudgeCommand::resolve()?.prefix();
     Ok((
-        format!("{command_env}{executable} inbox --session {session_id} --message {message_id}"),
-        format!("{command_env}EVERETT_SESSION_ID={session_id} EVERETT_HARNESS_NAME={harness} {executable} reply {message_id} '<your concise result>'"),
+        format!("{command} inbox --session {session_id} --message {message_id}"),
+        format!("EVERETT_SESSION_ID={session_id} EVERETT_HARNESS_NAME={harness} {command} reply {message_id} '<your concise result>'"),
     ))
+}
+
+pub(crate) struct NudgeCommand {
+    pub executable: std::path::PathBuf,
+    pub everett_home: std::path::PathBuf,
+    pub auth_provider: String,
+}
+
+impl NudgeCommand {
+    pub fn resolve() -> Result<Self> {
+        Ok(Self {
+            executable: std::env::current_exe()
+                .map_err(|e| reject(format!("cannot resolve Everett executable: {e}")))?,
+            everett_home: std::path::absolute(crate::session::home())
+                .map_err(|e| reject(format!("cannot resolve Everett profile against sender cwd: {e}")))?,
+            auth_provider: crate::config::get("auth.provider", Some("EVERETT_AUTH_PROVIDER"), "cloudflare"),
+        })
+    }
+
+    pub fn prefix(&self) -> String {
+        format!("{}{}", command_env_prefix(&self.everett_home.to_string_lossy(), &self.auth_provider),
+            shell_quote(&self.executable.to_string_lossy()))
+    }
 }
 
 fn command_env_prefix(everett_home: &str, auth_provider: &str) -> String {

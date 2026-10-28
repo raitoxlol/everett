@@ -97,7 +97,7 @@ pub fn omp_extension_path() -> PathBuf {
 /// The OMP extension body, with this binary's absolute path baked in so OMP
 /// still finds it when its PATH differs from ours (basename is the fallback).
 pub fn omp_extension_source() -> String {
-    include_str!("omp_session_start.mjs").replace("__EVERETT_BIN__", &exe())
+    include_str!("omp_session_start.mjs").replace("\"__EVERETT_BIN__\"", &serde_json::to_string(&exe()).unwrap())
 }
 
 /// A hook registered by the retired Python package: `<python> <...>/everett/hooks/<script>.py`.
