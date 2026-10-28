@@ -892,10 +892,11 @@ fn send_inbox_cmd(args: &Args, r: &Map<String, Value>, session: &Session, label:
 }
 
 pub fn cmd_reply(args: &Args) -> i32 {
+    let caller = crate::send::caller_session_id();
     match crate::send::reply(
         args.id.as_deref().unwrap_or(""),
         args.text.as_deref().unwrap_or(""),
-        None,
+        (!caller.is_empty()).then_some(caller.as_str()),
     ) {
         Ok(result) => {
             if result.get("mode").and_then(Value::as_str) == Some("peer-reply") {

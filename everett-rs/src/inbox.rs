@@ -508,8 +508,12 @@ pub fn render(messages: &[Map<String, Value>], at: Option<f64>) -> (String, Vec<
         let how = if kind == "reply" || kind == "event" {
             String::new()
         } else {
+            let recipient_env = m.get("to").and_then(Value::as_str)
+                .filter(|sid| valid_id(sid))
+                .map(|sid| format!("EVERETT_SESSION_ID={sid} "))
+                .unwrap_or_default();
             format!(
-                "\nAnswer with everett_send(reply_to=\"{}\", text=...) or `everett reply {} \"<text>\"`.",
+                "\nAnswer with everett_send(reply_to=\"{}\", text=...) or `{recipient_env}everett reply {} \"<text>\"`.",
                 id, id
             )
         };
