@@ -29,6 +29,7 @@ pub mod relay;
 pub mod route;
 pub mod send;
 pub mod session;
+pub mod t3_wake;
 pub mod timefmt;
 pub mod trunk;
 pub mod trunk_schedule;
