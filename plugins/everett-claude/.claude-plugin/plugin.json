@@ -1,0 +1,6 @@
+{
+  "name": "everett",
+  "version": "0.1.0",
+  "description": "Continue Claude at Stop when Everett has unread messages. Optional local inbox channel.",
+  "license": "MIT"
+}
