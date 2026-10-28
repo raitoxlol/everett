@@ -1,0 +1,18 @@
+#!/bin/sh
+set -eu
+
+if [ -n "${FAKE_SENTINEL:-}" ]; then
+    : > "$FAKE_SENTINEL"
+fi
+
+case "${FAKE_MODE:-}" in
+    slow) exec /bin/sleep 5 ;;
+    error) printf '%s\n' 'PRIVATE ERROR' >&2; exit 2 ;;
+    bad-json) printf '%s\n' 'invalid'; exit 0 ;;
+    large) exec /usr/bin/head -c 1048577 /dev/zero ;;
+    read) exec /bin/cat "$FAKE_RESPONSE" ;;
+esac
+
+[ "$#" -eq 5 ] && [ "$1" = inbox ] && [ "$2" = --session ] &&
+    [ "$3" = test-session-1 ] && [ "$4" = --peek ] && [ "$5" = --json ] || exit 2
+exec /bin/cat "$FAKE_RESPONSE"

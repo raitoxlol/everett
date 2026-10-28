@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "everett-wake": {
+      "command": "python3",
+      "args": ["${EVERETT_CLAUDE_PLUGIN_DIR}/scripts/channel.py"]
+    }
+  }
+}
