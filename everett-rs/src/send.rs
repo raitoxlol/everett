@@ -35,8 +35,8 @@ pub fn command_for(session: &Session, text: &str) -> Result<Vec<String>> {
         return Err(EverettError::new(
             2,
             "T3 Code owns this thread's resume point, so a CLI resume would fork it. \
-             Bind EVERETT_SESSION_ID to the provider session in T3 Code, then queue inbox \
-             delivery and explicitly poll everett_inbox.",
+             Use --mode ping to send an inbox nudge through the T3 CLI, or --mode inbox \
+             to queue without waking the thread.",
         ));
     }
     match session.harness.as_str() {
@@ -676,6 +676,13 @@ pub fn delivery_mode_for(
     guard_delivery(mode, false, caller)?;
     let sid = caller.map(str::to_string).unwrap_or_else(caller_session_id);
     let remote_derived = inbox::relay_context(&sid).is_some();
+    if session.source == "t3code" && matches!(mode, "ping" | "auto")
+        && !remote_derived && !external::is_external(&session.harness)
+    {
+        require_local_prompt(caller)?;
+        crate::t3_wake::validate_target(session)?;
+        return Ok("ping".into());
+    }
     if mode == "ping" {
         require_local_prompt(caller)?;
         if external::is_external(&session.harness) || session.source == "t3code"
@@ -725,6 +732,26 @@ pub fn ping_as(
         return Err(EverettError::new(2, "Ping requires non-empty text within 64 KiB and a positive finite timeout"));
     }
     delivery_mode_for(session, "ping", None, caller)?;
+    if session.source == "t3code" {
+        let thread = crate::t3_wake::validate_target(session)?;
+        let mut out = send_inbox_as(session, text, 0.0, caller, caller_harness, 1.0, None)?;
+        let mid = out.get("message_id").and_then(Value::as_str).unwrap_or("");
+        let receipt = crate::t3_wake::wake(&thread, session, mid).map_err(|error| {
+            EverettError::new(4, format!(
+                "Immediate T3 ping not confirmed: {}. Inbox message {mid} remains recorded and may have been read. Do not blindly retry.",
+                error.message,
+            ))
+        })?;
+        out.insert("wake".into(), json!({"state":"prompt_sent","transport":"t3","thread_id":thread,"receipt":receipt}));
+        out.insert("mode".into(), json!("ping"));
+        out.insert("pinged".into(), json!(true));
+        out.insert("queued".into(), json!(true));
+        out.remove("pickup");
+        out.remove("poll_session_id");
+        out.remove("pickup_note");
+        out.insert("note".into(), json!("T3 accepted the inbox nudge for a new or queued turn. The durable inbox is retained; consumption and reply are not confirmed."));
+        return Ok(out);
+    }
     if attached(session, None) {
         crate::claude_wake::validate_target(session).map_err(|error| EverettError::new(4,
             format!("Ping unavailable for {}: {}. Nothing was queued. Use --mode inbox for legacy delivery.", session.id, error.message)))?;
@@ -883,7 +910,7 @@ pub fn send_inbox_as(
         result.insert("pickup".into(), json!("poll"));
         result.insert("poll_session_id".into(), json!(session.id));
         result.insert("pickup_note".into(), json!(
-            "Queued only. In T3 Code, bind EVERETT_SESSION_ID to this provider session in the MCP launch environment, call everett_inbox, and reply with everett_send(reply_to=<message id>, text=...)."
+            "Queued only for this explicit inbox send; no T3 turn was requested. Use mode=ping to send an inbox nudge through the T3 CLI. For manual pickup, bind EVERETT_SESSION_ID to this provider session in the MCP launch environment, call everett_inbox, and reply with everett_send(reply_to=<message id>, text=...)."
         ));
     }
     if wait > 0.0 {
@@ -978,6 +1005,9 @@ pub fn reply_as(
         who.get("from_card").and_then(|v| v.as_str()).unwrap_or(""),
         provenance,
     )?;
+    if !caller_id.is_empty() {
+        inbox::mark_done(caller_id, &[message_id]);
+    }
     let mut out = Map::new();
     out.insert("mode".into(), json!("reply"));
     out.insert("message_id".into(), message.get("id").cloned().unwrap_or(Value::Null));

@@ -64,7 +64,7 @@ pub fn tools() -> &'static Vec<Value> {
             }),
             json!({
                 "name": "everett_send",
-                "description": "Ping another session immediately. Pass text to route, or to for a user-named destination. An idle local target runs headless; a verified attached local Claude background session receives a fixed inbox nudge. pinged=true confirms dispatch, not inbox consumption or task completion. Unsupported immediate transports fail explicitly without queue fallback. Explicit mode=inbox retains legacy hooks/polling/remote queue delivery. reply_to queues a correlated answer. NEW starts a session only with spawn=true; ASK sends nothing. Host-bound caller identity, remote provenance and hop limits remain enforced.",
+                "description": "Ping another session immediately. Pass text to route, or to for a user-named destination. An idle local target runs headless; a verified attached local Claude background session receives a fixed inbox nudge. T3 Code targets receive a fixed inbox nudge through t3 thread send, starting a turn or queuing the next turn when busy. pinged=true confirms dispatch, not inbox consumption or task completion. Unsupported immediate transports fail explicitly without queue fallback. Explicit mode=inbox retains legacy hooks/polling/remote queue delivery. reply_to queues a correlated answer. NEW starts a session only with spawn=true; ASK sends nothing. Host-bound caller identity, remote provenance and hop limits remain enforced.",
                 "inputSchema": {"type": "object", "properties": {
                     "text": s("The request for the other session. Make it self-contained."),
                     "to": s("Local session id prefix/title/card/project, or a directory target id:AGENT/HARNESS/SESSION. Remote transports currently require explicit legacy mode=inbox."),
@@ -74,7 +74,7 @@ pub fn tools() -> &'static Vec<Value> {
                     "dir": s("Working directory for a spawned session."),
                     "harness": {"type": "string", "enum": crate::send::SPAWNABLE, "description": "Harness for a spawned session."},
                     "timeout": {"type": "number", "description": "Seconds to wait for the reply (default 300).", "minimum": 1},
-                    "mode": {"type": "string", "enum": crate::send::MODES, "description": "ping (default): immediate headless delivery or a verified local Claude native nudge; an unavailable transport is an error, never silent queue fallback. inbox is explicit legacy queue delivery; auto/resume are compatibility modes."},
+                    "mode": {"type": "string", "enum": crate::send::MODES, "description": "ping (default): immediate headless delivery, a verified local Claude native nudge, or a T3 thread inbox nudge. An unavailable transport is an error, never silent queue fallback. inbox is explicit legacy queue delivery; auto selects ping for T3 threads; resume is a compatibility mode."},
                     "wait": {"type": "number", "minimum": 0, "description": "Explicit inbox mode: seconds to wait for a reply (default 0). Does not ping or wake the target."},
                     "reply_to": s("Answer this Everett message id; the reply goes to its sender."),
                 }, "required": ["text"], "additionalProperties": false},
@@ -84,6 +84,7 @@ pub fn tools() -> &'static Vec<Value> {
                 "description": "Read the Everett messages waiting for your session (requests, replies, events) and mark them delivered. Hooks normally inject these automatically; use this where they cannot.",
                 "inputSchema": {"type": "object", "properties": {
                     "peek": {"type": "boolean", "description": "Do not mark them delivered.", "default": false},
+                    "message_id": s("Read only this exact message id from your host-bound inbox."),
                 }, "additionalProperties": false},
             }),
             json!({
@@ -992,7 +993,11 @@ fn tool_inbox(
             "\"peek\" must be a boolean".to_string(),
         ));
     }
-    let items = crate::inbox::pending(&sid, None);
+    let message_id = str_arg(args, "message_id", false)?;
+    let mut items = crate::inbox::pending(&sid, None);
+    if args.contains_key("message_id") {
+        items.retain(|m| m.get("id").and_then(Value::as_str) == Some(message_id.as_str()));
+    }
     let mut messages: Vec<Value> = Vec::new();
     let mut out = Map::new();
     out.insert("session".into(), json!(sid));

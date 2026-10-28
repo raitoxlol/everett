@@ -36,6 +36,7 @@ impl NativeFixture {
                     std::thread::sleep(std::time::Duration::from_millis(1));
                     continue;
                 };
+                stream.set_nonblocking(false).unwrap();
                 let mut reader = BufReader::new(stream.try_clone().unwrap());
                 let mut line = String::new();
                 reader.read_line(&mut line).unwrap();
