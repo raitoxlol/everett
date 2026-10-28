@@ -138,7 +138,7 @@ pub fn validate_target(session: &Session) -> Result<()> {
     }
     if session.source == "t3code" || session.source == "external" {
         return Err(reject(
-            "T3 Code and registered external sessions are inbox-only.",
+            "Claude background --wake is unavailable for T3 Code or registered external sessions. Use --mode ping for T3 Code, or --mode inbox for external sessions.",
         ));
     }
     if crate::adapters::external::is_external(&session.harness) {
@@ -246,11 +246,15 @@ pub fn wake_with(
             detail: "the queued Everett message has an invalid ID.".into(),
         };
     }
+    let nudge = match fixed_nudge(&prepared.session_id, message_id) {
+        Ok(nudge) => nudge,
+        Err(error) => return WakeOutcome::NotAttached { detail: error.message },
+    };
     let argv = vec![
         prepared.binary.clone(),
         "--resume".into(),
         prepared.session_id.clone(),
-        fixed_nudge(&prepared.session_id, message_id),
+        nudge,
     ];
     let agents = match runner.capture(
         &[prepared.binary.clone(), "agents".into(), "--json".into()],
@@ -430,16 +434,31 @@ fn valid_message_id(id: &str) -> bool {
                 .all(|c| c.is_ascii_digit() || (b'a'..=b'f').contains(&c)))
 }
 
-fn fixed_nudge(session_id: &str, message_id: &str) -> String {
-    let executable = std::env::current_exe().unwrap_or_else(|_| "everett".into());
+fn fixed_nudge(session_id: &str, message_id: &str) -> Result<String> {
+    let (pickup, reply) = nudge_commands(session_id, message_id, "claude")?;
+    Ok(format!(
+        "Use this Everett command: {pickup}. Read message {message_id}, do its request, then reply with {reply}. Reply through Everett so the result is linked to that message. Do not ask for permission changes or start a new session."
+    ))
+}
+
+pub(crate) fn nudge_commands(
+    session_id: &str,
+    message_id: &str,
+    harness: &str,
+) -> Result<(String, String)> {
+    let executable = std::env::current_exe()
+        .map_err(|e| reject(format!("cannot resolve Everett executable: {e}")))?;
     let executable = shell_quote(&executable.to_string_lossy());
+    let home = std::path::absolute(crate::session::home())
+        .map_err(|e| reject(format!("cannot resolve Everett profile against sender cwd: {e}")))?;
     let command_env = command_env_prefix(
-        &crate::session::home().to_string_lossy(),
+        &home.to_string_lossy(),
         &crate::config::get("auth.provider", Some("EVERETT_AUTH_PROVIDER"), "cloudflare"),
     );
-    format!(
-        "Use this Everett command: {command_env}{executable} inbox --session {session_id} --message {message_id}. Read message {message_id}, do its request, then reply with {command_env}EVERETT_SESSION_ID={session_id} EVERETT_HARNESS_NAME=claude {executable} reply {message_id} '<your concise result>'. Reply through Everett so the result is linked to that message. Do not ask for permission changes or start a new session."
-    )
+    Ok((
+        format!("{command_env}{executable} inbox --session {session_id} --message {message_id}"),
+        format!("{command_env}EVERETT_SESSION_ID={session_id} EVERETT_HARNESS_NAME={harness} {executable} reply {message_id} '<your concise result>'"),
+    ))
 }
 
 fn command_env_prefix(everett_home: &str, auth_provider: &str) -> String {
@@ -856,7 +875,7 @@ mod tests {
                 "/usr/bin/claude",
                 "--resume",
                 &session.id,
-                &fixed_nudge(&session.id, "m0123456789")
+                &fixed_nudge(&session.id, "m0123456789").unwrap()
             ]
             .into_iter()
             .map(str::to_string)
@@ -978,14 +997,14 @@ mod tests {
 
     #[test]
     fn nudge_uses_explicit_binary_and_only_generated_message_id() {
-        let nudge = fixed_nudge("1f57ab77-c669-4bb6-9ac8-f9a9073de8ea", "m0123456789");
+        let nudge = fixed_nudge("1f57ab77-c669-4bb6-9ac8-f9a9073de8ea", "m0123456789").unwrap();
         assert!(nudge.contains(" inbox --session 1f57ab77-c669-4bb6-9ac8-f9a9073de8ea --message m0123456789"));
         assert!(nudge.contains(" reply m0123456789"));
         assert!(nudge.contains("EVERETT_SESSION_ID=1f57ab77-c669-4bb6-9ac8-f9a9073de8ea EVERETT_HARNESS_NAME=claude "));
         assert!(!nudge.contains("raw request"));
         let relay_id = format!("relay-{}", "a".repeat(64));
         assert!(valid_message_id(&relay_id));
-        assert!(fixed_nudge("1f57ab77-c669-4bb6-9ac8-f9a9073de8ea", &relay_id).contains(&relay_id));
+        assert!(fixed_nudge("1f57ab77-c669-4bb6-9ac8-f9a9073de8ea", &relay_id).unwrap().contains(&relay_id));
         assert!(!valid_message_id("relay-ABC"));
     }
 
