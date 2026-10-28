@@ -19,6 +19,7 @@ pub mod install;
 pub mod mcp;
 pub mod messaging;
 pub mod onboard;
+pub mod omp_wake;
 pub mod paths;
 pub mod peer;
 pub mod proc;

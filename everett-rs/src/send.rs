@@ -683,10 +683,11 @@ pub fn delivery_mode_for(
         crate::t3_wake::validate_target(session)?;
         return Ok("ping".into());
     }
+    let omp_wake = crate::omp_wake::available(session);
     if mode == "ping" {
         require_local_prompt(caller)?;
         if external::is_external(&session.harness) || session.source == "t3code"
-            || (session.harness != "claude" && attached(session, ps_out)) {
+            || (session.harness != "claude" && !omp_wake && attached(session, ps_out)) {
             return Err(EverettError::new(4, "No immediate ping transport for this session. Nothing was queued. Use --mode inbox only for legacy hooks/polling."));
         }
         return Ok("ping".into());
@@ -700,6 +701,9 @@ pub fn delivery_mode_for(
     }
     if mode != "auto" {
         return Ok(if remote_derived { "inbox" } else { mode }.to_string());
+    }
+    if omp_wake && !remote_derived {
+        return Ok("ping".into());
     }
     if remote_derived
         || external::is_external(&session.harness)
@@ -750,6 +754,18 @@ pub fn ping_as(
         out.remove("poll_session_id");
         out.remove("pickup_note");
         out.insert("note".into(), json!("T3 accepted the inbox nudge for a new or queued turn. The durable inbox is retained; consumption and reply are not confirmed."));
+        return Ok(out);
+    }
+    if crate::omp_wake::available(session) {
+        if caller_harness.is_some_and(external::is_external) {
+            return Err(EverettError::new(2, "External callers are inbox-only."));
+        }
+        let mut out = send_inbox_as(session, text, 0.0, caller, caller_harness, 1.0, None)?;
+        out.insert("mode".into(), json!("ping"));
+        out.insert("transport".into(), json!("omp-extension"));
+        out.insert("pinged".into(), json!(false));
+        out.insert("wake".into(), json!({"state":"extension_pending"}));
+        out.insert("note".into(), json!("Accepted by the live OMP watcher transport. Nudge, consumption, and reply are not confirmed."));
         return Ok(out);
     }
     if attached(session, None) {

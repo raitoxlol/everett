@@ -191,6 +191,49 @@ pub fn pid_alive(pid: i32) -> bool {
     alive || std::io::Error::last_os_error().raw_os_error() == Some(libc::EPERM)
 }
 
+/// Kernel process start identity, including the boot identity. Unknown platforms fail closed.
+pub fn process_identity(pid: i32) -> Option<String> {
+    if pid <= 1 {
+        return None;
+    }
+    #[cfg(target_os = "linux")]
+    {
+        let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
+        let fields: Vec<_> = stat.rsplit_once(')')?.1.split_whitespace().collect();
+        if matches!(*fields.first()?, "Z" | "X") {
+            return None;
+        }
+        let start: u64 = fields.get(19)?.parse().ok()?;
+        let boot = std::fs::read_to_string("/proc/sys/kernel/random/boot_id").ok()?;
+        Some(format!("linux:{}:{start}", boot.trim()))
+    }
+    #[cfg(target_os = "macos")]
+    {
+        let mut info = std::mem::MaybeUninit::<libc::proc_bsdinfo>::uninit();
+        let size = std::mem::size_of::<libc::proc_bsdinfo>();
+        // The kernel initializes the full buffer only when it returns its exact size.
+        let read = unsafe { libc::proc_pidinfo(pid, libc::PROC_PIDTBSDINFO, 0, info.as_mut_ptr().cast(), size as i32) };
+        if read != size as i32 {
+            return None;
+        }
+        let info = unsafe { info.assume_init() };
+        if info.pbi_pid != pid as u32 || info.pbi_status == libc::SZOMB {
+            return None;
+        }
+        let mut boot = std::mem::MaybeUninit::<libc::timeval>::uninit();
+        let mut size = std::mem::size_of::<libc::timeval>();
+        let mut mib = [libc::CTL_KERN, libc::KERN_BOOTTIME];
+        let result = unsafe { libc::sysctl(mib.as_mut_ptr(), 2, boot.as_mut_ptr().cast(), &mut size, std::ptr::null_mut(), 0) };
+        if result != 0 || size != std::mem::size_of::<libc::timeval>() {
+            return None;
+        }
+        let boot = unsafe { boot.assume_init() };
+        Some(format!("macos:{}:{}:{}:{}", boot.tv_sec, boot.tv_usec, info.pbi_start_tvsec, info.pbi_start_tvusec))
+    }
+    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+    None
+}
+
 /// Parent pid and full command line of a process: `/proc` on Linux, one `ps` call elsewhere.
 pub fn parent_args(pid: i32) -> Option<(i32, String)> {
     if let (Ok(stat), Ok(cmdline)) =
