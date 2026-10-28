@@ -14,7 +14,7 @@ against an idle session. It does not inject a prompt into an attached agent.
 | --- | --- | --- | --- |
 | Claude Code | Claude project transcripts | `UserPromptSubmit`, `PostToolUse`, or MCP polling | Default local `ping` verifies and nudges an existing background session; compatibility `--wake`; optional receiver policy |
 | Codex | Codex session transcripts | Supported Codex hooks or MCP polling | No native wake |
-| OMP | OMP session files | Everett extension at agent start and tool results, or MCP polling | No native wake |
+| OMP | OMP session files | Everett extension watcher, agent start, tool results, or MCP polling | Attached idle OMP 18.12.2 wakes through its live Everett extension; local `ping`/`auto` requires a fresh per-session capability |
 | Pi | Pi session files | MCP polling; the Pi extension binds identity and records activity | No native wake |
 | Hermes Agent | Profile session databases | MCP polling | No native wake; platform chats are list/route only |
 | Grok CLI | Grok session files | `PostToolUse` or MCP polling | No native wake; Grok CLI is separate from Grok Bot |
@@ -22,7 +22,8 @@ against an idle session. It does not inject a prompt into an attached agent.
 
 Hooks require installation and support from the running harness version. They
 consume messages when the agent reaches a hook event. They do not start a new
-turn in an idle agent. `hooked: true` reports integration support, not an
+turn in an idle agent, except for the OMP extension watcher described in the
+[delivery policy](message-delivery.md#attached-omp-sessions). `hooked: true` reports integration support, not an
 observed pickup. Hermes resume applies to interactive CLI sessions, not Telegram
 or Discord chats.
 
@@ -50,6 +51,8 @@ See [dots setup](openai-dots.md) and [Grok Bot webhook wake](grok-bot.md#wake-a-
 
 1. **Ping a local agent.** Default `send` runs an idle target headless or sends
    a verified native nudge to an attached local Claude background session.
+   An attached OMP session with a live extension capability accepts the request
+   for an idle watcher nudge, reported separately as `extension_pending`.
    Unsupported immediate transports fail without a queue fallback. T3 threads,
    external registrations, and remote transports require explicit legacy inbox mode.
 2. **Wake Claude.** Local `send --to FULL_UUID --wake` requires an interactive
