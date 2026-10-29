@@ -98,6 +98,7 @@ pub struct Args {
     pub revoke_device: bool,
     pub auth_provider: Option<String>,
     pub auth_issuer: Option<String>,
+    pub auth_base_url: Option<String>,
     pub auth_cancel: bool,
     pub auth_no_wait: bool,
 }

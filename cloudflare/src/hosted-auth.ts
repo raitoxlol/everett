@@ -2,7 +2,7 @@ import { DurableObject } from 'cloudflare:workers';
 import { z, ZodError } from 'zod';
 import { sha256 } from '@noble/hashes/sha256';
 import { DEVICE_LABEL_LIMIT, digest, identifier, namespace, RelayError, type Identity, type Principal } from './protocol';
-import { hostedConfig, requireOAuth, type HostedConfig, type HostedAuthEnv } from './hosted-config';
+import { hostedConfig, requireOAuth, requirePublicHost, type HostedConfig, type HostedAuthEnv } from './hosted-config';
 import { authFontStyles } from './hosted-auth-fonts';
 
 const MINUTE = 60000, DAY = 86400000;
@@ -186,7 +186,7 @@ export class HostedAuth extends DurableObject<HostedAuthEnv> {
     return { row, csrf: parts[1], account: this.#accountFor(row.github_id, row.login, c) };
   }
   #mutation(request: Request, c: HostedConfig, p: Record<string, string>) {
-    if (request.headers.get('Origin') !== c.issuer) throw new RelayError('origin_denied', 403);
+    if (request.headers.get('Origin') !== new URL(request.url).origin) throw new RelayError('origin_denied', 403);
     const session = this.#session(request, c);
     if (!session || !p.csrf || !equal(p.csrf, session.csrf)) throw new RelayError('owner_session_or_csrf_required', 403);
     return session;
@@ -210,8 +210,7 @@ export class HostedAuth extends DurableObject<HostedAuthEnv> {
       return json({ error: 'temporarily_unavailable' }, 503);
     };
     try {
-      const c = hostedConfig(this.env), url = new URL(request.url);
-      if (url.origin !== c.issuer) throw new RelayError('origin_denied', 403);
+      const c = hostedConfig(this.env), url = new URL(request.url), host = requirePublicHost(url, c);
       // Caller-controlled streams must never hold the issuer's state gate.
       if (request.method === 'POST') {
         const buffered = await boundedText(request.body, 16384);
@@ -221,7 +220,7 @@ export class HostedAuth extends DurableObject<HostedAuthEnv> {
         // Expected denials must not reject blockConcurrencyWhile and reset the DO.
         try {
           this.#cleanup();
-          return await this.#route(request, url, c);
+          return await this.#route(request, url, c, host);
         } catch (error) { return failure(error); }
       });
     } catch (error) { return failure(error); }
@@ -270,33 +269,33 @@ export class HostedAuth extends DurableObject<HostedAuthEnv> {
     return { labels, complete: rows.length <= DEVICE_LABEL_LIMIT && active.value.length <= DEVICE_LABEL_LIMIT };
   }
 
-  async #route(request: Request, url: URL, c: HostedConfig): Promise<Response> {
+  async #route(request: Request, url: URL, c: HostedConfig, host: string): Promise<Response> {
     const path = url.pathname;
     if (request.method === 'GET') {
-      if (path === '/auth/github') return this.#githubStart(request, url, c);
-      if (path === '/auth/callback/github') return this.#githubCallback(request, url, c);
+      if (path === '/auth/github') return this.#githubStart(request, url, c, host);
+      if (path === '/auth/callback/github') return this.#githubCallback(request, url, c, host);
       if (path === '/enroll') return this.#enrollPage(request, url, c);
       if (path === '/.well-known/oauth-authorization-server') {
         requireOAuth(c);
-        return json({ issuer: c.issuer, authorization_endpoint: `${c.issuer}/oauth/authorize`, token_endpoint: `${c.issuer}/oauth/token`,
-          revocation_endpoint: `${c.issuer}/oauth/revoke`, introspection_endpoint: `${c.issuer}/oauth/introspect`,
+        return json({ issuer: c.issuer, authorization_endpoint: `${host}/oauth/authorize`, token_endpoint: `${host}/oauth/token`,
+          revocation_endpoint: `${host}/oauth/revoke`, introspection_endpoint: `${host}/oauth/introspect`,
           scopes_supported: ['everett'], response_types_supported: ['code'], response_modes_supported: ['query'],
           grant_types_supported: ['authorization_code', 'refresh_token'], code_challenge_methods_supported: ['S256'],
           token_endpoint_auth_methods_supported: ['none'], revocation_endpoint_auth_methods_supported: ['none'],
           authorization_response_iss_parameter_supported: true, client_id_metadata_document_supported: true });
       }
-      if (path === '/oauth/authorize') { requireOAuth(c); return this.#authorize(request, url, c); }
+      if (path === '/oauth/authorize') { requireOAuth(c); return this.#authorize(request, url, c, host); }
     }
     if (request.method === 'POST') {
-      if (path === '/v2/auth/device') return this.#deviceStart(request, c);
+      if (path === '/v2/auth/device') return this.#deviceStart(request, c, host);
       if (path === '/v2/auth/poll') return this.#devicePoll(request, c);
       if (path === '/v2/auth/cancel') return this.#deviceCancel(request);
-      if (path === '/enroll/decision') return this.#deviceDecision(request, c);
-      if (path === '/enroll/revoke') return this.#browserRevoke(request, c);
+      if (path === '/enroll/decision') return this.#deviceDecision(request, c, host);
+      if (path === '/enroll/revoke') return this.#browserRevoke(request, c, host);
       if (path === '/auth/logout') {
         const p = await form(request, ['csrf']), session = this.#mutation(request, c, p);
         this.ctx.storage.sql.exec('DELETE FROM owner_sessions WHERE session_hash=?', session.row.session_hash);
-        const response = redirect(`${c.issuer}/enroll`); setCookie(response, c, 'session', '', 0); return response;
+        const response = redirect(`${host}/enroll`); setCookie(response, c, 'session', '', 0); return response;
       }
       if (path === '/oauth/consent') { requireOAuth(c); return this.#consent(request, c); }
       if (path === '/oauth/token') { requireOAuth(c); return this.#token(request, c); }
@@ -306,24 +305,24 @@ export class HostedAuth extends DurableObject<HostedAuthEnv> {
     return json({ error: 'not_found' }, 404);
   }
 
-  #githubStart(request: Request, url: URL, c: HostedConfig) {
+  #githubStart(request: Request, url: URL, c: HostedConfig, host: string) {
     this.#rate('github-start', 20);
     if (c.enrollment === 'public') this.#rate(`requester:${this.#requester(request, c)}:github-start`, 5);
     const p = fields(url.searchParams, ['return_to']);
     const returnTo = p.return_to ?? '/enroll';
-    const target = new URL(returnTo, c.issuer);
-    if (!returnTo.startsWith('/enroll') || target.origin !== c.issuer || target.pathname !== '/enroll' || target.hash || returnTo.length > 2048) throw new RelayError('invalid_return_to', 400);
+    const target = new URL(returnTo, host);
+    if (!returnTo.startsWith('/enroll') || target.origin !== host || target.pathname !== '/enroll' || target.hash || returnTo.length > 2048) throw new RelayError('invalid_return_to', 400);
     if (this.#count('gh_states') >= 100) throw new RelayError('pending_limit', 429);
     const state = random(), verifier = random(), binding = `${random()}.${verifier}`;
     this.ctx.storage.sql.exec('INSERT INTO gh_states VALUES(?,?,?,?)', hash(state), hash(binding), `${target.pathname}${target.search}`, Date.now() + DEVICE_MS);
     const github = new URL('https://github.com/login/oauth/authorize');
-    github.searchParams.set('client_id', c.githubId); github.searchParams.set('redirect_uri', `${c.issuer}/auth/callback/github`);
+    github.searchParams.set('client_id', c.githubId); github.searchParams.set('redirect_uri', `${host}/auth/callback/github`);
     github.searchParams.set('state', state); github.searchParams.set('code_challenge', s256(verifier)); github.searchParams.set('code_challenge_method', 'S256');
     github.searchParams.set('scope', 'read:user');
     if (c.enrollment === 'owner') github.searchParams.set('login', c.ownerLogin);
     const response = redirect(github.href, 302); setCookie(response, c, 'github', binding, 600); return response;
   }
-  async #githubCallback(request: Request, url: URL, c: HostedConfig) {
+  async #githubCallback(request: Request, url: URL, c: HostedConfig, host: string) {
     this.#rate('github-callback', 30);
     const p = fields(url.searchParams, ['state', 'code', 'error', 'error_description', 'error_uri', 'iss']);
     if (p.iss !== undefined && p.iss !== 'https://github.com/login/oauth') throw new RelayError('invalid_github_issuer', 400);
@@ -335,7 +334,7 @@ export class HostedAuth extends DurableObject<HostedAuthEnv> {
     this.ctx.storage.sql.exec('DELETE FROM gh_states WHERE state_hash=?', row.state_hash);
     if (p.error || !p.code || p.code.length > 2048) throw new RelayError('github_login_denied', 403);
     const token = await this.#externalJSON('https://github.com/login/oauth/access_token', { method: 'POST', headers: { Accept: 'application/json', 'Content-Type': 'application/x-www-form-urlencoded' }, body: new URLSearchParams({
-      client_id: c.githubId, client_secret: c.githubSecret, code: p.code, redirect_uri: `${c.issuer}/auth/callback/github`, code_verifier: parts[1],
+      client_id: c.githubId, client_secret: c.githubSecret, code: p.code, redirect_uri: `${host}/auth/callback/github`, code_verifier: parts[1],
     }).toString() });
     if (typeof token.access_token !== 'string' || !token.access_token || token.access_token.length > 4096 || (token.token_type !== undefined && String(token.token_type).toLowerCase() !== 'bearer')) throw new RelayError('github_login_denied', 403);
     const user = await this.#externalJSON('https://api.github.com/user', { headers: { Authorization: `Bearer ${token.access_token}`, Accept: 'application/vnd.github+json', 'User-Agent': 'Everett', 'X-GitHub-Api-Version': '2022-11-28' } });
@@ -352,11 +351,11 @@ export class HostedAuth extends DurableObject<HostedAuthEnv> {
     }
     const sid = random(), csrf = random();
     this.ctx.storage.sql.exec('INSERT INTO owner_sessions VALUES(?,?,?,?,?)', hash(sid), hash(csrf), id, login, Date.now() + SESSION_MS);
-    const response = redirect(`${c.issuer}${row.return_to}`); setCookie(response, c, 'session', `${sid}.${csrf}`, SESSION_MS / 1000); setCookie(response, c, 'github', '', 0);
+    const response = redirect(`${host}${row.return_to}`); setCookie(response, c, 'session', `${sid}.${csrf}`, SESSION_MS / 1000); setCookie(response, c, 'github', '', 0);
     return response;
   }
 
-  async #deviceStart(request: Request, c: HostedConfig) {
+  async #deviceStart(request: Request, c: HostedConfig, host: string) {
     this.#rate('device-start', 30);
     const { name } = z.strictObject({ name: cleanName }).parse(await body(request));
     if (this.#count('device_requests') >= 100) throw new RelayError('pending_limit', 429);
@@ -370,7 +369,7 @@ export class HostedAuth extends DurableObject<HostedAuthEnv> {
     }
     const poll = random(), code = random().slice(0, 12).toUpperCase();
     this.ctx.storage.sql.exec('INSERT INTO device_requests(poll_hash,user_code,name,state,agent_id,event_id,expires_at,last_poll,account,requester_hash) VALUES(?,?,?,?,?,?,?,?,?,?)', hash(poll), code, name, 'pending', null, crypto.randomUUID(), Date.now() + DEVICE_MS, 0, null, requester);
-    return json({ device_code: poll, user_code: code, verification_uri: `${c.issuer}/enroll`, verification_uri_complete: `${c.issuer}/enroll?code=${code}`, expires_in: 600, interval: 5 });
+    return json({ device_code: poll, user_code: code, verification_uri: `${host}/enroll`, verification_uri_complete: `${host}/enroll?code=${code}`, expires_in: 600, interval: 5 });
   }
   async #devicePoll(request: Request, c: HostedConfig) {
     this.#rate('device-poll', 600);
@@ -431,7 +430,7 @@ export class HostedAuth extends DurableObject<HostedAuthEnv> {
     this.ctx.storage.sql.exec('INSERT OR IGNORE INTO hosted_agents(agent_id,name,kind,created_at,revoked,account) VALUES(?,?,?,?,?,?)', result.value.deviceId, name, kind, Date.now(), 0, account.subject);
     return result.value.deviceId;
   }
-  async #deviceDecision(request: Request, c: HostedConfig) {
+  async #deviceDecision(request: Request, c: HostedConfig, host: string) {
     if (c.enrollment === 'owner') this.#rate('browser-mutation', 60);
     const p = await form(request, ['csrf', 'user_code', 'decision']); const session = this.#mutation(request, c, p);
     const account = session.account;
@@ -457,7 +456,7 @@ export class HostedAuth extends DurableObject<HostedAuthEnv> {
       const agent = await this.#enroll(c, account, row.event_id, row.name, 'device');
       this.ctx.storage.sql.exec("UPDATE device_requests SET state='approved',agent_id=? WHERE poll_hash=? AND account=?", agent, row.poll_hash, account.subject);
     }
-    return redirect(`${c.issuer}/enroll?code=${p.user_code}`);
+    return redirect(`${host}/enroll?code=${p.user_code}`);
   }
 
   async #live(c: HostedConfig, agentId: string) {
@@ -514,7 +513,7 @@ export class HostedAuth extends DurableObject<HostedAuthEnv> {
     }
     return html(`${content}</ul>${agents.length > 256 ? '<p>Only the newest 256 credentials are displayed.</p>' : ''}</section>`, 200, callbackOrigin);
   }
-  async #browserRevoke(request: Request, c: HostedConfig) {
+  async #browserRevoke(request: Request, c: HostedConfig, host: string) {
     if (c.enrollment === 'owner') this.#rate('browser-mutation', 60);
     const p = await form(request, ['csrf', 'agent_id']); const session = this.#mutation(request, c, p); identifier.parse(p.agent_id);
     if (c.enrollment === 'public') this.#rate(`browser-mutation:${session.account.subject}`, 60);
@@ -525,10 +524,10 @@ export class HostedAuth extends DurableObject<HostedAuthEnv> {
       this.ctx.storage.sql.exec('UPDATE native_tokens SET revoked=1 WHERE agent_id=?', p.agent_id);
       this.ctx.storage.sql.exec('UPDATE token_families SET revoked=1 WHERE agent_id=?', p.agent_id);
     });
-    return redirect(`${c.issuer}/enroll`);
+    return redirect(`${host}/enroll`);
   }
 
-  async #authorize(request: Request, url: URL, c: HostedConfig) {
+  async #authorize(request: Request, url: URL, c: HostedConfig, host: string) {
     this.#rate('oauth-authorize', 30);
     if (c.enrollment === 'public') this.#rate(`requester:${this.#requester(request, c)}:oauth-authorize`, 5);
     const p = fields(url.searchParams, ['client_id', 'redirect_uri', 'response_type', 'scope', 'state', 'resource', 'code_challenge', 'code_challenge_method']);
@@ -547,7 +546,7 @@ export class HostedAuth extends DurableObject<HostedAuthEnv> {
     const name = cleanName.safeParse(doc.client_name), clientName = name.success ? name.data : new URL(p.client_id).host;
     const binding = random(), id = crypto.randomUUID();
     this.ctx.storage.sql.exec('INSERT INTO auth_requests(id,client_id,client_name,redirect_uri,resource,challenge,state,binding_hash,phase,event_id,agent_id,expires_at,account) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)', id, p.client_id, clientName, p.redirect_uri, p.resource, p.code_challenge, p.state ?? null, hash(binding), 'pending', crypto.randomUUID(), null, Date.now() + DEVICE_MS, null);
-    const response = redirect(`${c.issuer}/enroll?request=${id}`, 302); setCookie(response, c, 'oauth', binding, 600); return response;
+    const response = redirect(`${host}/enroll?request=${id}`, 302); setCookie(response, c, 'oauth', binding, 600); return response;
   }
   async #consent(request: Request, c: HostedConfig) {
     if (c.enrollment === 'owner') this.#rate('browser-mutation', 60);

@@ -12,8 +12,9 @@ The development issuer is `https://everett-dev.raitox-everett-dev.workers.dev`, 
 origin without a trailing slash. The Worker is `everett-dev` in the Raitox tech account.
 The recorded 2026-10-21 checkpoint reported HTTPS health 200 with GitHub credentials
 unconfigured. That checkpoint does not establish current auth readiness.
-Fresh interactive onboarding defaults to `https://everett.raitox.tech`, not this development
-issuer. Use explicit issuer configuration to test a development deployment.
+Fresh interactive onboarding defaults to `https://relay.raitox.tech` for the
+network endpoint. Account identity stays `https://everett.raitox.tech`. Use
+explicit issuer and `base_url` configuration to test a development deployment.
 
 ## Native enrollment
 
@@ -32,7 +33,7 @@ Native credentials expire after 30 days. No native renewal endpoint exists. Non-
 
 Browser enrollment distinguishes waiting, completed approval, denied, cancelled, expired and revoked credentials. Close guidance appears only for an authoritatively approved/consumed request whose credential remains active. It confirms browser approval; CLI polling and private persistence complete in the terminal. Native credentials never appear in HTML.
 
-Browser mutations use exact Origin, owner session cookie and hidden CSRF value. POST `/enroll/decision` form `{csrf,user_code,decision:"approve"|"deny"}`; `/enroll/revoke` form `{csrf,agent_id}`; `/auth/logout` form `{csrf}`. These return 303. Native credentials never grant browser owner authority.
+Browser mutations use exact same-origin `Origin`, owner session cookie and hidden CSRF value. Auth is accepted on every configured public host; identity strings stay on `EVERETT_ISSUER`. POST `/enroll/decision` form `{csrf,user_code,decision:"approve"|"deny"}`; `/enroll/revoke` form `{csrf,agent_id}`; `/auth/logout` form `{csrf}`. These return 303 to the request host. Native credentials never grant browser owner authority.
 
 ## OAuth for the existing HTTP gateway
 
@@ -48,11 +49,11 @@ Codes expire in five minutes; access tokens in 15 minutes; refresh families have
 
 ## Configuration and rollout boundary
 
-Required native auth names: EVERETT_ISSUER, AUTH_GITHUB_ID, AUTH_GITHUB_SECRET, EVERETT_OWNER_GITHUB_ID, EVERETT_OWNER_GITHUB_LOGIN. OAuth adds EVERETT_OAUTH_CLIENT_IDS, EVERETT_OAUTH_REDIRECT_URIS, EVERETT_OAUTH_RESOURCES, EVERETT_OAUTH_INTROSPECTION_SECRET (32+ chars).
+Required native auth names: EVERETT_ISSUER, AUTH_GITHUB_ID, AUTH_GITHUB_SECRET, EVERETT_OWNER_GITHUB_ID, EVERETT_OWNER_GITHUB_LOGIN. Optional `EVERETT_PUBLIC_HOSTS` is a comma-separated allowlist of extra public origins that may serve auth (the issuer origin is always included). OAuth adds EVERETT_OAUTH_CLIENT_IDS, EVERETT_OAUTH_REDIRECT_URIS, EVERETT_OAUTH_RESOURCES, EVERETT_OAUTH_INTROSPECTION_SECRET (32+ chars).
 
 `EVERETT_ENROLLMENT` selects who may enroll. Unset or `owner` keeps today's behavior: only the configured GitHub owner completes sign-in, sessions, approval and credentials. `public` lets any verified GitHub account approve devices into its own relay namespace; accounts see, use and revoke only their own credentials, and cross-owner delivery stays denied. The owner names remain required in public mode: they identify pre-upgrade rows and the account restored by a rollback. Rolling back to `owner` immediately stops non-owner sessions, native tokens and OAuth liveness without deleting their records. On first deploy the broker backfills existing decided rows to the owner; live pending requests stay claimable. A mistyped value fails closed with `authentication_unconfigured`.
 
-Set the GitHub app callback to `<EVERETT_ISSUER>/auth/callback/github` for the selected deployment. The gateway remains a separate OAuth consumer. Do not copy credentials into source, reports, chat or vault. Configure secret values privately through Cloudflare secret input.
+Set the GitHub app callback to `<public-host>/auth/callback/github` for each public host that serves browser login. The public issuer callback remains `https://everett.raitox.tech/auth/callback/github`. After adding `relay.raitox.tech`, also register `https://relay.raitox.tech/auth/callback/github`. Discovery `issuer` stays `EVERETT_ISSUER`; authorization/token/revocation/introspection URLs follow the request host. The gateway remains a separate OAuth consumer. Do not copy credentials into source, reports, chat or vault. Configure secret values privately through Cloudflare secret input.
 
 The native HTTP adapter and outbound polling are implemented. A physical Mac/NUC
 send/read/reply, reconnect, and revocation journey passed with synthetic GitHub and a

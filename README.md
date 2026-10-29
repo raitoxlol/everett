@@ -18,7 +18,8 @@ See also [Grok Bot 0.77 reachability](docs/grok-bot.md#grok-bot-077-reachability
 
 Everett is one native binary for macOS and Linux. Have at least one harness CLI on your PATH.
 Local sessions, routing, inboxes, hooks, MCP, and SSH peers work without an Everett account.
-The hosted service at `https://everett.raitox.tech` currently accepts only its configured
+The hosted relay is `https://relay.raitox.tech`. Account identity stays
+`https://everett.raitox.tech`. The service currently accepts only its configured
 GitHub owner. Public self-service account signup is not available.
 
 To install and configure local agents without browser sign-in:
@@ -75,7 +76,8 @@ review/apply, then a copyable instruction prompt. With a configured hosted Cloud
 CLI opens the approval page locally, prints a URL and code usable on another device, waits for
 approval, saves its private credential, and verifies its identity with the server before continuing.
 SSH sessions keep the URL/code path. Fresh interactive setup defaults to
-`https://everett.raitox.tech`, which accepts GitHub accounts into separate relay namespaces.
+`https://relay.raitox.tech` for the network endpoint, with account identity
+`https://everett.raitox.tech`. That service accepts GitHub accounts into separate relay namespaces.
 Explicit account configuration is preserved. After a failed or cancelled sign-in, press
 `l` in the terminal wizard to continue locally. To skip browser sign-in entirely, use the
 account-free quickstart above. See [account setup](docs/auth.md).
@@ -323,7 +325,8 @@ The actual native CLI passed local production-Worker acceptance and a physical M
 send/read/reply/reconnect/revoke journey, with synthetic GitHub and private SSH forwarding
 to the local Worker. The [2.0.0 release notes](https://github.com/raitoxlol/everett/releases/tag/v2.0.0) record successful hosted
 first-run GitHub approval. Real public Mac/NUC delivery, idle Claude wake/reply and second-account isolation/revocation passed for 2.1.0.
-Choosing sign-in during fresh interactive onboarding opens `https://everett.raitox.tech` for account approval.
+Choosing sign-in during fresh interactive onboarding opens `https://relay.raitox.tech` for account approval.
+Identity keys remain `https://everett.raitox.tech`.
 That service supports public enrollment; messaging stays within each account. Existing account configuration
 is preserved. Cloudflare's device protocol is custom, not RFC8628.
 Cross-owner grants are unavailable on Cloudflare. SSH pairing uses an explicit address; cloud-agent OAuth is separate.
@@ -583,11 +586,12 @@ escalate_minutes = 30         # re-notify once when a session stays blocked this
 
 [auth]
 provider = "cloudflare"                 # EVERETT_AUTH_PROVIDER; only supported provider
-issuer = "https://everett.raitox.tech"  # EVERETT_AUTH_ISSUER; optional custom issuer
+issuer = "https://everett.raitox.tech"  # EVERETT_AUTH_ISSUER; identity, not the connect URL
+base_url = "https://relay.raitox.tech"  # EVERETT_AUTH_BASE_URL; optional relay URL
 
 ```
 
-Environment overrides: `EVERETT_VAULT`, `EVERETT_VAULT_DIR`, `EVERETT_HARNESS`, `EVERETT_ROUTER`, `TYPESAFE_API_KEY`, `EVERETT_NOTIFY`, `EVERETT_NOTIFY_COMMAND`, `EVERETT_ESCALATE_MINUTES`, `EVERETT_AUTH_ISSUER`, and `EVERETT_HOME` (the root used in place of `~`).
+Environment overrides: `EVERETT_VAULT`, `EVERETT_VAULT_DIR`, `EVERETT_HARNESS`, `EVERETT_ROUTER`, `TYPESAFE_API_KEY`, `EVERETT_NOTIFY`, `EVERETT_NOTIFY_COMMAND`, `EVERETT_ESCALATE_MINUTES`, `EVERETT_AUTH_ISSUER`, `EVERETT_AUTH_BASE_URL`, and `EVERETT_HOME` (the root used in place of `~`). Existing configs that set only `issuer` keep using that origin as the connect URL.
 
 ## Accounts
 

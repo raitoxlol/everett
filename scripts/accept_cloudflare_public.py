@@ -17,6 +17,7 @@ import time
 import uuid
 
 PUBLIC_ISSUER = "https://everett.raitox.tech"
+PUBLIC_RELAY = "https://relay.raitox.tech"
 RUN_RE = re.compile(r"^[a-f0-9]{12}$")
 HOST_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.@-]*$")
 
@@ -73,6 +74,8 @@ def parse_identity(value: object) -> Identity:
     owner, device_id, issuer = (value.get(key) for key in ("owner", "agent_id", "issuer"))
     if not all(isinstance(item, str) and item for item in (owner, device_id, issuer)):
         raise AcceptanceError("whoami omitted public account metadata")
+    if issuer.rstrip("/") == PUBLIC_RELAY:
+        raise AcceptanceError("device identity issuer must remain the public Everett issuer, not the relay hostname")
     if issuer.rstrip("/") != PUBLIC_ISSUER:
         raise AcceptanceError("device is not signed in to the public Everett issuer")
     return Identity(owner=owner, device_id=device_id, issuer=issuer.rstrip("/"))
