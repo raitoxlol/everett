@@ -4,6 +4,7 @@ use std::io::Write;
 use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
+use std::time::{Duration, Instant};
 
 use regex::Regex;
 use serde_json::{json, Map, Value};
@@ -50,8 +51,7 @@ fn lock_path(target: &Path) -> PathBuf {
     target.with_extension("lock")
 }
 
-fn lock_file(target: &Path) -> Result<fs::File> {
-    use fs2::FileExt;
+fn open_lock(target: &Path) -> Result<fs::File> {
     if let Some(parent) = lock_path(target).parent().map(|p| p.to_path_buf()) {
         crate::peer::private_dir(&parent)?;
     }
@@ -61,12 +61,47 @@ fn lock_file(target: &Path) -> Result<fs::File> {
         .truncate(true)
         .open(lock_path(target))
         .map_err(|e| EverettError::new(2, format!("cannot lock {}: {}", target.display(), e)))?;
+    Ok(file)
+}
+
+fn lock_file(target: &Path) -> Result<fs::File> {
+    use fs2::FileExt;
+    let file = open_lock(target)?;
     file.lock_exclusive()
         .map_err(|e| EverettError::new(2, format!("cannot lock {}: {}", target.display(), e)))?;
     Ok(file)
 }
 
+fn check_deadline(deadline: Option<Instant>) -> Result<()> {
+    if deadline.is_some_and(|deadline| Instant::now() >= deadline) {
+        return Err(EverettError::new(4, "Proof deadline expired before inbox append. Nothing was queued."));
+    }
+    Ok(())
+}
+
+fn lock_file_until(target: &Path, deadline: Instant) -> Result<fs::File> {
+    use fs2::FileExt;
+    check_deadline(Some(deadline))?;
+    let file = open_lock(target)?;
+    loop {
+        check_deadline(Some(deadline))?;
+        match file.try_lock_exclusive() {
+            Ok(()) => return Ok(file),
+            Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                std::thread::sleep(Duration::from_millis(10).min(deadline.saturating_duration_since(Instant::now())));
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
+            Err(error) => return Err(EverettError::new(2, format!("cannot lock {}: {error}", target.display()))),
+        }
+    }
+}
+
 fn append_locked(target: &PathBuf, line: &str) -> Result<()> {
+    append_locked_until(target, line, None)
+}
+
+fn append_locked_until(target: &PathBuf, line: &str, deadline: Option<Instant>) -> Result<()> {
+    check_deadline(deadline)?;
     if let Some(parent) = target.parent() {
         crate::peer::private_dir(parent)?;
     }
@@ -77,6 +112,7 @@ fn append_locked(target: &PathBuf, line: &str) -> Result<()> {
         .open(target)
         .map_err(|e| EverettError::new(2, format!("cannot write {}: {}", target.display(), e)))?;
     let _ = f.set_permissions(std::os::unix::fs::PermissionsExt::from_mode(0o600));
+    check_deadline(deadline)?;
     f.write_all(line.as_bytes())
         .map_err(|e| EverettError::new(2, format!("cannot write {}: {}", target.display(), e)))
 }
@@ -101,6 +137,22 @@ pub fn post(
     from_harness: &str,
     from_card: &str,
     extra: Option<Map<String, Value>>,
+) -> Result<Map<String, Value>> {
+    post_with_deadline(to, text, sender, kind, reply_to, hops, from_harness, from_card, extra, None)
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn post_with_deadline(
+    to: &str,
+    text: &str,
+    sender: &str,
+    kind: &str,
+    reply_to: &str,
+    hops: i64,
+    from_harness: &str,
+    from_card: &str,
+    extra: Option<Map<String, Value>>,
+    deadline: Option<Instant>,
 ) -> Result<Map<String, Value>> {
     let text = text.trim();
     if text.is_empty() {
@@ -130,7 +182,13 @@ pub fn post(
         label_external(&mut message);
     }
     let target = path(to)?;
-    append(&target, &(serde_json::to_string(&message).unwrap() + "\n"))?;
+    let line = serde_json::to_string(&message).unwrap() + "\n";
+    if let Some(deadline) = deadline {
+        let _guard = lock_file_until(&target, deadline)?;
+        append_locked_until(&target, &line, Some(deadline))?;
+    } else {
+        append(&target, &line)?;
+    }
     Ok(message)
 }
 
