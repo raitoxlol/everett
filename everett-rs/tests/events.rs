@@ -59,6 +59,24 @@ fn event_log_state_and_describe() {
 }
 
 #[test]
+fn event_timestamps_round_trip_exactly() {
+    let h = lib_home();
+    let cwd = project(&h);
+    // These values were found by searching adjacent f64s with the default JSON parser.
+    for start in [1793180897.9323323, 1793180897.9323335, 1793180897.9323401] {
+        let event = record(&cwd, "blocked", "waiting on staging key", "", Some(start)).unwrap();
+        assert_eq!(event["ts"], json!(start));
+        let state = events::state("s1").unwrap();
+        assert_eq!(state["ts"], json!(start));
+        assert_eq!(state["since"], json!(start));
+        assert_eq!(events::read(start).last().unwrap()["ts"], json!(start));
+        record(&cwd, "blocked", "still waiting", "", Some(start + 1.0));
+        assert_eq!(events::state("s1").unwrap()["since"], json!(start));
+        record(&cwd, "done", "shipped", "", Some(start + 2.0));
+    }
+}
+
+#[test]
 fn validation() {
     let h = lib_home();
     let cwd = project(&h);
@@ -81,6 +99,37 @@ fn auto_debounce() {
 }
 
 type Calls = RefCell<Vec<(Vec<String>, Option<HashMap<String, String>>)>>;
+
+#[test]
+fn elapsed_minutes_round_seconds_before_truncating_minutes() {
+    let h = lib_home();
+    let cwd = project(&h);
+    let start = 1793180897.9323323;
+    std::env::set_var("EVERETT_ESCALATE_MINUTES", "30");
+    std::env::set_var("EVERETT_NOTIFY_COMMAND", "x");
+    let calls: Calls = RefCell::new(Vec::new());
+    let runner = |argv: &[String], env: Option<&HashMap<String, String>>| calls.borrow_mut().push((argv.to_vec(), env.cloned()));
+    for (elapsed, minutes) in [(1860.0 - 0.000001, 31), (1859.0, 30), (1890.0, 31)] {
+        std::env::set_var("EVERETT_NOTIFY", "none");
+        record(&cwd, "blocked", "waiting on staging key", "", Some(start));
+        std::env::set_var("EVERETT_NOTIFY", "command");
+        assert!(events::check_escalations(Some(start + 1799.9), Some(&runner)).is_empty());
+        let at = start + elapsed;
+        assert_eq!(events::check_escalations(Some(at), Some(&runner)).len(), 1);
+        let reason = format!("blocked for {minutes} min");
+        let calls = calls.borrow();
+        let (argv, env) = calls.last().unwrap();
+        assert!(argv[4].starts_with(&format!("{reason}: blocked [atlas]")), "{argv:?}");
+        assert_eq!(env.as_ref().unwrap()["EVERETT_EVENT_REASON"], reason);
+        assert_eq!(events::describe(&events::state("s1").unwrap(), Some(at)),
+            format!("blocked {minutes}m: waiting on staging key"));
+        record(&cwd, "done", "shipped", "", Some(at));
+    }
+    for name in ["EVERETT_ESCALATE_MINUTES", "EVERETT_NOTIFY_COMMAND"] {
+        std::env::remove_var(name);
+    }
+    std::env::set_var("EVERETT_NOTIFY", "none");
+}
 
 #[test]
 fn notify_modes_and_command_environment() {
