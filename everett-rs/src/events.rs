@@ -456,7 +456,7 @@ pub fn check_escalations(at: Option<f64>, runner: Option<&NotifyRunner<'_>>) -> 
         if !HUMAN_KINDS.contains(&kind) || escalated || now - since < limit {
             continue;
         }
-        let minutes = ((now - since) / 60.0) as i64;
+        let minutes = ((now - since).round() / 60.0) as i64;
         notify(
             &data,
             &format!("{} for {} min", kind, minutes),
@@ -525,7 +525,7 @@ pub fn parse_since(value: &str) -> Result<f64> {
 }
 
 pub fn age(seconds: f64) -> String {
-    let s = seconds.max(0.0) as i64;
+    let s = seconds.max(0.0).round() as i64;
     if s < 3600 {
         format!("{}m", s / 60)
     } else if s < 172800 {
