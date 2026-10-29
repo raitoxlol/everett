@@ -106,18 +106,22 @@ fn resolve_identity(args: &Args, stored: Option<&Credential>, pending: Option<&P
     origin(PUBLIC_ISSUER)
 }
 
+/// Connect origin for device start/poll/enroll. `base_url` always wins over issuer.
 fn resolve_base(args: &Args, stored: Option<&Credential>, pending: Option<&Pending>) -> Result<String> {
     if let Some(base) = args.auth_base_url.as_deref().filter(|s| !s.is_empty()) {
         return origin(base);
     }
-    if let Some(issuer) = args.auth_issuer.as_deref().filter(|s| !s.is_empty()) {
-        return origin(issuer);
-    }
-    if cloudflare_config_active(stored.is_some() || pending.is_some()) {
+    let config_active = cloudflare_config_active(stored.is_some() || pending.is_some());
+    if config_active {
         let configured_base = auth::base_url();
         if !configured_base.is_empty() {
             return origin(&configured_base);
         }
+    }
+    if let Some(issuer) = args.auth_issuer.as_deref().filter(|s| !s.is_empty()) {
+        return origin(issuer);
+    }
+    if config_active {
         let configured_issuer = auth::issuer();
         if !configured_issuer.is_empty() {
             return origin(&configured_issuer);
