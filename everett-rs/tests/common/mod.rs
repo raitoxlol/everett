@@ -7,6 +7,12 @@ use std::process::{Command, Output};
 /// Host-installed harness CLIs (omp, devin, pi, ...) must not leak into tests.
 pub const HERMETIC_PATH: &str = "/usr/bin:/bin";
 
+pub fn scrub_caller_identity(command: &mut Command) {
+    for name in CALLER_IDENTITY_UNSET {
+        command.env_remove(name);
+    }
+}
+
 pub struct Fixture {
     pub dir: tempfile::TempDir,
 }
@@ -28,6 +34,7 @@ impl Fixture {
             .env_remove("EVERETT_SEND")
             .env_remove("EVERETT_HOPS")
             .env_remove("EVERETT_SESSION_ID");
+        scrub_caller_identity(&mut cmd);
         cmd.output().unwrap()
     }
 
@@ -47,6 +54,7 @@ impl Fixture {
             .stdin(std::process::Stdio::piped())
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::piped());
+        scrub_caller_identity(&mut cmd);
         for (k, v) in extra_env {
             cmd.env(k, v);
         }
@@ -206,6 +214,16 @@ impl LibHome {
     }
 }
 
+const CALLER_IDENTITY_UNSET: &[&str] = &[
+    "EVERETT_SESSION_ID",
+    "CLAUDE_CODE_SESSION_ID",
+    "CLAUDE_SESSION_ID",
+    "CODEX_THREAD_ID",
+    "HERMES_SESSION_ID",
+    "PI_SESSION_FILE",
+    "GROK_SESSION_ID",
+];
+
 const SANDBOX_UNSET: &[&str] = &[
     "TYPESAFE_API_KEY",
     "EVERETT_VAULT",
@@ -214,16 +232,9 @@ const SANDBOX_UNSET: &[&str] = &[
     "EVERETT_HARNESS",
     "EVERETT_SEND",
     "EVERETT_HOPS",
-    "EVERETT_SESSION_ID",
     "EVERETT_MERGE_LLM",
     "CLAUDE_CODE_ENTRYPOINT",
     "CLAUDECODE",
-    "CLAUDE_CODE_SESSION_ID",
-    "CLAUDE_SESSION_ID",
-    "CODEX_THREAD_ID",
-    "HERMES_SESSION_ID",
-    "PI_SESSION_FILE",
-    "GROK_SESSION_ID",
     "EVERETT_NOTIFY_COMMAND",
     "EVERETT_ESCALATE_MINUTES",
 ];
@@ -235,7 +246,7 @@ pub fn lib_home() -> LibHome {
     std::env::set_var("HOME", dir.path());
     std::env::set_var("EVERETT_HOME", dir.path());
     std::env::set_var("EVERETT_NOTIFY", "none");
-    for name in SANDBOX_UNSET {
+    for name in SANDBOX_UNSET.iter().chain(CALLER_IDENTITY_UNSET) {
         std::env::remove_var(name);
     }
     LibHome { dir, _guard: guard }

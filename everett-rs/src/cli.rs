@@ -481,6 +481,16 @@ fn cmd_remote_send(args: &Args, to: &str) -> i32 {
     }
 }
 
+pub fn cmd_proof_wake(args: &Args) -> i32 {
+    let report = crate::proof_wake::run(args.to.as_deref().unwrap_or(""), args.hours, args.timeout, args.dry_run);
+    if args.json {
+        println!("{}", serde_json::to_string_pretty(&report).unwrap());
+    } else {
+        println!("{}", report.human());
+    }
+    report.exit_code
+}
+
 pub fn cmd_send(args: &Args) -> i32 {
     if args.wake {
         if args.to.is_none() || args.spawn || args.mode == "resume" {
