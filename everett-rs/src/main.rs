@@ -25,7 +25,7 @@ const HELP_GROUPS: &[(&str, &[&str])] = &[
     ("Start here", &["onboard", "dashboard", "ls", "doctor"]),
     (
         "Work across sessions",
-        &["send", "route", "inbox", "reply", "event", "events", "subscribe"],
+        &["send", "route", "inbox", "reply", "proof", "event", "events", "subscribe"],
     ),
     ("Shared memory", &["learn", "core", "trunk", "cards"]),
     (
@@ -70,6 +70,11 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Cmd {
+    /// check an explicitly selected local wake path end to end
+    Proof {
+        #[command(subcommand)]
+        action: ProofCmd,
+    },
     /// list this account's registered device metadata, or manage one device
     Devices {
         #[command(subcommand)]
@@ -594,6 +599,22 @@ enum ExternalCmd {
     },
 }
 
+#[derive(Subcommand)]
+enum ProofCmd {
+    /// send a nonce canary through ping and wait for its correlated inbox reply
+    Wake {
+        #[arg(long, value_name = "SESSION")]
+        to: String,
+        #[arg(long, default_value_t = 120.0)]
+        timeout: f64,
+        #[arg(long)]
+        json: bool,
+        /// resolve the target and transport without sending anything
+        #[arg(long)]
+        dry_run: bool,
+    },
+}
+
 fn main() {
     let cli = Cli::from_arg_matches(&command().get_matches()).unwrap_or_else(|e| e.exit());
     let mut a = Args {
@@ -620,6 +641,13 @@ fn main() {
         }
     };
     let code = match cmd {
+        Cmd::Proof { action: ProofCmd::Wake { to, timeout, json, dry_run } } => {
+            a.to = Some(to);
+            a.timeout = timeout;
+            a.json = json;
+            a.dry_run = dry_run;
+            cli::cmd_proof_wake(&a)
+        }
         Cmd::Devices {
             action: Some(Devices::Revoke { device_id }),
             ..

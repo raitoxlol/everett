@@ -107,6 +107,31 @@ pub struct PreparedWake {
 
 struct SystemWakeRunner;
 
+struct BudgetWakeRunner {
+    deadline: Instant,
+}
+
+impl BudgetWakeRunner {
+    fn remaining(&self, limit: f64) -> std::result::Result<f64, String> {
+        let remaining = self.deadline.saturating_duration_since(Instant::now()).as_secs_f64();
+        if remaining <= 0.0 {
+            Err("wake dispatch timeout expired".into())
+        } else {
+            Ok(remaining.min(limit))
+        }
+    }
+}
+
+impl WakeRunner for BudgetWakeRunner {
+    fn capture(&self, argv: &[String], cwd: &str, timeout: f64) -> std::result::Result<RunOutput, String> {
+        SystemWakeRunner.capture(argv, cwd, self.remaining(timeout)?)
+    }
+
+    fn attach(&self, argv: &[String], cwd: &str, timeout: f64, receipt: &str, target_pid: u32) -> std::result::Result<PtyOutput, String> {
+        run_pty_until(argv, cwd, self.remaining(timeout)?, receipt, target_pid, Some(self.deadline))
+    }
+}
+
 impl WakeRunner for SystemWakeRunner {
     fn capture(
         &self,
@@ -160,6 +185,10 @@ pub fn validate_target(session: &Session) -> Result<()> {
 
 pub fn prepare(session: &Session) -> Result<PreparedWake> {
     prepare_with(session, &SystemWakeRunner)
+}
+
+pub(crate) fn prepare_until(session: &Session, deadline: Instant) -> Result<PreparedWake> {
+    prepare_with(session, &BudgetWakeRunner { deadline })
 }
 
 pub fn prepare_with(session: &Session, runner: &dyn WakeRunner) -> Result<PreparedWake> {
@@ -234,6 +263,10 @@ fn wake_lock_at(home: &Path, session_id: &str) -> Result<File> {
 
 pub fn wake(prepared: &PreparedWake, message_id: &str) -> WakeOutcome {
     wake_with(prepared, message_id, &SystemWakeRunner)
+}
+
+pub(crate) fn wake_until(prepared: &PreparedWake, message_id: &str, deadline: Instant) -> WakeOutcome {
+    wake_with(prepared, message_id, &BudgetWakeRunner { deadline })
 }
 
 pub fn wake_with(
@@ -508,6 +541,17 @@ fn run_pty(
     receipt: &str,
     target_pid: u32,
 ) -> std::result::Result<PtyOutput, String> {
+    run_pty_until(argv, cwd, timeout, receipt, target_pid, None)
+}
+
+fn run_pty_until(
+    argv: &[String],
+    cwd: &str,
+    timeout: f64,
+    receipt: &str,
+    target_pid: u32,
+    proof_deadline: Option<Instant>,
+) -> std::result::Result<PtyOutput, String> {
     if argv.is_empty() || !timeout.is_finite() || timeout <= 0.0 {
         return Err("invalid PTY command or timeout".into());
     }
@@ -570,7 +614,8 @@ fn run_pty(
         return Err(std::io::Error::last_os_error().to_string());
     }
     let mut output = String::new();
-    let deadline = Instant::now() + Duration::from_secs_f64(timeout.min(300.0));
+    let attach_deadline = Instant::now() + Duration::from_secs_f64(timeout.min(300.0));
+    let deadline = proof_deadline.map_or(attach_deadline, |deadline| deadline.min(attach_deadline));
     let mut buffer = [0u8; 4096];
     loop {
         match child.0.as_mut().expect("live connector").try_wait() {
@@ -636,7 +681,8 @@ fn run_pty(
                     // Match the documented interactive detach first, with a
                     // bounded direct-client fallback if Claude ignores Ctrl-Z.
                     let _ = std::io::Write::write_all(&mut master, b"\x1a");
-                    let grace = Instant::now() + Duration::from_secs(2);
+                    let detach_deadline = Instant::now() + Duration::from_secs(2);
+                    let grace = proof_deadline.map_or(detach_deadline, |deadline| detach_deadline.min(deadline));
                     let mut status = None;
                     while Instant::now() < grace {
                         if CANCEL_REQUESTED.load(Ordering::Relaxed) {
@@ -970,6 +1016,40 @@ mod tests {
         assert_ne!(out.client_pid, target_pid);
         assert!(pid_alive(target_pid));
         assert!(started.elapsed() < Duration::from_secs(2));
+    }
+
+    #[test]
+    fn pty_detach_grace_helper() {
+        if std::env::var_os("EVERETT_TEST_PTY_GRACE_CHILD").is_none() { return; }
+        let dir = tempfile::tempdir().unwrap();
+        let ready = dir.path().join("ready");
+        let release = dir.path().join("release");
+        let ready_thread = ready.clone();
+        let release_thread = release.clone();
+        let controller = std::thread::spawn(move || {
+            let started = Instant::now();
+            while !ready_thread.exists() {
+                assert!(started.elapsed() < Duration::from_secs(2));
+                std::thread::sleep(Duration::from_millis(5));
+            }
+            std::thread::sleep(Duration::from_millis(500));
+            fs::write(release_thread, "go").unwrap();
+        });
+        let script = format!("stty -isig; touch '{}'; while [ ! -f '{}' ]; do sleep 0.01; done; printf 'receipt'; exec sleep 30", ready.display(), release.display());
+        let started = Instant::now();
+        let out = run_pty(&["/bin/sh".into(), "-c".into(), script], "/", 1.0, "receipt", std::process::id()).unwrap();
+        controller.join().unwrap();
+        assert!(out.output.contains("receipt") && !out.timed_out, "{out:?}");
+        assert!(started.elapsed() >= Duration::from_millis(2400), "receipt must retain full two second detach grace");
+    }
+
+    #[test]
+    fn ordinary_receipt_near_attach_limit_keeps_full_detach_grace() {
+        let mut env: std::collections::HashMap<String, String> = std::env::vars().collect();
+        env.insert("EVERETT_TEST_PTY_GRACE_CHILD".into(), "1".into());
+        let out = run_capture(&[std::env::current_exe().unwrap().to_string_lossy().into_owned(),
+            "--exact".into(), "claude_wake::tests::pty_detach_grace_helper".into(), "--nocapture".into()], None, &env, 8.0).unwrap();
+        assert!(!out.timed_out && out.code == 0, "{out:?}");
     }
 
     #[test]
