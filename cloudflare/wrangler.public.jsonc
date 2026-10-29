@@ -30,12 +30,19 @@
       "custom_domain": true,
       "enabled": true,
       "previews_enabled": false
+    },
+    {
+      "pattern": "relay.raitox.tech",
+      "custom_domain": true,
+      "enabled": true,
+      "previews_enabled": false
     }
   ],
   "vars": {
     "AUTH_GITHUB_ID": "Ov23liS4NbTt3HxvwHji",
     "EVERETT_ENROLLMENT": "public",
     "EVERETT_ISSUER": "https://everett.raitox.tech",
+    "EVERETT_PUBLIC_HOSTS": "https://everett.raitox.tech,https://relay.raitox.tech",
     "EVERETT_OAUTH_CLIENT_IDS": "https://chatgpt.com/oauth/client.json",
     "EVERETT_OAUTH_REDIRECT_URIS": "https://chatgpt.com/connector_platform_oauth_redirect",
     "EVERETT_OAUTH_RESOURCES": "https://tunnel-service.gateway.unified-0.internal.api.openai.org/v1/mcp/tunnel_6ad61d5e26b481918aaeb35a57e1a673",

@@ -6,7 +6,7 @@ The driver stages a unique message, retries it with the same idempotency key whi
 
 ## Check the two existing devices
 
-Use an Everett 2.0 or newer binary on both computers. You can point the driver at a v2 binary with `--everett /absolute/path/to/everett-v2` and `--remote-everett /absolute/path/to/everett-v2`. This avoids replacing the installed binary. Confirm that each device already uses native Cloudflare sign-in for `https://everett.raitox.tech`. Keep the Mac and NUC on the same Everett account.
+Use an Everett 2.0 or newer binary on both computers. You can point the driver at a v2 binary with `--everett /absolute/path/to/everett-v2` and `--remote-everett /absolute/path/to/everett-v2`. This avoids replacing the installed binary. Confirm that each device already uses native Cloudflare sign-in whose identity issuer is `https://everett.raitox.tech` (the relay URL may be `https://relay.raitox.tech`). Keep the Mac and NUC on the same Everett account.
 
 From the repository root, inspect the plan. This command does not run Everett or make a network request:
 

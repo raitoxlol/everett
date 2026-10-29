@@ -29,13 +29,15 @@ A successful registration does not prove that a running agent has loaded the too
 
 ## Hosted Cloudflare native sign-in
 
-The service at `https://everett.raitox.tech` accepts GitHub accounts into isolated relay
-namespaces. Devices communicate only within their account. Local setup and SSH peers
-remain account-free; [custom deployments](../cloudflare/CLI-CONTRACT.md#configuration-and-rollout-boundary)
+The hosted relay at `https://relay.raitox.tech` accepts GitHub accounts into isolated relay
+namespaces. Account identity stays `https://everett.raitox.tech` so existing owner keys,
+tokens and queued messages keep working if the network hostname changes. Devices communicate
+only within their account. Local setup and SSH peers remain account-free;
+[custom deployments](../cloudflare/CLI-CONTRACT.md#configuration-and-rollout-boundary)
 can restrict enrollment to an owner.
 
 Cloudflare enrollment uses its own native API and credential, separate from cloud-agent OAuth grants. On a new installation, run `everett` normally: choose sign-in to open
-`https://everett.raitox.tech/enroll` with this device's approval code. Continue with GitHub,
+`https://relay.raitox.tech/enroll` with this device's approval code. Continue with GitHub,
 compare and approve the named device, and return to the terminal; verified approval
 automatically opens agent selection. No separate login command or issuer setup is needed.
 Existing explicit account configuration is preserved, and authenticated normal launches
@@ -49,7 +51,7 @@ Production uses `EVERETT_ENROLLMENT=public`; self-hosted deployments can retain 
 For a custom deployment or an explicit repair:
 
 ```sh
-everett login --provider cloudflare --issuer https://YOUR-EVERETT-ISSUER --device laptop --open
+everett login --provider cloudflare --issuer https://YOUR-EVERETT-ISSUER --base-url https://YOUR-RELAY --device laptop --open
 everett whoami --provider cloudflare --json
 ```
 
@@ -60,14 +62,18 @@ is a display label. Approval never signs into Claude, Codex or another agent's p
 
 | Action | Command / result |
 | --- | --- |
-| Start without waiting | `everett login --provider cloudflare --issuer https://YOUR-EVERETT-ISSUER --no-wait` prints a public approval link/code. |
+| Start without waiting | `everett login --provider cloudflare --issuer https://YOUR-EVERETT-ISSUER --base-url https://YOUR-RELAY --no-wait` prints a public approval link/code. |
 | Resume | Run `everett login --provider cloudflare` again; pending issuer and request are retained privately. |
 | Cancel | Ctrl-C during waiting, or `everett login --provider cloudflare --cancel`. Approval racing cancellation is never claimed as cancelled. |
 | Retry | Denied, expired and cancelled requests clear pending state; rerun login. `--force` requests a new approval. |
 | Verify / sign out | `everett whoami --provider cloudflare` checks the server. `everett logout --provider cloudflare` removes the local credential only. |
 
 For a configured installation, `[auth] provider = "cloudflare"` (environment
-`EVERETT_AUTH_PROVIDER`) and `issuer` (`EVERETT_AUTH_ISSUER`) select this path. Cloudflare is the default and only supported provider.
+`EVERETT_AUTH_PROVIDER`) and `issuer` (`EVERETT_AUTH_ISSUER`) select identity.
+`base_url` (`EVERETT_AUTH_BASE_URL`) selects the relay origin; if it is unset, a
+configured `issuer` is still used as the connect URL. Fresh installs default to
+`https://relay.raitox.tech` for connect and `https://everett.raitox.tech` for identity.
+Cloudflare is the default and only supported provider.
 Successful native onboarding saves `provider = "cloudflare"`.
 `cloudflare-auth.json` and `cloudflare-pending.json` live beneath the `.everett` directory
 rooted by `EVERETT_HOME`/`HOME`, written atomically with mode 0600 in a private directory.

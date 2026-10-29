@@ -1,8 +1,10 @@
 # Connect two computers through Cloudflare
 
-The native adapter uses the configured Cloudflare issuer and a custom device approval
-protocol. Interactive setup offers account-free local agents or explicit sign-in to
-`https://everett.raitox.tech`. Existing custom issuer configuration is preserved.
+The native adapter uses the configured Cloudflare identity issuer, an optional
+relay base URL, and a custom device approval protocol. Interactive setup offers
+account-free local agents or explicit sign-in through `https://relay.raitox.tech`.
+Account identity stays `https://everett.raitox.tech`. Existing custom issuer
+configuration is preserved and still used as the connect URL when `base_url` is unset.
 The public service accepts GitHub accounts into separate relay namespaces. For local
 agents without an account, use the [account-free setup](auth.md#set-up-local-agents-without-an-account).
 
@@ -15,8 +17,9 @@ Hostile browser request replay remains covered by synthetic-provider runtime tes
 
 Run `everett` normally on each new computer and choose sign-in for hosted delivery; no separate login
 command is required. For a custom deployment, set `EVERETT_AUTH_PROVIDER=cloudflare`
-and `EVERETT_AUTH_ISSUER` to that deployment's HTTPS origin, or the equivalent `[auth]`
-provider and issuer settings. These are public configuration values. Do not copy a credential
+and `EVERETT_AUTH_ISSUER` to that deployment's identity origin, optionally with
+`EVERETT_AUTH_BASE_URL` / `[auth] base_url` when the relay hostname differs, or the
+equivalent `[auth]` provider and issuer settings. These are public configuration values. Do not copy a credential
 file, relay keys or an existing device identity to another computer.
 
 1. Install Everett on each computer and run `everett` to begin automatic onboarding.

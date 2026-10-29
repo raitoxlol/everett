@@ -924,3 +924,65 @@ fn rejected_credential_starts_new_approval_but_uncertainty_keeps_it() {
     fake.approved();
     assert!(f.run(&["login"]).status.success());
 }
+
+#[test]
+fn base_url_does_not_change_public_issuer_identity() {
+    let f = fixture();
+    let fake = Fake::new();
+    fake.approved();
+    let out = f.run(&[
+        "login",
+        "--provider",
+        "cloudflare",
+        "--base-url",
+        &fake.issuer,
+        "--json",
+    ]);
+    redact(&out);
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let identity: Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(identity["issuer"], everett::cloudflare_auth::PUBLIC_ISSUER);
+    assert_eq!(identity["verified"], true);
+    let stored: Value = serde_json::from_slice(&std::fs::read(f.home().join(".everett/cloudflare-auth.json")).unwrap()).unwrap();
+    assert_eq!(stored["issuer"], everett::cloudflare_auth::PUBLIC_ISSUER);
+    assert_eq!(stored["base_url"], fake.issuer);
+    assert_eq!(stored["owner"], "owner-synthetic");
+
+    let other = Fake::new();
+    f.write(
+        ".everett/config.toml",
+        &format!(
+            "[auth]\nprovider = 'cloudflare'\nbase_url = '{}'\n",
+            other.issuer
+        ),
+    );
+    let out = f.run(&["whoami", "--json"]);
+    redact(&out);
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let again: Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(again["issuer"], everett::cloudflare_auth::PUBLIC_ISSUER);
+    assert_eq!(again["owner"], "owner-synthetic");
+    assert_eq!(again["agent_id"], "immutable-agent");
+    assert!(
+        other.requests().iter().any(|r| r.0 == "/v2/relay/whoami"),
+        "whoami should follow the configured relay base URL"
+    );
+    let stored_after: Value = serde_json::from_slice(&std::fs::read(f.home().join(".everett/cloudflare-auth.json")).unwrap()).unwrap();
+    assert_eq!(stored_after["issuer"], everett::cloudflare_auth::PUBLIC_ISSUER);
+    assert_eq!(stored_after["owner"], stored["owner"]);
+}
+
+#[test]
+fn issuer_only_config_still_connects_to_that_origin() {
+    let f = fixture();
+    let fake = Fake::new();
+    fake.configure(&f);
+    fake.approved();
+    assert!(f.run(&["login", "--json"]).status.success());
+    let stored: Value = serde_json::from_slice(&std::fs::read(f.home().join(".everett/cloudflare-auth.json")).unwrap()).unwrap();
+    assert_eq!(stored["issuer"], fake.issuer);
+    assert_eq!(stored["base_url"], fake.issuer);
+    assert!(fake.requests().iter().any(|r| r.0 == "/v2/auth/device"));
+    assert!(fake.requests().iter().any(|r| r.0 == "/v2/relay/whoami"));
+}
+

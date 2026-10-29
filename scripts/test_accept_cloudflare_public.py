@@ -59,6 +59,7 @@ class PublicAcceptanceTests(unittest.TestCase):
             dict(valid, owner=""),
             dict(valid, agent_id=None),
             dict(valid, issuer="https://everett.raitox.tech.attacker.test"),
+            dict(valid, issuer=acceptance.PUBLIC_RELAY),
         ):
             with self.subTest(invalid=invalid), self.assertRaises(acceptance.AcceptanceError):
                 acceptance.parse_identity(invalid)

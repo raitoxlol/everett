@@ -9,6 +9,7 @@ export interface Env {
   AUTHENTICATOR?: Fetcher;
   AUTH_STATE?: DurableObjectNamespace<HostedAuth>;
   EVERETT_ISSUER?: string;
+  EVERETT_PUBLIC_HOSTS?: string;
 }
 export const operations = ['whoami', 'register', 'device', 'devices', 'exposeSession', 'sessionDirectory', 'credentials', 'memberships', 'revokeAgent', 'revokeMember', 'rotate', 'enqueue', 'pending', 'accept', 'observe', 'status'] as const;
 export type Operation = typeof operations[number];

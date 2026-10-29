@@ -5,10 +5,12 @@ import { sha256 } from '@noble/hashes/sha256';
 import { hkdf } from '@noble/hashes/hkdf';
 import { ed25519, x25519 } from '@noble/curves/ed25519';
 import { chacha20poly1305 } from '@noble/ciphers/chacha';
-import { aadBytes, bytes, deviceBytes, encode, envelopeBytes, fingerprint, hexString, observationBytes, type Device, type Envelope, type Observation } from '../src/protocol';
+import { aadBytes, bytes, deviceBytes, encode, envelopeBytes, fingerprint, hexString, namespace, observationBytes, RelayError, type Device, type Envelope, type Observation } from '../src/protocol';
+import { hostedConfig, type HostedAuthEnv } from '../src/hosted-config';
 import type { Env } from '../src/index';
 
 const issuer = 'https://everett.test';
+const relayHost = 'https://relay.everett.test';
 const resource = 'https://gateway.example/mcp';
 const redirect = 'https://chatgpt.com/connector_platform_oauth_redirect';
 const client = 'https://chatgpt.com/oauth/client.json';
@@ -20,17 +22,19 @@ async function memberCount() {
   }
   return count;
 }
-const fetchWorker = (path: string, init?: RequestInit) => workerExports.default.fetch(new Request(issuer + path, { ...init, redirect: 'manual' }));
+const fetchOn = (origin: string, path: string, init?: RequestInit) => workerExports.default.fetch(new Request(origin + path, { ...init, redirect: 'manual' }));
+const fetchWorker = (path: string, init?: RequestInit) => fetchOn(issuer, path, init);
 const json = (body: unknown): RequestInit => ({ method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
 const form = (body: Record<string, string>): RequestInit => ({ method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, body: new URLSearchParams(body).toString() });
 
 class Browser {
   cookies = new Map<string, string>();
+  constructor(readonly origin = issuer) {}
   async request(path: string, init: RequestInit = {}) {
     const headers = new Headers(init.headers);
     headers.set('Cookie', [...this.cookies].map(([k, v]) => `${k}=${v}`).join('; '));
-    if (init.method === 'POST') headers.set('Origin', issuer);
-    const response = await fetchWorker(path, { ...init, headers });
+    if (init.method === 'POST') headers.set('Origin', this.origin);
+    const response = await fetchOn(this.origin, path, { ...init, headers });
     for (const cookie of response.headers.getAll('Set-Cookie')) {
       const pair = cookie.split(';', 1)[0], at = pair.indexOf('=');
       this.cookies.set(pair.slice(0, at), pair.slice(at + 1));
@@ -523,3 +527,77 @@ describe('OAuth resource-bound authorization', () => {
     expect((await fetchWorker('/oauth/token', form({ grant_type: 'refresh_token', refresh_token: tokens.refresh_token, client_id: client, resource }))).status).toBe(400);
   });
 });
+
+describe('Public hosts stay separate from issuer identity', () => {
+  const owner = namespace({ issuer, subject: 'github:282002453', org: null });
+  async function nativeOn(origin: string, token: string, operation: string, args: unknown = {}) {
+    const init = json(args);
+    const headers = new Headers(init.headers); headers.set('Authorization', 'Bearer ' + token);
+    return fetchOn(origin, '/v2/relay/' + operation, { ...init, headers });
+  }
+  it('keeps issuer in the public-host allowlist and rejects unknown origins', () => {
+    const authEnv = bindings as unknown as HostedAuthEnv;
+    const config = hostedConfig(authEnv);
+    expect(config.issuer).toBe(issuer);
+    expect(config.publicHosts).toEqual([issuer, relayHost]);
+    expect(() => hostedConfig({ ...authEnv, EVERETT_PUBLIC_HOSTS: 'https://evil.example/path' })).toThrow(RelayError);
+    expect(() => hostedConfig({ ...authEnv, EVERETT_PUBLIC_HOSTS: 'https://user:secret@evil.example' })).toThrow(RelayError);
+  });
+  it('accepts auth on both public hosts and keeps identity keys on the issuer', async () => {
+    const issuerBrowser = new Browser(issuer), relayBrowser = new Browser(relayHost);
+    expect((await issuerBrowser.login()).status).toBe(303);
+    expect((await relayBrowser.login()).status).toBe(303);
+
+    const issuerGithub = await issuerBrowser.request('/auth/github');
+    expect(new URL(issuerGithub.headers.get('Location')!).searchParams.get('redirect_uri')).toBe(`${issuer}/auth/callback/github`);
+    const relayGithub = await relayBrowser.request('/auth/github');
+    expect(new URL(relayGithub.headers.get('Location')!).searchParams.get('redirect_uri')).toBe(`${relayHost}/auth/callback/github`);
+
+    const fromIssuer = await begin();
+    expect(new URL(fromIssuer.verification_uri_complete).origin).toBe(issuer);
+    expect((await issuerBrowser.request('/enroll/decision', form({ csrf: await issuerBrowser.csrf('/enroll?code=' + fromIssuer.user_code), user_code: fromIssuer.user_code, decision: 'approve' }))).status).toBe(303);
+    const issuerCred = await (await fetchWorker('/v2/auth/poll', json({ device_code: fromIssuer.device_code }))).json() as { state: string; token: string; owner: string };
+    expect(issuerCred.state).toBe('approved');
+    expect(issuerCred.owner).toBe(owner);
+
+    const fromRelay = await (await fetchOn(relayHost, '/v2/auth/device', json({ name: 'relay-device' }))).json() as { device_code: string; user_code: string; verification_uri_complete: string };
+    expect(new URL(fromRelay.verification_uri_complete).origin).toBe(relayHost);
+    expect((await relayBrowser.request('/enroll/decision', form({ csrf: await relayBrowser.csrf('/enroll?code=' + fromRelay.user_code), user_code: fromRelay.user_code, decision: 'approve' }))).status).toBe(303);
+    const relayCred = await (await fetchOn(relayHost, '/v2/auth/poll', json({ device_code: fromRelay.device_code }))).json() as { state: string; token: string; owner: string };
+    expect(relayCred.state).toBe('approved');
+    expect(relayCred.owner).toBe(owner);
+    expect(relayCred.owner).toBe(issuerCred.owner);
+
+    const issuerWho = await (await nativeOn(issuer, issuerCred.token, 'whoami')).json() as { result: { owner: string } };
+    const relayWho = await (await nativeOn(relayHost, relayCred.token, 'whoami')).json() as { result: { owner: string } };
+    expect(issuerWho.result.owner).toBe(owner);
+    expect(relayWho.result.owner).toBe(owner);
+    expect((await nativeOn(relayHost, issuerCred.token, 'whoami')).status).toBe(200);
+    expect((await nativeOn(issuer, relayCred.token, 'whoami')).status).toBe(200);
+  });
+  it('advertises identity issuer in OAuth metadata while endpoints follow the request host', async () => {
+    const fromIssuer = await (await fetchOn(issuer, '/.well-known/oauth-authorization-server')).json() as Record<string, string>;
+    const fromRelay = await (await fetchOn(relayHost, '/.well-known/oauth-authorization-server')).json() as Record<string, string>;
+    expect(fromIssuer.issuer).toBe(issuer);
+    expect(fromRelay.issuer).toBe(issuer);
+    expect(fromIssuer.authorization_endpoint).toBe(`${issuer}/oauth/authorize`);
+    expect(fromRelay.authorization_endpoint).toBe(`${relayHost}/oauth/authorize`);
+    expect(fromRelay.token_endpoint).toBe(`${relayHost}/oauth/token`);
+    expect(fromRelay.introspection_endpoint).toBe(`${relayHost}/oauth/introspect`);
+  });
+  it('denies unknown hosts, other-allowlist Origin, and absolute return_to redirects', async () => {
+    expect((await fetchOn('https://attacker.example', '/enroll')).status).toBe(403);
+    expect((await fetchOn('https://attacker.example', '/v2/auth/device', json({ name: 'x' }))).status).toBe(403);
+    const pending = await begin(), browser = new Browser();
+    await browser.login();
+    const csrf = await browser.csrf('/enroll?code=' + pending.user_code);
+    const init = form({ csrf, user_code: pending.user_code, decision: 'approve' }), headers = new Headers(init.headers);
+    headers.set('Cookie', [...browser.cookies].map(([k, v]) => `${k}=${v}`).join('; '));
+    headers.set('Origin', relayHost);
+    expect((await fetchWorker('/enroll/decision', { ...init, headers })).status).toBe(403);
+    expect((await browser.request('/auth/github?return_to=' + encodeURIComponent(`${relayHost}/enroll`))).status).toBe(400);
+    expect((await browser.request('/auth/github?return_to=' + encodeURIComponent('https://attacker.example/enroll'))).status).toBe(400);
+    expect(await memberCount()).toBe(0);
+  });
+});
+
