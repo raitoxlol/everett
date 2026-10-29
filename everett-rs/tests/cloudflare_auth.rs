@@ -139,6 +139,15 @@ impl Fake {
             ),
         );
     }
+    fn configure_split(&self, f: &Fixture, identity: &str) {
+        f.write(
+            ".everett/config.toml",
+            &format!(
+                "[auth]\nprovider = 'cloudflare'\nissuer = '{identity}'\nbase_url = '{}'\n",
+                self.issuer
+            ),
+        );
+    }
     fn approved(&self) {
         self.polls.lock().unwrap().push_back((200,json!({"state":"approved","token":TOKEN,"agent_id":"immutable-agent","owner":"owner-synthetic","expires_at":(everett::session::now()*1000.0) as u64+60_000})));
     }
@@ -984,5 +993,91 @@ fn issuer_only_config_still_connects_to_that_origin() {
     assert_eq!(stored["base_url"], fake.issuer);
     assert!(fake.requests().iter().any(|r| r.0 == "/v2/auth/device"));
     assert!(fake.requests().iter().any(|r| r.0 == "/v2/relay/whoami"));
+}
+
+#[test]
+fn config_issuer_and_base_url_send_requests_to_base_url() {
+    let f = fixture();
+    let identity = Fake::new();
+    let relay = Fake::new();
+    relay.configure_split(&f, &identity.issuer);
+    relay.approved();
+    let out = f.run(&["login", "--json"]);
+    redact(&out);
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let shown: Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(shown["issuer"], identity.issuer);
+    assert_eq!(shown["verified"], true);
+    let stored: Value = serde_json::from_slice(&std::fs::read(f.home().join(".everett/cloudflare-auth.json")).unwrap()).unwrap();
+    assert_eq!(stored["issuer"], identity.issuer);
+    assert_eq!(stored["base_url"], relay.issuer);
+    assert!(relay.requests().iter().any(|r| r.0 == "/v2/auth/device"));
+    assert!(relay.requests().iter().any(|r| r.0 == "/v2/auth/poll"));
+    assert!(relay.requests().iter().any(|r| r.0 == "/v2/relay/whoami"));
+    assert!(
+        identity.requests().is_empty(),
+        "issuer is identity only; enrollment must not contact it: {:?}",
+        identity.requests()
+    );
+}
+
+#[test]
+fn login_issuer_flag_with_base_url_flag_keeps_identity_on_issuer() {
+    let f = fixture();
+    let identity = Fake::new();
+    let relay = Fake::new();
+    relay.approved();
+    let out = f.run(&[
+        "login",
+        "--provider",
+        "cloudflare",
+        "--issuer",
+        &identity.issuer,
+        "--base-url",
+        &relay.issuer,
+        "--json",
+    ]);
+    redact(&out);
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let shown: Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(shown["issuer"], identity.issuer);
+    assert_eq!(shown["verified"], true);
+    let stored: Value = serde_json::from_slice(&std::fs::read(f.home().join(".everett/cloudflare-auth.json")).unwrap()).unwrap();
+    assert_eq!(stored["issuer"], identity.issuer);
+    assert_eq!(stored["base_url"], relay.issuer);
+    assert!(relay.requests().iter().any(|r| r.0 == "/v2/auth/device"));
+    assert!(relay.requests().iter().any(|r| r.0 == "/v2/auth/poll"));
+    assert!(relay.requests().iter().any(|r| r.0 == "/v2/relay/whoami"));
+    assert!(
+        identity.requests().is_empty(),
+        "login --issuer must not send network requests to issuer when --base-url is set: {:?}",
+        identity.requests()
+    );
+}
+
+#[test]
+fn login_issuer_flag_still_uses_configured_base_url() {
+    let f = fixture();
+    let identity = Fake::new();
+    let relay = Fake::new();
+    relay.configure_split(&f, &identity.issuer);
+    relay.approved();
+    let out = f.run(&["login", "--issuer", &identity.issuer, "--json"]);
+    redact(&out);
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let shown: Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(shown["issuer"], identity.issuer);
+    assert_eq!(shown["verified"], true);
+    let stored: Value = serde_json::from_slice(&std::fs::read(f.home().join(".everett/cloudflare-auth.json")).unwrap()).unwrap();
+    assert_eq!(stored["issuer"], identity.issuer);
+    assert_eq!(stored["base_url"], relay.issuer);
+    assert!(relay.requests().iter().any(|r| r.0 == "/v2/auth/device"));
+    assert!(relay.requests().iter().any(|r| r.0 == "/v2/auth/poll"));
+    assert!(relay.requests().iter().any(|r| r.0 == "/v2/relay/whoami"));
+    assert!(
+        identity.requests().is_empty(),
+        "login --issuer must not override configured base_url: {:?}",
+        identity.requests()
+    );
 }
 
