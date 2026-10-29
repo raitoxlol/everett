@@ -1,3 +1,5 @@
+mod common;
+
 use std::fs::{self, OpenOptions};
 use std::io::Write;
 use std::os::unix::fs::PermissionsExt;
@@ -134,6 +136,7 @@ impl Pair {
             )
             .env("FAKE_REMOTE", self.remote.path())
             .env("FAKE_LOCAL", self.local.path());
+        common::scrub_caller_identity(&mut cmd);
         cmd
     }
 
@@ -262,6 +265,7 @@ fn fake_ssh(args: &[String]) -> i32 {
         .env_remove("EVERETT_SESSION_ID")
         .env_remove("EVERETT_HARNESS_NAME")
         .env_remove("EVERETT_HOPS");
+    common::scrub_caller_identity(&mut cmd);
     if args.last().unwrap().ends_with(" peer identity") {
         cmd.args(["peer", "identity"]);
     } else if args.last().unwrap().ends_with(" peer install") {

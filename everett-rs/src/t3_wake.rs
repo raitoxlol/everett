@@ -65,6 +65,13 @@ pub fn nudge(session: &Session, message_id: &str) -> Result<String> {
 
 /// Send the nudge into the thread. Ok carries the T3 CLI's receipt.
 pub fn wake(thread: &str, session: &Session, message_id: &str) -> Result<String> {
+    wake_with_timeout(thread, session, message_id, SEND_TIMEOUT)
+}
+
+pub(crate) fn wake_with_timeout(thread: &str, session: &Session, message_id: &str, timeout: f64) -> Result<String> {
+    if !timeout.is_finite() || timeout <= 0.0 {
+        return Err(EverettError::new(4, "Timeout expired before T3 dispatch."));
+    }
     let bin = binary().ok_or_else(|| {
         EverettError::new(4, "T3 Code CLI (t3) not found on PATH or in ~/.t3/bin.")
     })?;
@@ -77,12 +84,13 @@ pub fn wake(thread: &str, session: &Session, message_id: &str) -> Result<String>
         nudge(session, message_id)?,
     ];
     let env: HashMap<String, String> = std::env::vars().collect();
-    let out = run_capture(&argv, None, &env, SEND_TIMEOUT)
+    let timeout = timeout.min(SEND_TIMEOUT);
+    let out = run_capture(&argv, None, &env, timeout)
         .map_err(|e| EverettError::new(4, format!("t3 thread send failed to start: {e}")))?;
     if out.timed_out {
         return Err(EverettError::new(
             4,
-            format!("t3 thread send timed out after {SEND_TIMEOUT}s"),
+            format!("t3 thread send timed out after {timeout}s"),
         ));
     }
     if out.code != 0 {

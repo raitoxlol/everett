@@ -18,8 +18,9 @@ The native path retains `queued` and `delivered` as independent inbox-pickup
 observations. If native attachment fails after the inbox write, the error names
 the retained message. The request may already have been read; do not blindly retry.
 
-T3 Code, external agents, attached sessions without a supported wake transport, and remote transports
-currently have no synchronous ping path. They fail explicitly without queueing.
+T3 Code pings use `t3 thread send` to dispatch a fixed inbox nudge to the owning
+thread. External agents, attached sessions without a supported wake transport,
+and remote transports have no immediate ping path. They fail without queueing.
 Remote-derived callers cannot resume, spawn, or wake local providers. A process
 being alive does not prove it can receive a prompt. Legacy queue delivery requires
 an explicit `--mode inbox` or MCP `mode: "inbox"`; `auto` and `resume` retain their
@@ -137,6 +138,46 @@ task completion.
 or an accepting hook marks the returned message ids consumed so they do not
 appear again. Records remain available for `reply_to` lookup until expiry.
 
+## Wake proofs
+
+Run `everett proof wake --to <session> [--timeout 120] [--json]` to check one
+explicit local target. It never selects a target automatically or broadcasts.
+Remote-derived callers are refused under the same owner/local rule as ping.
+`--dry-run` resolves the target and selected transport without sending anything.
+
+The command sends a fixed request to reply through Everett with exactly
+`WAKE-OK <random nonce>` using a proof-specific dispatch budget. Ordinary CLI
+and MCP ping timeouts keep their existing behavior. Idle headless resumes also
+get a durable inbox canary and a fixed pickup/reply nudge, so stdout alone cannot
+pass. It reports UTC observation timestamps for target resolution, dispatch with
+the wake receipt, pickup via the original's `.done` entry, and a matching reply,
+plus total latency. Transports are `t3`, `omp`, `claude_bg`, `resume`, or `none`.
+OMP dispatch retains its `extension_pending` receipt; acceptance does not prove
+that the watcher nudged the agent. Resume dispatch reports the connector PID as
+`resume_started` and observes the inbox while that client runs. The proof stops
+its own connector when it finishes; provider stdout cannot establish a reply.
+
+Claude availability uses a bounded, non-sending background-capability preflight
+for both dry-run and real proofs. Missing executables and foreground-only
+sessions report `none` before queueing. Inbox lock acquisition is part of the
+proof budget. Expiry prevents a late canary append.
+
+The sender's own inbox is read without consuming any messages. Success requires
+the target's reply to reference the canary ID and contain exactly the nonce
+token within the timeout, which includes dispatch. A reply after a peek can pass
+with pickup still unobserved. Wrong replies do not prevent a later correct reply
+from passing before the deadline. Canaries and replies remain recorded; the
+proof never retries a failed dispatch.
+
+| Exit | Result |
+| --- | --- |
+| 0 | Matching reply received, or a successful dry-run. |
+| 2 | Invalid arguments, unresolved/ambiguous target, self-target, or owner/local refusal. |
+| 3 | No immediate wake transport; nothing queued. |
+| 4 | Dispatch failed or expired; the error identifies any retained canary. |
+| 5 | Timed out without pickup or a matching reply. |
+| 6 | Pickup observed, but no correct correlated reply within the timeout. |
+
 ## Verification
 
 `everett-rs/tests/delivery_policy.rs` drives the real CLI and stdio MCP with an
@@ -146,3 +187,6 @@ queue receipts, and read-once inbox consumption. `tests/live.rs`,
 explicit external polling, synthetic T3 request/reply, and the CLI/MCP journey.
 These fixtures do not prove that a real provider UI wakes or accepts a prompt.
 Webhook tests post to a fake endpoint. They do not prove a live Grok Bot run.
+`tests/proof_wake.rs` checks the proof command with fake executables and isolated
+inboxes. Running the proof against an explicitly chosen real session is a
+separate live check.
