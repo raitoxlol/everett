@@ -7,6 +7,7 @@ export default defineConfig({
     wrangler: { configPath: './wrangler.jsonc' },
     miniflare: { bindings: {
       EVERETT_ISSUER: 'https://everett.test',
+      EVERETT_PUBLIC_HOSTS: 'https://everett.test,https://relay.everett.test',
       AUTH_GITHUB_ID: 'synthetic-client',
       AUTH_GITHUB_SECRET: 'synthetic-test-value-only',
       EVERETT_OWNER_GITHUB_ID: '282002453',

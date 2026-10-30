@@ -334,11 +334,14 @@ enum Cmd {
         /// Cloudflare enrollment (config: auth.provider)
         #[arg(long, value_parser = ["cloudflare"])]
         provider: Option<String>,
-        /// Cloudflare HTTPS origin (otherwise auth.issuer or stored issuer)
+        /// Cloudflare identity issuer (otherwise auth.issuer or https://everett.raitox.tech)
         #[arg(long)]
         issuer: Option<String>,
+        /// Cloudflare relay URL (otherwise auth.base_url, auth.issuer, or https://relay.raitox.tech)
+        #[arg(long)]
+        base_url: Option<String>,
         /// cancel the pending Cloudflare approval request
-        #[arg(long, conflicts_with_all = ["force", "open", "no_wait", "issuer", "device"])]
+        #[arg(long, conflicts_with_all = ["force", "open", "no_wait", "issuer", "base_url", "device"])]
         cancel: bool,
         /// start or show a pending Cloudflare approval without waiting
         #[arg(long)]
@@ -967,7 +970,7 @@ fn main() {
             cli::cmd_install_mcp(&a)
         }
         Cmd::Login {
-            provider, issuer, cancel, no_wait,
+            provider, issuer, base_url, cancel, no_wait,
             device,
             open,
             force,
@@ -975,6 +978,7 @@ fn main() {
         } => {
             a.auth_provider = provider;
             a.auth_issuer = issuer;
+            a.auth_base_url = base_url;
             a.auth_cancel = cancel;
             a.auth_no_wait = no_wait;
             a.device = device;

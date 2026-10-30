@@ -7,18 +7,21 @@ import { ed25519, x25519 } from '@noble/curves/ed25519';
 import type { Env } from '../src/index';
 
 const issuer = 'https://everett.test';
+const relayHost = 'https://relay.everett.test';
 const env = bindings as unknown as Env;
-const fetchWorker = (path: string, init?: RequestInit) => workerExports.default.fetch(new Request(issuer + path, { ...init, redirect: 'manual' }));
+const fetchOn = (origin: string, path: string, init?: RequestInit) => workerExports.default.fetch(new Request(origin + path, { ...init, redirect: 'manual' }));
+const fetchWorker = (path: string, init?: RequestInit) => fetchOn(issuer, path, init);
 const json = (body: unknown): RequestInit => ({ method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
 const form = (body: Record<string, string>): RequestInit => ({ method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, body: new URLSearchParams(body).toString() });
 
 class Browser {
   cookies = new Map<string, string>();
+  constructor(readonly origin = issuer) {}
   async request(path: string, init: RequestInit = {}) {
     const headers = new Headers(init.headers);
     headers.set('Cookie', [...this.cookies].map(([k, v]) => `${k}=${v}`).join('; '));
-    if (init.method === 'POST') headers.set('Origin', issuer);
-    const response = await fetchWorker(path, { ...init, headers });
+    if (init.method === 'POST') headers.set('Origin', this.origin);
+    const response = await fetchOn(this.origin, path, { ...init, headers });
     for (const cookie of response.headers.getAll('Set-Cookie')) {
       const pair = cookie.split(';', 1)[0], at = pair.indexOf('=');
       this.cookies.set(pair.slice(0, at), pair.slice(at + 1));
@@ -353,5 +356,15 @@ describe('Public enrollment: shared-cap isolation', () => {
     expect(foreignHtml).not.toContain('/oauth/consent');
     const foreignConsent = await bob.request('/oauth/consent', form({ csrf: await bob.csrf('/enroll'), request_id: location.searchParams.get('request')!, decision: 'approve', name: 'stolen' }));
     expect(foreignConsent.status).toBeGreaterThanOrEqual(400);
+  });
+
+  it('keeps public account namespaces on the issuer when enrollment uses the relay host', async () => {
+    const alice = new Browser(relayHost);
+    await alice.login('/enroll', ALICE.id, ALICE.login);
+    const pending = await (await fetchOn(relayHost, '/v2/auth/device', json({ name: 'relay-alice' }))).json() as { device_code: string; user_code: string };
+    expect((await alice.request('/enroll/decision', form({ csrf: await alice.csrf('/enroll?code=' + pending.user_code), user_code: pending.user_code, decision: 'approve' }))).status).toBe(303);
+    const body = (await poll(pending.device_code)).body;
+    expect(body.owner).toBe(namespace({ issuer, subject: `github:${ALICE.id}`, org: null }));
+    expect((await whoami(body.token!)).owner).toBe(body.owner);
   });
 });

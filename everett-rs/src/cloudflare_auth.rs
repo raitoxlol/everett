@@ -16,6 +16,8 @@ use url::Url;
 #[derive(Clone, Serialize, Deserialize)]
 pub struct Credential {
     pub issuer: String,
+    #[serde(default)]
+    pub base_url: String,
     pub agent_id: String,
     pub owner: String,
     pub device_name: String,
@@ -32,6 +34,8 @@ impl Credential {
 #[derive(Serialize, Deserialize)]
 struct Pending {
     issuer: String,
+    #[serde(default)]
+    base_url: String,
     device_code: String,
     user_code: String,
     verification_uri: String,
@@ -65,6 +69,72 @@ pub fn require_provider() -> Result<()> {
 }
 
 pub const PUBLIC_ISSUER: &str = "https://everett.raitox.tech";
+pub const PUBLIC_RELAY: &str = "https://relay.raitox.tech";
+
+fn canonical_identity(value: &str) -> &str {
+    if value == PUBLIC_RELAY { PUBLIC_ISSUER } else { value }
+}
+
+fn pending_base(pending: &Pending) -> &str {
+    if pending.base_url.is_empty() { pending.issuer.as_str() } else { pending.base_url.as_str() }
+}
+
+fn cloudflare_config_active(stored_or_pending: bool) -> bool {
+    let provider = crate::config::get("auth.provider", Some("EVERETT_AUTH_PROVIDER"), "cloudflare");
+    provider == "cloudflare"
+        || std::env::var_os("EVERETT_AUTH_ISSUER").is_some()
+        || std::env::var_os("EVERETT_AUTH_BASE_URL").is_some()
+        || !stored_or_pending
+}
+
+fn resolve_identity(args: &Args, stored: Option<&Credential>, pending: Option<&Pending>) -> Result<String> {
+    if let Some(issuer) = args.auth_issuer.as_deref().filter(|s| !s.is_empty()) {
+        return origin(canonical_identity(issuer));
+    }
+    if cloudflare_config_active(stored.is_some() || pending.is_some()) {
+        let configured = auth::issuer();
+        if !configured.is_empty() {
+            return origin(canonical_identity(&configured));
+        }
+    }
+    if let Some(stored) = stored {
+        return origin(&stored.issuer);
+    }
+    if let Some(pending) = pending {
+        return origin(&pending.issuer);
+    }
+    origin(PUBLIC_ISSUER)
+}
+
+/// Connect origin for device start/poll/enroll. `base_url` always wins over issuer.
+fn resolve_base(args: &Args, stored: Option<&Credential>, pending: Option<&Pending>) -> Result<String> {
+    if let Some(base) = args.auth_base_url.as_deref().filter(|s| !s.is_empty()) {
+        return origin(base);
+    }
+    let config_active = cloudflare_config_active(stored.is_some() || pending.is_some());
+    if config_active {
+        let configured_base = auth::base_url();
+        if !configured_base.is_empty() {
+            return origin(&configured_base);
+        }
+    }
+    if let Some(issuer) = args.auth_issuer.as_deref().filter(|s| !s.is_empty()) {
+        return origin(issuer);
+    }
+    if config_active {
+        let configured_issuer = auth::issuer();
+        if !configured_issuer.is_empty() {
+            return origin(&configured_issuer);
+        }
+    }
+    if let Some(pending) = pending {
+        return origin(pending_base(pending));
+    }
+    if let Some(stored) = stored {
+        return origin(&stored.connect_origin());
+    }
+    origin(PUBLIC_RELAY)
+}
 
 pub fn onboarding_issuer() -> Option<String> {
     crate::config::values().ok()?;
@@ -76,8 +146,7 @@ pub fn onboarding_issuer() -> Option<String> {
     if credential_path().exists() || pending_path().exists() {
         return Some(String::new());
     }
-    let issuer = auth::issuer();
-    Some(if issuer.is_empty() { PUBLIC_ISSUER.into() } else { issuer })
+    Some(auth::issuer())
 }
 
 pub fn authenticated() -> bool {
@@ -165,7 +234,7 @@ fn lock() -> Result<File> {
 
 fn origin(value: &str) -> Result<String> {
     let url =
-        Url::parse(value).map_err(|_| fail(2, "Cloudflare issuer must be an HTTPS origin"))?;
+        Url::parse(value).map_err(|_| fail(2, "Cloudflare origin must be an HTTPS origin"))?;
     let loopback = matches!(url.host_str(), Some("localhost" | "127.0.0.1" | "[::1]"));
     if (url.scheme() != "https" && !(url.scheme() == "http" && loopback))
         || url.host_str().is_none()
@@ -175,7 +244,7 @@ fn origin(value: &str) -> Result<String> {
         || url.query().is_some()
         || url.fragment().is_some()
     {
-        return Err(fail(2, "Cloudflare issuer must be an HTTPS origin without credentials, path, query or fragment (HTTP is allowed only on loopback)"));
+        return Err(fail(2, "Cloudflare origin must be an HTTPS origin without credentials, path, query or fragment (HTTP is allowed only on loopback)"));
     }
     Ok(url.origin().ascii_serialization())
 }
@@ -299,16 +368,17 @@ fn text(body: &Value, key: &str) -> Result<String> {
         .ok_or_else(|| fail(6, "Cloudflare response is missing a valid required field"))
 }
 
-fn start(issuer: &str, name: &str) -> Result<Pending> {
+fn start(identity: &str, base: &str, name: &str) -> Result<Pending> {
     if name.trim().is_empty() || name.chars().count() > 100 || name.chars().any(char::is_control) {
         return Err(fail(2, "device name must have 1–100 visible characters"));
     }
-    let (status, body) = request(issuer, "/v2/auth/device", &json!({"name":name}), None)?;
+    let (status, body) = request(base, "/v2/auth/device", &json!({"name":name}), None)?;
     if status != 200 {
         return Err(status_error(status));
     }
     let pending = Pending {
-        issuer: origin(issuer)?,
+        issuer: origin(identity)?,
+        base_url: origin(base)?,
         device_code: text(&body, "device_code")?,
         user_code: text(&body, "user_code")?,
         verification_uri: text(&body, "verification_uri")?,
@@ -332,9 +402,9 @@ fn start(issuer: &str, name: &str) -> Result<Pending> {
             .user_code
             .bytes()
             .all(|b| b.is_ascii_digit() || (b'A'..=b'F').contains(&b))
-        || pending.verification_uri != format!("{}/enroll", pending.issuer)
+        || pending.verification_uri != format!("{}/enroll", pending.base_url)
         || pending.verification_uri_complete
-            != format!("{}/enroll?code={}", pending.issuer, pending.user_code)
+            != format!("{}/enroll?code={}", pending.base_url, pending.user_code)
     {
         return Err(fail(
             6,
@@ -372,7 +442,7 @@ impl StoppedRequest {
 
 fn cancel(pending: &Pending) -> Result<StoppedRequest> {
     let (status, body) = request(
-        &pending.issuer,
+        pending_base(pending),
         "/v2/auth/cancel",
         &json!({"device_code":pending.device_code}),
         None,
@@ -398,7 +468,7 @@ fn verify_identity(stored: &Credential) -> Result<Option<Value>> {
         ));
     }
     let (status, body) = request(
-        &stored.issuer,
+        &stored.connect_origin(),
         "/v2/relay/whoami",
         &json!({}),
         Some(&stored.token),
@@ -479,7 +549,7 @@ fn wait(pending: &Pending) -> Result<Credential> {
             continue;
         }
         let response = request_with_timeout(
-            &pending.issuer,
+            pending_base(pending),
             "/v2/auth/poll",
             &json!({"device_code":pending.device_code}),
             None,
@@ -518,6 +588,7 @@ fn wait(pending: &Pending) -> Result<Credential> {
             Some("approved") => {
                 let stored = Credential {
                     issuer: pending.issuer.clone(),
+                    base_url: pending_base(pending).to_string(),
                     token: text(&body, "token")?,
                     agent_id: text(&body, "agent_id")?,
                     owner: text(&body, "owner")?,
@@ -617,26 +688,8 @@ pub fn sign_in(args: &Args) -> Result<Value> {
     let _lock = lock()?;
     let stored = load()?;
     let mut pending = read::<Pending>(&pending_path())?;
-    let configured_issuer = args.auth_issuer.clone().unwrap_or_else(|| {
-        let provider = crate::config::get("auth.provider", Some("EVERETT_AUTH_PROVIDER"), "cloudflare");
-        if provider == "cloudflare"
-            || std::env::var_os("EVERETT_AUTH_ISSUER").is_some()
-            || (stored.is_none() && pending.is_none())
-        {
-            auth::issuer()
-        } else {
-            String::new()
-        }
-    });
-    let issuer = origin(if configured_issuer.is_empty() {
-        stored
-            .as_ref()
-            .map(|s| s.issuer.as_str())
-            .or_else(|| pending.as_ref().map(|p| p.issuer.as_str()))
-            .unwrap_or("")
-    } else {
-        &configured_issuer
-    })?;
+    let issuer = resolve_identity(args, stored.as_ref(), pending.as_ref())?;
+    let base = resolve_base(args, stored.as_ref(), pending.as_ref())?;
     if !args.force && pending.is_none() {
         if let Some(stored) = &stored {
             if stored.issuer != issuer {
@@ -657,6 +710,12 @@ pub fn sign_in(args: &Args) -> Result<Value> {
                 "pending login belongs to a different issuer; cancel it before switching",
             ));
         }
+        if pending_base(old) != base {
+            return Err(fail(
+                2,
+                "pending login belongs to a different relay URL; cancel it before switching",
+            ));
+        }
         if args.force {
             cancel(old)?;
             pending = None;
@@ -667,7 +726,7 @@ pub fn sign_in(args: &Args) -> Result<Value> {
     }
     let pending = match pending {
         Some(p) => p,
-        None => start(&issuer, &args.device.clone().unwrap_or_else(auth::hostname))?,
+        None => start(&issuer, &base, &args.device.clone().unwrap_or_else(auth::hostname))?,
     };
     eprintln!(
         "Open {}\nCompare code {} and device name {}. Approve in your browser.",
@@ -747,7 +806,7 @@ pub fn cmd_logout(args: &Args) -> i32 {
             if args.revoke_device {
                 if let Some(stored) = &stored {
                     let (status, _) = request(
-                        &stored.issuer,
+                        &stored.connect_origin(),
                         "/v2/relay/revokeAgent",
                         &json!({"deviceId":stored.agent_id}),
                         Some(&stored.token),
@@ -779,6 +838,20 @@ pub fn cmd_logout(args: &Args) -> i32 {
 }
 
 impl Credential {
+    fn connect_origin(&self) -> String {
+        let configured = crate::config::get("auth.base_url", Some("EVERETT_AUTH_BASE_URL"), "");
+        if !configured.is_empty() {
+            return configured;
+        }
+        if !self.base_url.is_empty() {
+            return self.base_url.clone();
+        }
+        if self.issuer == PUBLIC_ISSUER && auth::issuer().is_empty() {
+            return PUBLIC_RELAY.into();
+        }
+        self.issuer.clone()
+    }
+
     pub(crate) fn relay_origin(&self) -> Result<String> {
         if self.expires_at <= (session::now() * 1000.0) as u64 {
             return Err(fail(
@@ -787,7 +860,7 @@ impl Credential {
             ));
         }
         crate::relay::valid(&self.agent_id)?;
-        origin(&self.issuer)
+        origin(&self.connect_origin())
     }
 
     pub(crate) fn relay_request(&self, name: &str, value: &Value) -> Result<Value> {
