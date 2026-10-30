@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Separate the Cloudflare relay base URL from issuer identity. Account keys stay `https://everett.raitox.tech`; the CLI defaults to `https://relay.raitox.tech` for connect. Worker auth accepts an allowlist of public hosts. Existing configs that set only `issuer` keep working.
+
 - Remove Convex completely: Cloudflare is the only hosted relay. Remove the legacy OIDC relay login, registry/address publication, backend package, vendored SDK and CI; retain local/offline messaging, explicit SSH pairing, signed envelopes, ping-default and authors cards.
 
 - Make `ping` the CLI and MCP send default. Idle local sessions run headless; verified local Claude background sessions receive an immediate native inbox nudge. Unsupported immediate transports fail instead of silently queueing. `inbox`, `auto`, and `resume` remain explicit compatibility modes.

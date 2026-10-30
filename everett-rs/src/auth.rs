@@ -5,6 +5,10 @@ pub fn issuer() -> String {
     config::get("auth.issuer", Some("EVERETT_AUTH_ISSUER"), "")
 }
 
+pub fn base_url() -> String {
+    config::get("auth.base_url", Some("EVERETT_AUTH_BASE_URL"), "")
+}
+
 pub fn hostname() -> String {
     let mut buf = vec![0u8; 256];
     // SAFETY: buf is a valid writable buffer; gethostname writes a NUL-terminated name.
