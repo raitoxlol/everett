@@ -1,6 +1,7 @@
-# Everett 2.1.0 — v2 GA
+# Everett 2.2.0 — Cloudflare-only relay
 
-This release completes account-free local setup and adds opt-in delivery to idle Claude background sessions. The v2 relay protocol stays compatible with 2.0.0.
+Everett 2.2.0 removes the Convex relay backend. Cloudflare is the only hosted
+relay; account-free local/offline messaging and explicit SSH pairing remain.
 
 ## Install or update
 
@@ -9,29 +10,44 @@ curl -fsSL https://raw.githubusercontent.com/raitoxlol/everett/main/install.sh |
 everett doctor
 ```
 
-The installer verifies archive checksums. Set `EVERETT_VERSION=v2.1.0` to pin this version.
+The installer verifies archive checksums. Set `EVERETT_VERSION=v2.2.0` to pin
+this version.
+
+## Breaking changes
+
+- Convex relay users must move to Cloudflare or use local/offline messaging or
+  explicit SSH pairing. The Convex relay backend and its legacy OIDC,
+  registry/address publication, SDK and CI are removed.
+- Unsupported cross-owner grant CLI/MCP surfaces are removed; they are not
+  carried forward as compatibility shims.
 
 ## What changed
 
-- Local setup works without an Everett account. Browser sign-in opens only after explicit confirmation; local setup is available without it.
-- `send --wake` can wake an idle Claude background session. Automatic receiver wake requires a local policy allowing the exact session, directory and paired sender device. It is disabled by default.
-- Replies retain their request correlation, signed remote provenance and Claude harness identity. Targeted inbox reads preserve unrelated pending messages. A delivered prompt is distinct from a model reply.
-- Hosted multi-account enrollment is implemented behind a deployment flag. Each GitHub account owns a separate relay namespace; cross-account messaging remains denied. Public enrollment is enabled after live second-account acceptance.
+- `ping` is now the CLI and MCP send default. Idle local sessions run headless;
+  verified local Claude background sessions receive an immediate native inbox
+  nudge. Unsupported immediate transports fail instead of silently queueing.
+  `inbox`, `auto`, and `resume` remain explicit compatibility modes.
+- Added opt-in authenticated author/session cards on Cloudflare (RAI-70), with
+  `relay expose`, `relay authors`, and corresponding MCP actions. MCP
+  `directory` continues to list device bundles.
+- Added relay-bound delivery for registered external agents, including
+  `grok-bot` and `openai-dot` (#97).
+- Improved receiver resilience: failed capability-status writes no longer stop
+  delivery (#109), and incomplete inbox rows or unreadable outgoing receipts
+  are skipped rather than terminating the receiver (#110).
+- Added hosted device names and advisory local renaming through
+  `relay devices --names` and `relay rename NAME`.
+- Added an owner-configured webhook nudge for matching `grok-bot` and
+  `openai-dot` inbox messages. HTTP 200 indicates that the endpoint accepted a
+  routine run; it does not establish message consumption.
+- Validated native Claude ping requests remain durable when preflight or attach
+  fails, and the local dashboard shows explicitly exposed peer cards with
+  separate agent/session tags.
 
-## Verified behavior
+See [CHANGELOG.md](CHANGELOG.md) for the full list.
 
-The real-model acceptance is recorded in [receiver wake PR56](https://github.com/raitoxlol/everett/pull/56).
+## Proof status
 
-On 2026-10-24, a physical Linux NUC sent through the public HTTPS relay to a dedicated idle Claude session on a Mac. Claude read the exact request and returned a correlated reply to the NUC. Native terminal observations confirmed the same Claude process and unchanged unsent composer draft. Idempotent replay produced no duplicate reply; a denied receiver policy imported the message without waking the agent.
-
-A second real GitHub account enrolled distinct Mac and NUC devices into its own namespace. Its public send/read/reply round trip passed. Device lists excluded the other account; attempts to pair with or revoke an original-account device returned HTTP 403. Revoking the second account’s NUC credential blocked its next request while both the sibling Mac credential and original account stayed valid. This relay check used synthetic inbox sessions and real GitHub accounts; the Claude run above used a real model.
-
-The Mac reused its existing Claude provider login. Everett GitHub enrollment identifies devices; it does not authenticate an agent provider or transfer provider credentials between machines.
-
-## Scope and limits
-
-Live ChatGPT OAuth and deployed capacity are not yet verified. T3 discovery and MCP behavior have synthetic coverage; automatic T3 wake is not claimed. Native Everett credentials expire after 30 days and require reenrollment.
-
-The service stores account and device metadata, signed routing/status metadata and queued encrypted message bodies. Plaintext transcripts and shared local memory remain on devices. It is inaccurate to describe this relay as storing only authentication information.
-
-The release workflow builds four macOS/Linux archives and publishes their SHA-256 checksums. The CLI and hosted Worker are separate deployments.
+The maintainer waived the live proof gates for this release. Live same-org,
+cross-org, and external relay-binding evidence is not recorded; this release
+does not claim those flows were live-proven.
