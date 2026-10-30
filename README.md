@@ -11,7 +11,8 @@ Hark and Muse compatibility is unverified.
 Dots and Grok Bot can use owner-configured webhook nudges. Other harnesses use
 headless resume or inbox pickup. See [agent support and wake](docs/agent-support.md).
 
-Before cutting or announcing v2.2.0, complete the [live proof bar](docs/v2.2-proof-bar.md).
+The maintainer waived the v2.2.0 live proof bar; live same-org, cross-org, and
+external-binding evidence is not recorded. See the [proof-bar status](docs/v2.2-proof-bar.md).
 See also [Grok Bot 0.77 reachability](docs/grok-bot.md#grok-bot-077-reachability).
 
 ## Quickstart

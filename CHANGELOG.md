@@ -1,16 +1,17 @@
 # Changelog
 
-## Unreleased
+## 2.2.0 — 2026-10-27
 
 - Separate the Cloudflare relay base URL from issuer identity. Account keys stay `https://everett.raitox.tech`; the CLI defaults to `https://relay.raitox.tech` for connect. Worker auth accepts an allowlist of public hosts. Existing configs that set only `issuer` keep working.
 
-- Remove Convex completely: Cloudflare is the only hosted relay. Remove the legacy OIDC relay login, registry/address publication, backend package, vendored SDK and CI; retain local/offline messaging, explicit SSH pairing, signed envelopes, ping-default and authors cards.
+- Remove Convex completely: Cloudflare is the only hosted relay. Remove the legacy OIDC relay login, registry/address publication, backend package, vendored SDK, CI, and unsupported cross-owner grant CLI/MCP surfaces. Local/offline messaging, explicit SSH pairing, and signed v2 envelopes remain. This breaks use of the Convex relay.
 
-- Make `ping` the CLI and MCP send default. Idle local sessions run headless; verified local Claude background sessions receive an immediate native inbox nudge. Unsupported immediate transports fail instead of silently queueing. `inbox`, `auto`, and `resume` remain explicit compatibility modes.
-- Add opt-in authenticated author/session cards on Cloudflare. `relay expose SESSION`, `relay authors`, and MCP relay `expose`/`withdraw`/`authors` use credential-derived authors and agents, without device pairing for discovery. MCP `directory` retains device bundles. Revoked credentials and memberships disappear from directory results; unexpected lookup failures surface as errors.
+- Make `ping` the CLI and MCP send default and add opt-in authenticated author/session cards on Cloudflare (RAI-70). Idle local sessions run headless; verified local Claude background sessions receive an immediate native inbox nudge. Unsupported immediate transports fail instead of silently queueing. `inbox`, `auto`, and `resume` remain explicit compatibility modes. `relay expose SESSION`, `relay authors`, and MCP relay `expose`/`withdraw`/`authors` use credential-derived authors and agents, without device pairing for discovery. MCP `directory` retains device bundles. Revoked credentials and memberships disappear from directory results; unexpected lookup failures surface as errors.
 - Keep validated native Claude ping requests durable even when preflight or attach fails, returning the retained message ID without claiming successful dispatch. Stubbed CLI/MCP tests cover native receipts, failure retention, and non-interactive stdin; legacy `--wake` remains interactive-only.
-- Show authenticated peer cards and separate agent/session tags in the local dashboard. Cards are shared plaintext metadata only after explicit exposure; message encryption, remote provenance, and read-only provider stores are unchanged. Backend deployment is required for the new directory APIs.
+- Show authenticated peer cards and separate agent/session tags in the local dashboard. Cards are shared plaintext metadata only after explicit exposure; message encryption, remote provenance, and read-only provider stores are unchanged. A Cloudflare Worker deployment is required for the directory APIs.
 
+- Route relay-bound delivery to registered external agents, including `grok-bot` and `openai-dot` (#97).
+- Keep delivery running when a capability-status write fails (#109), and skip incomplete inbox rows and unreadable outgoing receipts instead of terminating the receiver (#110).
 - Add `relay devices --names` to show hosted enrollment names beside device IDs and verified fingerprints, and `relay rename NAME` to update only this device's advisory label. Original JSON bundle output and pairing/pin semantics are unchanged. Hosted metadata requires a backend update; missing labels remain explicitly unnamed.
 
 - Add an owner `receiver-webhook.json` policy. When a rule matches a registered `grok-bot` or `openai-dot` inbox message, Everett POSTs a wake nudge to the owner's HTTPS URL. The POST omits message text. HTTP 200 means the endpoint accepted a routine run, not that the bot consumed the inbox. A missing or disabled policy leaves send behavior unchanged.
