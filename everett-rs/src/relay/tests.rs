@@ -1092,3 +1092,108 @@ fn imported_external_inbox_posts_one_webhook_without_the_message_text() {
     import_inner(&b, &external, now, true).unwrap();
     assert_eq!(crate::receiver_webhook::testing_posts().len(), 1);
 }
+#[test]
+fn pinned_peer_is_accepted_across_configured_relay_aliases() {
+    if !crate::test_support::isolated(
+        "relay::tests::pinned_peer_is_accepted_across_configured_relay_aliases",
+    ) {
+        return;
+    }
+    let home = tempfile::tempdir().unwrap();
+    std::env::set_var("HOME", home.path());
+    std::env::set_var("EVERETT_HOME", home.path());
+    let (a, b) = devices();
+    *NATIVE_DEVICES.lock().unwrap() = vec![a.device.clone(), b.device.clone()];
+    peer::private_dir(crate::cloudflare_auth::credential_path().parent().unwrap()).unwrap();
+    write(
+        &crate::cloudflare_auth::credential_path(),
+        &json!({
+            "issuer": crate::cloudflare_auth::PUBLIC_ISSUER,
+            "base_url": crate::cloudflare_auth::PUBLIC_RELAY,
+            "agent_id": b.device.device_id,
+            "owner": b.device.owner,
+            "device_name": "fixture",
+            "token": format!("evt_{}", "a".repeat(64)),
+            "expires_at": u64::MAX
+        }),
+    )
+    .unwrap();
+    peer::private_dir(&root().join("peers")).unwrap();
+    let save = |deployment: &str| {
+        write(
+            &peer_path("peer").unwrap(),
+            &Paired {
+                device: a.device.clone(),
+                deployment: deployment.into(),
+                grant_id: None,
+            },
+        )
+        .unwrap();
+    };
+
+    assert!(crate::cloudflare_auth::same_relay(
+        crate::cloudflare_auth::PUBLIC_ISSUER,
+        crate::cloudflare_auth::PUBLIC_RELAY
+    ));
+    assert!(!crate::cloudflare_auth::same_relay(
+        "https://alias-a.example",
+        "https://alias-b.example"
+    ));
+    save(crate::cloudflare_auth::PUBLIC_ISSUER);
+    let accepted = paired("peer", &b.device.owner).unwrap();
+    assert_eq!(accepted.device.device_id, a.device.device_id);
+    assert_eq!(accepted.deployment, crate::cloudflare_auth::PUBLIC_RELAY);
+    revoke_device_with(
+        &a.device.device_id,
+        &b.device.owner,
+        crate::cloudflare_auth::PUBLIC_RELAY,
+        |_, _, _| Ok(json!({})),
+    )
+    .unwrap();
+    assert!(!peer_path("peer").unwrap().exists());
+
+    save("https://foreign.example");
+    let rejected = match paired("peer", &b.device.owner) {
+        Err(error) => error,
+        Ok(_) => panic!("foreign deployment was accepted"),
+    };
+    assert!(
+        rejected.message.contains("relay deployment"),
+        "{}",
+        rejected.message
+    );
+    assert!(peer_path("peer").unwrap().exists());
+    revoke_device_with(
+        &a.device.device_id,
+        &b.device.owner,
+        crate::cloudflare_auth::PUBLIC_RELAY,
+        |_, _, _| Ok(json!({})),
+    )
+    .unwrap();
+    assert!(
+        peer_path("peer").unwrap().exists(),
+        "a foreign pin is a different relay"
+    );
+
+    std::env::set_var(
+        "EVERETT_AUTH_RELAY_ALIASES",
+        "https://alias-a.example, https://alias-b.example",
+    );
+    std::env::set_var("EVERETT_AUTH_BASE_URL", "https://alias-b.example");
+    assert!(!crate::cloudflare_auth::same_relay(
+        crate::cloudflare_auth::PUBLIC_ISSUER,
+        crate::cloudflare_auth::PUBLIC_RELAY
+    ));
+    save("https://alias-a.example");
+    let custom = paired("peer", &b.device.owner).unwrap();
+    assert_eq!(custom.deployment, "https://alias-b.example");
+    save(crate::cloudflare_auth::PUBLIC_ISSUER);
+    match paired("peer", &b.device.owner) {
+        Err(error) => assert!(
+            error.message.contains("relay deployment"),
+            "{}",
+            error.message
+        ),
+        Ok(_) => panic!("explicit aliases must not keep the public pair"),
+    }
+}

@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- Keep GitHub sign-in on the identity issuer when a browser opens another public relay host, so the GitHub OAuth app needs only the issuer callback. Accept existing peer pins across an explicit relay alias list; the public issuer and `https://relay.raitox.tech` are the default list.
+
 ## 2.2.0 — 2026-10-27
 
 - Separate the Cloudflare relay base URL from issuer identity. Account keys stay `https://everett.raitox.tech`; the CLI defaults to `https://relay.raitox.tech` for connect. Worker auth accepts an allowlist of public hosts. Existing configs that set only `issuer` keep working.

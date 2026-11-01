@@ -589,10 +589,11 @@ escalate_minutes = 30         # re-notify once when a session stays blocked this
 provider = "cloudflare"                 # EVERETT_AUTH_PROVIDER; only supported provider
 issuer = "https://everett.raitox.tech"  # EVERETT_AUTH_ISSUER; identity, not the connect URL
 base_url = "https://relay.raitox.tech"  # EVERETT_AUTH_BASE_URL; optional relay URL
+# relay_aliases = "https://everett.raitox.tech,https://relay.raitox.tech"  # EVERETT_AUTH_RELAY_ALIASES; default shown
 
 ```
 
-Environment overrides: `EVERETT_VAULT`, `EVERETT_VAULT_DIR`, `EVERETT_HARNESS`, `EVERETT_ROUTER`, `TYPESAFE_API_KEY`, `EVERETT_NOTIFY`, `EVERETT_NOTIFY_COMMAND`, `EVERETT_ESCALATE_MINUTES`, `EVERETT_AUTH_ISSUER`, `EVERETT_AUTH_BASE_URL`, and `EVERETT_HOME` (the root used in place of `~`). Existing configs that set only `issuer` keep using that origin as the connect URL.
+Environment overrides: `EVERETT_VAULT`, `EVERETT_VAULT_DIR`, `EVERETT_HARNESS`, `EVERETT_ROUTER`, `TYPESAFE_API_KEY`, `EVERETT_NOTIFY`, `EVERETT_NOTIFY_COMMAND`, `EVERETT_ESCALATE_MINUTES`, `EVERETT_AUTH_ISSUER`, `EVERETT_AUTH_BASE_URL`, `EVERETT_AUTH_RELAY_ALIASES`, and `EVERETT_HOME` (the root used in place of `~`). Existing configs that set only `issuer` keep using that origin as the connect URL. GitHub sign-in stays on the issuer. Pins treat every origin in `relay_aliases` as the same relay; an explicit list replaces the public pair above.
 
 ## Accounts
 

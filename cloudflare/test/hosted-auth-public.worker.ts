@@ -48,7 +48,12 @@ beforeEach(() => {
   providerUser = { id: 282002453, login: 'raitoxlol' };
   vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
     const request = new Request(input, init), url = new URL(request.url);
-    if (url.href === 'https://github.com/login/oauth/access_token' && request.method === 'POST') return Response.json({ access_token: 'synthetic-provider-response-only', token_type: 'bearer' });
+    if (url.href === 'https://github.com/login/oauth/access_token' && request.method === 'POST') {
+      const body = new TextDecoder().decode(await request.arrayBuffer());
+      expect(body).toContain(encodeURIComponent(`${issuer}/auth/callback/github`));
+      expect(body).not.toContain(relayHost);
+      return Response.json({ access_token: 'synthetic-provider-response-only', token_type: 'bearer' });
+    }
     if (url.href === 'https://api.github.com/user' && request.method === 'GET') return Response.json(providerUser);
     if (url.href === 'https://chatgpt.com/oauth/client.json') return Response.json({ client_id: 'https://chatgpt.com/oauth/client.json', redirect_uris: ['https://chatgpt.com/connector_platform_oauth_redirect'], token_endpoint_auth_method: 'none' });
     throw new Error('unexpected outbound provider request');
@@ -359,9 +364,19 @@ describe('Public enrollment: shared-cap isolation', () => {
   });
 
   it('keeps public account namespaces on the issuer when enrollment uses the relay host', async () => {
-    const alice = new Browser(relayHost);
-    await alice.login('/enroll', ALICE.id, ALICE.login);
     const pending = await (await fetchOn(relayHost, '/v2/auth/device', json({ name: 'relay-alice' }))).json() as { device_code: string; user_code: string };
+    const relay = new Browser(relayHost);
+    const start = await relay.request('/auth/github?return_to=' + encodeURIComponent('/enroll?code=' + pending.user_code));
+    expect(start.status).toBe(302);
+    const handoff = new URL(start.headers.get('Location')!);
+    expect(handoff.origin).toBe(issuer);
+    expect(handoff.searchParams.get('return_to')).toBe('/enroll?code=' + pending.user_code);
+    providerUser = { id: ALICE.id, login: ALICE.login };
+    const alice = new Browser(issuer);
+    const github = await alice.request(handoff.pathname + handoff.search);
+    expect(new URL(github.headers.get('Location')!).searchParams.get('redirect_uri')).toBe(`${issuer}/auth/callback/github`);
+    const done = await alice.request('/auth/callback/github?' + new URLSearchParams({ state: new URL(github.headers.get('Location')!).searchParams.get('state')!, code: 'synthetic-code', iss: 'https://github.com/login/oauth' }));
+    expect(new URL(done.headers.get('Location')!, issuer).origin).toBe(issuer);
     expect((await alice.request('/enroll/decision', form({ csrf: await alice.csrf('/enroll?code=' + pending.user_code), user_code: pending.user_code, decision: 'approve' }))).status).toBe(303);
     const body = (await poll(pending.device_code)).body;
     expect(body.owner).toBe(namespace({ issuer, subject: `github:${ALICE.id}`, org: null }));
