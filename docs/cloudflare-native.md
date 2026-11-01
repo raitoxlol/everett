@@ -19,7 +19,11 @@ Run `everett` normally on each new computer and choose sign-in for hosted delive
 command is required. For a custom deployment, set `EVERETT_AUTH_PROVIDER=cloudflare`
 and `EVERETT_AUTH_ISSUER` to that deployment's identity origin, optionally with
 `EVERETT_AUTH_BASE_URL` / `[auth] base_url` when the relay hostname differs, or the
-equivalent `[auth]` provider and issuer settings. These are public configuration values. Do not copy a credential
+equivalent `[auth]` provider and issuer settings. GitHub approval always continues on
+the identity issuer, so the GitHub app callback stays on that host. Peer pins stored
+against either public hostname remain valid after the connect URL changes. A custom
+deployment can set `relay_aliases` / `EVERETT_AUTH_RELAY_ALIASES` to the origins that
+name one relay; that list replaces the public pair. These are public configuration values. Do not copy a credential
 file, relay keys or an existing device identity to another computer.
 
 1. Install Everett on each computer and run `everett` to begin automatic onboarding.
