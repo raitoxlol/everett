@@ -380,7 +380,7 @@ fn paired(name: &str, owner: &str) -> Result<Paired> {
         let paired: Paired = read(&path)?;
         paired.device.verify()?;
         if (paired.device.owner != owner && paired.grant_id.is_none())
-            || paired.deployment != deployment()?
+            || !crate::cloudflare_auth::same_relay(&paired.deployment, &deployment()?)
         {
             return Err(bad("peer is pinned to another account or relay deployment"));
         }
@@ -585,7 +585,7 @@ pub fn revoke_device_with(
             let pin: Paired = read(&path)?;
             if pin.device.device_id == device_id
                 && pin.device.owner == owner
-                && pin.deployment == deployment
+                && crate::cloudflare_auth::same_relay(&pin.deployment, deployment)
             {
                 let name = path.file_stem().unwrap().to_string_lossy().to_string();
                 remove_locked(&name)?;
@@ -768,7 +768,7 @@ pub fn add(
             if path.exists() {
                 let existing: Paired = read(&path)?;
                 if existing.device != pin.device
-                    || existing.deployment != pin.deployment
+                    || !crate::cloudflare_auth::same_relay(&existing.deployment, &pin.deployment)
                     || existing.grant_id != pin.grant_id
                 {
                     return Err(bad(

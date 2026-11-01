@@ -71,6 +71,40 @@ pub fn require_provider() -> Result<()> {
 pub const PUBLIC_ISSUER: &str = "https://everett.raitox.tech";
 pub const PUBLIC_RELAY: &str = "https://relay.raitox.tech";
 
+/// Origins that name one relay. Unset configuration uses the public issuer and
+/// relay host. An explicit list replaces that default; exact matches still count.
+pub(crate) fn same_relay(pinned: &str, current: &str) -> bool {
+    let pinned = origin(pinned).unwrap_or_else(|_| pinned.to_string());
+    let current = origin(current).unwrap_or_else(|_| current.to_string());
+    if pinned == current {
+        return true;
+    }
+    let aliases = relay_aliases();
+    aliases.contains(&pinned) && aliases.contains(&current)
+}
+
+fn relay_aliases() -> Vec<String> {
+    let configured = crate::config::get("auth.relay_aliases", Some("EVERETT_AUTH_RELAY_ALIASES"), "");
+    let raw = if configured.is_empty() {
+        format!("{PUBLIC_ISSUER},{PUBLIC_RELAY}")
+    } else {
+        configured
+    };
+    let mut aliases = Vec::new();
+    for part in raw.split(',') {
+        let part = part.trim();
+        if part.is_empty() {
+            continue;
+        }
+        if let Ok(origin) = origin(part) {
+            if !aliases.contains(&origin) {
+                aliases.push(origin);
+            }
+        }
+    }
+    aliases
+}
+
 fn canonical_identity(value: &str) -> &str {
     if value == PUBLIC_RELAY { PUBLIC_ISSUER } else { value }
 }

@@ -77,6 +77,14 @@ function cookies(request: Request) {
 function setCookie(response: Response, c: HostedConfig, suffix: string, value: string, seconds: number) {
   response.headers.append('Set-Cookie', `${cookieName(c, suffix)}=${value}; Path=/; HttpOnly; SameSite=Lax; Max-Age=${seconds}${c.secureCookies ? '; Secure' : ''}`);
 }
+/// GitHub OAuth apps register one callback host. Sign-in therefore starts and
+/// finishes on the issuer, and `return_to` stays a local enroll path there.
+function githubReturnTo(raw: string | undefined, issuer: string) {
+  const returnTo = raw ?? '/enroll';
+  const target = new URL(returnTo, issuer);
+  if (!returnTo.startsWith('/enroll') || target.origin !== issuer || target.pathname !== '/enroll' || target.hash || returnTo.length > 2048) throw new RelayError('invalid_return_to', 400);
+  return `${target.pathname}${target.search}`;
+}
 const csrfField = (csrf: string) => `<input type="hidden" name="csrf" value="${esc(csrf)}">`;
 
 type Session = { session_hash: string; csrf_hash: string; github_id: string; login: string; expires_at: number };
@@ -306,25 +314,34 @@ export class HostedAuth extends DurableObject<HostedAuthEnv> {
   }
 
   #githubStart(request: Request, url: URL, c: HostedConfig, host: string) {
+    const p = fields(url.searchParams, ['return_to']);
+    const returnTo = githubReturnTo(p.return_to, c.issuer);
+    if (host !== c.issuer) {
+      const next = new URL('/auth/github', c.issuer);
+      next.searchParams.set('return_to', returnTo);
+      return redirect(next.href, 302);
+    }
     this.#rate('github-start', 20);
     if (c.enrollment === 'public') this.#rate(`requester:${this.#requester(request, c)}:github-start`, 5);
-    const p = fields(url.searchParams, ['return_to']);
-    const returnTo = p.return_to ?? '/enroll';
-    const target = new URL(returnTo, host);
-    if (!returnTo.startsWith('/enroll') || target.origin !== host || target.pathname !== '/enroll' || target.hash || returnTo.length > 2048) throw new RelayError('invalid_return_to', 400);
     if (this.#count('gh_states') >= 100) throw new RelayError('pending_limit', 429);
     const state = random(), verifier = random(), binding = `${random()}.${verifier}`;
-    this.ctx.storage.sql.exec('INSERT INTO gh_states VALUES(?,?,?,?)', hash(state), hash(binding), `${target.pathname}${target.search}`, Date.now() + DEVICE_MS);
+    this.ctx.storage.sql.exec('INSERT INTO gh_states VALUES(?,?,?,?)', hash(state), hash(binding), returnTo, Date.now() + DEVICE_MS);
     const github = new URL('https://github.com/login/oauth/authorize');
-    github.searchParams.set('client_id', c.githubId); github.searchParams.set('redirect_uri', `${host}/auth/callback/github`);
+    github.searchParams.set('client_id', c.githubId); github.searchParams.set('redirect_uri', `${c.issuer}/auth/callback/github`);
     github.searchParams.set('state', state); github.searchParams.set('code_challenge', s256(verifier)); github.searchParams.set('code_challenge_method', 'S256');
     github.searchParams.set('scope', 'read:user');
     if (c.enrollment === 'owner') github.searchParams.set('login', c.ownerLogin);
     const response = redirect(github.href, 302); setCookie(response, c, 'github', binding, 600); return response;
   }
   async #githubCallback(request: Request, url: URL, c: HostedConfig, host: string) {
+    const allowed = ['state', 'code', 'error', 'error_description', 'error_uri', 'iss'];
+    const p = fields(url.searchParams, allowed);
+    if (host !== c.issuer) {
+      const next = new URL('/auth/callback/github', c.issuer);
+      for (const key of allowed) if (p[key] !== undefined) next.searchParams.set(key, p[key]);
+      return redirect(next.href, 302);
+    }
     this.#rate('github-callback', 30);
-    const p = fields(url.searchParams, ['state', 'code', 'error', 'error_description', 'error_uri', 'iss']);
     if (p.iss !== undefined && p.iss !== 'https://github.com/login/oauth') throw new RelayError('invalid_github_issuer', 400);
     if (!secretPattern.test(p.state ?? '')) throw new RelayError('invalid_github_state', 400);
     const row = this.#row<{ state_hash: string; binding_hash: string; return_to: string; expires_at: number }>('SELECT * FROM gh_states WHERE state_hash=?', hash(p.state));
@@ -334,7 +351,7 @@ export class HostedAuth extends DurableObject<HostedAuthEnv> {
     this.ctx.storage.sql.exec('DELETE FROM gh_states WHERE state_hash=?', row.state_hash);
     if (p.error || !p.code || p.code.length > 2048) throw new RelayError('github_login_denied', 403);
     const token = await this.#externalJSON('https://github.com/login/oauth/access_token', { method: 'POST', headers: { Accept: 'application/json', 'Content-Type': 'application/x-www-form-urlencoded' }, body: new URLSearchParams({
-      client_id: c.githubId, client_secret: c.githubSecret, code: p.code, redirect_uri: `${host}/auth/callback/github`, code_verifier: parts[1],
+      client_id: c.githubId, client_secret: c.githubSecret, code: p.code, redirect_uri: `${c.issuer}/auth/callback/github`, code_verifier: parts[1],
     }).toString() });
     if (typeof token.access_token !== 'string' || !token.access_token || token.access_token.length > 4096 || (token.token_type !== undefined && String(token.token_type).toLowerCase() !== 'bearer')) throw new RelayError('github_login_denied', 403);
     const user = await this.#externalJSON('https://api.github.com/user', { headers: { Authorization: `Bearer ${token.access_token}`, Accept: 'application/vnd.github+json', 'User-Agent': 'Everett', 'X-GitHub-Api-Version': '2022-11-28' } });
@@ -351,7 +368,7 @@ export class HostedAuth extends DurableObject<HostedAuthEnv> {
     }
     const sid = random(), csrf = random();
     this.ctx.storage.sql.exec('INSERT INTO owner_sessions VALUES(?,?,?,?,?)', hash(sid), hash(csrf), id, login, Date.now() + SESSION_MS);
-    const response = redirect(`${host}${row.return_to}`); setCookie(response, c, 'session', `${sid}.${csrf}`, SESSION_MS / 1000); setCookie(response, c, 'github', '', 0);
+    const response = redirect(`${c.issuer}${row.return_to}`); setCookie(response, c, 'session', `${sid}.${csrf}`, SESSION_MS / 1000); setCookie(response, c, 'github', '', 0);
     return response;
   }
 
@@ -470,7 +487,7 @@ export class HostedAuth extends DurableObject<HostedAuthEnv> {
     const session = this.#session(request, c);
     if (!session) {
       const returnTo = `${url.pathname}${url.search}`;
-      const signIn = `<div class="auth-lead"><h1>Sign in to Everett</h1></div><div class="auth-action"><p class="auth-copy">Sign in with GitHub to review this device request. Check its name and full code before approving.</p><a class="auth-button" href="/auth/github?return_to=${esc(encodeURIComponent(returnTo))}"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 .8a11.2 11.2 0 0 0-3.54 21.83c.56.1.77-.24.77-.54v-2.1c-3.14.68-3.8-1.34-3.8-1.34-.51-1.3-1.25-1.65-1.25-1.65-1.02-.7.08-.69.08-.69 1.12.08 1.7 1.14 1.7 1.14 1 .1.44 2.78 3.26 1.97.1-.73.4-1.24.72-1.53-2.5-.28-5.12-1.25-5.12-5.57 0-1.23.44-2.23 1.15-3.02-.12-.28-.5-1.43.1-2.98 0 0 .94-.3 3.08 1.15a10.7 10.7 0 0 1 5.6 0c2.13-1.45 3.07-1.15 3.07-1.15.61 1.55.23 2.7.11 2.98.72.79 1.15 1.79 1.15 3.02 0 4.33-2.63 5.28-5.14 5.56.4.35.77 1.03.77 2.08v3.13c0 .3.2.65.78.54A11.2 11.2 0 0 0 12 .8Z"/></svg><span>Continue with GitHub</span></a></div>`;
+      const signIn = `<div class="auth-lead"><h1>Sign in to Everett</h1></div><div class="auth-action"><p class="auth-copy">Sign in with GitHub to review this device request. Check its name and full code before approving.</p><a class="auth-button" href="${esc(`${c.issuer}/auth/github?return_to=${encodeURIComponent(returnTo)}`)}"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 .8a11.2 11.2 0 0 0-3.54 21.83c.56.1.77-.24.77-.54v-2.1c-3.14.68-3.8-1.34-3.8-1.34-.51-1.3-1.25-1.65-1.25-1.65-1.02-.7.08-.69.08-.69 1.12.08 1.7 1.14 1.7 1.14 1 .1.44 2.78 3.26 1.97.1-.73.4-1.24.72-1.53-2.5-.28-5.12-1.25-5.12-5.57 0-1.23.44-2.23 1.15-3.02-.12-.28-.5-1.43.1-2.98 0 0 .94-.3 3.08 1.15a10.7 10.7 0 0 1 5.6 0c2.13-1.45 3.07-1.15 3.07-1.15.61 1.55.23 2.7.11 2.98.72.79 1.15 1.79 1.15 3.02 0 4.33-2.63 5.28-5.14 5.56.4.35.77 1.03.77 2.08v3.13c0 .3.2.65.78.54A11.2 11.2 0 0 0 12 .8Z"/></svg><span>Continue with GitHub</span></a></div>`;
       return html(signIn);
     }
     let callbackOrigin: string | undefined;
