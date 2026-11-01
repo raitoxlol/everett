@@ -73,6 +73,11 @@ For a configured installation, `[auth] provider = "cloudflare"` (environment
 `base_url` (`EVERETT_AUTH_BASE_URL`) selects the relay origin; if it is unset, a
 configured `issuer` is still used as the connect URL. Fresh installs default to
 `https://relay.raitox.tech` for connect and `https://everett.raitox.tech` for identity.
+GitHub sign-in always starts and finishes on the identity issuer, including when
+the browser opened the relay host, so the GitHub OAuth app keeps that single callback.
+Peer pins accept every origin in `relay_aliases` (`EVERETT_AUTH_RELAY_ALIASES`) as the
+same relay. When the setting is unset, the public issuer and `https://relay.raitox.tech`
+are that list. An explicit list replaces it. Origins outside the list still have to match exactly.
 Cloudflare is the default and only supported provider.
 Successful native onboarding saves `provider = "cloudflare"`.
 `cloudflare-auth.json` and `cloudflare-pending.json` live beneath the `.everett` directory

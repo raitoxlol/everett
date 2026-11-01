@@ -177,9 +177,9 @@ CLI enrollment credentials are separate from these gateway OAuth credentials.
 For a separately configured development server:
 
 1. Configure the server's exact `EVERETT_ISSUER`, owner identity, GitHub OAuth
-   app and private GitHub secret. Each public host that serves login needs a
-   GitHub callback `<public-host>/auth/callback/github`; the connector callback belongs in the
-   authorization server's redirect allowlist, not the GitHub app.
+   app and private GitHub secret. The GitHub app callback is only
+   `<issuer>/auth/callback/github`. Extra public hosts redirect sign-in to that issuer.
+   The connector callback belongs in the authorization server's redirect allowlist, not the GitHub app.
 2. Configure exact `EVERETT_OAUTH_CLIENT_IDS`, `EVERETT_OAUTH_REDIRECT_URIS`, and
    `EVERETT_OAUTH_RESOURCES`. Use the client metadata URL, callback and resource
    actually presented by the selected client; do not guess them. Set the private

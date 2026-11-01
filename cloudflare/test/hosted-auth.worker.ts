@@ -65,7 +65,12 @@ beforeEach(() => {
   providerUser = { id: 282002453, login: 'raitoxlol' };
   vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
     const request = new Request(input, init), url = new URL(request.url);
-    if (url.href === 'https://github.com/login/oauth/access_token' && request.method === 'POST') return Response.json({ access_token: 'synthetic-provider-response-only', token_type: 'bearer' });
+    if (url.href === 'https://github.com/login/oauth/access_token' && request.method === 'POST') {
+      const body = new TextDecoder().decode(await request.arrayBuffer());
+      expect(body).toContain(encodeURIComponent(`${issuer}/auth/callback/github`));
+      expect(body).not.toContain(relayHost);
+      return Response.json({ access_token: 'synthetic-provider-response-only', token_type: 'bearer' });
+    }
     if (url.href === 'https://api.github.com/user' && request.method === 'GET') return Response.json(providerUser);
     if (url.href === client) return Response.json({ client_id: client, client_name: 'Synthetic ChatGPT', redirect_uris: [redirect], token_endpoint_auth_method: 'none' });
     throw new Error('unexpected outbound provider request');
@@ -252,7 +257,7 @@ describe('Hosted device login through real Worker routes', () => {
     expect(anonymous).toContain('<h1>Sign in to Everett</h1>');
     expect(anonymous).toContain('Continue with GitHub');
     expect(anonymous).toContain('class="auth-button"');
-    expect(anonymous).toContain('href="/auth/github?return_to=');
+    expect(anonymous).toContain(`href="${issuer}/auth/github?return_to=`);
     expect(anonymous).toContain(`%2Fenroll%3Fcode%3D${pending.user_code}`);
     expect(anonymous).not.toContain(pending.device_code);
 
@@ -543,15 +548,27 @@ describe('Public hosts stay separate from issuer identity', () => {
     expect(() => hostedConfig({ ...authEnv, EVERETT_PUBLIC_HOSTS: 'https://evil.example/path' })).toThrow(RelayError);
     expect(() => hostedConfig({ ...authEnv, EVERETT_PUBLIC_HOSTS: 'https://user:secret@evil.example' })).toThrow(RelayError);
   });
-  it('accepts auth on both public hosts and keeps identity keys on the issuer', async () => {
-    const issuerBrowser = new Browser(issuer), relayBrowser = new Browser(relayHost);
+  it('accepts relay API auth on both public hosts and finishes GitHub sign-in on the issuer', async () => {
+    const issuerBrowser = new Browser(issuer);
     expect((await issuerBrowser.login()).status).toBe(303);
-    expect((await relayBrowser.login()).status).toBe(303);
 
-    const issuerGithub = await issuerBrowser.request('/auth/github');
-    expect(new URL(issuerGithub.headers.get('Location')!).searchParams.get('redirect_uri')).toBe(`${issuer}/auth/callback/github`);
-    const relayGithub = await relayBrowser.request('/auth/github');
-    expect(new URL(relayGithub.headers.get('Location')!).searchParams.get('redirect_uri')).toBe(`${relayHost}/auth/callback/github`);
+    const relayPage = await (await fetchOn(relayHost, '/enroll')).text();
+    expect(relayPage).toContain(`href="${issuer}/auth/github?return_to=`);
+    const relayGithub = await new Browser(relayHost).request('/auth/github?return_to=' + encodeURIComponent('/enroll'));
+    expect(relayGithub.status).toBe(302);
+    expect(relayGithub.headers.get('Set-Cookie')).toBeNull();
+    const handoff = new URL(relayGithub.headers.get('Location')!);
+    expect(handoff.origin).toBe(issuer);
+    expect(handoff.pathname).toBe('/auth/github');
+    expect(handoff.searchParams.get('return_to')).toBe('/enroll');
+    const followed = await issuerBrowser.request(handoff.pathname + handoff.search);
+    expect(new URL(followed.headers.get('Location')!).searchParams.get('redirect_uri')).toBe(`${issuer}/auth/callback/github`);
+    const relayCallback = await fetchOn(relayHost, '/auth/callback/github?' + new URLSearchParams({ state: 'ab'.repeat(32), code: 'synthetic-code', iss: 'https://github.com/login/oauth' }));
+    expect(relayCallback.status).toBe(302);
+    const callbackHandoff = new URL(relayCallback.headers.get('Location')!);
+    expect(callbackHandoff.origin + callbackHandoff.pathname).toBe(`${issuer}/auth/callback/github`);
+    expect(callbackHandoff.searchParams.get('code')).toBe('synthetic-code');
+    expect(callbackHandoff.searchParams.get('redirect_uri')).toBeNull();
 
     const fromIssuer = await begin();
     expect(new URL(fromIssuer.verification_uri_complete).origin).toBe(issuer);
@@ -562,7 +579,7 @@ describe('Public hosts stay separate from issuer identity', () => {
 
     const fromRelay = await (await fetchOn(relayHost, '/v2/auth/device', json({ name: 'relay-device' }))).json() as { device_code: string; user_code: string; verification_uri_complete: string };
     expect(new URL(fromRelay.verification_uri_complete).origin).toBe(relayHost);
-    expect((await relayBrowser.request('/enroll/decision', form({ csrf: await relayBrowser.csrf('/enroll?code=' + fromRelay.user_code), user_code: fromRelay.user_code, decision: 'approve' }))).status).toBe(303);
+    expect((await issuerBrowser.request('/enroll/decision', form({ csrf: await issuerBrowser.csrf('/enroll?code=' + fromRelay.user_code), user_code: fromRelay.user_code, decision: 'approve' }))).status).toBe(303);
     const relayCred = await (await fetchOn(relayHost, '/v2/auth/poll', json({ device_code: fromRelay.device_code }))).json() as { state: string; token: string; owner: string };
     expect(relayCred.state).toBe('approved');
     expect(relayCred.owner).toBe(owner);
