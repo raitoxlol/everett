@@ -249,6 +249,38 @@ describe('Hosted device login through real Worker routes', () => {
     expect((await nativeWhoami(first.token)).status).toBe(401);
     expect((await nativeWhoami(second.token)).status).toBe(200);
   });
+  it('authorizes relay requests without a redundant credentialActive RPC', async () => {
+    const browser = new Browser(); await browser.login();
+    const credential = await enroll(browser);
+    const who = await (await nativeWhoami(credential.token)).json() as { result: { owner: string } };
+    const relay = env.OWNERS.get(env.OWNERS.idFromName(who.result.owner));
+    let preflightCalls = 0;
+    await runInDurableObject(relay, instance => {
+      const prototype = Object.getPrototypeOf(instance);
+      const original = prototype.credentialActive;
+      vi.spyOn(prototype, 'credentialActive').mockImplementation(function (this: typeof instance, ...args: unknown[]) {
+        preflightCalls++;
+        return original.apply(this, args);
+      });
+    });
+    for (let i = 0; i < 3; i++) expect((await nativeWhoami(credential.token)).status).toBe(200);
+    expect(preflightCalls, 'membership is checked by the relay operation itself').toBe(0);
+  });
+  it.each(['credentials', 'members'] as const)('rejects relay and metadata calls immediately after %s revocation', async table => {
+    const browser = new Browser(); await browser.login();
+    const credential = await enroll(browser);
+    const who = await (await nativeWhoami(credential.token)).json() as { result: { owner: string } };
+    const relay = env.OWNERS.get(env.OWNERS.idFromName(who.result.owner));
+    await runInDurableObject(relay, (_instance, state) => {
+      state.storage.sql.exec(`UPDATE ${table} SET status='revoked'`);
+    });
+    for (const [op, args] of [
+      ['whoami', {}], ['pending', { deviceId: credential.agent_id }],
+      ['deviceLabels', {}], ['renameDevice', { name: 'must-not-change' }],
+    ] as const) {
+      expect((await nativeCall(credential.token, op, args)).status, op).toBe(401);
+    }
+  });
   it('shows close guidance only after authoritative approval and never renders the native token', async () => {
     const pending = await begin('browser-flow');
     const pagePath = '/enroll?code=' + pending.user_code;
