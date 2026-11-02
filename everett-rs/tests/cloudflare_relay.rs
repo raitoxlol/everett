@@ -157,6 +157,7 @@ struct Server {
     calls: Arc<Mutex<Vec<String>>>,
     labels_missing: Arc<AtomicBool>,
     device_error: Arc<Mutex<Option<String>>>,
+    registration_failures: Arc<AtomicBool>,
 }
 impl Server {
     fn new() -> Self {
@@ -169,6 +170,8 @@ impl Server {
         let missing = labels_missing.clone();
         let device_error = Arc::new(Mutex::new(None::<String>));
         let denial = device_error.clone();
+        let registration_failures = Arc::new(AtomicBool::new(false));
+        let failures = registration_failures.clone();
         let (p, r, c) = (pending.clone(), revoked.clone(), calls.clone());
         std::thread::spawn(move || {
             for stream in listener.incoming() {
@@ -183,6 +186,9 @@ impl Server {
                             200,
                             json!({"result":{"owner":"synthetic-owner","deviceId":"synthetic-agent","role":"member"}}),
                         ),
+                        "/v2/relay/register" if failures.swap(false, Ordering::SeqCst) => {
+                            (503, json!({"error":"service_unavailable"}))
+                        }
                         "/v2/relay/register" => (200, json!({"result":null})),
                         "/v2/relay/revokeAgent" => {
                             assert_eq!(args, json!({"deviceId":"synthetic-agent"}));
@@ -252,6 +258,7 @@ impl Server {
             calls,
             labels_missing,
             device_error,
+            registration_failures,
         }
     }
     fn configure(&self, f: &Fixture) {
@@ -332,6 +339,52 @@ fn until_with_timeout(timeout: Duration, mut condition: impl FnMut() -> bool) {
         std::thread::sleep(Duration::from_millis(25));
     }
 }
+#[test]
+fn idle_receiver_registers_once_across_polls_and_transient_failure() {
+    let f = fixture();
+    let server = Server::new();
+    server.configure(&f);
+    let mut child = listener(&f);
+    until_with_timeout(Duration::from_secs(25), || {
+        server.pending.load(Ordering::SeqCst) >= 3 || child.0.try_wait().unwrap().is_some()
+    });
+    assert!(child.0.try_wait().unwrap().is_none());
+    child.0.kill().unwrap();
+    child.0.wait().unwrap();
+    let calls = server.calls.lock().unwrap();
+    let registrations = calls.iter().filter(|p| p.as_str() == "/v2/relay/register").count();
+    let polls = calls.iter().filter(|p| p.as_str() == "/v2/relay/pending").count();
+    eprintln!("receiver request budget: {registrations} registrations, {polls} polls");
+    assert_eq!(registrations, 1, "unchanged device registration repeated between polls");
+    assert_eq!(polls, 3);
+}
+
+#[test]
+fn receiver_retries_failed_registration_before_polling_and_registers_after_restart() {
+    let f = fixture();
+    let server = Server::new();
+    server.configure(&f);
+    server.registration_failures.store(true, Ordering::SeqCst);
+    server.pending.store(1, Ordering::SeqCst);
+    let mut child = listener(&f);
+    until(|| server.pending.load(Ordering::SeqCst) >= 2);
+    child.0.kill().unwrap();
+    child.0.wait().unwrap();
+    {
+        let calls = server.calls.lock().unwrap();
+        let operations: Vec<_> = calls.iter().filter(|p| p.as_str() != "/v2/relay/whoami").map(String::as_str).collect();
+        assert_eq!(operations, ["/v2/relay/register", "/v2/relay/register", "/v2/relay/pending"]);
+    }
+    let previous_calls = server.calls.lock().unwrap().len();
+    let mut restarted = listener(&f);
+    until(|| server.pending.load(Ordering::SeqCst) >= 3);
+    restarted.0.kill().unwrap();
+    restarted.0.wait().unwrap();
+    let calls = server.calls.lock().unwrap();
+    let operations: Vec<_> = calls[previous_calls..].iter().filter(|p| p.as_str() != "/v2/relay/whoami").map(String::as_str).collect();
+    assert_eq!(operations, ["/v2/relay/register", "/v2/relay/pending"]);
+}
+
 #[test]
 fn transient_pending_failure_reconnects_large_page_then_revocation_stops() {
     let f = fixture();
