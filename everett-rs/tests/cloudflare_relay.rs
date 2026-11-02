@@ -333,6 +333,26 @@ fn until_with_timeout(timeout: Duration, mut condition: impl FnMut() -> bool) {
     }
 }
 #[test]
+fn idle_receiver_registers_once_across_polls_and_transient_failure() {
+    let f = fixture();
+    let server = Server::new();
+    server.configure(&f);
+    let mut child = listener(&f);
+    until_with_timeout(Duration::from_secs(25), || {
+        server.pending.load(Ordering::SeqCst) >= 3 || child.0.try_wait().unwrap().is_some()
+    });
+    assert!(child.0.try_wait().unwrap().is_none());
+    child.0.kill().unwrap();
+    child.0.wait().unwrap();
+    let calls = server.calls.lock().unwrap();
+    let registrations = calls.iter().filter(|p| p.as_str() == "/v2/relay/register").count();
+    let polls = calls.iter().filter(|p| p.as_str() == "/v2/relay/pending").count();
+    eprintln!("receiver request budget: {registrations} registrations, {polls} polls");
+    assert_eq!(registrations, 1, "unchanged device registration repeated between polls");
+    assert_eq!(polls, 3);
+}
+
+#[test]
 fn transient_pending_failure_reconnects_large_page_then_revocation_stops() {
     let f = fixture();
     let server = Server::new();
