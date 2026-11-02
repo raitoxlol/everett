@@ -1705,10 +1705,8 @@ async fn receive(
     client: &mut RelayClient,
     keys: &Keys,
     ingress: &Path,
-    register: &Value,
     rejected: &mut RejectedCache,
 ) -> Result<Option<String>> {
-    mutation(client, "relay:register", register.clone()).await?;
     for path in crate::paths::glob(ingress, "*.json") {
         let envelope: Envelope = read(&path)?;
         if envelope.recipient_owner == keys.device.owner
@@ -1790,8 +1788,17 @@ async fn run_native(
     );
     let mut rejected = RejectedCache::new();
     let mut delay = 5;
+    let mut registered = false;
     loop {
-        match receive(&mut client, keys, ingress, register, &mut rejected).await {
+        let result = async {
+            if !registered {
+                mutation(&mut client, "relay:register", register.clone()).await?;
+                registered = true;
+            }
+            receive(&mut client, keys, ingress, &mut rejected).await
+        }
+        .await;
+        match result {
             Ok(_) => {
                 delay = 5;
             }
