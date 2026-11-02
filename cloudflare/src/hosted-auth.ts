@@ -233,7 +233,7 @@ export class HostedAuth extends DurableObject<HostedAuthEnv> {
       });
     } catch (error) { return failure(error); }
   }
-  async verifyAgent(token: string): Promise<Principal | null> {
+  async authenticateRelayToken(token: string): Promise<Principal | null> {
     try {
       const c = hostedConfig(this.env);
       if (!/^evt_[a-f0-9]{64}$/.test(token)) return null;
@@ -241,7 +241,6 @@ export class HostedAuth extends DurableObject<HostedAuthEnv> {
         'SELECT t.token_hash,t.agent_id,t.expires_at,t.revoked,a.account FROM native_tokens t LEFT JOIN hosted_agents a ON a.agent_id=t.agent_id WHERE t.token_hash=?', hash(token));
       if (!row || row.revoked || row.expires_at <= Date.now() || !row.account || !this.#accountAllowed(c, row.account)) return null;
       const identity = this.#identityFor(row.account, c);
-      if (!await this.#relayFor(identity).credentialActive(identity, row.agent_id)) return null;
       return { ...identity, agentId: row.agent_id, role: 'member', expiresAt: row.expires_at };
     } catch { return null; }
   }

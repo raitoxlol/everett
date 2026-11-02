@@ -20,10 +20,17 @@ function hostedVerifier(env: Env): PrincipalVerifier {
     const bearer = request.headers.get('Authorization');
     if (!bearer || !/^Bearer evt_[0-9a-f]{64}$/.test(bearer)) throw new RelayError('invalid_token', 401);
     const auth = env.AUTH_STATE!.get(env.AUTH_STATE!.idFromName(env.EVERETT_ISSUER!));
-    const principal = await auth.verifyAgent(bearer.slice(7));
+    const principal = await auth.authenticateRelayToken(bearer.slice(7));
     if (!principal) throw new RelayError('invalid_token', 401);
     return principal;
   } };
+}
+
+function relayFailure(result: Extract<RelayResult, { ok: false }>, env: Env): Response {
+  const revoked = env.AUTH_STATE && env.EVERETT_ISSUER && result.error === 'credential_or_membership_revoked';
+  return Response.json({ error: revoked ? 'invalid_token' : result.error }, {
+    status: revoked ? 401 : result.status, headers: { 'Cache-Control': 'no-store' },
+  });
 }
 
 export async function handleRequest(request: Request, env: Env, verifier: PrincipalVerifier = hostedVerifier(env)): Promise<Response> {
@@ -51,11 +58,11 @@ export async function handleRequest(request: Request, env: Env, verifier: Princi
         : (z.strictObject({}).parse(args), undefined);
       const auth = env.AUTH_STATE.get(env.AUTH_STATE.idFromName(env.EVERETT_ISSUER));
       const result = await auth.relayDeviceLabels(p, name);
-      if (!result.ok) return Response.json({ error: result.error }, { status: result.status, headers: { 'Cache-Control': 'no-store' } });
+      if (!result.ok) return relayFailure(result, env);
       return Response.json({ result: result.value }, { headers: { 'Cache-Control': 'no-store' } });
     }
     const result: RelayResult = JSON.parse(await stub.relay(p, op as Operation, args));
-    if (!result.ok) return Response.json({ error: result.error }, { status: result.status, headers: { 'Cache-Control': 'no-store' } });
+    if (!result.ok) return relayFailure(result, env);
     return Response.json({ result: result.value }, { headers: { 'Cache-Control': 'no-store' } });
   } catch (error) {
     const known = error instanceof RelayError;
