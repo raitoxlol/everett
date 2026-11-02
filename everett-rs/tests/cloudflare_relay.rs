@@ -157,7 +157,7 @@ struct Server {
     calls: Arc<Mutex<Vec<String>>>,
     labels_missing: Arc<AtomicBool>,
     device_error: Arc<Mutex<Option<String>>>,
-    registration_failures: Arc<AtomicUsize>,
+    registration_failures: Arc<AtomicBool>,
 }
 impl Server {
     fn new() -> Self {
@@ -170,7 +170,7 @@ impl Server {
         let missing = labels_missing.clone();
         let device_error = Arc::new(Mutex::new(None::<String>));
         let denial = device_error.clone();
-        let registration_failures = Arc::new(AtomicUsize::new(0));
+        let registration_failures = Arc::new(AtomicBool::new(false));
         let failures = registration_failures.clone();
         let (p, r, c) = (pending.clone(), revoked.clone(), calls.clone());
         std::thread::spawn(move || {
@@ -186,7 +186,7 @@ impl Server {
                             200,
                             json!({"result":{"owner":"synthetic-owner","deviceId":"synthetic-agent","role":"member"}}),
                         ),
-                        "/v2/relay/register" if failures.fetch_update(Ordering::SeqCst, Ordering::SeqCst, |n| n.checked_sub(1)).is_ok() => {
+                        "/v2/relay/register" if failures.swap(false, Ordering::SeqCst) => {
                             (503, json!({"error":"service_unavailable"}))
                         }
                         "/v2/relay/register" => (200, json!({"result":null})),
@@ -364,7 +364,7 @@ fn receiver_retries_failed_registration_before_polling_and_registers_after_resta
     let f = fixture();
     let server = Server::new();
     server.configure(&f);
-    server.registration_failures.store(1, Ordering::SeqCst);
+    server.registration_failures.store(true, Ordering::SeqCst);
     server.pending.store(1, Ordering::SeqCst);
     let mut child = listener(&f);
     until(|| server.pending.load(Ordering::SeqCst) >= 2);
