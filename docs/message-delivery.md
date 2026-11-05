@@ -18,6 +18,14 @@ The native path retains `queued` and `delivered` as independent inbox-pickup
 observations. If native attachment fails after the inbox write, the error names
 the retained message. The request may already have been read; do not blindly retry.
 
+`everett send "request" --to SESSION --dry-run --json` previews the selected
+transport without sending or queueing. T3, live OMP extension, and attached Claude
+pings report `transport` and a null `command` and `manual_command`, because they
+use inbox nudges rather than provider resume commands. T3 also reports `thread_id`.
+Idle headless delivery reports `transport: "resume"` with the provider command.
+The preview leaves `pinged`, `queued`, and `delivered` false. It does not prove
+that a provider will accept a nudge or return a reply.
+
 T3 Code pings use `t3 thread send` to dispatch a fixed inbox nudge to the owning
 thread. External agents, attached sessions without a supported wake transport,
 and remote transports have no immediate ping path. They fail without queueing.
@@ -133,6 +141,13 @@ Replies and explicit remote MCP sends report `delivered: false` at enqueue.
 Transport statuses remain distinct. In encrypted relay observations, `delivered`
 means authorized device ingress and `claimed` means inbox pickup. Neither proves
 task completion.
+
+Relay status retains local acceptance and authenticated correlated replies when
+the server reports an older state. A saved reply survives request expiry.
+`posted` reports a locally recorded enqueue acknowledgement. Without one, a
+request is `unconfirmed` until its retry window ends, then `expired` unless a
+stronger local observation exists. Expiry does not rule out an earlier pickup or
+reply. Status queries do not rewrite local receipts or establish task success.
 
 `everett_inbox(peek=true)` leaves messages unread. A normal `everett_inbox` call
 or an accepting hook marks the returned message ids consumed so they do not

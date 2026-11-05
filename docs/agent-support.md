@@ -27,11 +27,13 @@ turn in an idle agent, except for the OMP extension watcher described in the
 observed pickup. Hermes resume applies to interactive CLI sessions, not Telegram
 or Discord chats.
 
-T3 Code is an overlay on its Claude, Codex, or Grok sessions. Everett can discover
-those threads and queue inbox messages. It refuses CLI resume and native wake
-because T3 owns the resume point. The client must bind the provider session and
-poll MCP, or use supported underlying hooks. Actual T3-client acceptance remains
-separate from the synthetic CLI/MCP tests.
+T3 Code is an overlay on its Claude, Codex, or Grok sessions. Everett discovers
+those threads and sends a fixed inbox nudge through `t3 thread send` for local
+`ping` and `auto` delivery. The owning thread and T3 CLI must be available.
+Provider CLI resume is refused because T3 owns the resume point. Explicit inbox
+delivery queues without a nudge. T3 dispatch acceptance does not prove inbox
+pickup or a reply. Actual T3-client acceptance remains separate from the
+synthetic CLI/MCP tests.
 
 ## Cloud agents
 

@@ -1052,7 +1052,7 @@ fn find_outgoing(owner: &str, mid: &str) -> Result<(PathBuf, Outgoing)> {
 
 pub fn status(name: &str, mid: &str) -> Result<Value> {
     let owner = relay_account()?.owner;
-    let (_, outgoing) = find_outgoing(&owner, mid)?;
+    let (path, outgoing) = find_outgoing(&owner, mid)?;
     let keys = verified_keys(&owner)?;
     if outgoing.envelope.from_device != keys.device.device_id
         || outgoing.envelope.sender_fingerprint != keys.device.fingerprint()
@@ -1070,16 +1070,37 @@ pub fn status(name: &str, mid: &str) -> Result<Value> {
     } else {
         paired(name, &owner)?;
     }
-    if !outgoing.posted {
-        return Ok(
-            json!({"message_id":mid,"state":"unconfirmed","expires_at":outgoing.envelope.expires_at,"note":"A local retry record exists; relay queueing has not been confirmed. Run everett relay to retry before expiry."}),
-        );
+    let local = match outgoing.state {
+        State::Replied => Some(("replied", "A correlated reply was received locally. Task success is not implied.")),
+        State::Delivered if !outgoing.posted => Some(("delivered", "Durable recipient acceptance was observed locally; task completion is not confirmed.")),
+        State::Queued if !outgoing.posted && outgoing.envelope.expires_at <= milliseconds() => {
+            Some(("expired", "The local retry window expired without confirmed relay queueing. Earlier pickup or reply is not ruled out."))
+        }
+        State::Queued if !outgoing.posted => Some(("unconfirmed", "A local retry record exists; relay queueing has not been confirmed. Run everett relay to retry before expiry.")),
+        _ => None,
+    };
+    if let Some((state, note)) = local {
+        return Ok(json!({"message_id":mid,"state":state,"posted":outgoing.posted,
+            "expires_at":outgoing.envelope.expires_at,"note":note}));
     }
     runtime(async move {
         let mut client = client(&owner).await?;
         let status = query(&mut client,"relay:status",json!({"fromDevice":outgoing.envelope.from_device,"messageId":outgoing.envelope.message_id})).await?;
+        let server_state = match status["state"].as_str() {
+            Some(state @ ("queued" | "expired" | "delivered" | "claimed" | "replied")) => state,
+            _ => return Err(bad("invalid relay status state")),
+        };
+        let latest: Outgoing = read(&path)?;
+        let (state, note) = match latest.state {
+            State::Replied => ("replied", "A correlated reply was received locally. Task success is not implied."),
+            State::Delivered if matches!(server_state, "queued" | "expired") => {
+                ("delivered", "Durable recipient acceptance was observed locally; task completion is not confirmed.")
+            }
+            _ => (server_state, "Server state reflects signed observations, never session wake-up."),
+        };
         Ok(
-            json!({"message_id":outgoing.envelope.message_id,"state":status["state"],"expires_at":outgoing.envelope.expires_at,"note":"Server state reflects signed observations, never session wake-up."}),
+            json!({"message_id":outgoing.envelope.message_id,"state":state,"posted":latest.posted,
+                "expires_at":outgoing.envelope.expires_at,"note":note}),
         )
     })
 }

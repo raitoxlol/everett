@@ -629,6 +629,9 @@ limitations: [relay threat model](docs/relay-threat-model.md).
 
 ## Troubleshooting
 
+For delivery diagnosis, compatibility checks, migration, and a correlated reply check,
+see [troubleshoot message delivery](docs/messaging-troubleshooting.md).
+
 | Symptom | Next step |
 | --- | --- |
 | `everett: command not found` | Add the install directory (default `~/.local/bin`; `~/.cargo/bin` for cargo) to `PATH`, open a new terminal, then `everett --version`. |

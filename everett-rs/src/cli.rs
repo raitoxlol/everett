@@ -640,28 +640,66 @@ pub fn cmd_send(args: &Args) -> i32 {
             Err(error) => { eprintln!("everett: {}", error.message); error.code },
         };
     }
-    let command = match crate::send::command_for(&session, args.text.as_deref().unwrap_or("")) {
-        Ok(c) => c,
-        Err(e) => {
-            eprintln!("everett: {}", e.message);
-            return e.code;
-        }
-    };
     if args.dry_run {
-        let blocked_running = session.running || crate::registry::session_running(&session, None, None);
+        let text = args.text.as_deref().unwrap_or("");
+        if mode == "ping" && (text.trim().is_empty() || text.len() > crate::peer::BODY_CAP
+            || !args.timeout.is_finite() || args.timeout <= 0.0)
+        {
+            eprintln!("everett: Ping requires non-empty text within 64 KiB and a positive finite timeout");
+            return 2;
+        }
+        let transport = if mode == "ping" && session.source == "t3code" {
+            "t3"
+        } else if mode == "ping" && crate::omp_wake::available(&session) {
+            "omp-extension"
+        } else if mode == "ping" && crate::send::attached(&session, None) {
+            if let Err(error) = crate::claude_wake::validate_target(&session) {
+                eprintln!("everett: {}", error.message);
+                return error.code;
+            }
+            "claude-bg"
+        } else {
+            "resume"
+        };
+        let command = if transport == "resume" {
+            match crate::send::command_for(&session, args.text.as_deref().unwrap_or("")) {
+                Ok(command) => Some(command),
+                Err(error) => {
+                    eprintln!("everett: {}", error.message);
+                    return error.code;
+                }
+            }
+        } else {
+            None
+        };
+        let blocked_running = transport == "resume"
+            && (session.running || crate::registry::session_running(&session, None, None));
         let mut payload = r.clone();
-        payload.insert("manual_command".into(), r.get("command").cloned().unwrap_or(Value::Null));
+        payload.insert("manual_command".into(), if command.is_some() {
+            r.get("command").cloned().unwrap_or(Value::Null)
+        } else {
+            Value::Null
+        });
         payload.insert("delivered".into(), json!(false));
+        payload.insert("queued".into(), json!(false));
+        payload.insert("pinged".into(), json!(false));
         payload.insert("dry_run".into(), json!(true));
+        payload.insert("mode".into(), json!(mode));
+        payload.insert("transport".into(), json!(transport));
         payload.insert("command".into(), json!(command));
         payload.insert("blocked_running".into(), json!(blocked_running));
+        if transport == "t3" {
+            payload.insert("thread_id".into(), json!(crate::t3_wake::thread_id(&session)));
+        }
+        let preview = command.as_ref().map(|argv| crate::send::format_command(argv))
+            .unwrap_or_else(|| format!("{transport} inbox nudge; no provider resume command"));
         emit(
             args.json,
             &payload,
             vec![
                 routed_line,
                 Some(format!("DRY RUN  {}", label)),
-                Some(format!("  {}", crate::send::format_command(&command))),
+                Some(format!("  {preview}")),
                 if blocked_running { Some("  blocked: target session is marked running".to_string()) } else { None },
             ],
         );

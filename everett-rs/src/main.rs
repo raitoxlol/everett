@@ -161,7 +161,7 @@ enum Cmd {
         idempotency_key: Option<String>,
         #[arg(long)]
         json: bool,
-        /// route and print the command without resuming a session
+        /// preview the transport or resume command without sending or queueing
         #[arg(long)]
         dry_run: bool,
         /// maximum wait for the session reply in seconds
