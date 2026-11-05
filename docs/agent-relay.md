@@ -76,9 +76,18 @@ forwarding; remote-derived callers are inbox-only, never resumed/spawned as owne
 
 Call `everett_agent_status` with `{"message_id":"RETURNED-MESSAGE-ID"}`. `queued`
 means acknowledged enqueue, `delivered` means durable recipient acceptance, `claimed`
-means observed local inbox pickup, and `replied` means correlated reply enqueue plus a
-signed observation. The listener retries pickup/reply observations; none proves task
-completion. Server ciphertext is deleted on delivery; local inbox retention is separate.
+means observed local inbox pickup, and `replied` means an authenticated correlated
+reply received locally or a signed relay observation. A saved reply remains visible
+after the original request expires, even if the server observation is older.
+The listener retries pickup/reply observations; none proves task completion.
+Server ciphertext is deleted on delivery; local inbox retention is separate.
+
+`posted: false` means the sender has no recorded enqueue acknowledgement. While
+that retry window remains open, its state is `unconfirmed`; after expiry, it is
+`expired` unless local acceptance or a reply was already observed. Missing an
+acknowledgement does not establish that the server never accepted the request.
+Status reads keep these receipt files unchanged and still verify the current
+account and peer. They are not offline diagnostics.
 
 ## Revoke and inspect
 

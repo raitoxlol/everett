@@ -555,6 +555,29 @@ fn onboard_tui_quit_makes_no_changes() {
 
 #[cfg(unix)]
 #[test]
+fn onboard_tui_compact_account_keeps_local_and_quit_choices_visible() {
+    let fx = fixture();
+    let mut cmd = tui_command(&fx, &[]);
+    cmd.env("EVERETT_AUTH_PROVIDER", "cloudflare")
+        .env("EVERETT_NO_ANIM", "1");
+    let mut p = spawn_tui_command(cmd, 54, 14);
+    p.see("Welcome to Everett");
+    p.send("\r");
+    p.see("Sign in to Everett");
+    let screen = p.screen();
+    assert!(screen.contains("enter sign in"), "{screen}");
+    assert!(screen.contains("l continue locally"), "{screen}");
+    assert!(screen.contains("q quit"), "{screen}");
+    p.send("l");
+    p.see("Choose your agents");
+    p.send("q");
+    p.see("Setup stopped. Applied changes, if any, are kept.");
+    assert!(!fx.home().join(".everett/cloudflare-auth.json").exists());
+    assert!(!fx.home().join(".everett/onboarding-complete").exists());
+}
+
+#[cfg(unix)]
+#[test]
 fn onboard_tui_full_wizard_applies() {
     let fx = fixture();
     plant(&fx, "claude.jsonl", ".claude/projects/app/claude.jsonl");
