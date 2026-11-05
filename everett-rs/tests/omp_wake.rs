@@ -64,6 +64,27 @@ fn cli_fixture() -> Fixture {
 }
 
 #[test]
+fn cli_ping_preview_names_extension_without_resuming_or_queueing() {
+    for mode in ["ping", "auto"] {
+        let f = cli_fixture();
+        f.write(&format!(".everett/inbox/omp-wake/{SID}.json"), &lease().to_string());
+        let out = f.run(&["send", "request", "--to", SID, "--mode", mode, "--dry-run", "--json"]);
+        assert!(out.status.success(), "{out:?}");
+        let preview: Value = serde_json::from_slice(&out.stdout).unwrap();
+        assert_eq!(preview["mode"], "ping");
+        assert_eq!(preview["transport"], "omp-extension");
+        assert_eq!(preview["queued"], false);
+        assert_eq!(preview["delivered"], false);
+        assert_eq!(preview["pinged"], false);
+        assert_eq!(preview["blocked_running"], false);
+        assert!(preview["command"].is_null(), "{preview}");
+        assert!(preview["manual_command"].is_null(), "{preview}");
+        assert!(!f.home().join(format!(".everett/inbox/{SID}.jsonl")).exists());
+        assert!(!f.home().join(format!(".everett/inbox/{SID}.done")).exists());
+    }
+}
+
+#[test]
 fn cli_and_mcp_ping_and_auto_use_live_extension_transport() {
     for mode in ["ping", "auto"] {
         for mcp in [false, true] {

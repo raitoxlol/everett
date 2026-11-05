@@ -9,6 +9,7 @@ use everett::{
     },
 };
 use serde_json::{json, Value};
+use sha2::{Digest, Sha256};
 use std::{fs, io::Write, path::Path, process::{Command, Stdio}};
 
 struct NativeFixture {
@@ -16,6 +17,9 @@ struct NativeFixture {
     revoked: std::sync::Arc<std::sync::atomic::AtomicBool>,
     running: std::sync::Arc<std::sync::atomic::AtomicBool>,
     worker: Option<std::thread::JoinHandle<()>>,
+    status: std::sync::Arc<std::sync::Mutex<Value>>,
+    status_calls: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+    reply_during_status: std::sync::Arc<std::sync::Mutex<Option<std::path::PathBuf>>>,
 }
 
 impl NativeFixture {
@@ -27,6 +31,11 @@ impl NativeFixture {
         let url = format!("http://{}", listener.local_addr().unwrap());
         let running = Arc::new(AtomicBool::new(true));
         let revoked = Arc::new(AtomicBool::new(false));
+        let status = Arc::new(std::sync::Mutex::new(json!({"state":"queued"})));
+        let status_calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let (response, calls) = (status.clone(), status_calls.clone());
+        let reply_during_status = Arc::new(std::sync::Mutex::new(None::<std::path::PathBuf>));
+        let reply_path = reply_during_status.clone();
         let revoked_device = revoked.clone();
         let active = running.clone();
         let (a, b) = (a.device.clone(), b.device.clone());
@@ -41,6 +50,7 @@ impl NativeFixture {
                 let mut line = String::new();
                 reader.read_line(&mut line).unwrap();
                 let whoami = line.contains("/whoami");
+                let status_request = line.contains("/status");
                 let mut len = 0;
                 let mut caller_a = false;
                 loop {
@@ -62,6 +72,14 @@ impl NativeFixture {
                     json!({"owner":caller.owner,"deviceId":caller.device_id})
                 } else if revoked_device.load(Ordering::Relaxed) {
                     Value::Null
+                } else if status_request {
+                    calls.fetch_add(1, Ordering::SeqCst);
+                    if let Some(path) = reply_path.lock().unwrap().take() {
+                        let mut outgoing: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+                        outgoing["state"] = json!("replied");
+                        fs::write(path, serde_json::to_vec(&outgoing).unwrap()).unwrap();
+                    }
+                    response.lock().unwrap().clone()
                 } else {
                     assert!(args["deviceId"] == a.device_id || args["deviceId"] == b.device_id);
                     json!(if args["deviceId"] == a.device_id { &a } else { &b })
@@ -70,7 +88,7 @@ impl NativeFixture {
                 write!(stream, "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nContent-Type: application/json\r\nConnection: close\r\n\r\n{}", body.len(), body).unwrap();
             }
         });
-        Self { url, revoked, running, worker: Some(worker) }
+        Self { url, revoked, running, worker: Some(worker), status, status_calls, reply_during_status }
     }
 }
 
@@ -89,6 +107,127 @@ fn put(home: &Path, relative: &str, value: &impl serde::Serialize) {
 fn select(home: &Path) {
     std::env::set_var("EVERETT_HOME", home);
     std::env::set_var("HOME", home);
+}
+
+fn status_fixture(posted: bool, state: &str, expired: bool) -> (common::Fixture, NativeFixture, String) {
+    let f = common::fixture();
+    let owner = "status-fixture-owner";
+    let a = Keys::new(owner.into(), "agent-a".into(), [1; 32], [2; 32]);
+    let b = Keys::new(owner.into(), "agent-b".into(), [3; 32], [4; 32]);
+    let server = NativeFixture::new(&a, &b);
+    put(&f.home(), ".everett/cloudflare-auth.json", &json!({
+        "issuer":server.url,"agent_id":"agent-a","owner":owner,
+        "device_name":"fixture","token":format!("evt_{}", "a".repeat(64)),"expires_at":u64::MAX
+    }));
+    let hash = format!("{:x}", Sha256::digest(json!([owner,"agent-a"]).to_string()));
+    put(&f.home(), &format!(".everett/relay-cloudflare/keys-{hash}.json"),
+        &json!({"signing":hex::encode([1;32]),"encryption":hex::encode([2;32])}));
+    let now = (everett::session::now() * 1000.0) as i64;
+    let envelope = a.seal(&b.device, "status-request", &Payload::Inbox {
+        session:"recipient".into(),harness:"codex".into(),text:"status check".into(),
+        from:"sender".into(),from_harness:"claude".into(),from_card:String::new(),
+        reply_to:String::new(),hops:1,external_untrusted:false,
+    }, if expired { now - 7200000 } else { now }, 3600000, None, None).unwrap();
+    let mid = envelope.message_id.clone();
+    put(&f.home(), ".everett/relay-cloudflare/outgoing/status.json", &json!({
+        "peer":"id:agent-b","envelope":envelope,"digest":"fixture","session":"sender", "harness":"claude",
+        "posted":posted,"state":state
+    }));
+    (f, server, mid)
+}
+
+#[test]
+fn unconfirmed_relay_status_expires_without_a_retry_instruction() {
+    for expired in [false, true] {
+        let (f, server, mid) = status_fixture(false, "queued", expired);
+        let out = f.run(&["peer", "status", "id:agent-b", &mid]);
+        assert!(out.status.success(), "{out:?}");
+        let result: Value = serde_json::from_slice(&out.stdout).unwrap();
+        assert_eq!(result["state"], if expired { "expired" } else { "unconfirmed" }, "{result}");
+        assert_eq!(result["posted"], false);
+        if expired {
+            assert!(!result["note"].as_str().unwrap().contains("Run everett relay to retry"), "{result}");
+        }
+        assert_eq!(server.status_calls.load(std::sync::atomic::Ordering::SeqCst), 0);
+    }
+}
+
+#[test]
+fn cached_relay_observations_survive_expiry_and_stale_server_state() {
+    for local in ["delivered", "replied"] {
+        for posted in [false, true] {
+            let (f, server, mid) = status_fixture(posted, local, true);
+            *server.status.lock().unwrap() = json!({"state":"expired"});
+            let before = fs::read(f.home().join(".everett/relay-cloudflare/outgoing/status.json")).unwrap();
+            let out = f.run(&["peer", "status", "id:agent-b", &mid]);
+            assert!(out.status.success(), "{out:?}");
+            let result: Value = serde_json::from_slice(&out.stdout).unwrap();
+            assert_eq!(result["state"], local, "{result}");
+            let calls = common::mcp_calls(&f, &[], &[], &[("everett_agent_status",json!({"message_id":mid}))]);
+            assert_ne!(calls[0]["isError"], true, "{:?}", calls[0]);
+            assert_eq!(common::tool_json(&calls[0])["state"], local);
+            let expected_calls = if posted && local == "delivered" { 2 } else { 0 };
+            assert_eq!(server.status_calls.load(std::sync::atomic::Ordering::SeqCst), expected_calls);
+            assert_eq!(fs::read(f.home().join(".everett/relay-cloudflare/outgoing/status.json")).unwrap(), before);
+        }
+    }
+}
+
+#[test]
+fn posted_relay_status_preserves_server_observations_and_advances_local_delivery() {
+    for local in ["queued", "delivered"] {
+        for remote in ["queued", "expired", "delivered", "claimed", "replied"] {
+            let (f, server, mid) = status_fixture(true, local, true);
+            *server.status.lock().unwrap() = json!({"state":remote});
+            let out = f.run(&["peer", "status", "id:agent-b", &mid]);
+            assert!(out.status.success(), "{out:?}");
+            let result: Value = serde_json::from_slice(&out.stdout).unwrap();
+            let expected = if local == "delivered" && matches!(remote, "queued" | "expired") {
+                "delivered"
+            } else {
+                remote
+            };
+            assert_eq!(result["state"], expected, "{result}");
+            assert_eq!(result["posted"], true);
+            assert_eq!(server.status_calls.load(std::sync::atomic::Ordering::SeqCst), 1);
+        }
+    }
+}
+
+#[test]
+fn cached_relay_status_still_checks_current_peer_authorization() {
+    for local in ["delivered", "replied"] {
+        let (f, server, mid) = status_fixture(true, local, true);
+        server.revoked.store(true, std::sync::atomic::Ordering::SeqCst);
+        let out = f.run(&["peer", "status", "id:agent-b", &mid]);
+        assert!(!out.status.success(), "{out:?}");
+        let calls = common::mcp_calls(&f, &[], &[], &[("everett_agent_status",json!({"message_id":mid}))]);
+        assert_eq!(calls[0]["isError"], true, "{:?}", calls[0]);
+        assert_eq!(server.status_calls.load(std::sync::atomic::Ordering::SeqCst), 0);
+    }
+}
+
+#[test]
+fn relay_status_rejects_malformed_server_observations() {
+    for status in [json!({}), json!({"state":"unknown"})] {
+        let (f, server, mid) = status_fixture(true, "queued", false);
+        *server.status.lock().unwrap() = status;
+        let out = f.run(&["peer", "status", "id:agent-b", &mid]);
+        assert_eq!(out.status.code(), Some(2), "{out:?}");
+        assert!(String::from_utf8_lossy(&out.stderr).contains("invalid relay status state"));
+    }
+}
+
+#[test]
+fn relay_status_includes_a_reply_received_while_the_server_query_is_in_flight() {
+    let (f, server, mid) = status_fixture(true, "queued", true);
+    *server.status.lock().unwrap() = json!({"state":"expired"});
+    *server.reply_during_status.lock().unwrap() = Some(f.home().join(".everett/relay-cloudflare/outgoing/status.json"));
+    let out = f.run(&["peer", "status", "id:agent-b", &mid]);
+    assert!(out.status.success(), "{out:?}");
+    let result: Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(result["state"], "replied", "{result}");
+    assert_eq!(server.status_calls.load(std::sync::atomic::Ordering::SeqCst), 1);
 }
 
 #[test]

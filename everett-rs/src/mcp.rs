@@ -163,7 +163,7 @@ pub fn tools() -> &'static Vec<Value> {
             }),
             json!({
                 "name":"everett_agent_status",
-                "description":"Sender-only status: queued after enqueue acknowledgement; delivered after durable recipient acceptance; claimed after inbox pickup; replied after correlated reply enqueue and signed observation. Never inferred from a connection or wake-up.",
+                "description":"Sender-only status: unconfirmed when enqueue acknowledgement is missing; expired when its retry window ends; queued after enqueue acknowledgement; delivered after durable recipient acceptance; claimed after inbox pickup; replied after an authenticated correlated reply is received locally or a signed relay observation. Never inferred from a connection or wake-up. posted reports whether a local enqueue acknowledgement was recorded.",
                 "inputSchema":{"type":"object","properties":{"message_id":s("Outgoing message ID.")},"required":["message_id"],"additionalProperties":false}
             }),
         ]

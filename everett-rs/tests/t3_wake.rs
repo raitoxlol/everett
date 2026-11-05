@@ -284,6 +284,62 @@ fn t3_explicit_inbox_stays_queue_only() {
 }
 
 #[test]
+fn t3_cli_ping_preview_does_not_resume_or_queue() {
+    let fx = fixture();
+    plant_thread(&fx.home());
+    let fake = fake_t3(&fx.home(), 0);
+    for mode in ["ping", "auto"] {
+        let out = Command::new(env!("CARGO_BIN_EXE_everett"))
+            .args(["send", "--to", SESSION, "--mode", mode, "--dry-run", "--json", BODY])
+            .env_clear()
+            .env("HOME", fx.home())
+            .env("EVERETT_HOME", fx.home())
+            .env("EVERETT_T3_BIN", &fake)
+            .env("PATH", common::HERMETIC_PATH)
+            .env("EVERETT_SESSION_ID", "caller")
+            .output().unwrap();
+        assert!(out.status.success(), "{out:?}");
+        let preview: Value = serde_json::from_slice(&out.stdout).unwrap();
+        assert_eq!(preview["mode"], "ping");
+        assert_eq!(preview["transport"], "t3");
+        assert_eq!(preview["thread_id"], THREAD);
+        assert_eq!(preview["delivered"], false);
+        assert_eq!(preview["queued"], false);
+        assert_eq!(preview["pinged"], false);
+        assert_eq!(preview["blocked_running"], false);
+        assert!(preview["command"].is_null(), "{preview}");
+        assert!(preview["manual_command"].is_null(), "{preview}");
+        assert!(!fx.home().join("t3-argv").exists());
+        assert!(!fx.home().join(".everett/inbox").exists());
+    }
+}
+
+#[test]
+fn t3_cli_ping_preview_rejects_invalid_requests_without_side_effects() {
+    let fx = fixture();
+    plant_thread(&fx.home());
+    let fake = fake_t3(&fx.home(), 0);
+    for (text, timeout) in [(" ".to_string(), "120"), ("request".to_string(), "0"),
+        ("request".to_string(), "NaN"), ("x".repeat(65537), "120")]
+    {
+        let out = Command::new(env!("CARGO_BIN_EXE_everett"))
+            .args(["send", "--to", SESSION, "--dry-run", "--timeout", timeout, "--json", &text])
+            .env_clear()
+            .env("HOME", fx.home())
+            .env("EVERETT_HOME", fx.home())
+            .env("EVERETT_T3_BIN", &fake)
+            .env("PATH", common::HERMETIC_PATH)
+            .env("EVERETT_SESSION_ID", "caller")
+            .output().unwrap();
+        assert_eq!(out.status.code(), Some(2), "{out:?}");
+        let error = String::from_utf8_lossy(&out.stderr);
+        assert!(error.contains(if timeout == "120" { "Ping requires" } else { "--timeout" }), "{out:?}");
+        assert!(!fx.home().join("t3-argv").exists());
+        assert!(!fx.home().join(".everett/inbox").exists());
+    }
+}
+
+#[test]
 fn regression_t3_fallback_commands_use_quoted_executable_and_sender_profile() {
     assert_fallback_commands(false);
 }

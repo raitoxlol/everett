@@ -48,6 +48,39 @@ fn live_target() -> Fixture {
 }
 
 #[test]
+fn attached_claude_preview_names_native_transport_without_a_resume_command() {
+    let fx = fixture();
+    let sid = "11111111-1111-4111-8111-111111111111";
+    fx.write(&format!(".claude/projects/p/{sid}.jsonl"), &jsonl(&[json!({
+        "type":"user", "sessionId":sid, "cwd":fx.home(),
+        "timestamp":chrono::Utc::now().to_rfc3339(),
+        "message":{"role":"user", "content":"Review the task"}
+    })]));
+    fx.write(&format!(".everett/inbox/live/{sid}.json"),
+        &json!({"pid":std::process::id(),"harness":"claude","ts":everett::session::now()}).to_string());
+    let out = fx.run(&["send", "request", "--to", sid, "--dry-run", "--json"]);
+    assert!(out.status.success(), "{out:?}");
+    let preview: Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(preview["transport"], "claude-bg");
+    assert_eq!(preview["mode"], "ping");
+    assert_eq!(preview["blocked_running"], false);
+    assert_eq!(preview["queued"], false);
+    assert_eq!(preview["delivered"], false);
+    assert!(preview["command"].is_null(), "{preview}");
+    assert!(preview["manual_command"].is_null(), "{preview}");
+    assert!(!fx.home().join(format!(".everett/inbox/{sid}.jsonl")).exists());
+}
+
+#[test]
+fn invalid_attached_claude_preview_is_refused_without_queueing() {
+    let fx = live_target();
+    let out = fx.run(&["send", "request", "--to", "policy-target", "--dry-run", "--json"]);
+    assert!(!out.status.success(), "{out:?}");
+    assert!(String::from_utf8_lossy(&out.stderr).contains("full Claude session UUID"));
+    assert!(!fx.home().join(".everett/inbox/policy-target.jsonl").exists());
+}
+
+#[test]
 fn automatic_cli_send_refuses_passive_delivery_without_enqueuing() {
     let fx = live_target();
     let out = fx.run(&[
