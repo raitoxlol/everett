@@ -302,3 +302,42 @@ fn diagnostics_bound_cache_scans_and_reject_unsafe_records_without_repairing_the
     assert_eq!(value["outgoing"]["truncated"], true);
     assert!(!value.to_string().contains("private-parser-error"));
 }
+
+fn diagnose_within(f: &Fixture, limit: std::time::Duration) -> Value {
+    let mut child = command(f, &["relay", "diagnose"])
+        .stdout(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let start = std::time::Instant::now();
+    while child.try_wait().unwrap().is_none() {
+        if start.elapsed() > limit {
+            child.kill().ok();
+            panic!("relay diagnose blocked on configuration");
+        }
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+    let out = child.wait_with_output().unwrap();
+    assert!(out.status.success(), "{out:?}");
+    serde_json::from_slice(&out.stdout).unwrap()
+}
+
+#[test]
+fn diagnostics_bound_configuration_reads() {
+    let f = fixture();
+    let config = f.home().join(".everett/config.toml");
+    fs::create_dir_all(config.parent().unwrap()).unwrap();
+
+    // A FIFO must not block diagnostics.
+    let status = Command::new("mkfifo").arg(&config).status().unwrap();
+    assert!(status.success());
+    let value = diagnose_within(&f, std::time::Duration::from_secs(10));
+    assert_eq!(value["registration"]["credential"], "config_unreadable");
+    fs::remove_file(&config).unwrap();
+
+    // A directive beyond the read bound must not influence the result.
+    let mut text = "#".repeat(300 * 1024);
+    text.push_str("\n[auth]\nprovider = \"other\"\n");
+    fs::write(&config, text).unwrap();
+    let value = diagnose_within(&f, std::time::Duration::from_secs(10));
+    assert_eq!(value["registration"]["credential"], "config_unreadable");
+}

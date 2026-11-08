@@ -61,17 +61,41 @@ fn file_state(path: &Path) -> &'static str {
     }
 }
 
+const CONFIG_LIMIT: u64 = 256 * 1024;
+
+/// Mirrors `require_provider` without the unbounded, blocking config loader.
+/// Unreadable, oversized or non-regular configuration counts as not selected.
+fn provider_selected() -> Option<bool> {
+    if let Ok(value) = std::env::var("EVERETT_AUTH_PROVIDER") {
+        let value = value.trim();
+        if !value.is_empty() {
+            return Some(value == "cloudflare");
+        }
+    }
+    match crate::config::values_bounded(CONFIG_LIMIT) {
+        Ok(None) => Some(true),
+        Ok(Some(values)) => Some(values
+            .get("auth.provider")
+            .map(|v| v.trim())
+            .filter(|v| !v.is_empty())
+            .is_none_or(|v| v == "cloudflare")),
+        Err(()) => None,
+    }
+}
+
 pub(super) fn snapshot() -> Value {
     let root = super::root();
     let credential = read_record::<crate::cloudflare_auth::Credential>(
         &crate::cloudflare_auth::credential_path(),
     );
-    let selected = crate::cloudflare_auth::require_provider().is_ok();
+    let provider = provider_selected();
+    let selected = provider == Some(true);
     let identity = credential
         .as_ref()
         .filter(|_| selected)
         .map(|c| (c.owner.as_str(), c.agent_id.as_str()));
     let credential_state = match credential.as_ref() {
+        _ if provider.is_none() => "config_unreadable",
         Some(_) if !selected => "provider_mismatch",
         Some(c) if c.expired() => "expired",
         Some(_) => "cached",
