@@ -1741,6 +1741,16 @@ fn finish_staged(
     Ok(())
 }
 
+/// Whether encrypted ingress for this device is still waiting to be published.
+fn has_stage(keys: &Keys, ingress: &Path) -> bool {
+    crate::paths::glob(ingress, "*.json").iter().any(|path| {
+        read::<Envelope>(path).is_ok_and(|envelope| {
+            envelope.recipient_owner == keys.device.owner
+                && envelope.to_device == keys.device.device_id
+        })
+    })
+}
+
 async fn receive(
     client: &mut RelayClient,
     keys: &Keys,
@@ -1880,6 +1890,10 @@ async fn run_native(
     let mut registered = false;
     let mut notices: Option<notifications::Listener> = None;
     let mut consumed = 0u64;
+    // Retained encrypted stages retry with backoff (5s doubling to 300s) so a
+    // persistently undeliverable row cannot reintroduce steady idle requests.
+    let mut retry_delay = Duration::from_secs(5);
+    let mut retry_at = has_stage(keys, ingress).then(tokio::time::Instant::now);
     loop {
         let result: Result<()> = async {
             if !registered {
@@ -1895,10 +1909,21 @@ async fn run_native(
                     _ => None,
                 }
             } else { None };
-            if generation.is_some() || (!push && polling.is_due(tokio::time::Instant::now())) {
+            let retry_due = retry_at.is_some_and(|at| tokio::time::Instant::now() >= at);
+            if generation.is_some() || retry_due || (!push && polling.is_due(tokio::time::Instant::now())) {
                 let busy = receive(&mut client, keys, ingress, &mut rejected).await?;
                 polling.complete(tokio::time::Instant::now(), busy);
                 if let Some(epoch) = generation { consumed = epoch; }
+                // A transient failure inside publish_staged keeps the encrypted stage and
+                // still returns Ok; without another hint nothing would retry it. Keep
+                // retrying with backoff until no stage for this device remains.
+                if has_stage(keys, ingress) {
+                    if retry_due { retry_delay = (retry_delay * 2).min(Duration::from_secs(300)); }
+                    retry_at = Some(tokio::time::Instant::now() + retry_delay);
+                } else {
+                    retry_delay = Duration::from_secs(5);
+                    retry_at = None;
+                }
             }
             if reconcile(&mut client, keys, &mut rejected).await? && !push {
                 polling.activity(tokio::time::Instant::now());
