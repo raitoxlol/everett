@@ -158,6 +158,8 @@ struct Server {
     labels_missing: Arc<AtomicBool>,
     device_error: Arc<Mutex<Option<String>>>,
     registration_failures: Arc<AtomicBool>,
+    pending_times: Arc<Mutex<Vec<Instant>>>,
+    pending_completed: Arc<AtomicUsize>,
 }
 impl Server {
     fn new() -> Self {
@@ -172,12 +174,19 @@ impl Server {
         let denial = device_error.clone();
         let registration_failures = Arc::new(AtomicBool::new(false));
         let failures = registration_failures.clone();
+        let pending_times = Arc::new(Mutex::new(Vec::new()));
+        let times = pending_times.clone();
+        let pending_completed = Arc::new(AtomicUsize::new(0));
+        let completed = pending_completed.clone();
         let (p, r, c) = (pending.clone(), revoked.clone(), calls.clone());
         std::thread::spawn(move || {
             for stream in listener.incoming() {
                 let mut stream = stream.unwrap();
                 let (path, args) = request(&mut stream);
                 c.lock().unwrap().push(path.clone());
+                if path == "/v2/relay/pending" {
+                    times.lock().unwrap().push(Instant::now());
+                }
                 let (status, result) = if r.load(Ordering::SeqCst) {
                     (401, json!({"error":"invalid_token"}))
                 } else {
@@ -190,6 +199,7 @@ impl Server {
                             (503, json!({"error":"service_unavailable"}))
                         }
                         "/v2/relay/register" => (200, json!({"result":null})),
+                        "/v2/relay/observe" => (200, json!({"result":null})),
                         "/v2/relay/revokeAgent" => {
                             assert_eq!(args, json!({"deviceId":"synthetic-agent"}));
                             (200, json!({"result":null}))
@@ -248,7 +258,10 @@ impl Server {
                     }
                 };
                 let body = result.to_string();
-                let _ = write!(stream, "HTTP/1.1 {status} Test\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len());
+                let sent = write!(stream, "HTTP/1.1 {status} Test\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len());
+                if sent.is_ok() && path == "/v2/relay/pending" && status == 200 {
+                    completed.fetch_add(1, Ordering::SeqCst);
+                }
             }
         });
         Self {
@@ -259,6 +272,8 @@ impl Server {
             labels_missing,
             device_error,
             registration_failures,
+            pending_times,
+            pending_completed,
         }
     }
     fn configure(&self, f: &Fixture) {
@@ -357,6 +372,122 @@ fn idle_receiver_registers_once_across_polls_and_transient_failure() {
     eprintln!("receiver request budget: {registrations} registrations, {polls} polls");
     assert_eq!(registrations, 1, "unchanged device registration repeated between polls");
     assert_eq!(polls, 3);
+    assert_eq!(calls.iter().filter(|p| p.as_str() == "/v2/relay/whoami").count(), 2,
+        "quiet maintenance added authentication requests beyond receiver startup");
+}
+
+fn webhook_retry_stops_after_authorization_change(change: &str) {
+    let f = fixture();
+    let server = Server::new();
+    server.configure(&f);
+    server.pending.store(1, Ordering::SeqCst);
+    let private = |name: &str, body: &str| {
+        let path = f.write(name, body);
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
+        path
+    };
+    let bearer = private("webhook-test.key", "synthetic-webhook-key");
+    private(".everett/relay-cloudflare/receiver-webhook.json", &json!({
+        "version":1,"enabled":true,"activated_at":1,"rules":[{
+            "id":"retry-rule","owner":"synthetic-owner","recipient_device":"synthetic-agent",
+            "session":"ext-webhook-test","harness":"grok-bot","cooldown_seconds":3600,
+            "url":"https://webhook-test.invalid/routine","bearer_file":bearer
+        }]
+    }).to_string());
+    let last = everett::session::now() as i64;
+    let ledger = private(".everett/relay-cloudflare/receiver-webhook/ledger.json", &json!({
+        "version":1,"rules":{"retry-rule":last},"messages":{
+            "retry-message":{"rule_id":"retry-rule","session":"ext-webhook-test","harness":"grok-bot",
+                "state":"pending","attempts":1,"at":last}
+        }
+    }).to_string());
+    let mut child = listener(&f);
+    until_with_timeout(Duration::from_secs(25), || {
+        server.pending_completed.load(Ordering::SeqCst) >= 3 || child.0.try_wait().unwrap().is_some()
+    });
+    assert!(child.0.try_wait().unwrap().is_none());
+    match change {
+        "logout" => std::fs::remove_file(f.home().join(".everett/cloudflare-auth.json")).unwrap(),
+        "provider" => { f.write(".everett/config.toml", "[auth]\nprovider = 'oidc'\n"); }
+        "credential" => {
+            let path = f.home().join(".everett/cloudflare-auth.json");
+            let mut credential: Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+            credential["token"] = json!("evt_dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd");
+            std::fs::write(path, serde_json::to_vec(&credential).unwrap()).unwrap();
+        }
+        "backend" => server.revoked.store(true, Ordering::SeqCst),
+        _ => unreachable!(),
+    }
+    let mut saved: Value = serde_json::from_slice(&std::fs::read(&ledger).unwrap()).unwrap();
+    saved["rules"]["retry-rule"] = json!(everett::session::now() as i64 - 3600);
+    let before = serde_json::to_vec(&saved).unwrap();
+    let armed = ledger.with_extension("next");
+    std::fs::write(&armed, &before).unwrap();
+    std::fs::set_permissions(&armed, std::fs::Permissions::from_mode(0o600)).unwrap();
+    std::fs::rename(armed, &ledger).unwrap();
+    until_with_timeout(Duration::from_secs(12), || child.0.try_wait().unwrap().is_some());
+    assert_eq!(child.0.try_wait().unwrap().unwrap().code(), Some(1));
+    assert_eq!(std::fs::read(ledger).unwrap(), before, "webhook attempts changed after {change}");
+    assert_eq!(server.pending_times.lock().unwrap().len(), 3,
+        "authorization was deferred until the next inbox poll after {change}");
+}
+
+#[test]
+fn pending_webhook_retry_stops_on_logout_during_idle_backoff() {
+    webhook_retry_stops_after_authorization_change("logout");
+}
+
+#[test]
+fn pending_webhook_retry_stops_on_provider_switch_during_idle_backoff() {
+    webhook_retry_stops_after_authorization_change("provider");
+}
+
+#[test]
+fn pending_webhook_retry_stops_on_credential_replacement_during_idle_backoff() {
+    webhook_retry_stops_after_authorization_change("credential");
+}
+
+#[test]
+fn pending_webhook_retry_stops_on_backend_revocation_during_idle_backoff() {
+    webhook_retry_stops_after_authorization_change("backend");
+}
+
+#[test]
+fn idle_polling_backs_off_while_local_claims_keep_five_second_maintenance() {
+    let f = fixture();
+    let server = Server::new();
+    server.configure(&f);
+    server.pending.store(1, Ordering::SeqCst);
+    let mut child = listener(&f);
+    until_with_timeout(Duration::from_secs(25), || {
+        server.pending_times.lock().unwrap().len() >= 3 || child.0.try_wait().unwrap().is_some()
+    });
+    assert!(child.0.try_wait().unwrap().is_none());
+    {
+        let times = server.pending_times.lock().unwrap();
+        let gaps: Vec<_> = times.windows(2).map(|pair| pair[1] - pair[0]).collect();
+        eprintln!("idle pending gaps: {gaps:?}");
+        assert!(gaps[0] >= Duration::from_secs(4), "{gaps:?}");
+        assert!(gaps[1] >= Duration::from_secs(9), "idle polling did not back off: {gaps:?}");
+    }
+    let claimed_at = Instant::now();
+    f.write(".everett/inbox/idle-claim.jsonl", &format!("{}\n", json!({
+        "id":"local-claim", "text":"already consumed", "relay_owner":"synthetic-owner",
+        "relay_recipient_device":"synthetic-agent", "relay_sender_owner":"synthetic-owner",
+        "relay_message_id":"remote-claim"
+    })));
+    f.write(".everett/inbox/idle-claim.done", "local-claim\n");
+    until_with_timeout(Duration::from_secs(8), || {
+        server.calls.lock().unwrap().iter().any(|path| path == "/v2/relay/observe")
+    });
+    assert!(claimed_at.elapsed() < Duration::from_secs(8));
+    until_with_timeout(Duration::from_secs(8), || server.pending_times.lock().unwrap().len() >= 4);
+    let times = server.pending_times.lock().unwrap();
+    assert!(times[3] - times[2] < Duration::from_secs(14), "local work did not reset idle polling: {times:?}");
+    drop(times);
+    server.revoked.store(true, Ordering::SeqCst);
+    until_with_timeout(Duration::from_secs(8), || child.0.try_wait().unwrap().is_some());
+    assert_eq!(child.0.try_wait().unwrap().unwrap().code(), Some(1));
 }
 
 #[test]

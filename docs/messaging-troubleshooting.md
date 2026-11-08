@@ -5,6 +5,31 @@ no reply. Keep the message ID from the first attempt until its outcome is known.
 
 ## Diagnose the failed step
 
+Start with `everett relay diagnose` for a JSON snapshot that makes no network
+calls. MCP clients can call `everett_agent_relay` with `action="diagnose"`.
+No account sign-in or running receiver is required.
+
+The snapshot reports the receiver's held local leases, cached credential and
+key-file presence, external registration counts, webhook configuration and retry
+counts, and cached outgoing and encrypted ingress counts. `cached` or `present`
+does not prove current server registration or authorization. `running` means
+the local receiver holds its leases with a matching cached identity; it does not
+prove that polling succeeds. Webhook configuration does not prove endpoint
+acceptance. Bearer files are never opened by diagnostics.
+
+Each cache or registration scan examines at most 256 directory entries. Private
+JSON reads are capped at 256 KiB per file; receiver capability status has its
+own smaller bound. Unsafe, oversized, or malformed records count as unreadable
+and remain untouched. `truncated: true` means counts are partial. Cached queue
+counts include all stored accounts. Expired encrypted ingress can still be
+recoverable after an earlier delivery, so diagnosis does not delete it.
+
+Output excludes message text, identifiers, webhook URLs, bearer paths, and
+credential values. CLI diagnostics do not create or modify state. MCP uses its
+normal call-metadata log; the diagnostic handler does not change relay state.
+Use the checks below when you deliberately need a launcher probe or a remote
+observation.
+
 1. Run `everett --version` on each computer involved.
 2. Run `everett doctor` on the sender and recipient. Check the reported executable,
    session stores, hooks, and MCP registrations. Doctor probes local launchers;
