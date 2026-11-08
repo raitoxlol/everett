@@ -39,8 +39,20 @@ impl Watchdog for Command {
     fn checked_output(&mut self) -> Output {
         let mut stdout = tempfile::tempfile().unwrap();
         let mut stderr = tempfile::tempfile().unwrap();
-        let mut child = self.process_group(0).stdin(Stdio::null())
-            .stdout(stdout.try_clone().unwrap()).stderr(stderr.try_clone().unwrap()).spawn().unwrap();
+        // Linux returns ETXTBSY when a parallel test's fork still holds a write fd
+        // to a freshly written fixture executable; retry briefly instead of failing.
+        let mut attempt = 0;
+        let mut child = loop {
+            match self.process_group(0).stdin(Stdio::null())
+                .stdout(stdout.try_clone().unwrap()).stderr(stderr.try_clone().unwrap()).spawn()
+            {
+                Err(e) if e.kind() == std::io::ErrorKind::ExecutableFileBusy && attempt < 50 => {
+                    attempt += 1;
+                    std::thread::sleep(Duration::from_millis(20));
+                }
+                result => break result.unwrap(),
+            }
+        };
         let status = child.wait_timeout(Duration::from_secs(12)).unwrap();
         if status.is_none() {
             unsafe { libc::kill(-(child.id() as i32), libc::SIGKILL); }
