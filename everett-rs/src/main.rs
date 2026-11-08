@@ -492,6 +492,8 @@ fn peer_output(result: everett::error::Result<serde_json::Value>) -> i32 {
 
 #[derive(Subcommand)]
 enum RelayCmd {
+    /// read-only offline receiver, registration, webhook and bounded cache diagnostics as JSON
+    Diagnose,
     /// list exposed, authenticated author/session cards in this account (no pairing)
     Authors,
     /// expose one exact local session and its card to authenticated account peers
@@ -657,6 +659,7 @@ fn main() {
         } => peer_output(everett::relay::revoke_device(&device_id)),
         Cmd::Devices { action: None, .. } => peer_output(everett::relay::devices()),
         Cmd::Relay { action } => match action {
+            Some(RelayCmd::Diagnose) => peer_output(Ok(everett::relay::diagnostics())),
             Some(RelayCmd::Authors) => peer_output(everett::messaging::authors().map(|sessions| serde_json::json!({"sessions":sessions}))),
             Some(RelayCmd::Expose { session, harness, remove }) => peer_output(everett::messaging::expose_id(&session, harness.as_deref(), remove)),
             None => peer_output(everett::relay::run()),

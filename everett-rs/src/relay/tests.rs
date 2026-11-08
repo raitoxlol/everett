@@ -16,6 +16,47 @@ fn configure(keys: &Keys, devices: Vec<Device>) {
 
 static RECEIVER_ENV_LOCK: Mutex<()> = Mutex::new(());
 
+#[test]
+fn idle_poll_schedule_caps_at_sixty_seconds_and_resets_after_activity() {
+    let mut now = tokio::time::Instant::now();
+    let mut polling = PollSchedule::new(now);
+    assert!(polling.is_due(now));
+    for seconds in [5, 10, 20, 40, 60, 60] {
+        polling.complete(now, false);
+        assert!(!polling.is_due(now + Duration::from_secs(seconds - 1)));
+        now += Duration::from_secs(seconds);
+        assert!(polling.is_due(now));
+    }
+    polling.complete(now, true);
+    assert!(!polling.is_due(now + Duration::from_secs(4)));
+    now += Duration::from_secs(5);
+    assert!(polling.is_due(now));
+    polling.complete(now, false);
+    now += Duration::from_secs(5);
+    assert!(polling.is_due(now));
+    polling.complete(now, false);
+    assert!(!polling.is_due(now + Duration::from_secs(9)));
+    assert!(polling.is_due(now + Duration::from_secs(10)));
+}
+
+#[test]
+fn local_activity_brings_idle_poll_forward_without_postponing_a_due_poll() {
+    let mut now = tokio::time::Instant::now();
+    let mut polling = PollSchedule::new(now);
+    for seconds in [5, 10, 20, 40] {
+        polling.complete(now, false);
+        now += Duration::from_secs(seconds);
+    }
+    polling.complete(now, false);
+    polling.activity(now + Duration::from_secs(5));
+    assert!(!polling.is_due(now + Duration::from_secs(9)));
+    assert!(polling.is_due(now + Duration::from_secs(10)));
+    polling.activity(now + Duration::from_secs(10));
+    assert!(polling.is_due(now + Duration::from_secs(10)));
+    let restarted = PollSchedule::new(now);
+    assert!(restarted.is_due(now));
+}
+
 thread_local! {
     pub(super) static FAIL_STAGE_DELETE_SYNC: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
@@ -523,11 +564,12 @@ pub(super) struct TestClient {
     native: Option<crate::cloudflare_auth::Credential>,
     responses: std::collections::VecDeque<(&'static str, std::result::Result<Value, &'static str>)>,
     calls: Vec<(String, Value)>,
+    before_response: Option<fn(&str)>,
 }
 
 impl TestClient {
     fn fake(responses: Vec<(&'static str, std::result::Result<Value, &'static str>)>) -> Self {
-        Self { native: None, responses: responses.into(), calls: vec![] }
+        Self { native: None, responses: responses.into(), calls: vec![], before_response: None }
     }
 
     pub fn native(stored: crate::cloudflare_auth::Credential) -> Self {
@@ -542,10 +584,259 @@ impl TestClient {
                 _ => panic!("unexpected native fixture request: {name}"),
             });
         }
+        if let Some(callback) = self.before_response.take() {
+            callback(name);
+        }
         let (expected, result) = self.responses.pop_front().expect("unexpected relay request");
         assert_eq!(name, expected);
         self.calls.push((name.to_string(), value));
         result.map_err(|e| EverettError::new(1, e))
+    }
+}
+
+fn queued_webhook_retry(keys: &Keys) -> PathBuf {
+    peer::private_dir(&root()).unwrap();
+    let bearer = root().join("webhook-test.key");
+    peer::save(&bearer, b"synthetic-webhook-test-key").unwrap();
+    write(&root().join("receiver-webhook.json"), &json!({
+        "version":1,"enabled":true,"activated_at":1,"rules":[{
+            "id":"retry-rule","owner":keys.device.owner,"recipient_device":keys.device.device_id,
+            "session":"ext-webhook-test","harness":"grok-bot","cooldown_seconds":30,
+            "url":"https://webhook-test.invalid/routine","bearer_file":bearer
+        }]
+    })).unwrap();
+    let ledger = root().join("receiver-webhook/ledger.json");
+    peer::private_dir(ledger.parent().unwrap()).unwrap();
+    let last = milliseconds() / 1000 - 31;
+    write(&ledger, &json!({"version":1,"rules":{"retry-rule":last},"messages":{
+        "retry-message":{"rule_id":"retry-rule","session":"ext-webhook-test","harness":"grok-bot",
+            "state":"pending","attempts":1,"at":last}
+    }})).unwrap();
+    ledger
+}
+
+#[test]
+fn due_webhook_retry_requires_authorization_during_an_idle_poll_gap() {
+    if !crate::test_support::isolated("relay::tests::due_webhook_retry_requires_authorization_during_an_idle_poll_gap") {
+        return;
+    }
+    let _env = RECEIVER_ENV_LOCK.lock().unwrap();
+    let home = tempfile::tempdir().unwrap();
+    std::env::set_var("HOME", home.path());
+    std::env::set_var("EVERETT_HOME", home.path());
+    std::env::set_var("EVERETT_AUTH_PROVIDER", "cloudflare");
+    let (a, b) = devices();
+    configure(&b, vec![a.device.clone(), b.device.clone()]);
+    let ledger = queued_webhook_retry(&b);
+    let before = fs::read(&ledger).unwrap();
+    let _capture = crate::receiver_webhook::testing_begin(200);
+    let now = tokio::time::Instant::now();
+    let mut polling = PollSchedule::new(now);
+    polling.complete(now, false);
+    assert!(!polling.is_due(now + Duration::from_secs(1)));
+    let mut denied = TestClient::fake(vec![("relay:whoami", Err("Cloudflare relay denied: revoked receiver"))]);
+    let rt = tokio::runtime::Runtime::new().unwrap();
+    let error = rt.block_on(poll_receiver_webhook(&mut denied, &b)).unwrap_err();
+    assert!(super::denied(&error));
+    assert_eq!(denied.calls.len(), 1);
+    assert!(crate::receiver_webhook::testing_posts().is_empty());
+    assert_eq!(fs::read(&ledger).unwrap(), before);
+    let mut changed = TestClient::fake(vec![("relay:whoami", Ok(json!({"owner":"another-owner","deviceId":b.device.device_id})))]);
+    let error = rt.block_on(poll_receiver_webhook(&mut changed, &b)).unwrap_err();
+    assert_eq!(error.code, 2);
+    assert!(crate::receiver_webhook::testing_posts().is_empty());
+    assert_eq!(fs::read(ledger).unwrap(), before);
+}
+
+#[test]
+fn webhook_maintenance_defers_uncertain_auth_without_spending_attempts() {
+    if !crate::test_support::isolated("relay::tests::webhook_maintenance_defers_uncertain_auth_without_spending_attempts") {
+        return;
+    }
+    let _env = RECEIVER_ENV_LOCK.lock().unwrap();
+    let home = tempfile::tempdir().unwrap();
+    std::env::set_var("HOME", home.path());
+    std::env::set_var("EVERETT_HOME", home.path());
+    std::env::set_var("EVERETT_AUTH_PROVIDER", "cloudflare");
+    let (a, b) = devices();
+    configure(&b, vec![a.device.clone(), b.device.clone()]);
+    let ledger = queued_webhook_retry(&b);
+    let _capture = crate::receiver_webhook::testing_begin(200);
+    let rt = tokio::runtime::Runtime::new().unwrap();
+    let mut saved: Value = read(&ledger).unwrap();
+    saved["rules"]["retry-rule"] = json!(milliseconds() / 1000);
+    write(&ledger, &saved).unwrap();
+    let mut quiet = TestClient::fake(vec![]);
+    rt.block_on(poll_receiver_webhook(&mut quiet, &b)).unwrap();
+    assert!(quiet.calls.is_empty());
+    assert!(crate::receiver_webhook::testing_posts().is_empty());
+    let ledger = queued_webhook_retry(&b);
+    let before = fs::read(&ledger).unwrap();
+    let mut uncertain = TestClient::fake(vec![("relay:whoami", Err("network"))]);
+    let error = rt.block_on(poll_receiver_webhook(&mut uncertain, &b)).unwrap_err();
+    assert_eq!(error.code, 6);
+    assert!(!super::denied(&error));
+    assert_eq!(fs::read(&ledger).unwrap(), before);
+    assert!(crate::receiver_webhook::testing_posts().is_empty());
+    let mut recovered = TestClient::fake(vec![("relay:whoami", Ok(json!({"owner":b.device.owner,"deviceId":b.device.device_id})))]);
+    rt.block_on(poll_receiver_webhook(&mut recovered, &b)).unwrap();
+    assert_eq!(crate::receiver_webhook::testing_posts().len(), 1);
+    let saved: Value = read(&ledger).unwrap();
+    assert_eq!(saved["messages"]["retry-message"]["state"], "posted");
+    assert_eq!(saved["messages"]["retry-message"]["attempts"], 2);
+    rt.block_on(poll_receiver_webhook(&mut quiet, &b)).unwrap();
+    assert!(quiet.calls.is_empty());
+    assert_eq!(crate::receiver_webhook::testing_posts().len(), 1);
+}
+
+#[test]
+fn webhook_metadata_errors_remain_nonfatal_and_do_not_authenticate() {
+    if !crate::test_support::isolated("relay::tests::webhook_metadata_errors_remain_nonfatal_and_do_not_authenticate") {
+        return;
+    }
+    let _env = RECEIVER_ENV_LOCK.lock().unwrap();
+    let home = tempfile::tempdir().unwrap();
+    std::env::set_var("HOME", home.path());
+    std::env::set_var("EVERETT_HOME", home.path());
+    std::env::set_var("EVERETT_AUTH_PROVIDER", "cloudflare");
+    let (a, b) = devices();
+    configure(&b, vec![a.device.clone(), b.device.clone()]);
+    let _capture = crate::receiver_webhook::testing_begin(200);
+    let rt = tokio::runtime::Runtime::new().unwrap();
+    let mut client = TestClient::fake(vec![]);
+    let ledger = queued_webhook_retry(&b);
+    peer::save(&ledger, b"{").unwrap();
+    rt.block_on(poll_receiver_webhook(&mut client, &b)).unwrap();
+    queued_webhook_retry(&b);
+    peer::save(&root().join("receiver-webhook.json"), b"{").unwrap();
+    rt.block_on(poll_receiver_webhook(&mut client, &b)).unwrap();
+    let ledger = queued_webhook_retry(&b);
+    let before = fs::read(&ledger).unwrap();
+    fs::remove_file(root().join("webhook-test.key")).unwrap();
+    rt.block_on(poll_receiver_webhook(&mut client, &b)).unwrap();
+    assert_eq!(fs::read(ledger).unwrap(), before);
+    assert!(client.calls.is_empty());
+    assert!(crate::receiver_webhook::testing_posts().is_empty());
+}
+
+#[test]
+fn webhook_retry_reloads_after_authorization_without_holding_the_ledger_lock() {
+    if !crate::test_support::isolated("relay::tests::webhook_retry_reloads_after_authorization_without_holding_the_ledger_lock") {
+        return;
+    }
+    let _env = RECEIVER_ENV_LOCK.lock().unwrap();
+    let home = tempfile::tempdir().unwrap();
+    std::env::set_var("HOME", home.path());
+    std::env::set_var("EVERETT_HOME", home.path());
+    std::env::set_var("EVERETT_AUTH_PROVIDER", "cloudflare");
+    let (a, b) = devices();
+    configure(&b, vec![a.device.clone(), b.device.clone()]);
+    let ledger = queued_webhook_retry(&b);
+    let _capture = crate::receiver_webhook::testing_begin(200);
+    fn consume_retry(name: &str) {
+        assert_eq!(name, "relay:whoami");
+        let directory = root().join("receiver-webhook");
+        let lock = fs::OpenOptions::new().read(true).write(true).open(directory.join("ledger.lock")).unwrap();
+        fs2::FileExt::try_lock_exclusive(&lock).expect("ledger lock held while awaiting authorization");
+        let path = directory.join("ledger.json");
+        let mut saved: Value = read(&path).unwrap();
+        saved["messages"]["retry-message"]["state"] = json!("posted");
+        saved["messages"]["retry-message"]["attempts"] = json!(2);
+        write(&path, &saved).unwrap();
+    }
+    let mut client = TestClient::fake(vec![("relay:whoami", Ok(json!({"owner":b.device.owner,"deviceId":b.device.device_id})))]);
+    client.before_response = Some(consume_retry);
+    tokio::runtime::Runtime::new().unwrap().block_on(poll_receiver_webhook(&mut client, &b)).unwrap();
+    assert_eq!(client.calls.len(), 1);
+    assert!(crate::receiver_webhook::testing_posts().is_empty());
+    let saved: Value = read(&ledger).unwrap();
+    assert_eq!(saved["messages"]["retry-message"]["state"], "posted");
+    assert_eq!(saved["messages"]["retry-message"]["attempts"], 2);
+}
+
+#[test]
+fn polling_activity_ignores_rejected_rows_and_keeps_uncertain_ingress_active() {
+    if !crate::test_support::isolated("relay::tests::polling_activity_ignores_rejected_rows_and_keeps_uncertain_ingress_active") {
+        return;
+    }
+    let _env = RECEIVER_ENV_LOCK.lock().unwrap();
+    let home = tempfile::tempdir().unwrap();
+    std::env::set_var("HOME", home.path());
+    std::env::set_var("EVERETT_HOME", home.path());
+    std::env::set_var("EVERETT_NOTIFY", "none");
+    std::env::set_var("EVERETT_AUTH_PROVIDER", "cloudflare");
+    let (a, b) = devices();
+    configure(&b, vec![a.device.clone(), b.device.clone()]);
+    let ingress = root().join("ingress");
+    peer::private_dir(&ingress).unwrap();
+    let transcript = home.path().join(".codex/sessions/2026/10/12/recipient.jsonl");
+    fs::create_dir_all(transcript.parent().unwrap()).unwrap();
+    fs::write(transcript, include_str!("../../tests/fixtures/codex.jsonl").replace("x-1", "recipient")).unwrap();
+    let now = milliseconds();
+    let envelope = a.seal(&b.device, "polling-activity", &payload(1), now, TTL, None, None).unwrap();
+    let mut invalid = envelope.clone();
+    invalid.signature = "00".repeat(64);
+    let page = |rows: Vec<Envelope>, done: bool| json!({
+        "serverNow":now, "envelopes":rows.into_iter().map(|envelope| json!({"envelope":envelope})).collect::<Vec<_>>(),
+        "isDone":done, "continueCursor":"next"
+    });
+    let rt = tokio::runtime::Runtime::new().unwrap();
+    let mut rejected = RejectedCache::new();
+    let mut invalid_client = TestClient::fake(vec![("relay:pending", Ok(page(vec![invalid], true)))]);
+    assert!(!rt.block_on(receive(&mut invalid_client, &b, &ingress, &mut rejected)).unwrap());
+    let mut uncertain = TestClient::fake(vec![
+        ("relay:pending", Ok(page(vec![], false))),
+        ("relay:pending", Ok(page(vec![envelope.clone()], true))),
+        ("relay:observe", Err("network")),
+    ]);
+    assert!(rt.block_on(receive(&mut uncertain, &b, &ingress, &mut rejected)).unwrap());
+    let path = ingress.join(format!("{}.json", local_message_id(&envelope)));
+    assert!(path.exists());
+    assert!(inbox::read("recipient").is_empty());
+    let mut recovered = TestClient::fake(vec![
+        ("relay:observe", Ok(json!({}))),
+        ("relay:pending", Ok(page(vec![], true))),
+    ]);
+    assert!(rt.block_on(receive(&mut recovered, &b, &ingress, &mut rejected)).unwrap());
+    assert!(!path.exists());
+    assert_eq!(inbox::read("recipient").len(), 1);
+    let mut idle = TestClient::fake(vec![("relay:pending", Ok(page(vec![], true)))]);
+    assert!(!rt.block_on(receive(&mut idle, &b, &ingress, &mut rejected)).unwrap());
+}
+
+#[test]
+fn newly_posted_local_requests_keep_polling_active_without_reposting() {
+    if !crate::test_support::isolated("relay::tests::newly_posted_local_requests_keep_polling_active_without_reposting") {
+        return;
+    }
+    let _env = RECEIVER_ENV_LOCK.lock().unwrap();
+    let home = tempfile::tempdir().unwrap();
+    std::env::set_var("HOME", home.path());
+    std::env::set_var("EVERETT_HOME", home.path());
+    std::env::set_var("EVERETT_AUTH_PROVIDER", "cloudflare");
+    let (a, b) = devices();
+    configure(&a, vec![a.device.clone(), b.device.clone()]);
+    let path = root().join("outgoing/posted.json");
+    peer::private_dir(path.parent().unwrap()).unwrap();
+    let rt = tokio::runtime::Runtime::new().unwrap();
+    for (age, state, active) in [
+        (0, State::Queued, true),
+        (61_000, State::Queued, false),
+        (0, State::Replied, false),
+        (TTL + 1, State::Queued, false),
+    ] {
+        let out = Outgoing {
+            peer: "id:agent-b".into(),
+            envelope: a.seal(&b.device, "posted-activity", &payload(1), milliseconds() - age, TTL, None, None).unwrap(),
+            digest: "fixture".into(), session: "sender".into(), harness: "claude".into(),
+            posted: true, state, reply_pending: None,
+        };
+        write(&path, &out).unwrap();
+        let before = fs::read(&path).unwrap();
+        let mut client = TestClient::fake(vec![]);
+        assert_eq!(rt.block_on(reconcile(&mut client, &a, &mut RejectedCache::new())).unwrap(), active);
+        assert!(client.calls.is_empty());
+        assert_eq!(fs::read(&path).unwrap(), before);
     }
 }
 
@@ -681,11 +972,11 @@ fn relay_transport_denied_row_does_not_block_allowed_and_own_revocation_stops() 
     // independently generated local inbox ID. Reconcile retries idempotently.
     inbox::take("x-1");
     let mut claims = TestClient::fake(vec![("relay:observe", Ok(json!({})))]);
-    rt.block_on(reconcile(&mut claims, &b, &mut RejectedCache::new())).unwrap();
+    assert!(rt.block_on(reconcile(&mut claims, &b, &mut RejectedCache::new())).unwrap());
     assert_eq!(claims.calls[0].1["state"], "claimed");
     assert_eq!(claims.calls[0].1["messageId"], blocked.message_id);
     assert_eq!(claims.calls[0].1["senderOwner"], a.device.owner);
-    rt.block_on(reconcile(&mut claims, &b, &mut RejectedCache::new())).unwrap();
+    assert!(!rt.block_on(reconcile(&mut claims, &b, &mut RejectedCache::new())).unwrap());
     assert!(claims.responses.is_empty());
     let mut replies = TestClient::fake(vec![("relay:observe", Ok(json!({})))]);
     rt.block_on(signed_observation(

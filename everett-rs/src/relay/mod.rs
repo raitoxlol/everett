@@ -1,5 +1,6 @@
 pub mod crypto;
-mod queue;
+mod diagnostics;
+pub(crate) mod queue;
 pub(crate) mod receiver;
 #[cfg(not(test))]
 mod transport;
@@ -27,6 +28,11 @@ use crypto::{Device, Envelope, Keys, Parent};
 
 const DEADLINE: Duration = Duration::from_secs(20);
 const TTL: i64 = 3_600_000;
+const OUTGOING_ACTIVITY_MS: i64 = 60_000;
+
+pub fn diagnostics() -> Value {
+    diagnostics::snapshot()
+}
 
 pub(super) fn bad(error: impl std::fmt::Display) -> EverettError {
     EverettError::new(2, format!("relay: {error}"))
@@ -1500,7 +1506,8 @@ async fn signed_observation(
     Ok(())
 }
 
-async fn reconcile(client: &mut RelayClient, keys: &Keys, rejected: &mut RejectedCache) -> Result<()> {
+async fn reconcile(client: &mut RelayClient, keys: &Keys, rejected: &mut RejectedCache) -> Result<bool> {
+    let mut busy = false;
     for path in crate::paths::glob(&inbox::inbox_dir(), "*.jsonl") {
         let session = path.file_stem().unwrap_or_default().to_string_lossy();
         let done = inbox::done_ids(&session);
@@ -1534,6 +1541,7 @@ async fn reconcile(client: &mut RelayClient, keys: &Keys, rejected: &mut Rejecte
                 )
             ));
             if !marker.exists() {
+                busy = true;
                 if let Err(error) =
                     signed_observation(client, keys, sender_owner, remote_mid, "claimed").await
                 {
@@ -1555,12 +1563,22 @@ async fn reconcile(client: &mut RelayClient, keys: &Keys, rejected: &mut Rejecte
             }
             continue;
         };
-        if out.envelope.owner == keys.device.owner
+        let now = milliseconds();
+        let own = out.envelope.owner == keys.device.owner
             && out.envelope.from_device == keys.device.device_id
-            && out.envelope.sender_fingerprint == keys.device.fingerprint()
-            && ((!out.posted && out.envelope.expires_at > milliseconds())
+            && out.envelope.sender_fingerprint == keys.device.fingerprint();
+        if own && out.posted && out.state != State::Replied
+            && out.envelope.created_at <= now
+            && out.envelope.created_at > now.saturating_sub(OUTGOING_ACTIVITY_MS)
+            && out.envelope.expires_at > now
+        {
+            busy = true;
+        }
+        if own
+            && ((!out.posted && out.envelope.expires_at > now)
                 || (out.posted && out.reply_pending.is_some()))
         {
+            busy = true;
             let pin = if out.envelope.recipient_owner == keys.device.owner && out.envelope.grant_id.is_none() {
                 active_same_owner_device(client, &keys.device.owner, &out.envelope.to_device).await.map(|device| (device, None))
             } else {
@@ -1593,7 +1611,7 @@ async fn reconcile(client: &mut RelayClient, keys: &Keys, rejected: &mut Rejecte
             }
         }
     }
-    Ok(())
+    Ok(busy)
 }
 
 #[derive(Deserialize)]
@@ -1727,12 +1745,14 @@ async fn receive(
     keys: &Keys,
     ingress: &Path,
     rejected: &mut RejectedCache,
-) -> Result<Option<String>> {
+) -> Result<bool> {
+    let mut busy = false;
     for path in crate::paths::glob(ingress, "*.json") {
         let envelope: Envelope = read(&path)?;
         if envelope.recipient_owner == keys.device.owner
             && envelope.to_device == keys.device.device_id
         {
+            busy = true;
             publish_staged(client, keys, &path, &envelope).await?;
         }
     }
@@ -1764,6 +1784,7 @@ async fn receive(
                 continue;
             }
             let path = ingress.join(format!("{}.json", local_message_id(&envelope)));
+            busy = true;
             write(&path, &envelope)?;
             publish_staged(client, keys, &path, &envelope).await?;
         }
@@ -1779,10 +1800,37 @@ async fn receive(
         }
         cursor = Some(page.continue_cursor);
     }
-    reconcile(client, keys, rejected).await?;
-    drain_receiver_wakes(keys)?;
-    note_receiver_webhook(crate::receiver_webhook::poll());
-    Ok(cursor)
+    Ok(busy)
+}
+
+struct PollSchedule {
+    idle_delay: Duration,
+    next_poll: tokio::time::Instant,
+}
+
+impl PollSchedule {
+    fn new(now: tokio::time::Instant) -> Self {
+        Self { idle_delay: Duration::from_secs(5), next_poll: now }
+    }
+
+    fn is_due(&self, now: tokio::time::Instant) -> bool {
+        now >= self.next_poll
+    }
+
+    fn complete(&mut self, now: tokio::time::Instant, busy: bool) {
+        if busy {
+            self.idle_delay = Duration::from_secs(5);
+        }
+        self.next_poll = now + self.idle_delay;
+        if !busy {
+            self.idle_delay = (self.idle_delay * 2).min(Duration::from_secs(60));
+        }
+    }
+
+    fn activity(&mut self, now: tokio::time::Instant) {
+        self.idle_delay = Duration::from_secs(5);
+        self.next_poll = self.next_poll.min(now + self.idle_delay);
+    }
 }
 
 fn note_receiver_webhook(outcome: Result<crate::receiver_webhook::Outcome>) {
@@ -1798,6 +1846,20 @@ fn note_receiver_webhook(outcome: Result<crate::receiver_webhook::Outcome>) {
     }
 }
 
+async fn poll_receiver_webhook(client: &mut RelayClient, keys: &Keys) -> Result<()> {
+    match crate::receiver_webhook::retry_due() {
+        Ok(true) => {
+            if !check_own_identity(client, keys).await? {
+                return Err(EverettError::new(6, "relay: authorization uncertain; webhook retry deferred"));
+            }
+            note_receiver_webhook(crate::receiver_webhook::poll());
+        }
+        Ok(false) => {}
+        Err(error) => note_receiver_webhook(Err(error)),
+    }
+    Ok(())
+}
+
 async fn run_native(
     mut client: RelayClient,
     keys: &Keys,
@@ -1809,14 +1871,24 @@ async fn run_native(
     );
     let mut rejected = RejectedCache::new();
     let mut delay = 5;
+    let mut polling = PollSchedule::new(tokio::time::Instant::now());
     let mut registered = false;
     loop {
-        let result = async {
+        let result: Result<()> = async {
             if !registered {
                 mutation(&mut client, "relay:register", register.clone()).await?;
                 registered = true;
             }
-            receive(&mut client, keys, ingress, &mut rejected).await
+            if polling.is_due(tokio::time::Instant::now()) {
+                let busy = receive(&mut client, keys, ingress, &mut rejected).await?;
+                polling.complete(tokio::time::Instant::now(), busy);
+            }
+            if reconcile(&mut client, keys, &mut rejected).await? {
+                polling.activity(tokio::time::Instant::now());
+            }
+            drain_receiver_wakes(keys)?;
+            poll_receiver_webhook(&mut client, keys).await?;
+            Ok(())
         }
         .await;
         match result {
@@ -1825,6 +1897,7 @@ async fn run_native(
             }
             Err(error) if denied(&error) || !matches!(error.code, 5 | 6) => return Err(error),
             Err(error) => {
+                polling = PollSchedule::new(tokio::time::Instant::now());
                 eprintln!(
                     "everett relay: {}; retrying in {delay}s; encrypted staging kept",
                     error.message

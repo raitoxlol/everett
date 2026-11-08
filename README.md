@@ -20,8 +20,9 @@ See also [Grok Bot 0.77 reachability](docs/grok-bot.md#grok-bot-077-reachability
 Everett is one native binary for macOS and Linux. Have at least one harness CLI on your PATH.
 Local sessions, routing, inboxes, hooks, MCP, and SSH peers work without an Everett account.
 The hosted relay is `https://relay.raitox.tech`. Account identity stays
-`https://everett.raitox.tech`. The service currently accepts only its configured
-GitHub owner. Public self-service account signup is not available.
+`https://everett.raitox.tech`. Hosted enrollment follows the deployed service's
+account policy. The repository's public deployment profile enables separate
+GitHub account namespaces; self-hosted deployments can restrict enrollment to one owner.
 
 To install and configure local agents without browser sign-in:
 

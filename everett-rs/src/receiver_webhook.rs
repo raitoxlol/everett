@@ -369,6 +369,34 @@ pub fn poll() -> Result<Outcome> {
     evaluate(&policy_dir(), None, unix_secs(), &mut default_poster)
 }
 
+pub(crate) fn retry_due() -> Result<bool> {
+    retry_due_at(&policy_dir(), unix_secs())
+}
+
+fn retry_due_at(root: &Path, now: i64) -> Result<bool> {
+    let policy = load_policy(root)?;
+    if !policy.enabled {
+        return Ok(false);
+    }
+    let directory = root.join(DIRECTORY);
+    let ledger_path = directory.join("ledger.json");
+    if !ledger_path.exists() {
+        return Ok(false);
+    }
+    crate::peer::private_dir(&directory)?;
+    let _guard = crate::peer::lock(&directory.join("ledger.lock"))?;
+    let policy = load_policy(root)?;
+    if !policy.enabled {
+        return Ok(false);
+    }
+    let ledger = load_ledger(&ledger_path)?;
+    let Some((_, _, rule)) = due_retry(&policy, None, now, &ledger) else {
+        return Ok(false);
+    };
+    read_bearer(Path::new(&rule.bearer_file))?;
+    Ok(true)
+}
+
 pub fn after_local_queue(
     session_id: &str,
     harness: &str,
@@ -604,15 +632,13 @@ fn handle(
     Ok((report, true))
 }
 
-fn pump(
+fn due_retry(
     policy: &Policy,
     skip: Option<&str>,
     now: i64,
-    ledger: &mut Ledger,
-    post: &mut dyn FnMut(&Request) -> Response,
-    logs: &mut Vec<String>,
-) -> Result<bool> {
-    let due = ledger.messages.iter().find_map(|(id, saved)| {
+    ledger: &Ledger,
+) -> Option<(String, Saved, Rule)> {
+    ledger.messages.iter().find_map(|(id, saved)| {
         if Some(id.as_str()) == skip || saved.state != "pending" || saved.attempts >= MAX_ATTEMPTS {
             return None;
         }
@@ -624,29 +650,29 @@ fn pump(
         if cooling(rule, ledger, now) {
             return None;
         }
-        Some((
-            id.clone(),
-            rule.id.clone(),
-            saved.session.clone(),
-            saved.harness.clone(),
-            saved.attempts,
-        ))
-    });
-    let Some((id, rule_id, session, harness, attempts)) = due else {
+        Some((id.clone(), saved.clone(), rule.clone()))
+    })
+}
+
+fn pump(
+    policy: &Policy,
+    skip: Option<&str>,
+    now: i64,
+    ledger: &mut Ledger,
+    post: &mut dyn FnMut(&Request) -> Response,
+    logs: &mut Vec<String>,
+) -> Result<bool> {
+    let Some((id, saved, rule)) = due_retry(policy, skip, now, ledger) else {
         return Ok(false);
-    };
-    let Some(rule) = policy.rules.iter().find(|rule| rule.id == rule_id).cloned() else {
-        ledger.messages.remove(&id);
-        return Ok(true);
     };
     attempt(
         &Attempt {
             rule: &rule,
-            session: &session,
-            harness: &harness,
+            session: &saved.session,
+            harness: &saved.harness,
             message_id: &id,
         },
-        attempts,
+        saved.attempts,
         now,
         ledger,
         post,
@@ -928,11 +954,16 @@ fn load_policy(root: &Path) -> Result<Policy> {
     let policy: Policy =
         serde_json::from_slice(&fs::read(&path).map_err(|_| bad("policy could not be read"))?)
             .map_err(|_| bad("policy JSON is invalid"))?;
+    validate_policy(&policy)?;
+    Ok(policy)
+}
+
+fn validate_policy(policy: &Policy) -> Result<()> {
     if policy.version != 1 {
         return Err(bad("unsupported policy version"));
     }
     if !policy.enabled {
-        return Ok(policy);
+        return Ok(());
     }
     if !(1..=4_000_000_000).contains(&policy.activated_at) {
         return Err(bad("activated_at must be a Unix timestamp in seconds"));
@@ -947,7 +978,30 @@ fn load_policy(root: &Path) -> Result<Policy> {
             return Err(bad("duplicate rule id"));
         }
     }
-    Ok(policy)
+    Ok(())
+}
+
+pub(crate) fn diagnostics(root: &Path) -> Value {
+    let path = root.join(POLICY_FILE);
+    if fs::symlink_metadata(&path).is_err_and(|error| error.kind() == std::io::ErrorKind::NotFound) {
+        return json!({"state":"not_configured"});
+    }
+    let Some(policy) = crate::relay::queue::read_record::<Policy>(&path)
+        .filter(|policy| validate_policy(policy).is_ok()) else {
+        return json!({"state":"unreadable"});
+    };
+    let ledger_path = root.join(DIRECTORY).join("ledger.json");
+    let ledger = match crate::relay::queue::read_record::<Ledger>(&ledger_path) {
+        Some(ledger) if ledger.version == 1 => {
+            let pending = ledger.messages.values().filter(|saved| saved.state == "pending").count();
+            let posted = ledger.messages.values().filter(|saved| saved.state == "posted").count();
+            json!({"state":"cached","entries":ledger.messages.len(),"pending":pending,"posted":posted})
+        }
+        _ if fs::symlink_metadata(&ledger_path).is_err_and(|error| error.kind() == std::io::ErrorKind::NotFound) => json!({"state":"missing"}),
+        _ => json!({"state":"unreadable"}),
+    };
+    json!({"state":if policy.enabled {"enabled"} else {"disabled"},"rules":policy.rules.len(),"ledger":ledger,
+        "note":"Configuration and cached retry counts only. Bearer files are not opened and endpoint acceptance is not checked."})
 }
 
 fn validate_rule(rule: &Rule) -> Result<()> {
@@ -1364,6 +1418,32 @@ mod tests {
             &mut Posts(vec![Response::Status(200)]),
         );
         assert_eq!(posted.value.unwrap()["state"], "accepted");
+    }
+
+    #[test]
+    fn retry_readiness_matches_cooldown_attempt_limits_and_terminal_state() {
+        let temp = tempfile::tempdir().unwrap();
+        let arrival = fixture(temp.path());
+        let now = 1_700_000_100;
+        assert!(!retry_due_at(temp.path(), now).unwrap());
+        deliver(temp.path(), &arrival, now, &mut Posts(vec![Response::Status(503)]));
+        assert!(!retry_due_at(temp.path(), now + 29).unwrap());
+        assert!(retry_due_at(temp.path(), now + 30).unwrap());
+        let policy = load_policy(temp.path()).unwrap();
+        let path = temp.path().join(DIRECTORY).join("ledger.json");
+        let mut ledger = load_ledger(&path).unwrap();
+        assert!(due_retry(&policy, Some(&arrival.message_id), now + 30, &ledger).is_none());
+        ledger.messages.get_mut(&arrival.message_id).unwrap().attempts = MAX_ATTEMPTS;
+        save_ledger(&path, &ledger).unwrap();
+        assert!(!retry_due_at(temp.path(), now + 30).unwrap());
+        ledger.messages.get_mut(&arrival.message_id).unwrap().attempts = 1;
+        ledger.messages.get_mut(&arrival.message_id).unwrap().state = "posted".into();
+        save_ledger(&path, &ledger).unwrap();
+        assert!(!retry_due_at(temp.path(), now + 30).unwrap());
+        ledger.messages.get_mut(&arrival.message_id).unwrap().state = "pending".into();
+        ledger.messages.get_mut(&arrival.message_id).unwrap().rule_id = "removed-rule".into();
+        save_ledger(&path, &ledger).unwrap();
+        assert!(!retry_due_at(temp.path(), now + 30).unwrap());
     }
 
     #[test]
