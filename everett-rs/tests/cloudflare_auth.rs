@@ -789,8 +789,13 @@ fn browser_approval_resumes_onboarding_then_guides_and_prints_review_prompt() {
         see(&mut session, &mut vt, "Sign in with GitHub");
         session.send("\r").unwrap();
         see(&mut session, &mut vt, "Choose your agents");
-        let url = std::fs::read_to_string(f.home().join("browser-url")).unwrap();
-        assert_eq!(url, format!("{}/enroll?code=ABCDEF123456", fake.issuer));
+        let expected_url = format!("{}/enroll?code=ABCDEF123456", fake.issuer);
+        let opener_deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            if std::fs::read_to_string(f.home().join("browser-url")).is_ok_and(|url| url == expected_url) { break; }
+            assert!(Instant::now() < opener_deadline, "browser opener did not record the approval URL");
+            std::thread::sleep(Duration::from_millis(10));
+        }
         assert!(f.home().join(".everett/cloudflare-auth.json").exists());
         let configured = std::fs::read_to_string(f.home().join(".everett/config.toml")).unwrap();
         assert!(configured.contains("cloudflare"), "{configured}");

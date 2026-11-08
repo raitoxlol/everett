@@ -66,7 +66,128 @@ function observe(b: Awaited<ReturnType<typeof agent>>, e: Envelope, state: Obser
   o.signature = sign(observationBytes(namespace(b.p), o), b.n); return o;
 }
 const request = (op: string, body: unknown = {}, headers: Record<string, string> = {}) => new Request(`https://everett.test/v2/relay/${op}`, { method: 'POST', headers: { 'Content-Type': 'application/json', ...headers }, body: JSON.stringify(body) });
-afterEach(async () => { vi.restoreAllMocks(); await reset(); });
+const notificationClients: WebSocket[] = [];
+afterEach(async () => {
+  await Promise.all(notificationClients.splice(0).map(socket => new Promise<void>(resolve => {
+    if (socket.readyState === WebSocket.CLOSED) return resolve();
+    socket.addEventListener('close', () => resolve(), { once: true });
+    socket.close();
+  })));
+  vi.restoreAllMocks(); await reset();
+});
+
+async function watch(p: Principal, extra: Record<string, string> = {}) {
+  const response = await handleRequest(new Request('https://everett.test/v2/relay/watch', {
+    headers: { Upgrade: 'websocket', ...extra },
+  }), env, { verify: async () => p });
+  expect(response.status).toBe(101);
+  const socket = response.webSocket!;
+  const frames: string[] = [];
+  const closed: number[] = [];
+  socket.addEventListener('message', event => { frames.push(String(event.data)); });
+  socket.addEventListener('close', event => { closed.push(event.code); });
+  socket.accept(); notificationClients.push(socket);
+  await vi.waitFor(() => expect(frames).toEqual(['{"type":"inbox_changed"}']));
+  return { socket, frames, closed };
+}
+
+describe('hibernating receiver notifications', () => {
+  it('keeps the attachment bounded for long verified identities', async () => {
+    const identity: Identity = { issuer: `https://issuer.example/${'x'.repeat(1800)}`, subject: '界'.repeat(256), org: org() };
+    const stub = env.OWNERS.get(env.OWNERS.idFromName(namespace(identity)));
+    const result = await stub.enroll(identity, 'admin', crypto.randomUUID());
+    if (!result.ok) throw new Error(result.error);
+    const p: Principal = { ...identity, agentId: result.value.deviceId, role: 'admin', expiresAt: Date.now() + 60000 };
+    const d = device(p, 41);
+    await call(p, 'register', { device: d });
+    await watch(p);
+    const attachment = await runInDurableObject(stub, async (_, state) => state.getWebSockets(p.agentId)[0].deserializeAttachment());
+    expect(attachment).toEqual({ agentId: p.agentId, expiresAt: p.expiresAt, fingerprint: fingerprint(d) });
+    expect(encoder.encode(JSON.stringify(attachment)).length).toBeLessThan(512);
+  });
+
+  it('closes sockets on membership revocation and signed device rotation', async () => {
+    const space = org(), a = await agent(space), b = await agent(space, 'bob', 'member', 3);
+    const receiver = await watch(b.p);
+    const replacement = device(b.p, 11);
+    await call(b.p, 'rotate', { device: replacement, oldFingerprint: fingerprint(b.d), signature: sign(rotationBytes(replacement, fingerprint(b.d)), b.n) });
+    await vi.waitFor(() => expect(receiver.closed).toEqual([1008]));
+    const reconnected = await watch(b.p);
+    await call(a.p, 'revokeMember', { subject: b.p.subject });
+    await vi.waitFor(() => expect(reconnected.closed).toEqual([1008]));
+  });
+
+  it('sends only a fixed recipient hint after durable enqueue, with no idle alarm', async () => {
+    const space = org(), a = await agent(space), b = await agent(space, 'bob', 'member', 3), outsider = await agent(org());
+    const sender = await watch(a.p), receiver = await watch(b.p), other = await watch(outsider.p);
+    const message = envelope(a, b);
+    await expect(call(a.p, 'enqueue', { envelope: { ...message, signature: '00'.repeat(64) } })).rejects.toThrow('invalid_signature');
+    expect(receiver.frames).toHaveLength(1);
+    expect(await call(a.p, 'enqueue', { envelope: message })).toMatchObject({ state: 'queued' });
+    await vi.waitFor(() => expect(receiver.frames).toHaveLength(2));
+    expect(receiver.frames).toEqual(['{"type":"inbox_changed"}', '{"type":"inbox_changed"}']);
+    expect(sender.frames).toHaveLength(1); expect(other.frames).toHaveLength(1);
+    expect((await call(b.p, 'pending', { deviceId: b.p.agentId })).envelopes[0].envelope).toEqual(message);
+    expect(receiver.frames.join('')).not.toContain(message.ciphertext);
+    expect(receiver.frames.join('')).not.toContain(message.messageId);
+    const idle = await agent(org()); await watch(idle.p);
+    expect(await runInDurableObject(idle.stub, async (_, state) => state.storage.getAlarm())).toBeNull();
+  });
+
+  it('restores hibernating socket attachments and recovers queued work on reconnect', async () => {
+    const space = org(), a = await agent(space), b = await agent(space, 'bob', 'member', 3);
+    const receiver = await watch(b.p);
+    await evictDurableObject(b.stub);
+    const message = envelope(a, b);
+    await call(a.p, 'enqueue', { envelope: message });
+    await vi.waitFor(() => expect(receiver.frames).toHaveLength(2));
+    receiver.socket.close();
+    await vi.waitFor(() => expect(receiver.closed).toHaveLength(1));
+    const reconnected = await watch(b.p);
+    expect(reconnected.frames).toHaveLength(1);
+    expect((await call(b.p, 'pending', { deviceId: b.p.agentId })).envelopes).toHaveLength(1);
+  });
+
+  it('closes revoked receivers immediately and refuses their next subscription', async () => {
+    const space = org(), a = await agent(space), b = await agent(space, 'bob', 'member', 3);
+    const receiver = await watch(b.p);
+    await call(a.p, 'revokeAgent', { deviceId: b.p.agentId });
+    await vi.waitFor(() => expect(receiver.closed).toEqual([1008]));
+    const denied = await handleRequest(new Request('https://everett.test/v2/relay/watch', { headers: { Upgrade: 'websocket' } }), env, { verify: async () => b.p });
+    expect(denied.status).toBe(403);
+  });
+
+  it('reauthorizes attachments before hints and never forwards expired socket notifications', async () => {
+    const space = org(), a = await agent(space), b = await agent(space, 'bob', 'member', 3);
+    const receiver = await watch({ ...b.p, expiresAt: Date.now() + 1200 });
+    await new Promise(resolve => setTimeout(resolve, 1250));
+    await call(a.p, 'enqueue', { envelope: envelope(a, b) });
+    await vi.waitFor(() => expect(receiver.closed).toEqual([1008]));
+    expect(receiver.frames).toHaveLength(1);
+    expect((await call(b.p, 'pending', { deviceId: b.p.agentId })).envelopes).toHaveLength(1);
+  });
+
+  it('ignores client identity headers and refuses application messages on notification sockets', async () => {
+    const a = await agent(org()), other = await agent(org());
+    const receiver = await watch(a.p, { 'X-Everett-Principal': JSON.stringify(other.p) });
+    expect(await runInDurableObject(a.stub, async (_, state) => state.getWebSockets(a.p.agentId).length)).toBe(1);
+    receiver.socket.send('{"type":"send","text":"untrusted"}');
+    await vi.waitFor(() => expect(receiver.closed).toEqual([1008]));
+    expect((await call(a.p, 'pending', { deviceId: a.p.agentId })).envelopes).toEqual([]);
+  });
+
+  it('bounds connections per credential and rejects invalid upgrade and authentication', async () => {
+    const a = await agent(org()); await watch(a.p); await watch(a.p);
+    const limited = await handleRequest(new Request('https://everett.test/v2/relay/watch', { headers: { Upgrade: 'websocket' } }), env, { verify: async () => a.p });
+    expect(limited.status).toBe(429);
+    const plain = await handleRequest(new Request('https://everett.test/v2/relay/watch'), env, { verify: async () => a.p });
+    expect(plain.status).toBe(426);
+    const expired = await handleRequest(new Request('https://everett.test/v2/relay/watch', { headers: { Upgrade: 'websocket' } }), env, { verify: async () => ({ ...a.p, expiresAt: 1 }) });
+    expect(expired.status).toBe(401);
+    const denied = await handleRequest(new Request('https://everett.test/v2/relay/watch', { headers: { Upgrade: 'websocket' } }), env);
+    expect(denied.status).toBe(503);
+  });
+});
 
 describe('authenticated author/session directory', () => {
   it('exposes only opt-in cards with server-accounted authors, without pairing', async () => {
