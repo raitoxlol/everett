@@ -1,4 +1,4 @@
-//! Safe reads of cached receipts. A bad file is skipped instead of failing the caller.
+//! Bounded private JSON reads without following file symlinks.
 
 use std::fs::OpenOptions;
 use std::io::Read;
@@ -9,7 +9,7 @@ use serde::de::DeserializeOwned;
 
 const FILE_LIMIT: u64 = 256 * 1024;
 
-pub(super) fn read_record<T: DeserializeOwned>(path: &Path) -> Option<T> {
+pub(crate) fn read_record<T: DeserializeOwned>(path: &Path) -> Option<T> {
     let file = OpenOptions::new()
         .read(true)
         .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)

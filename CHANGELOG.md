@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+## 2.2.1 (release candidate)
+
+- Add `everett relay diagnose` and MCP `everett_agent_relay(action="diagnose")` for offline receiver, registration, webhook, and bounded cached-queue summaries. Diagnostics omit message bodies, account identifiers, URLs, and credential values. They do not verify remote connectivity or authorization.
+- Back off idle Cloudflare inbox polling through 5, 10, 20, 40, then 60 seconds. Keep local receipt, outgoing, wake, and webhook maintenance at five seconds. Due webhook retries reauthorize before dispatch; transient failures preserve the retry ledger.
+- Remove repeated idle device registration and redundant Worker membership RPCs while retaining per-operation authorization. The calculated quiet budget is 2,880 Durable Object requests per receiver per day with both Worker and receiver updates. Production savings remain unmeasured.
+- Correct T3, OMP, and attached Claude send previews without queueing or invoking resume. Preserve authenticated replies and durable delivery receipts when older status observations or request expiry arrive later.
+- Copy the test executable into the T3 fixture so tests work when Cargo's target and temporary home use different filesystems.
+- Gate tagged publication on Worker tests, typechecking, and public bundle packaging. Run the optimized CLI/MCP journey on build runners with a matching architecture before uploading their archives.
 - Keep GitHub sign-in on the identity issuer when a browser opens another public relay host, so the GitHub OAuth app needs only the issuer callback. Accept existing peer pins across an explicit relay alias list; the public issuer and `https://relay.raitox.tech` are the default list.
 
 ## 2.2.0 — 2026-10-27

@@ -25,6 +25,26 @@ These are calculated ceilings assuming one cycle every five seconds, excluding H
 
 That is a 66.7% reduction in steady idle Durable Object calls. Two receivers use approximately 69,120/day before other traffic; three still exceed the free allowance. Deploying only the Worker reduces the old receiver's cycle from six calls to four. Updating only the receiver reduces it from six to three. Both are required for the two-call cycle. Neither change was deployed during this investigation.
 
+## Adaptive inbox polling
+
+The receiver polls immediately at startup. Consecutive successful empty polls wait 5, 10, 20, 40, then 60 seconds. The interval stays at 60 seconds while idle. A valid eligible incoming envelope or retained encrypted ingress resets the interval to five seconds. Rejected rows do not count as activity.
+
+Local receipt reconciliation, outgoing retries, receiver wakes, and webhooks keep their normal five-second cadence. Eligible local claims or outgoing work bring the next inbox poll forward to within five seconds of that maintenance pass. Successfully posted local requests keep polling fast while their envelope is less than one minute old and still awaits a reply. Retrying an older request does not start a new fast window. A failed poll uses the existing transient retry sequence of 5, 10, 20, then 30 seconds. Recovery restarts the idle ramp; a restarted process registers and polls immediately.
+
+Before a saved webhook retry, the receiver checks whether a retry is due and validates its local bearer file, then reauthorizes through its existing relay client. Logout, provider or credential replacement, and backend revocation stop the receiver before dispatch. Transient uncertainty retains the ledger and uses the existing retry backoff. Metadata rejected during preflight is logged without stopping relay delivery or making an authorization call. No authorization call is added when a webhook retry is not due. Dispatch validates the bearer again after authorization. After #126, each due-retry authorization adds two Durable Object requests; these belong to retry traffic, not the quiet budget below.
+
+After a long idle period, the next remote message can wait up to 60 seconds before pickup, plus processing time and maintenance-tick drift. Active traffic uses five-second polling. Idle detection of backend revocation or local credential replacement can also take that long. Every relay request still checks the selected provider and current credential, and the Worker authorizes each operation against current revocation state before delivery. No authentication cache is added.
+
+| Steady idle receiver | Five-second polling after #126 | Adaptive polling at its cap |
+| --- | ---: | ---: |
+| HTTP inbox polls per day | 17,280 | 1,440 |
+| Durable Object requests per day | 34,560 | 2,880 |
+| Three receivers, Durable Object requests per day | 103,680 | 8,640 |
+
+At the cap, this is a calculated 91.7% reduction from #126 alone and 97.2% from the original six-call loop. The figures exclude the startup ramp, retries, receipt reconciliation, messages, registration, alarms, and other account traffic. They are not measured savings or a bill estimate. Pending local retries can keep a receiver active.
+
+See [the rollout and measurement procedure](cloudflare-rollout.md) before changing the Worker or any running receiver.
+
 ## Verification
 
 The actual CLI against an isolated HTTP fixture produced `3 registrations, 3 polls` before the fix and `1 registrations, 3 polls` afterward, including a temporary pending failure. A separate test covers failed registration and process restart. Existing checks cover provider/credential replacement and authoritative revocation.
@@ -40,6 +60,6 @@ npm --prefix cloudflare run build:public
 
 For live analytics, query `durableObjectsInvocationsAdaptiveGroups` by UTC date and namespace ID, and resolve IDs through `GET /accounts/{account_id}/workers/durable_objects/namespaces`. Query `workersInvocationsAdaptive` separately. Observability is disabled in the public profile; this investigation did not enable request-body logging or read bearer credentials.
 
-Further cuts need separate evidence: terminal receipt reconciliation can retry remote denials, and more receivers increase the fixed polling baseline. Push delivery could reduce idle traffic further, but requires reconnect, authorization and missed-message recovery tests. Slower polling changes message latency. Skipping per-operation authorization would weaken revocation and is not an acceptable saving.
+Further cuts need separate evidence: terminal receipt reconciliation can retry remote denials, and more receivers increase the fixed polling baseline. Push delivery could reduce idle traffic further, but requires reconnect, authorization and missed-message recovery tests. Skipping per-operation authorization would weaken revocation and is not an acceptable saving.
 
 Sources: [Durable Objects pricing](https://developers.cloudflare.com/durable-objects/platform/pricing/), [metrics and analytics](https://developers.cloudflare.com/durable-objects/observability/metrics-and-analytics/).

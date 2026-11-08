@@ -68,6 +68,33 @@ fn parse(text: &str) -> HashMap<String, String> {
     values
 }
 
+/// Bounded, nonblocking read for offline diagnostics: regular files only, at most
+/// `limit` bytes. `Ok(None)` means missing; `Err(())` means unreadable or oversized.
+pub(crate) fn values_bounded(limit: u64) -> Result<Option<HashMap<String, String>>, ()> {
+    use std::io::Read;
+    use std::os::unix::fs::OpenOptionsExt;
+    let path = config_path();
+    let file = match fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
+        .open(&path)
+    {
+        Ok(file) => file,
+        Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(None),
+        Err(_) => return Err(()),
+    };
+    let metadata = file.metadata().map_err(|_| ())?;
+    if !metadata.is_file() || metadata.len() > limit {
+        return Err(());
+    }
+    let mut text = String::new();
+    file.take(limit + 1).read_to_string(&mut text).map_err(|_| ())?;
+    if text.len() as u64 > limit {
+        return Err(());
+    }
+    Ok(Some(parse(&text)))
+}
+
 pub fn values() -> Result<HashMap<String, String>, String> {
     let path = config_path();
     match fs::read_to_string(&path) {

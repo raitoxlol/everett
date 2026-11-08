@@ -356,7 +356,7 @@ fn assert_fallback_commands(relative_profile: bool) {
     fs::create_dir_all(&recipient_home).unwrap();
     plant_thread(&profile);
     let binary = fx.home().join("Everett executable's binary");
-    fs::hard_link(env!("CARGO_BIN_EXE_everett"), &binary).unwrap();
+    fs::copy(env!("CARGO_BIN_EXE_everett"), &binary).unwrap();
     let out = Command::new(&binary)
         .args(["send", "--to", SESSION, "--json", BODY])
         .env_clear()

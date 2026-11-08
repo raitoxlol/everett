@@ -144,9 +144,9 @@ pub fn tools() -> &'static Vec<Value> {
             }),
             json!({
                 "name": "everett_agent_relay",
-                "description": "Authenticated author/session cards: authors lists opted-in account peers without pairing; expose/withdraw publishes/removes only this host-bound caller's session and card. Author and agent identity come from credentials, never tool arguments. directory lists device key bundles; devices is an alias. Identity, registration, names and revocation remain available. Only same-owner Cloudflare transport is supported. Run everett relay separately to receive legacy inbox messages.",
+                "description": "Authenticated author/session cards: authors lists opted-in account peers without pairing; expose/withdraw publishes/removes only this host-bound caller's session and card. Author and agent identity come from credentials, never tool arguments. directory lists device key bundles; devices is an alias. diagnose returns an offline, redacted snapshot of local receiver, registration, webhook and bounded cached queues, without sign-in or network calls. Identity, registration, names and revocation remain available. Only same-owner Cloudflare transport is supported. Run everett relay separately to receive legacy inbox messages.",
                 "inputSchema": {"type":"object","properties":{
-                    "action":{"type":"string","enum":["identity","register","directory","devices","authors","expose","withdraw","names","pair","unpair","credentials","memberships","revoke-membership","revoke-agent","revoke-credential"]},
+                    "action":{"type":"string","enum":["diagnose","identity","register","directory","devices","authors","expose","withdraw","names","pair","unpair","credentials","memberships","revoke-membership","revoke-agent","revoke-credential"]},
                     "id":s("Provisioned agent ID; for revoke-membership, exact provider subject; for unpair, alias."),
                     "name":s("Optional local relay alias for pair; defaults to the agent ID."),
                     "fingerprint":s("Exact 64-character lowercase fingerprint confirmed out of band.")
@@ -1233,6 +1233,7 @@ fn call_handler(
                 );
                 let id = str_arg(args, "id", requires_id)?;
                 match action.as_str() {
+                    "diagnose" => crate::relay::diagnostics(),
                     "identity" => crate::relay::admin_call("relay:whoami", json!({}), true)?,
                     "register" => crate::relay::register()?,
                     "authors" => json!({"sessions":crate::messaging::authors()?}),
