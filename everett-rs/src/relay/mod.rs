@@ -1756,6 +1756,7 @@ async fn receive(
     keys: &Keys,
     ingress: &Path,
     rejected: &mut RejectedCache,
+    retry: &mut bool,
 ) -> Result<bool> {
     let mut busy = false;
     for path in crate::paths::glob(ingress, "*.json") {
@@ -1785,6 +1786,14 @@ async fn receive(
         for row in page.envelopes {
             let envelope = row.envelope;
             if let Err(error) = import_inner(keys, &envelope, page.server_now, false) {
+                // Codes 5/6 are transient (timeout, sender-device lookup failure):
+                // leave the row queued and ask the caller to rescan instead of
+                // treating the hint as consumed.
+                if matches!(error.code, 5 | 6) && !denied(&error) {
+                    *retry = true;
+                    eprintln!("everett relay: inbox row deferred: {}", error.message);
+                    continue;
+                }
                 if rejected.insert(
                     local_message_id(&envelope),
                     envelope.expires_at,
@@ -1911,13 +1920,14 @@ async fn run_native(
             } else { None };
             let retry_due = retry_at.is_some_and(|at| tokio::time::Instant::now() >= at);
             if generation.is_some() || retry_due || (!push && polling.is_due(tokio::time::Instant::now())) {
-                let busy = receive(&mut client, keys, ingress, &mut rejected).await?;
+                let mut deferred = false;
+                let busy = receive(&mut client, keys, ingress, &mut rejected, &mut deferred).await?;
                 polling.complete(tokio::time::Instant::now(), busy);
                 if let Some(epoch) = generation { consumed = epoch; }
                 // A transient failure inside publish_staged keeps the encrypted stage and
                 // still returns Ok; without another hint nothing would retry it. Keep
                 // retrying with backoff until no stage for this device remains.
-                if has_stage(keys, ingress) {
+                if deferred || has_stage(keys, ingress) {
                     if retry_due { retry_delay = (retry_delay * 2).min(Duration::from_secs(300)); }
                     retry_at = Some(tokio::time::Instant::now() + retry_delay);
                 } else {
