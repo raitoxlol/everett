@@ -28,6 +28,8 @@ rpassword = "7"
 terminal_size = "0.4"
 rmcp = { version = "=3.4.0", default-features = false, features = ["server", "client", "transport-io", "transport-streamable-http-server"] }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "process", "net", "time", "sync", "io-util", "io-std"] }
+tokio-tungstenite = { version = "0.28", default-features = false, features = ["connect", "rustls-tls-webpki-roots"] }
+futures-util = { version = "0.3", features = ["sink"] }
 axum = { version = "0.8", default-features = false, features = ["http1", "tokio"] }
 sha2 = "0.10"
 subtle = "2"

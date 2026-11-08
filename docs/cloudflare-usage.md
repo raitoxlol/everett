@@ -2,7 +2,27 @@
 
 The free Durable Objects request allowance is 100,000 requests per account per UTC day. Each method called on a Durable Object namespace stub starts a billable RPC session. Worker requests, Durable Object requests, SQL rows and compute duration are separate meters.
 
-## Investigation, 2026-11-02
+## Push notifications, current candidate
+
+The candidate replaces scheduled inbox polls with `GET /v2/relay/watch`. The Worker authenticates the bearer and opens a hibernating WebSocket in the existing `OwnerRelay`. A fixed `inbox_changed` hint triggers an authenticated HTTPS scan of the durable encrypted queue. The socket never carries a message body or task instructions. The initial hint triggers recovery of queued work after connection or reconnection.
+
+Healthy quiet connections make no recurring billable HTTP or Durable Object calls. Cloudflare bills the connection upgrade once. Outbound hints and incoming protocol Ping frames are uncharged. The hibernation API lets the object sleep without charging idle duration. The client sends protocol Ping frames every 30 seconds to detect a broken connection. It sends no application heartbeat messages. No per-connection alarm or server timer keeps the object awake.
+
+Startup, reconnection, actual messages, authentication, retries, storage, and active object duration still cost resources. A local fixture observed five startup HTTP requests and zero additional HTTP requests over 36 seconds, including one protocol Ping. This observation is a bounded local check, not production billing or a user-capacity benchmark. For the public native verifier, each HTTP relay request generally invokes both `HostedAuth` and `OwnerRelay`; metadata and cross-owner paths can add work.
+
+A receiver rescans after reconnect, coalesces notifications without losing those that arrive during a scan, and uses exponential reconnect backoff with jitter. It resets backoff only after a healthy Pong on a connection at least 60 seconds old. Full authorization still occurs on inbox operations. Revocation and signed key rotation close invalid sockets. Saved attachments bind only the immutable device ID, credential expiry, and device fingerprint. Before sending hints the object checks expiry and current device/membership state. Local credential expiry, logout, provider changes, and token replacement stop the receiver during its five-second maintenance cycle.
+
+Push is the default. `EVERETT_RELAY_TRANSPORT=poll` or `[relay] transport = "poll"` explicitly enables the older adaptive polling mode below. An unsupported Worker fails clearly instead of silently creating recurring requests. Deploy the matching Worker before updating any receiver. See [rollout and rollback](cloudflare-rollout.md).
+
+| Quiet receivers | Adaptive polling at 60 seconds, DO requests/day | Healthy push, recurring idle DO requests/day |
+| ---: | ---: | ---: |
+| 1 | 2,880 | 0 |
+| 100 | 288,000 | 0 |
+| 1,000 | 2,880,000 | 0 |
+
+These are steady-state calculations. Zero is only the recurring idle component. Initial connections, reconnects, requests, receipts, and every other account workload share the 100,000 daily allowance. The free allowance is not an unlimited user plan. Production request attribution and dollar savings require authenticated account analytics.
+
+## Historical investigation, 2026-11-02
 
 Cloudflare's notification identified Durable Object **requests**, not storage, as the exhausted meter. The November 1 notification reported exhaustion at 15:12 UTC. The GraphQL adaptive analytics dataset for November 1 UTC returned 70,468 requests for `OwnerRelay` and 37,204 for `HostedAuth`, totaling 107,672. Worker analytics returned 45,249 invocations. These are analytics counts, not an exact billing reconciliation or endpoint-level attribution. Invocation success does not establish HTTP success.
 
@@ -25,7 +45,7 @@ These are calculated ceilings assuming one cycle every five seconds, excluding H
 
 That is a 66.7% reduction in steady idle Durable Object calls. Two receivers use approximately 69,120/day before other traffic; three still exceed the free allowance. Deploying only the Worker reduces the old receiver's cycle from six calls to four. Updating only the receiver reduces it from six to three. Both are required for the two-call cycle. Neither change was deployed during this investigation.
 
-## Adaptive inbox polling
+## Explicit compatibility polling
 
 The receiver polls immediately at startup. Consecutive successful empty polls wait 5, 10, 20, 40, then 60 seconds. The interval stays at 60 seconds while idle. A valid eligible incoming envelope or retained encrypted ingress resets the interval to five seconds. Rejected rows do not count as activity.
 
@@ -60,6 +80,6 @@ npm --prefix cloudflare run build:public
 
 For live analytics, query `durableObjectsInvocationsAdaptiveGroups` by UTC date and namespace ID, and resolve IDs through `GET /accounts/{account_id}/workers/durable_objects/namespaces`. Query `workersInvocationsAdaptive` separately. Observability is disabled in the public profile; this investigation did not enable request-body logging or read bearer credentials.
 
-Further cuts need separate evidence: terminal receipt reconciliation can retry remote denials, and more receivers increase the fixed polling baseline. Push delivery could reduce idle traffic further, but requires reconnect, authorization and missed-message recovery tests. Skipping per-operation authorization would weaken revocation and is not an acceptable saving.
+Terminal receipt reconciliation and failed outgoing work can still create active retry traffic. Attribute those separately after deployment. Preserve per-operation authorization; removing it would weaken revocation. The push candidate supersedes the fixed polling baseline for updated receivers.
 
 Sources: [Durable Objects pricing](https://developers.cloudflare.com/durable-objects/platform/pricing/), [metrics and analytics](https://developers.cloudflare.com/durable-objects/observability/metrics-and-analytics/).

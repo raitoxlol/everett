@@ -783,13 +783,15 @@ fn polling_activity_ignores_rejected_rows_and_keeps_uncertain_ingress_active() {
     let rt = tokio::runtime::Runtime::new().unwrap();
     let mut rejected = RejectedCache::new();
     let mut invalid_client = TestClient::fake(vec![("relay:pending", Ok(page(vec![invalid], true)))]);
-    assert!(!rt.block_on(receive(&mut invalid_client, &b, &ingress, &mut rejected)).unwrap());
+    let mut deferred = false;
+    assert!(!rt.block_on(receive(&mut invalid_client, &b, &ingress, &mut rejected, &mut deferred)).unwrap());
+    assert!(!deferred, "a forged signature is permanent, not a transient retry");
     let mut uncertain = TestClient::fake(vec![
         ("relay:pending", Ok(page(vec![], false))),
         ("relay:pending", Ok(page(vec![envelope.clone()], true))),
         ("relay:observe", Err("network")),
     ]);
-    assert!(rt.block_on(receive(&mut uncertain, &b, &ingress, &mut rejected)).unwrap());
+    assert!(rt.block_on(receive(&mut uncertain, &b, &ingress, &mut rejected, &mut false)).unwrap());
     let path = ingress.join(format!("{}.json", local_message_id(&envelope)));
     assert!(path.exists());
     assert!(inbox::read("recipient").is_empty());
@@ -797,11 +799,11 @@ fn polling_activity_ignores_rejected_rows_and_keeps_uncertain_ingress_active() {
         ("relay:observe", Ok(json!({}))),
         ("relay:pending", Ok(page(vec![], true))),
     ]);
-    assert!(rt.block_on(receive(&mut recovered, &b, &ingress, &mut rejected)).unwrap());
+    assert!(rt.block_on(receive(&mut recovered, &b, &ingress, &mut rejected, &mut false)).unwrap());
     assert!(!path.exists());
     assert_eq!(inbox::read("recipient").len(), 1);
     let mut idle = TestClient::fake(vec![("relay:pending", Ok(page(vec![], true)))]);
-    assert!(!rt.block_on(receive(&mut idle, &b, &ingress, &mut rejected)).unwrap());
+    assert!(!rt.block_on(receive(&mut idle, &b, &ingress, &mut rejected, &mut false)).unwrap());
 }
 
 #[test]
