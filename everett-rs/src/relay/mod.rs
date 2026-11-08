@@ -1,5 +1,6 @@
 pub mod crypto;
 mod diagnostics;
+mod notifications;
 pub(crate) mod queue;
 pub(crate) mod receiver;
 #[cfg(not(test))]
@@ -1740,11 +1741,22 @@ fn finish_staged(
     Ok(())
 }
 
+/// Whether encrypted ingress for this device is still waiting to be published.
+fn has_stage(keys: &Keys, ingress: &Path) -> bool {
+    crate::paths::glob(ingress, "*.json").iter().any(|path| {
+        read::<Envelope>(path).is_ok_and(|envelope| {
+            envelope.recipient_owner == keys.device.owner
+                && envelope.to_device == keys.device.device_id
+        })
+    })
+}
+
 async fn receive(
     client: &mut RelayClient,
     keys: &Keys,
     ingress: &Path,
     rejected: &mut RejectedCache,
+    retry: &mut bool,
 ) -> Result<bool> {
     let mut busy = false;
     for path in crate::paths::glob(ingress, "*.json") {
@@ -1774,6 +1786,14 @@ async fn receive(
         for row in page.envelopes {
             let envelope = row.envelope;
             if let Err(error) = import_inner(keys, &envelope, page.server_now, false) {
+                // Codes 5/6 are transient (timeout, sender-device lookup failure):
+                // leave the row queued and ask the caller to rescan instead of
+                // treating the hint as consumed.
+                if matches!(error.code, 5 | 6) && !denied(&error) {
+                    *retry = true;
+                    eprintln!("everett relay: inbox row deferred: {}", error.message);
+                    continue;
+                }
                 if rejected.insert(
                     local_message_id(&envelope),
                     envelope.expires_at,
@@ -1866,24 +1886,56 @@ async fn run_native(
     ingress: &Path,
     register: &Value,
 ) -> Result<Value> {
+    let mode = crate::config::get("relay.transport", Some("EVERETT_RELAY_TRANSPORT"), "push");
+    if !matches!(mode.as_str(), "push" | "poll") { return Err(bad("relay.transport must be push or explicit legacy poll")); }
+    let push = mode == "push";
     eprintln!(
-        "everett relay: Cloudflare outbound polling; receiver wake and webhook follow the local owner policy"
+        "everett relay: Cloudflare {}; receiver wake and webhook follow the local owner policy",
+        if push { "push notifications; no idle inbox polling" } else { "explicit legacy polling; recurring request cost" }
     );
     let mut rejected = RejectedCache::new();
     let mut delay = 5;
     let mut polling = PollSchedule::new(tokio::time::Instant::now());
     let mut registered = false;
+    let mut notices: Option<notifications::Listener> = None;
+    let mut consumed = 0u64;
+    // Retained encrypted stages retry with backoff (5s doubling to 300s) so a
+    // persistently undeliverable row cannot reintroduce steady idle requests.
+    let mut retry_delay = Duration::from_secs(5);
+    let mut retry_at = has_stage(keys, ingress).then(tokio::time::Instant::now);
     loop {
         let result: Result<()> = async {
             if !registered {
                 mutation(&mut client, "relay:register", register.clone()).await?;
                 registered = true;
+                if push { notices = Some(notifications::Listener::start(native_credential()?)); }
             }
-            if polling.is_due(tokio::time::Instant::now()) {
-                let busy = receive(&mut client, keys, ingress, &mut rejected).await?;
+            let generation = if let Some(listener) = &mut notices {
+                listener.validate()?;
+                match listener.state() {
+                    notifications::State::Ready(epoch) if epoch != consumed => Some(epoch),
+                    notifications::State::Stopped(code, message) => return Err(EverettError::new(code, message)),
+                    _ => None,
+                }
+            } else { None };
+            let retry_due = retry_at.is_some_and(|at| tokio::time::Instant::now() >= at);
+            if generation.is_some() || retry_due || (!push && polling.is_due(tokio::time::Instant::now())) {
+                let mut deferred = false;
+                let busy = receive(&mut client, keys, ingress, &mut rejected, &mut deferred).await?;
                 polling.complete(tokio::time::Instant::now(), busy);
+                if let Some(epoch) = generation { consumed = epoch; }
+                // A transient failure inside publish_staged keeps the encrypted stage and
+                // still returns Ok; without another hint nothing would retry it. Keep
+                // retrying with backoff until no stage for this device remains.
+                if deferred || has_stage(keys, ingress) {
+                    if retry_due { retry_delay = (retry_delay * 2).min(Duration::from_secs(300)); }
+                    retry_at = Some(tokio::time::Instant::now() + retry_delay);
+                } else {
+                    retry_delay = Duration::from_secs(5);
+                    retry_at = None;
+                }
             }
-            if reconcile(&mut client, keys, &mut rejected).await? {
+            if reconcile(&mut client, keys, &mut rejected).await? && !push {
                 polling.activity(tokio::time::Instant::now());
             }
             drain_receiver_wakes(keys)?;
@@ -1898,6 +1950,7 @@ async fn run_native(
             Err(error) if denied(&error) || !matches!(error.code, 5 | 6) => return Err(error),
             Err(error) => {
                 polling = PollSchedule::new(tokio::time::Instant::now());
+                consumed = 0;
                 eprintln!(
                     "everett relay: {}; retrying in {delay}s; encrypted staging kept",
                     error.message
@@ -1907,7 +1960,12 @@ async fn run_native(
                 continue;
             }
         }
-        tokio::time::sleep(Duration::from_secs(delay)).await;
+        if let Some(listener) = &mut notices {
+            tokio::select! {
+                _ = listener.changed() => {},
+                _ = tokio::time::sleep(Duration::from_secs(5)) => {},
+            }
+        } else { tokio::time::sleep(Duration::from_secs(delay)).await; }
     }
 }
 

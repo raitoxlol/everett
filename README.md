@@ -209,7 +209,7 @@ Done. MAX_RETRIES is now 5 and the backoff test covers the cap.
 | `everett peer add <name> --ssh user@host [--port N] --binary /absolute/everett --host-key SHA256:... --device-key SHA256:...` | Pair at an explicit SSH address; require both confirmed fingerprints. |
 | `everett peer serve --client ID` | Restricted sshd endpoint; no hosted address publication. |
 | `everett peer status <name> <message-id>` | SSH polls/imports replies; relay queries queued/delivered/claimed/replied/expired state from signed observations (not task completion). |
-| `everett relay` | Receive encrypted messages through Cloudflare outbound polling. Claude session wake and external webhook posts follow the local owner policy. |
+| `everett relay` | Receive encrypted messages through Cloudflare push notifications and authenticated HTTPS inbox reads. Claude session wake and external webhook posts follow the local owner policy. |
 | `everett relay register / devices / whoami` | Register this agent's keys and display name, list active key bundles (maximum 256), or verify account/agent authorization. |
 | `everett relay devices --names` | Hosted Cloudflare enrollment labels beside device IDs and fingerprints. Advisory only; the default JSON bundle list is unchanged. |
 | `everett relay expose SESSION [--harness H] [--remove]` | Opt in to sharing this exact local session's card, or withdraw it. The backend derives its authenticated author and agent. |
@@ -315,8 +315,12 @@ automatically. Use `everett relay devices --names`, then send to a unique name s
 `--to 'Max NUC/codex/SESSION_ID'`. No fingerprint exchange or `peer add-relay` is required
 for same-owner Cloudflare messaging.
 Those remote sends now require explicit `--mode inbox`; there is no synchronous remote
-ping receipt. The listener polls outbound HTTPS, stages ciphertext durably, reauthorizes before inbox
-publication and retries temporary failures. Receiver-side Claude wake is disabled by
+ping receipt. The listener uses an outbound hibernating WebSocket for fixed notifications, then reads
+the encrypted inbox over authenticated HTTPS. Healthy quiet connections make no scheduled billable
+inbox requests. The listener stages ciphertext durably, reauthorizes before inbox
+publication, and retries temporary failures. Deploy the matching Worker before updating receivers.
+An older Worker fails explicitly; `EVERETT_RELAY_TRANSPORT=poll` enables compatibility polling
+with a recurring request cost. See [request costs](docs/cloudflare-usage.md). Receiver-side Claude wake is disabled by
 default. An owner can opt in through the provider-local `receiver-wake.json` policy described
 in [the native relay guide](docs/cloudflare-native.md). A registered Grok Bot or OpenAI dot
 on that computer uses `receiver-webhook.json` in the same directory; see

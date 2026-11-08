@@ -43,11 +43,20 @@ export async function handleRequest(request: Request, env: Env, verifier: Princi
   }
   const op = url.pathname.match(/^\/v2\/relay\/([A-Za-z]+)$/)?.[1];
   const metadata = op === 'deviceLabels' || op === 'renameDevice';
-  if (!op || (!metadata && !operations.includes(op as Operation))) return Response.json({ error: 'not_found' }, { status: 404 });
-  if (request.method !== 'POST') return Response.json({ error: 'method_not_allowed' }, { status: 405, headers: { Allow: 'POST' } });
+  const watching = op === 'watch';
+  if (!op || (!watching && !metadata && !operations.includes(op as Operation))) return Response.json({ error: 'not_found' }, { status: 404 });
+  const method = watching ? 'GET' : 'POST';
+  if (request.method !== method) return Response.json({ error: 'method_not_allowed' }, { status: 405, headers: { Allow: method } });
   try {
     const p = principalSchema.parse(await verifier.verify(request));
     if (p.expiresAt <= Date.now()) throw new RelayError('invalid_token', 401);
+    if (watching) {
+      if (request.headers.get('Upgrade')?.toLowerCase() !== 'websocket') throw new RelayError('websocket_required', 426);
+      const stub = env.OWNERS.get(env.OWNERS.idFromName(namespace(p)));
+      return stub.fetch(new Request('https://everett.internal/watch', { headers: {
+        Upgrade: 'websocket', 'X-Everett-Principal': encodeURIComponent(JSON.stringify(p)),
+      } }));
+    }
     if (!request.headers.get('Content-Type')?.startsWith('application/json')) throw new RelayError('json_required', 415);
     const args: unknown = JSON.parse(await boundedText(request.body, 150000));
     const stub = env.OWNERS.get(env.OWNERS.idFromName(namespace(p)));
