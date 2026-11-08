@@ -1,6 +1,6 @@
 ---
 name: verify-everett
-description: Verify Everett releases, CLI setup, and all ten stdio MCP tools using isolated session stores. Use after routing, messaging, status, memory, or packaging changes.
+description: Verify Everett releases, CLI setup, and all thirteen stdio MCP tools using isolated session stores. Use after routing, messaging, status, memory, or packaging changes.
 ---
 # Verify Everett
 
@@ -20,7 +20,9 @@ Read [the feature map](features/README.md). `tests/release_journey.rs` runs all 
 
 ## Evidence
 
-The test asserts doctor's ten-tool probe, onboarding before any session store, cards, inbox consumption, replies, status, core files, older targets, child stdin, a ping after delivery, and that all ten tools were called. This is CLI/protocol evidence; GUI-client trust prompts and actual model resumes need separate checks.
+The test asserts doctor's thirteen-tool probe, onboarding before any session store, cards, inbox consumption, replies, status, core files, older targets, child stdin, a ping after delivery, and that all thirteen tools were called. This is CLI/protocol evidence; GUI-client trust prompts and actual model resumes need separate checks.
+
+Run `cargo test --locked --test relay_diagnostics` for the offline CLI and MCP diagnostic action. Set `EVERETT_VERIFY_BINARY` as above to drive a packaged binary. Its isolated fixtures check receiver leases, redaction, no network calls, unchanged relay files, bounded cache scans, and cached replies after expiry. MCP's normal call-metadata log remains separate from relay state.
 
 ## Cleanup
 

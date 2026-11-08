@@ -16,4 +16,6 @@ A fake Codex reads stdin during both resume and spawn over MCP. It must receive 
 
 ## Gotchas
 
+`cargo test --locked --test relay_diagnostics` exercises `everett relay diagnose` and MCP `everett_agent_relay(action="diagnose")` over isolated homes. It checks live local lease state, matching and mismatched cached identities, redaction, absence of network calls, unchanged relay files, unsafe records, scan bounds, and reply receipts after expiry. Counts describe cached files across all stored accounts, not remote authorization or task completion.
+
 This proves file delivery and subprocess/stdio behavior; actual models and hook injection need separate live checks. The unit suite covers interrupted delivery guidance without retries, hop limits and self-send guards.
