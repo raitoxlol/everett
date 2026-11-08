@@ -10,13 +10,15 @@ import {
 
 type Credential = { agent_id: string; subject: string; status: string };
 type Member = { subject: string; role: 'admin' | 'member'; status: string };
-type Attempt = { message_id: string; from_device: string; idempotency_key: string; digest: string; state: MessageState; expires_at: number; metadata: string };
+type Attempt = { message_id: string; from_device: string; to_device: string; idempotency_key: string; digest: string; state: MessageState; expires_at: number; metadata: string };
 type Metadata = Omit<Envelope, 'ciphertext' | 'signature' | 'ephemeralKey' | 'nonce' | 'createdAt'>;
 type EnrollmentResult = { ok: true; value: { owner: string; deviceId: string } } | { ok: false; error: string; status: number };
 export type RelayResult = { ok: true; value: unknown } | { ok: false; error: string; status: number };
 const empty = z.strictObject({});
 const deviceIdArgs = z.strictObject({ deviceId: identifier });
 const stateRank: Record<MessageState, number> = { queued: 0, expired: 0, delivered: 1, claimed: 2, replied: 3 };
+const watcherSchema = principalSchema.pick({ agentId: true, expiresAt: true }).extend({ fingerprint: z.string().regex(/^[0-9a-f]{64}$/) });
+const inboxChanged = JSON.stringify({ type: 'inbox_changed' });
 
 export class OwnerRelay extends DurableObject<Env> {
   constructor(ctx: DurableObjectState, env: Env) {
@@ -41,6 +43,49 @@ export class OwnerRelay extends DurableObject<Env> {
     return this.ctx.storage.sql.exec<T>(sql, ...args).toArray()[0];
   }
   #owner() { return this.#row<{ namespace: string }>('SELECT namespace FROM owner WHERE singleton=1')?.namespace; }
+
+  async fetch(request: Request): Promise<Response> {
+    if (request.method !== 'GET' || new URL(request.url).pathname !== '/watch' || request.headers.get('Upgrade')?.toLowerCase() !== 'websocket') return Response.json({ error: 'not_found' }, { status: 404 });
+    try {
+      const p = principalSchema.parse(JSON.parse(decodeURIComponent(request.headers.get('X-Everett-Principal') ?? 'null')));
+      this.#authorize(p);
+      const device = this.#activeDevice(p.agentId);
+      this.#rate(JSON.stringify(['watch', p.agentId]), 12, Date.now());
+      if (this.ctx.getWebSockets(p.agentId).filter(socket => socket.readyState === WebSocket.OPEN).length >= 2) throw new RelayError('connection_limit', 429);
+      const pair = new WebSocketPair();
+      this.ctx.acceptWebSocket(pair[1], [p.agentId]);
+      pair[1].serializeAttachment({ agentId: p.agentId, expiresAt: p.expiresAt, fingerprint: fingerprint(device) });
+      pair[1].send(inboxChanged);
+      return new Response(null, { status: 101, webSocket: pair[0] });
+    } catch (error) {
+      return Response.json({ error: error instanceof RelayError ? error.code : 'invalid_request' }, { status: error instanceof RelayError ? error.status : 400 });
+    }
+  }
+
+  #watcherActive(socket: WebSocket): boolean {
+    try {
+      const bound = watcherSchema.parse(socket.deserializeAttachment());
+      if (bound.expiresAt <= Date.now()) throw new RelayError('invalid_token', 401);
+      if (fingerprint(this.#activeDevice(bound.agentId)) !== bound.fingerprint) throw new RelayError('device_key_changed');
+      return true;
+    } catch {
+      socket.close(1008, 'notification authorization expired or changed');
+      return false;
+    }
+  }
+
+  #notify(device: string) {
+    for (const socket of this.ctx.getWebSockets(device)) {
+      if (!this.#watcherActive(socket)) continue;
+      try { socket.send(inboxChanged); } catch { socket.close(1001, 'reconnect'); }
+    }
+  }
+
+  #closeInvalidWatchers() { for (const socket of this.ctx.getWebSockets()) this.#watcherActive(socket); }
+
+  webSocketMessage(socket: WebSocket, _message: string | ArrayBuffer) { socket.close(1008, 'notifications are server-only'); }
+  webSocketClose(socket: WebSocket, _code: number, _reason: string, _wasClean: boolean) { socket.close(1000, ''); }
+  webSocketError(socket: WebSocket, _error: unknown) { socket.close(1011, 'reconnect'); }
 
   // Only an operator-controlled enrollment Worker may hold a namespace binding and call this RPC.
   // There is no public HTTP path; the event must come after owner consent and verified identity.
@@ -110,6 +155,7 @@ export class OwnerRelay extends DurableObject<Env> {
     const credential = this.#row<Credential>('SELECT * FROM credentials WHERE agent_id=?', agent.data);
     if (member?.status !== 'active' || member.role !== 'admin' || credential?.subject !== identity.data.subject) return false;
     this.ctx.storage.sql.exec("UPDATE credentials SET status='revoked' WHERE agent_id=?", agent.data);
+    this.#closeInvalidWatchers();
     return true;
   }
 
@@ -153,6 +199,12 @@ export class OwnerRelay extends DurableObject<Env> {
         if (op === 'enqueue' || op === 'accept' || op === 'observe') await this.#scheduleExpiry();
         return result;
       });
+      if (op === 'enqueue') {
+        const queued = z.object({ messageId: identifier }).parse(value);
+        const attempt = this.#attempt(queued.messageId);
+        if (attempt?.state === 'queued' && attempt.expires_at > Date.now()) this.#notify(attempt.to_device);
+      }
+      if (op === 'revokeAgent' || op === 'revokeMember' || op === 'rotate') this.#closeInvalidWatchers();
       return JSON.stringify({ ok: true, value });
     } catch (error) {
       if (error instanceof RelayError) return JSON.stringify({ ok: false, error: error.code, status: error.status });

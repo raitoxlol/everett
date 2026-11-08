@@ -897,17 +897,7 @@ impl Credential {
         origin(&self.connect_origin())
     }
 
-    pub(crate) fn relay_request(&self, name: &str, value: &Value) -> Result<Value> {
-        let operation = match name {
-            "relay:whoami" => "whoami", "relay:register" => "register", "relay:device" => "device",
-            "relay:devices" => "devices", "relay:credentials" => "credentials", "relay:memberships" => "memberships",
-            "relay:revokeAgent" => "revokeAgent", "relay:revokeMember" => "revokeMember", "relay:rotate" => "rotate",
-            "relay:enqueue" => "enqueue", "relay:pending" => "pending", "relay:accept" => "accept",
-            "relay:observe" => "observe", "relay:status" => "status",
-            "relay:deviceLabels" => "deviceLabels", "relay:renameDevice" => "renameDevice",
-            "relay:exposeSession" => "exposeSession", "relay:sessionDirectory" => "sessionDirectory",
-            _ => return Err(fail(2, "this operation is not supported by the Cloudflare relay; SSH publication and cross-owner grants are unavailable")),
-        };
+    pub(crate) fn validate_relay_binding(&self) -> Result<()> {
         if crate::config::get("auth.provider", Some("EVERETT_AUTH_PROVIDER"), "cloudflare")
             != "cloudflare"
         {
@@ -916,7 +906,7 @@ impl Credential {
                 "Cloudflare relay denied: provider changed; restart the relay",
             ));
         }
-        let issuer = self.relay_origin()?;
+        self.relay_origin()?;
         let current = load()?.ok_or_else(|| {
             fail(
                 1,
@@ -933,6 +923,36 @@ impl Credential {
                 "Cloudflare relay denied: signed-in identity changed; restart the relay",
             ));
         }
+        Ok(())
+    }
+
+    pub(crate) fn notification_request(&self) -> Result<tokio_tungstenite::tungstenite::http::Request<()>> {
+        use tokio_tungstenite::tungstenite::client::IntoClientRequest;
+        self.validate_relay_binding()?;
+        let origin = self.relay_origin()?;
+        let address = if let Some(host) = origin.strip_prefix("https://") {
+            format!("wss://{host}/v2/relay/watch")
+        } else if let Some(host) = origin.strip_prefix("http://") {
+            format!("ws://{host}/v2/relay/watch")
+        } else { return Err(fail(2, "invalid notification relay origin")); };
+        let mut request = address.into_client_request().map_err(|_| fail(2, "invalid notification request"))?;
+        request.headers_mut().insert("Authorization", format!("Bearer {}", self.token).parse().map_err(|_| fail(2, "invalid notification credential"))?);
+        Ok(request)
+    }
+
+    pub(crate) fn relay_request(&self, name: &str, value: &Value) -> Result<Value> {
+        let operation = match name {
+            "relay:whoami" => "whoami", "relay:register" => "register", "relay:device" => "device",
+            "relay:devices" => "devices", "relay:credentials" => "credentials", "relay:memberships" => "memberships",
+            "relay:revokeAgent" => "revokeAgent", "relay:revokeMember" => "revokeMember", "relay:rotate" => "rotate",
+            "relay:enqueue" => "enqueue", "relay:pending" => "pending", "relay:accept" => "accept",
+            "relay:observe" => "observe", "relay:status" => "status",
+            "relay:deviceLabels" => "deviceLabels", "relay:renameDevice" => "renameDevice",
+            "relay:exposeSession" => "exposeSession", "relay:sessionDirectory" => "sessionDirectory",
+            _ => return Err(fail(2, "this operation is not supported by the Cloudflare relay; SSH publication and cross-owner grants are unavailable")),
+        };
+        self.validate_relay_binding()?;
+        let issuer = self.relay_origin()?;
         let (status, body) = request_limited(
             &issuer,
             &format!("/v2/relay/{operation}"),

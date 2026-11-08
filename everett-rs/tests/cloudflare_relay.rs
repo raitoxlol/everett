@@ -334,6 +334,7 @@ fn listener(f: &Fixture) -> Running {
             .env_clear()
             .env("HOME", f.home())
             .env("EVERETT_HOME", f.home())
+            .env("EVERETT_RELAY_TRANSPORT", "poll")
             .env("PATH", "/usr/bin:/bin")
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
