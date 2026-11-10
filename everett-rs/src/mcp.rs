@@ -544,6 +544,8 @@ fn tool_control(
                 let mut forward = Map::new();
                 forward.insert("text".into(), json!(text));
                 forward.insert("to".into(), json!(s.id));
+                // resolve_session looked back a week; keep tool_send's lookup window the same.
+                forward.insert("hours".into(), json!(168.0));
                 return tool_send(&forward, identity);
             }
         }

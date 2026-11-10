@@ -112,6 +112,7 @@ pub struct StartRequest<'a> {
 
 pub fn start(req: &StartRequest, caller: Option<&str>) -> Result<Value> {
     crate::send::require_local_prompt(caller)?;
+    crate::send::hop_env_for(caller)?;
     if req.text.trim().is_empty() {
         return Err(EverettError::new(2, "text must not be empty."));
     }
@@ -142,7 +143,8 @@ pub fn start(req: &StartRequest, caller: Option<&str>) -> Result<Value> {
     }
     let cwd = if req.cwd.is_empty() { "." } else { req.cwd };
     let timeout = clamp_timeout(req.timeout, true)?;
-    let r = crate::send::spawn_for(req.harness, req.text, cwd, timeout, None, caller)?;
+    let env = crate::send::hop_env_for(caller)?;
+    let r = crate::send::spawn_for(req.harness, req.text, cwd, timeout, Some(&env), caller)?;
     Ok(json!({"via": "headless", "started": true, "waited": true, "harness": r.harness,
               "session_id": r.session_id, "cwd": r.cwd, "reply": r.reply}))
 }
@@ -152,6 +154,7 @@ pub fn start(req: &StartRequest, caller: Option<&str>) -> Result<Value> {
 pub fn send_t3(thread: &str, session: Option<&Session>, text: &str, wait: bool, timeout: Option<f64>,
                caller: Option<&str>) -> Result<Value> {
     crate::send::require_local_prompt(caller)?;
+    crate::send::hop_env_for(caller)?;
     if text.trim().is_empty() {
         return Err(EverettError::new(2, "text must not be empty."));
     }
@@ -175,9 +178,19 @@ pub fn read(thread: &str, session: Option<&Session>, messages: usize, caller: Op
         return Ok(json!({"via": "t3", "thread": thread, "result": result}));
     }
     let session = session.ok_or_else(|| EverettError::new(2, "read needs session or thread."))?;
-    let text = std::fs::read_to_string(&session.path).map_err(|e| {
-        EverettError::new(4, format!("Cannot read the {} transcript: {e}", session.harness))
-    })?;
+    let unreadable = |e: String| EverettError::new(4, format!("Cannot read the {} transcript: {e}", session.harness));
+    let tail = if session.harness == "hermes" {
+        crate::adapters::hermes::messages(&std::path::PathBuf::from(&session.path), &session.id, messages)
+            .map_err(unreadable)?
+            .into_iter()
+            .map(|(role, text)| json!({"role": role, "text": text.chars().take(4000).collect::<String>()}))
+            .collect()
+    } else {
+        // Grok stores a session directory; its messages live in chat_history.jsonl.
+        let path = std::path::Path::new(&session.path);
+        let file = if path.is_dir() { path.join("chat_history.jsonl") } else { path.to_path_buf() };
+        transcript_tail(&std::fs::read_to_string(file).map_err(|e| unreadable(e.to_string()))?, messages)
+    };
     Ok(json!({
         "via": "transcript",
         "session_id": session.id,
@@ -186,7 +199,7 @@ pub fn read(thread: &str, session: Option<&Session>, messages: usize, caller: Op
         "cwd": session.cwd,
         "running": session.running,
         "state": session.state,
-        "messages": transcript_tail(&text, messages),
+        "messages": tail,
     }))
 }
 
@@ -225,7 +238,12 @@ pub fn transcript_tail(text: &str, limit: usize) -> Vec<Value> {
 
 fn find_message(v: &Value, depth: usize) -> Option<(String, String)> {
     let obj = v.as_object()?;
-    if let (Some(role), Some(content)) = (obj.get("role").and_then(Value::as_str), obj.get("content")) {
+    if obj.contains_key("synthetic_reason") {
+        return None;
+    }
+    // Grok rows carry the speaker in `type` instead of `role`.
+    let role = obj.get("role").or_else(|| obj.get("type")).and_then(Value::as_str);
+    if let (Some(role), Some(content)) = (role, obj.get("content")) {
         if matches!(role, "user" | "assistant") {
             return Some((role.to_string(), content_text(content)));
         }

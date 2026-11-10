@@ -103,3 +103,52 @@ fn read_returns_any_harness_transcript_tail_and_stop_is_explicit() {
     let r = call(&fx, &t3, json!({"action":"stop","thread":THREAD}));
     assert!(r.to_string().contains("not supported for t3"), "{r}");
 }
+
+#[test]
+fn read_handles_hermes_db_and_grok_session_dirs() {
+    let fx = fixture();
+    let t3 = fake_t3(&fx, 0);
+    let db = fx.home().join(".hermes/state.db");
+    fs::create_dir_all(db.parent().unwrap()).unwrap();
+    let con = rusqlite::Connection::open(&db).unwrap();
+    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs_f64();
+    con.execute_batch("CREATE TABLE sessions (id TEXT, source TEXT, started_at REAL, cwd TEXT, title TEXT,
+            profile_name TEXT, last_activity_at REAL);
+         CREATE TABLE messages (id INTEGER PRIMARY KEY, session_id TEXT, role TEXT, content TEXT);").unwrap();
+    con.execute("INSERT INTO sessions VALUES ('h-1','cli',?1,'/work/herm','Hermes run','',?1)", [now - 60.0]).unwrap();
+    for (role, text) in [("user", "hermes ask"), ("tool", "skip"), ("assistant", "hermes answer"), ("user", "hermes again")] {
+        con.execute("INSERT INTO messages (session_id, role, content) VALUES ('h-1',?1,?2)", [role, text]).unwrap();
+    }
+    drop(con);
+    let r = tool_json(&call(&fx, &t3, json!({"action":"read","session":"h-1","messages":2})));
+    assert_eq!(r["harness"], "hermes", "{r}");
+    assert_eq!(r["messages"], json!([{"role":"assistant","text":"hermes answer"},{"role":"user","text":"hermes again"}]));
+
+    let sid = "4d1c2b3a-0000-4000-8000-00000000g0k1";
+    let folder = fx.home().join(".grok/sessions").join(everett::adapters::grok::quote("/work/grok")).join(sid);
+    fs::create_dir_all(&folder).unwrap();
+    fs::write(folder.join("summary.json"), json!({"info":{"id":sid,"cwd":"/work/grok"},"created_at":"2026-11-10T00:00:00Z","last_active_at":"2026-11-10T00:05:00Z"}).to_string()).unwrap();
+    fs::write(folder.join("chat_history.jsonl"), common::jsonl(&[
+        json!({"type":"system","content":"You are Grok."}),
+        json!({"type":"user","synthetic_reason":"system_reminder","content":[{"type":"text","text":"reminder"}]}),
+        json!({"type":"user","content":[{"type":"text","text":"grok ask"}]}),
+        json!({"type":"assistant","content":"grok answer"}),
+    ])).unwrap();
+    let r = tool_json(&call(&fx, &t3, json!({"action":"read","session":sid})));
+    assert_eq!(r["harness"], "grok", "{r}");
+    assert_eq!(r["messages"], json!([{"role":"user","text":"grok ask"},{"role":"assistant","text":"grok answer"}]));
+}
+
+#[test]
+fn hop_limit_blocks_starts_and_sends() {
+    let fx = fixture();
+    let t3 = fake_t3(&fx, 0);
+    for args in [json!({"action":"start","project":"/p","text":"x"}), json!({"action":"send","thread":THREAD,"text":"x"}),
+                 json!({"action":"start","harness":"codex","cwd":"/","text":"x"})] {
+        let out = mcp_calls(&fx, &[], &[("EVERETT_T3_BIN", t3.as_str()), ("EVERETT_SESSION_ID", "caller"), ("EVERETT_HOPS", "99")],
+            &[("everett_control", args.clone())]);
+        assert_eq!(out[0]["isError"], true, "{args}: {}", out[0]);
+        assert!(out[0].to_string().contains("Hop limit"), "{}", out[0]);
+    }
+    assert!(!fx.home().join("t3-argv").exists(), "t3 must not run past the hop limit");
+}
