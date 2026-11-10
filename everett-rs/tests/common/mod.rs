@@ -261,3 +261,26 @@ pub fn wait_for_exit(pidfile: &std::path::Path) {
         std::thread::sleep(std::time::Duration::from_millis(10));
     }
 }
+
+/// Copy the test binary into a fixture home. Copying (not hard-linking) works when
+/// Cargo's target and the temp home are on different filesystems (EXDEV); the copy
+/// is fsynced and closed before return so no write fd of ours outlives it.
+pub fn copy_executable(dest: &Path) {
+    std::fs::copy(env!("CARGO_BIN_EXE_everett"), dest).unwrap();
+    std::fs::File::open(dest).unwrap().sync_all().unwrap();
+}
+
+/// Run a command, retrying briefly on ETXTBSY. On Linux a parallel test's fork can
+/// still inherit a write fd to a freshly written executable until it execs.
+pub fn output_retrying_etxtbsy(command: &mut Command) -> Output {
+    let mut attempt = 0;
+    loop {
+        match command.output() {
+            Err(e) if e.kind() == std::io::ErrorKind::ExecutableFileBusy && attempt < 50 => {
+                attempt += 1;
+                std::thread::sleep(std::time::Duration::from_millis(20));
+            }
+            result => return result.unwrap(),
+        }
+    }
+}
