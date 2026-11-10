@@ -156,7 +156,8 @@ This proves the inbox and MCP contract on your machine, in a throwaway home, bef
 any Grok setup. It needs only the `everett` binary (2.2.1 or newer) and Python 3.
 
 ```sh
-export HOME="$(mktemp -d)" EVERETT_HOME="$HOME" EVERETT_NOTIFY=none
+scratch="$(mktemp -d)"
+export HOME="$scratch" EVERETT_HOME="$scratch" EVERETT_NOTIFY=none
 everett external add --id ext-grok-acceptance --harness grok-bot --title 'Grok Bot inbox'
 everett send 'check backup status' --to ext-grok-acceptance --mode inbox --json
 # expect "mode":"inbox", "queued":true, "wake":false
