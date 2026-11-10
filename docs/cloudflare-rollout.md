@@ -52,6 +52,28 @@ npm exec -- wrangler deploy --config wrangler.public.jsonc
 
 A new push receiver fails explicitly against an older Worker. If compatibility polling is required, explicitly set `EVERETT_RELAY_TRANSPORT=poll` or `[relay] transport = "poll"`. That mode resumes the recurring request cost and can wait up to 60 seconds for quiet inbox pickup.
 
+## Keep Worker and Durable Object code in step
+
+For a deployment that changes the RPC methods used between the Worker and a Durable Object, activate the reviewed version with `code_update_strategy: { "mode": "immediate" }`. Cloudflare otherwise defaults to deferring object code updates for up to 300 seconds. During that interval the Worker can call a method that the old object does not implement, returning `invalid_request` even though deployment upload and public health checks succeeded. Repeated diagnostic deployments restart the version transition and are not a repair.
+
+On 2026-11-09, the native `whoami` probe reproduced this mismatch during the push rollout. Deploying the original tested version with an immediate strategy restored authentication and passed an authenticated WebSocket hint/Pong check. No application compatibility patch was needed. Use the same immediate strategy for a rollback that must restore a matching Worker/object pair. Immediate activation can interrupt current object requests; clients must retry normally, preserving their identities and queues.
+
+Recent Wrangler versions support `--durable-objects-code-update-mode immediate`. For pinned Wrangler versions that lack this option, use the authenticated Create deployment API with the exact uploaded version ID:
+
+```json
+{
+  "strategy": "percentage",
+  "versions": [{ "version_id": "REVIEWED_VERSION_ID", "percentage": 100 }],
+  "code_update_strategy": { "mode": "immediate" }
+}
+```
+
+Send this body to `POST /accounts/{account_id}/workers/scripts/{script_name}/deployments` through the existing credential store. Keep credentials out of command arguments and evidence. Check API errors, active version, unchanged live bindings and both connector resource URLs, native identity, and authenticated notification upgrade before updating a receiver. Code update strategy is deployment-only and is not returned by deployment reads, so retain the request and successful response as evidence.
+
+Enabling `wrangler tail` or dashboard logs itself requires a software update and can restart objects or disconnect WebSockets. Separate instrumentation-induced reconnects from spontaneous failures, stop owned tail sessions after measuring, and recheck the receiver without tailing. A successful `/health` response alone does not verify a Durable Object RPC or subscription. See [known issues](https://developers.cloudflare.com/durable-objects/platform/known-issues/#code-updates).
+
+See [Durable Objects code updates](https://developers.cloudflare.com/durable-objects/deployments/durable-objects-code-updates/).
+
 ## Measure the account request budget
 
 1. Resolve namespace IDs using `GET /accounts/{account_id}/workers/durable_objects/namespaces`. Include production/development `OwnerRelay`, `HostedAuth`, and other account workloads.
