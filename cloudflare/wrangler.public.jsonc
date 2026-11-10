@@ -50,6 +50,7 @@
     "EVERETT_OWNER_GITHUB_LOGIN": "raitoxlol"
   },
   "durable_objects": {
+    "code_update_strategy": { "mode": "immediate" },
     "bindings": [
       { "name": "OWNERS", "class_name": "OwnerRelay" },
       { "name": "AUTH_STATE", "class_name": "HostedAuth" }
