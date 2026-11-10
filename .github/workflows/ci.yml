@@ -23,6 +23,11 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - name: Build the release binary
         run: cargo build --release --locked
+      - name: Verify local plugin installation against the release binary
+        working-directory: .
+        env:
+          EVERETT_VERIFY_BINARY: ${{ github.workspace }}/everett-rs/target/release/everett
+        run: python3 -m unittest discover -s plugins/everett-local/tests -v
       - name: Exercise the release binary over isolated stores
         env:
           EVERETT_VERIFY_BINARY: ${{ github.workspace }}/everett-rs/target/release/everett

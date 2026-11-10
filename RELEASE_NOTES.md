@@ -5,6 +5,10 @@ idle inbox requests on healthy push connections, and makes send previews and cac
 
 ## Changes
 
+- Include Everett Local 0.3.0 as a separate installer ZIP with portable desktop
+  manifests and Codex compatibility. The installer uses an explicit Everett
+  binary and includes no account credentials. Actual ChatGPT app loading remains
+  an open verification gate; see [ChatGPT setup](docs/chatgpt.md).
 - Run `everett relay diagnose` or MCP `everett_agent_relay(action="diagnose")`
   for receiver, registration, webhook, and bounded cached-queue summaries.
   The handler makes no network calls, reads no webhook bearer files, and omits
