@@ -27,7 +27,7 @@ class RuntimeTests(unittest.TestCase):
                 '--destination', str(home / 'plugin with spaces')], env=env, capture_output=True, text=True, timeout=15)
             self.assertEqual(installed.returncode, 0, installed.stderr)
             plugin = Path(json.loads(installed.stdout)['plugin'])
-            smoke = subprocess.run([sys.executable, str(ROOT / 'tests/smoke.py'), '--manifest', str(plugin / 'mcp.json')],
+            smoke = subprocess.run([sys.executable, str(ROOT / 'tests/smoke.py'), '--manifest', str(plugin / '.mcp.json')],
                 env=env, cwd=home, capture_output=True, text=True, timeout=45)
             self.assertEqual(smoke.returncode, 0, smoke.stderr)
             result = json.loads(smoke.stdout)

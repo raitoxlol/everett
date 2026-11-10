@@ -1,6 +1,6 @@
 {
   "name": "everett-direct",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "description": "Use the installed Everett runtime through local stdio and the existing owner account.",
   "author": {"name": "Wright/raitoxlol"},
   "skills": "./skills/",
