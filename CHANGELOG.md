@@ -2,16 +2,17 @@
 
 ## Unreleased
 
-## 2.2.1 (release candidate)
+## 2.2.1 — 2026-11-10
 
 - Add `everett relay diagnose` and MCP `everett_agent_relay(action="diagnose")` for offline receiver, registration, webhook, and bounded cached-queue summaries. Diagnostics omit message bodies, account identifiers, URLs, and credential values. They do not verify remote connectivity or authorization.
 - Use hibernating WebSocket notifications by default so healthy quiet receivers make no recurring billable inbox requests. Preserve encrypted queue recovery on reconnect, per-operation authorization, and five-second local maintenance. Legacy adaptive polling requires explicit `EVERETT_RELAY_TRANSPORT=poll`. Update the Worker first.
 - Remove repeated idle device registration and redundant Worker membership RPCs while retaining per-operation authorization. Startup, reconnects, messages, and retries still incur requests. Production savings remain unmeasured.
 - Correct T3, OMP, and attached Claude send previews without queueing or invoking resume. Preserve authenticated replies and durable delivery receipts when older status observations or request expiry arrive later.
-- Copy the test executable into the T3 fixture so tests work when Cargo's target and temporary home use different filesystems.
+- Copy test executables into T3 and reply fixtures so tests work when Cargo's target and temporary home use different filesystems, and retry fixture spawns that hit Linux ETXTBSY.
 - Gate tagged publication on Worker tests, typechecking, and public bundle packaging. Run the optimized CLI/MCP journey on build runners with a matching architecture before uploading their archives.
 - Keep GitHub sign-in on the identity issuer when a browser opens another public relay host, so the GitHub OAuth app needs only the issuer callback. Accept existing peer pins across an explicit relay alias list; the public issuer and `https://relay.raitox.tech` are the default list.
-- Accept ChatGPT's optional OAuth locale hint and validated support for public-client authentication in client metadata. Keep PKCE and configured client, redirect and resource restrictions. Preserve both existing connector resources in the public deployment profile and activate matching Worker/Durable Object code immediately.
+- Accept ChatGPT's optional OAuth locale hint and validated support for public-client authentication in client metadata. Keep PKCE and configured client, redirect and resource restrictions. Preserve both existing connector resources in the public deployment profile. A fresh ChatGPT callback and tool call remain unverified.
+- Document keeping Worker and Durable Object code in step: use immediate Durable Object code updates per deployment only when RPC methods change.
 
 ## 2.2.0 — 2026-10-27
 
