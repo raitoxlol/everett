@@ -356,9 +356,9 @@ fn assert_fallback_commands(relative_profile: bool) {
     fs::create_dir_all(&recipient_home).unwrap();
     plant_thread(&profile);
     let binary = fx.home().join("Everett executable's binary");
-    fs::copy(env!("CARGO_BIN_EXE_everett"), &binary).unwrap();
-    let out = Command::new(&binary)
-        .args(["send", "--to", SESSION, "--json", BODY])
+    common::copy_executable(&binary);
+    let mut cmd = Command::new(&binary);
+    cmd.args(["send", "--to", SESSION, "--json", BODY])
         .env_clear()
         .env("HOME", fx.home())
         .env("EVERETT_HOME", if relative_profile { Path::new(profile.file_name().unwrap()) } else { &profile })
@@ -367,8 +367,8 @@ fn assert_fallback_commands(relative_profile: bool) {
         .env("PATH", common::HERMETIC_PATH)
         .env("EVERETT_SESSION_ID", "caller")
         .env("EVERETT_NOTIFY", "none")
-        .current_dir(fx.home())
-        .output().unwrap();
+        .current_dir(fx.home());
+    let out = common::output_retrying_etxtbsy(&mut cmd);
     assert!(out.status.success(), "{out:?}");
     let result: Value = serde_json::from_slice(&out.stdout).unwrap();
     let mid = result["message_id"].as_str().unwrap();
