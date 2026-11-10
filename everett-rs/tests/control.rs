@@ -152,3 +152,43 @@ fn hop_limit_blocks_starts_and_sends() {
     }
     assert!(!fx.home().join("t3-argv").exists(), "t3 must not run past the hop limit");
 }
+
+#[test]
+fn remote_derived_caller_is_refused_for_every_action() {
+    let fx = fixture();
+    let t3 = fake_t3(&fx, 0);
+    fx.write(".everett/inbox/relay-context/caller.json", &json!({"hops": 1}).to_string());
+    for action in ["threads", "read", "stop"] {
+        let r = call(&fx, &t3, json!({"action": action, "thread": THREAD}));
+        assert_eq!(r["isError"], true, "{action}: {r}");
+        assert!(r.to_string().contains("Remote-derived"), "{action}: {r}");
+    }
+    assert!(!fx.home().join("t3-argv").exists(), "t3 must not run for a remote-derived caller");
+}
+
+#[test]
+fn t3_send_carries_hops_to_the_receiving_session() {
+    let fx = fixture();
+    let t3 = fake_t3(&fx, 0);
+    let db = fx.home().join(".t3/userdata/statev2.sqlite");
+    fs::create_dir_all(db.parent().unwrap()).unwrap();
+    let con = rusqlite::Connection::open(&db).unwrap();
+    con.execute_batch(include_str!("../../tests/fixtures/t3_v2.sql")).unwrap();
+    let now = chrono::Utc::now().to_rfc3339();
+    con.execute("INSERT INTO projection_projects VALUES ('p','Project','/work/project',NULL,'[]',?1,?1,NULL)", [&now]).unwrap();
+    con.execute("INSERT INTO orchestration_v2_projection_threads (thread_id,project_id,title,default_provider,runtime_mode,interaction_mode,active_provider_thread_id,created_at,updated_at,payload_json) VALUES (?1,'p','T','codex','full-access','default','provider',?2,?2,'{}')", [THREAD, &now]).unwrap();
+    con.execute("INSERT INTO orchestration_v2_projection_provider_threads (provider_thread_id,thread_id,provider,driver,status,updated_at,payload_json) VALUES ('provider',?1,'codex','codex','idle',?2,?3)",
+        [THREAD, &now, &json!({"driver":"codex","nativeThreadRef":{"driver":"codex","nativeId":"recv-session","strength":"strong"}}).to_string()]).unwrap();
+    drop(con);
+    let send = |caller: &str, hops: &str| mcp_calls(&fx, &[], &[("EVERETT_T3_BIN", t3.as_str()), ("EVERETT_SESSION_ID", caller), ("EVERETT_HOPS", hops)],
+        &[("everett_control", json!({"action":"send","thread":THREAD,"text":"go"}))])[0].clone();
+    // The fake t3 snapshots the receiver's hop record while it is still running.
+    fs::write(&t3, "#!/bin/sh\ncat \"$HOME/.everett/inbox/live/recv-session.json\" > \"$HOME/hops-during-send\" 2>/dev/null\nprintf '%s\\n' '{\"ok\":true}'\n").unwrap();
+    assert_ne!(send("caller", "2")["isError"], true);
+    let during: Value = serde_json::from_str(&fs::read_to_string(fx.home().join("hops-during-send")).unwrap()).unwrap();
+    assert_eq!(during["hops"], 3, "hop state must exist before the receiver runs");
+    // The receiving session now carries hop 3 (the limit), so it cannot forward again.
+    let r = send("recv-session", "0");
+    assert_eq!(r["isError"], true, "{r}");
+    assert!(r.to_string().contains("Hop limit"), "{r}");
+}

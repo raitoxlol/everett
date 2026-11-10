@@ -499,6 +499,8 @@ fn tool_control(
     use crate::control;
     let action = str_arg(args, "action", true)?;
     let caller = identity.get("session_id").and_then(Value::as_str).filter(|s| !s.is_empty());
+    // Owner-local only: every action, including listing, refuses remote-derived callers.
+    crate::send::require_local_prompt(caller).map_err(ToolFailure::Tool)?;
     let target = str_arg(args, "session", false)?;
     let thread = str_arg(args, "thread", false)?;
     let text = str_arg(args, "text", false)?;

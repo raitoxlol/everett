@@ -149,17 +149,31 @@ pub fn start(req: &StartRequest, caller: Option<&str>) -> Result<Value> {
               "session_id": r.session_id, "cwd": r.cwd, "reply": r.reply}))
 }
 
+/// The hop count a delivery from `caller` carries; errors at the hop limit.
+fn next_hops(caller: Option<&str>) -> Result<i64> {
+    let env = crate::send::hop_env_for(caller)?;
+    Ok(env.get("EVERETT_HOPS").and_then(|h| h.parse().ok()).unwrap_or(1))
+}
+
 /// Send text into a T3 thread as its next turn. Non-T3 sessions go through
 /// `everett_send`, which owns ping/resume delivery and its receipts.
 pub fn send_t3(thread: &str, session: Option<&Session>, text: &str, wait: bool, timeout: Option<f64>,
                caller: Option<&str>) -> Result<Value> {
     crate::send::require_local_prompt(caller)?;
-    crate::send::hop_env_for(caller)?;
+    let hops = next_hops(caller)?;
     if text.trim().is_empty() {
         return Err(EverettError::new(2, "text must not be empty."));
     }
     let thread = thread_for(thread, session)
         .ok_or_else(|| EverettError::new(4, "No T3 thread resolves to this target."))?;
+    // T3 agents don't inherit our env; carry the hop count in their live record,
+    // as inbox delivery does, so their own forwards keep counting. Record it
+    // before dispatch: with wait=true the receiver runs while t3 is still open.
+    for (key, (id, _)) in crate::adapters::t3code::threads(&crate::adapters::t3code::db_path()) {
+        if id == thread {
+            crate::inbox::record_hops(&key.1, hops);
+        }
+    }
     let mut args = vec!["thread", "send", "--json"];
     if wait {
         args.push("--wait");
@@ -178,6 +192,9 @@ pub fn read(thread: &str, session: Option<&Session>, messages: usize, caller: Op
         return Ok(json!({"via": "t3", "thread": thread, "result": result}));
     }
     let session = session.ok_or_else(|| EverettError::new(2, "read needs session or thread."))?;
+    if session.harness == "devin" {
+        return Err(EverettError::new(4, "read is not supported for devin transcripts yet (SQLite/ATIF storage)."));
+    }
     let unreadable = |e: String| EverettError::new(4, format!("Cannot read the {} transcript: {e}", session.harness));
     let tail = if session.harness == "hermes" {
         crate::adapters::hermes::messages(&std::path::PathBuf::from(&session.path), &session.id, messages)
