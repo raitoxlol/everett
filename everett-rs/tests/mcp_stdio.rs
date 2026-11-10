@@ -166,6 +166,7 @@ fn round_trip_over_pipes() {
             "everett_agent_send",
             "everett_agent_status",
             "everett_card",
+            "everett_control",
             "everett_core",
             "everett_event",
             "everett_inbox",

@@ -71,6 +71,23 @@ fn text(content: &SqlValue) -> String {
     clean(&s, 200)
 }
 
+/// Last `limit` user/assistant messages of one session, oldest first.
+pub fn messages(path: &PathBuf, session_id: &str, limit: usize) -> Result<Vec<(String, String)>, String> {
+    let con = connect(path).map_err(|e| e.to_string())?;
+    let mut stmt = con
+        .prepare("SELECT role, content FROM messages WHERE session_id = ?1 AND role IN ('user','assistant') ORDER BY id DESC LIMIT ?2")
+        .map_err(|e| e.to_string())?;
+    let mut rows: Vec<(String, String)> = stmt
+        .query_map(rusqlite::params![session_id, limit as i64], |r| {
+            Ok((r.get::<_, String>(0)?, sql_text(&r.get::<_, SqlValue>(1)?)))
+        })
+        .map_err(|e| e.to_string())?
+        .filter_map(|r| r.ok())
+        .collect();
+    rows.reverse();
+    Ok(rows)
+}
+
 pub fn read_db(profile: &str, path: &PathBuf, since_hours: f64) -> Result<Vec<Session>, String> {
     let con = connect(path).map_err(|e| e.to_string())?;
     let cols = columns(&con, "sessions");
