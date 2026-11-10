@@ -150,6 +150,27 @@ stdio can explicitly pass a matching `session_id`; remote callers must use the i
 their authorized gateway connection supplies. These registration and queue
 operations do not require or invoke live Grok Bot services.
 
+## Check Everett's side before connecting Grok
+
+This proves the inbox and MCP contract on your machine, in a throwaway home, before
+any Grok setup. It needs only the `everett` binary (2.2.1 or newer) and Python 3.
+
+```sh
+scratch="$(mktemp -d)"
+export HOME="$scratch" EVERETT_HOME="$scratch" EVERETT_NOTIFY=none
+everett external add --id ext-grok-acceptance --harness grok-bot --title 'Grok Bot inbox'
+everett send 'check backup status' --to ext-grok-acceptance --mode inbox --json
+# expect "mode":"inbox", "queued":true, "wake":false
+EVERETT_SESSION_ID=ext-grok-acceptance EVERETT_HARNESS_NAME=grok-bot everett mcp
+```
+
+In that MCP session, `everett_whoami` must return `session_id`
+`ext-grok-acceptance` and harness `grok-bot`; `everett_inbox` returns the queued
+message; `everett_send` with its `reply_to` queues the answer, which then appears
+in the sender's `everett inbox`. Verified 2026-11-10 with Everett 2.2.1. Grok's own
+side (the Bot calling this endpoint, and webhook wake) still has to be tested
+from your Grok account.
+
 ## Grok Bot 0.77 reachability
 
 The 0.77 human-to-Bot channels discussed for calls, iMessage/RCS, Mac Messages,
