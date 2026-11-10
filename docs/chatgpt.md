@@ -7,15 +7,15 @@ HTTPS or Secure MCP Tunnel. They have different installation and account checks.
 | Client or mode | Connection | Current evidence |
 | --- | --- | --- |
 | Codex with local plugin support | Everett Local, stdio | Installer, launcher, identity and listing verified with isolated fixtures. |
-| ChatGPT local desktop thread | Desktop-only plugin | Portable package prepared. Actual ChatGPT loading and tool calls remain unverified. |
+| ChatGPT local desktop thread | Desktop-only plugin | Local plugin source and installer. Actual ChatGPT loading and tool calls remain unverified. |
 | ChatGPT custom MCP connection | Existing HTTPS gateway or Secure MCP Tunnel | OAuth compatibility tests pass. A fresh ChatGPT identity/listing call remains required. |
 | ChatGPT web/mobile | Remote MCP connection | The local installer does not deploy a remote server or install into these clients. |
 
 ## Install Everett Local
 
-Install Everett 2.2.1 or newer and Python 3.9 or newer. Extract the
-`everett-local-0.3.0.zip` release asset, then follow its
-[installer instructions](../plugins/everett-local/README.md). The source archive
+Install Everett 2.2.1 or newer and Python 3.9 or newer. Everett Local is not
+published as a release asset. From a checkout of this repository, follow the
+[installer instructions](../plugins/everett-local/README.md). The plugin source
 contains no runtime path or credentials. The installer validates your binary and
 generates root `plugin.json` and `mcp.json` alongside a Codex compatibility manifest
 in a machine-local marketplace. Register that marketplace in a client that

@@ -40,8 +40,6 @@ npm --prefix cloudflare run build:public
 python3 -m unittest discover -s scripts -p 'test_*.py' -v
 python3 -m unittest discover -s plugins/everett-claude/tests -p 'test_*.py' -v
 node --test everett-rs/tests/omp_session_start.test.mjs
-EVERETT_VERIFY_BINARY="$PWD/everett-rs/target/release/everett" python3 -m unittest discover -s plugins/everett-local/tests -v
-python3 scripts/package_local_plugin.py --output dist
 ```
 
 Sanity-check the optimized binary with `--version` and `relay diagnose` in a
@@ -75,8 +73,7 @@ git push origin main --follow-tags
   runner architecture. Other architectures are cross-built and checksum verified;
   they require a matching host for execution evidence.
 - Renders `dist/everett.rb` (Homebrew formula) via `scripts/render_formula.sh`
-  and packages the separate `everett-local-0.3.0.zip` installer plus checksum.
-  Uploads everything to the `vX.Y.Z` GitHub release (creating the release
+  and uploads everything to the `vX.Y.Z` GitHub release (creating the release
   from `RELEASE_NOTES.md` if step 3 has not already).
 
 Check all tagged workflows and required reviews before calling the release
