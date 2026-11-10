@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Add MCP `everett_control` for owner-local session control: list, start, send to, wake and read T3 Code threads through the `t3` CLI; start headless sessions in other harnesses; read the latest messages from any harness transcript. `stop` reports per harness why it is unsupported instead of killing anything. Remote-derived callers are refused. Not exposed through the gateway.
+
 ## 2.2.1 — 2026-11-10
 
 - Add `everett relay diagnose` and MCP `everett_agent_relay(action="diagnose")` for offline receiver, registration, webhook, and bounded cached-queue summaries. Diagnostics omit message bodies, account identifiers, URLs, and credential values. They do not verify remote connectivity or authorization.

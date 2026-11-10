@@ -31,7 +31,7 @@ class RuntimeTests(unittest.TestCase):
                 env=env, cwd=home, capture_output=True, text=True, timeout=45)
             self.assertEqual(smoke.returncode, 0, smoke.stderr)
             result = json.loads(smoke.stdout)
-            self.assertEqual(result['advertised_tools'], 13)
+            self.assertEqual(result['advertised_tools'], 14)
             self.assertEqual(result['session_id'], session)
             self.assertTrue(result['local_listing_call'])
             self.assertEqual(result['messages_sent'], 0)

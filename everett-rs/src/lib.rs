@@ -5,6 +5,7 @@ pub mod claude_wake;
 pub mod cli;
 pub mod cloudflare_auth;
 pub mod config;
+pub mod control;
 pub mod core;
 pub mod dashboard;
 pub mod doctor;
