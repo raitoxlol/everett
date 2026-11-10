@@ -21,7 +21,7 @@ are included. `EVERETT_BIN`, if set, must be an absolute executable path and pas
 the same version check. An invalid override fails instead of choosing a stale binary.
 The generated plugin has root `plugin.json` and `mcp.json` for portable clients,
 plus `.codex-plugin/plugin.json` and `.mcp.json` for compatible Codex clients.
-The downloaded ZIP is installer source. Run the installer before loading the
+This directory is installer source. Run the installer before loading the
 generated package; source alone has no configured MCP launch command.
 
 Start a fresh client session to load the plugin. Ask it to call

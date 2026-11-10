@@ -4,7 +4,6 @@
 
 ## 2.2.1 (release candidate)
 
-- Package Everett Local 0.3.0 with portable root plugin/MCP manifests and Codex compatibility. Verify an installed package against the real runtime over isolated session fixtures. ChatGPT app loading and public desktop submission eligibility remain unverified.
 - Add `everett relay diagnose` and MCP `everett_agent_relay(action="diagnose")` for offline receiver, registration, webhook, and bounded cached-queue summaries. Diagnostics omit message bodies, account identifiers, URLs, and credential values. They do not verify remote connectivity or authorization.
 - Use hibernating WebSocket notifications by default so healthy quiet receivers make no recurring billable inbox requests. Preserve encrypted queue recovery on reconnect, per-operation authorization, and five-second local maintenance. Legacy adaptive polling requires explicit `EVERETT_RELAY_TRANSPORT=poll`. Update the Worker first.
 - Remove repeated idle device registration and redundant Worker membership RPCs while retaining per-operation authorization. Startup, reconnects, messages, and retries still incur requests. Production savings remain unmeasured.
