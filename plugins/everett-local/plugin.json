@@ -1,0 +1,20 @@
+{
+  "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
+  "name": "everett-direct",
+  "version": "0.3.0",
+  "description": "Discover local agent sessions and route authorized work through the installed Everett runtime.",
+  "author": { "name": "Wright/raitoxlol" },
+  "repository": "https://github.com/raitoxlol/everett",
+  "license": "MIT",
+  "extensions": {
+    "com.openai": {
+      "requires_local_executor": true,
+      "interface": {
+        "displayName": "Everett Local",
+        "shortDescription": "Local agent discovery and messaging",
+        "developerName": "Wright/raitoxlol",
+        "category": "Developer Tools"
+      }
+    }
+  }
+}

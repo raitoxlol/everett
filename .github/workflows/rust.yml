@@ -24,6 +24,11 @@ jobs:
       - uses: actions/checkout@v7
       - run: cargo clippy --locked --all-targets -- -D warnings
       - run: cargo test --locked
+      - name: Verify installed portable plugin against the runtime
+        working-directory: .
+        env:
+          EVERETT_VERIFY_BINARY: ${{ github.workspace }}/everett-rs/target/debug/everett
+        run: python3 -m unittest discover -s plugins/everett-local/tests -v
 
   relay:
     if: startsWith(github.ref, 'refs/tags/v')
