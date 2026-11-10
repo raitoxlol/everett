@@ -7,6 +7,10 @@ T3 Code threads are recognized through their underlying harness sessions.
 OpenAI dots and Grok Bot connect through registered external MCP inboxes.
 Hark and Muse compatibility is unverified.
 
+Everett Local packages the installed runtime for local plugin clients. ChatGPT
+custom MCP connections use the gateway over HTTPS or Secure MCP Tunnel. See
+[ChatGPT setup, supported modes, and verification](docs/chatgpt.md).
+
 **Wake support:** Claude Code has native local wake and an optional relay receiver policy.
 Dots and Grok Bot can use owner-configured webhook nudges. Other harnesses use
 headless resume or inbox pickup. See [agent support and wake](docs/agent-support.md).

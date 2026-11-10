@@ -1,0 +1,14 @@
+{
+  "name": "everett-direct",
+  "version": "0.3.0",
+  "description": "Use the installed Everett runtime through local stdio and the existing owner account.",
+  "author": {"name": "Wright/raitoxlol"},
+  "skills": "./skills/",
+  "mcpServers": "./.mcp.json",
+  "interface": {
+    "displayName": "Everett Local",
+    "shortDescription": "Local agent discovery and messaging",
+    "developerName": "Wright/raitoxlol",
+    "category": "Developer Tools"
+  }
+}
