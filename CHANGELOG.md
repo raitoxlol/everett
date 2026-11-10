@@ -11,6 +11,7 @@
 - Copy the test executable into the T3 fixture so tests work when Cargo's target and temporary home use different filesystems.
 - Gate tagged publication on Worker tests, typechecking, and public bundle packaging. Run the optimized CLI/MCP journey on build runners with a matching architecture before uploading their archives.
 - Keep GitHub sign-in on the identity issuer when a browser opens another public relay host, so the GitHub OAuth app needs only the issuer callback. Accept existing peer pins across an explicit relay alias list; the public issuer and `https://relay.raitox.tech` are the default list.
+- Accept ChatGPT's optional OAuth locale hint and validated support for public-client authentication in client metadata. Keep PKCE and configured client, redirect and resource restrictions. Preserve both existing connector resources in the public deployment profile and activate matching Worker/Durable Object code immediately.
 
 ## 2.2.0 — 2026-10-27
 
