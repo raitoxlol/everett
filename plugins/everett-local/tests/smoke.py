@@ -29,7 +29,12 @@ def main():
     missing = {'everett_whoami', 'everett_ls', 'everett_send', 'everett_inbox'} - names
     if missing:
         raise RuntimeError(f'missing advertised tools: {sorted(missing)}')
-    print(json.dumps({'success': True, 'installed_command': True, 'advertised_tools': len(names), 'identity_call': True, 'local_listing_call': True, 'messages_sent': 0, 'gui_client_verified': False}, indent=2))
+    whoami = rows[3]['result']
+    identity = whoami.get('structuredContent') or json.loads(whoami['content'][0]['text'])
+    session_id = identity.get('session_id') or ''
+    if not session_id:
+        raise RuntimeError('everett_whoami returned no session_id; the caller session is not bound')
+    print(json.dumps({'success': True, 'installed_command': True, 'advertised_tools': len(names), 'identity_call': True, 'session_id': session_id, 'local_listing_call': True, 'messages_sent': 0, 'gui_client_verified': False}, indent=2))
 
 
 if __name__ == '__main__':
