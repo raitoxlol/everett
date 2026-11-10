@@ -56,6 +56,8 @@ A new push receiver fails explicitly against an older Worker. If compatibility p
 
 For a deployment that changes the RPC methods used between the Worker and a Durable Object, activate the reviewed version with `code_update_strategy: { "mode": "immediate" }`. Cloudflare otherwise defaults to deferring object code updates for up to 300 seconds. During that interval the Worker can call a method that the old object does not implement, returning `invalid_request` even though deployment upload and public health checks succeeded. Repeated diagnostic deployments restart the version transition and are not a repair.
 
+Set the immediate mode per deployment, not in `wrangler.public.jsonc`. Immediate updates can interrupt in-flight object requests and WebSockets, so routine deployments that keep Worker/Durable Object RPC methods unchanged use Cloudflare's default.
+
 On 2026-11-09, the native `whoami` probe reproduced this mismatch during the push rollout. Deploying the original tested version with an immediate strategy restored authentication and passed an authenticated WebSocket hint/Pong check. No application compatibility patch was needed. Use the same immediate strategy for a rollback that must restore a matching Worker/object pair. Immediate activation can interrupt current object requests; clients must retry normally, preserving their identities and queues.
 
 Recent Wrangler versions support `--durable-objects-code-update-mode immediate`. For pinned Wrangler versions that lack this option, use the authenticated Create deployment API with the exact uploaded version ID:
