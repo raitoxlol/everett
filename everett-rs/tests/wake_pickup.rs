@@ -82,7 +82,7 @@ fn regression_unbound_hook_reply_instruction_binds_recipient() {
     let instruction = text.split('`').skip(1).step_by(2)
         .find(|command| command.contains("everett reply ")).unwrap()
         .replace("<text>", "hook answer");
-    fs::hard_link(env!("CARGO_BIN_EXE_everett"), fx.home().join("everett")).unwrap();
+    fs::copy(env!("CARGO_BIN_EXE_everett"), fx.home().join("everett")).unwrap();
     let answer = Command::new("/bin/sh")
         .args(["-c", &instruction])
         .env_clear()
