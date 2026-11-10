@@ -78,8 +78,18 @@ class LauncherTests(unittest.TestCase):
         self.assertEqual(json.loads(result.stdout)['transport'], 'stdio')
         self.assertFalse(json.loads(result.stdout)['browser_oauth'])
 
-    def test_portable_package_launches_the_same_runtime(self):
+    def test_default_install_has_no_root_manifests_and_removes_stale_ones(self):
+        plugin = Path(self.install()['plugin'])
+        for name in ('plugin.json', 'mcp.json'):
+            (plugin / name).write_text('{}')  # as a 0.3.0 install left them
         installed = self.install()
+        self.assertFalse(installed['portable'])
+        for name in ('plugin.json', 'mcp.json'):
+            self.assertFalse((plugin / name).exists(), name)
+        self.assertEqual(json.loads((plugin / '.codex-plugin/plugin.json').read_text())['mcpServers'], './.mcp.json')
+
+    def test_portable_package_launches_the_same_runtime(self):
+        installed = installer.install(self.root / 'installation with spaces', self.binary, portable=True)
         plugin = Path(installed['plugin'])
         manifest = json.loads((plugin / 'plugin.json').read_text())
         self.assertTrue(manifest['extensions']['com.openai']['requires_local_executor'])
@@ -89,7 +99,6 @@ class LauncherTests(unittest.TestCase):
         result = subprocess.run([server['command'], *server['args']], capture_output=True, text=True, timeout=10)
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(result.stdout, 'mcp-started:mcp')
-
 
 if __name__ == '__main__':
     unittest.main()

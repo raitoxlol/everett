@@ -1,9 +1,9 @@
 # Everett Local
 
-A local stdio plugin with a portable root manifest and Codex compatibility files.
+A local stdio plugin for the ChatGPT desktop app (Codex mode) and Codex.
 Uses the existing Everett account without a ChatGPT hosted OAuth connector.
 Requires Python 3.9+ and Everett 2.2.1+. Remote delivery still uses the configured
-Everett relay. Plugin version 0.3.0 adds the portable desktop package format.
+Everett relay. Plugin version 0.3.1 makes the ChatGPT desktop layout the default.
 
 ## Install
 
@@ -19,15 +19,27 @@ The installer checks the runtime before modifying the package and generates
 machine-specific paths under `~/.local/share/everett-direct-plugin`. No credentials
 are included. `EVERETT_BIN`, if set, must be an absolute executable path and pass
 the same version check. An invalid override fails instead of choosing a stale binary.
-The generated plugin has root `plugin.json` and `mcp.json` for portable clients,
-plus `.codex-plugin/plugin.json` and `.mcp.json` for compatible Codex clients.
+The generated plugin has `.codex-plugin/plugin.json` and `.mcp.json`. Do not add
+root `plugin.json`/`mcp.json` for ChatGPT: when they are present, ChatGPT desktop
+ignores the plugin's local server. `--portable` writes them for other
+agent-plugins clients; reinstalling without it removes them.
 This directory is installer source. Run the installer before loading the
 generated package; source alone has no configured MCP launch command.
 
-Start a fresh client session to load the plugin. Ask it to call
-`everett_whoami`, then `everett_ls`. Check actual tool results. Host support,
-permissions, and session binding must be verified in each app. Installing through
-the Codex CLI alone does not prove the ChatGPT app loads the package.
+### Use it in the ChatGPT desktop app
+
+1. Quit and reopen ChatGPT after every install or reinstall; it caches plugins.
+2. Switch to **Codex** mode and start a new chat. Regular ChatGPT mode cannot
+   run local plugins.
+3. Ask: "Use only the everett_local MCP server. Call everett_whoami, then
+   everett_ls with hours=1, and show the full tool names."
+4. The calls must be named `mcp__everett_local__everett_whoami` and
+   `mcp__everett_local__everett_ls`, and `session_id` must not be empty. If they
+   are named `mcp__everett__…`, another Everett MCP server answered instead; if
+   no `everett_local` tools exist, recheck step 1 and that no root `plugin.json`
+   is in `~/.codex/plugins/cache/everett-direct-local/everett-direct/<version>/`.
+
+Verified 2026-11-10 with ChatGPT desktop (Codex mode, GPT-6.1 Sol) and Everett 2.2.1.
 
 ## Check startup
 

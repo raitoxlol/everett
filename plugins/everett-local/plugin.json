@@ -1,7 +1,7 @@
 {
   "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
   "name": "everett-direct",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "description": "Discover local agent sessions and route authorized work through the installed Everett runtime.",
   "author": { "name": "Wright/raitoxlol" },
   "repository": "https://github.com/raitoxlol/everett",

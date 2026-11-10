@@ -7,7 +7,8 @@ HTTPS or Secure MCP Tunnel. They have different installation and account checks.
 | Client or mode | Connection | Current evidence |
 | --- | --- | --- |
 | Codex with local plugin support | Everett Local, stdio | Installer, launcher, identity and listing verified with isolated fixtures. |
-| ChatGPT local desktop thread | Desktop-only plugin | Local plugin source and installer. Actual ChatGPT loading and tool calls remain unverified. |
+| ChatGPT desktop, Codex mode | Everett Local, stdio | Verified 2026-11-10: fresh chat called `mcp__everett_local__everett_whoami` (bound session id) and `mcp__everett_local__everett_ls`. Requires an app restart after install and no root `plugin.json`. |
+| ChatGPT desktop, ChatGPT mode | — | Local plugins do not run here; use Codex mode. |
 | ChatGPT custom MCP connection | Existing HTTPS gateway or Secure MCP Tunnel | OAuth compatibility tests pass. A fresh ChatGPT identity/listing call remains required. |
 | ChatGPT web/mobile | Remote MCP connection | The local installer does not deploy a remote server or install into these clients. |
 
@@ -17,15 +18,15 @@ Install Everett 2.2.1 or newer and Python 3.9 or newer. Everett Local is not
 published as a release asset. From a checkout of this repository, follow the
 [installer instructions](../plugins/everett-local/README.md). The plugin source
 contains no runtime path or credentials. The installer validates your binary and
-generates root `plugin.json` and `mcp.json` alongside a Codex compatibility manifest
-in a machine-local marketplace. Register that marketplace in a client that
-supports local plugins, install Everett Local, and start a new conversation.
+generates the Codex/ChatGPT desktop manifest in a machine-local marketplace.
+Register that marketplace, install Everett Local, **quit and reopen ChatGPT**, then
+start a new chat in **Codex mode** and confirm the tool calls are named
+`mcp__everett_local__*`. See the [step-by-step check](../plugins/everett-local/README.md#use-it-in-the-chatgpt-desktop-app).
 
 The official [desktop-only plugin guide](https://developers.openai.com/plugins/deploy/desktop-only/)
 says local MCP plugins require a local desktop thread. Public directory submission
 of local MCP plugins is limited to approved partners with an allowlisted
-organization. A Codex CLI installation alone does not prove ChatGPT loaded it.
-Do not submit or advertise a public ChatGPT plugin until eligibility, clean
+organization. Do not submit or advertise a public ChatGPT plugin until eligibility, clean
 installation, and actual tool calls are verified.
 
 ## Test an existing ChatGPT MCP connection
