@@ -45,7 +45,7 @@
     "EVERETT_PUBLIC_HOSTS": "https://everett.raitox.tech,https://relay.raitox.tech",
     "EVERETT_OAUTH_CLIENT_IDS": "https://chatgpt.com/oauth/client.json",
     "EVERETT_OAUTH_REDIRECT_URIS": "https://chatgpt.com/connector_platform_oauth_redirect",
-    "EVERETT_OAUTH_RESOURCES": "https://tunnel-service.gateway.unified-0.internal.api.openai.org/v1/mcp/tunnel_6ad61d5e26b481918aaeb35a57e1a673",
+    "EVERETT_OAUTH_RESOURCES": "https://tunnel-service.gateway.unified-0.internal.api.openai.org/v1/mcp/tunnel_6ad61d5e26b481918aaeb35a57e1a673,https://tunnel-service.gateway.unified-0.internal.api.openai.org/v1/mcp/tunnel_6adc3d4308b88191ad0a60ae6ece9644",
     "EVERETT_OWNER_GITHUB_ID": "282002453",
     "EVERETT_OWNER_GITHUB_LOGIN": "raitoxlol"
   },

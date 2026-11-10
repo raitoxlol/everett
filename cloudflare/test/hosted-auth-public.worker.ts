@@ -95,6 +95,22 @@ async function authorize(browser: Browser, verifier = 'v'.repeat(64)) {
   return new URL(response.headers.get('Location')!, issuer);
 }
 
+describe('ChatGPT OAuth compatibility', () => {
+  it.each([
+    { name: 'legacy public client', metadata: { token_endpoint_auth_method: 'none' }, status: 302 },
+    { name: 'current ChatGPT client', metadata: { token_endpoint_auth_method: 'private_key_jwt', token_endpoint_auth_methods_supported: ['none', 'private_key_jwt'] }, status: 302 },
+    { name: 'private-only client', metadata: { token_endpoint_auth_method: 'private_key_jwt', token_endpoint_auth_methods_supported: ['private_key_jwt'] }, status: 400 },
+    { name: 'malformed methods', metadata: { token_endpoint_auth_method: 'none', token_endpoint_auth_methods_supported: 'none' }, status: 400 },
+  ])('handles $name with the locale hint', async ({ metadata, status }) => {
+    vi.mocked(globalThis.fetch).mockImplementationOnce(async () => Response.json({ client_id: oauthClient, redirect_uris: [oauthRedirect], ...metadata }));
+    const params = new URLSearchParams({ client_id: oauthClient, redirect_uri: oauthRedirect, resource: oauthResource, response_type: 'code', scope: 'everett', code_challenge_method: 'S256', code_challenge: challenge('v'.repeat(64)), state: 'compatibility-test', ui_locales: 'en-US' });
+    const response = await fetchWorker('/oauth/authorize?' + params);
+    expect(response.status).toBe(status);
+    if (status === 302) expect(new URL(response.headers.get('Location')!).pathname).toBe('/enroll');
+    else expect(await response.json()).toEqual({ error: 'invalid_client' });
+  });
+});
+
 describe('Public enrollment: account isolation', () => {
   it('lists owner-scoped advisory device labels and renames only the caller', async () => {
     const alice = await loginAs(ALICE), bob = await loginAs(BOB);

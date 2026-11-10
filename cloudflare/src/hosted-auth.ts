@@ -546,7 +546,7 @@ export class HostedAuth extends DurableObject<HostedAuthEnv> {
   async #authorize(request: Request, url: URL, c: HostedConfig, host: string) {
     this.#rate('oauth-authorize', 30);
     if (c.enrollment === 'public') this.#rate(`requester:${this.#requester(request, c)}:oauth-authorize`, 5);
-    const p = fields(url.searchParams, ['client_id', 'redirect_uri', 'response_type', 'scope', 'state', 'resource', 'code_challenge', 'code_challenge_method']);
+    const p = fields(url.searchParams, ['client_id', 'redirect_uri', 'response_type', 'scope', 'state', 'resource', 'code_challenge', 'code_challenge_method', 'ui_locales']);
     if (p.response_type !== 'code' || p.scope !== 'everett' || p.code_challenge_method !== 'S256' || !/^[A-Za-z0-9_-]{43}$/.test(p.code_challenge ?? '')) throw new RelayError('invalid_request', 400);
     if (!c.clients.includes(p.client_id)) throw new RelayError('invalid_client', 400);
     if (!c.resources.includes(p.resource)) throw new RelayError('invalid_target', 400);
@@ -556,7 +556,7 @@ export class HostedAuth extends DurableObject<HostedAuthEnv> {
     const doc = await this.#externalJSON(p.client_id, { headers: { Accept: 'application/json' } });
     if (doc.client_id !== p.client_id || !Array.isArray(doc.redirect_uris) || !doc.redirect_uris.every(v => typeof v === 'string') || !doc.redirect_uris.includes(p.redirect_uri) || doc.redirect_uris.length > 32) throw new RelayError('invalid_client', 400);
     const authMethods = doc.token_endpoint_auth_methods_supported;
-    if ((doc.token_endpoint_auth_method !== undefined && doc.token_endpoint_auth_method !== 'none') || (authMethods !== undefined && (!Array.isArray(authMethods) || !authMethods.includes('none')))) throw new RelayError('invalid_client', 400);
+    if (authMethods === undefined ? (doc.token_endpoint_auth_method !== undefined && doc.token_endpoint_auth_method !== 'none') : (!Array.isArray(authMethods) || !authMethods.every(v => typeof v === 'string') || !authMethods.includes('none'))) throw new RelayError('invalid_client', 400);
     if (doc.grant_types !== undefined && (!Array.isArray(doc.grant_types) || !doc.grant_types.includes('authorization_code'))) throw new RelayError('invalid_client', 400);
     if (doc.response_types !== undefined && (!Array.isArray(doc.response_types) || !doc.response_types.includes('code'))) throw new RelayError('invalid_client', 400);
     const name = cleanName.safeParse(doc.client_name), clientName = name.success ? name.data : new URL(p.client_id).host;
