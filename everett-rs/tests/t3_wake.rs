@@ -356,7 +356,7 @@ fn assert_fallback_commands(relative_profile: bool) {
     fs::create_dir_all(&recipient_home).unwrap();
     plant_thread(&profile);
     let binary = fx.home().join("Everett executable's binary");
-    fs::copy(env!("CARGO_BIN_EXE_everett"), &binary).unwrap();
+    common::copy_executable(&binary);
     let mut cmd = Command::new(&binary);
     cmd.args(["send", "--to", SESSION, "--json", BODY])
         .env_clear()
@@ -368,17 +368,7 @@ fn assert_fallback_commands(relative_profile: bool) {
         .env("EVERETT_SESSION_ID", "caller")
         .env("EVERETT_NOTIFY", "none")
         .current_dir(fx.home());
-    // Linux ETXTBSY: a parallel test's fork may still hold a write fd to the copy.
-    let mut attempt = 0;
-    let out = loop {
-        match cmd.output() {
-            Err(e) if e.kind() == std::io::ErrorKind::ExecutableFileBusy && attempt < 50 => {
-                attempt += 1;
-                std::thread::sleep(std::time::Duration::from_millis(20));
-            }
-            result => break result.unwrap(),
-        }
-    };
+    let out = common::output_retrying_etxtbsy(&mut cmd);
     assert!(out.status.success(), "{out:?}");
     let result: Value = serde_json::from_slice(&out.stdout).unwrap();
     let mid = result["message_id"].as_str().unwrap();
