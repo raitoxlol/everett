@@ -17,6 +17,11 @@ def runtime(config):
         binary = Path(override)
     else:
         binary = Path(json.loads(config.read_text())['binary'])
+    return validate(binary)
+
+
+def validate(binary):
+    """Check one explicit binary path; never consults EVERETT_BIN."""
     if not binary.is_absolute() or not binary.is_file() or not os.access(binary, os.X_OK):
         raise ValueError('Everett binary must be an absolute executable path. Rerun install.py --binary /path/to/everett.')
     version = subprocess.run([str(binary), '--version'], capture_output=True, text=True, timeout=5, check=True).stdout.strip()

@@ -6,7 +6,6 @@ import json
 from pathlib import Path
 import shutil
 import sys
-import tempfile
 
 SOURCE = Path(__file__).resolve().parent
 
@@ -17,11 +16,8 @@ def install(destination, binary):
     spec = importlib.util.spec_from_file_location('everett_local_launcher', SOURCE / 'scripts/launch.py')
     launcher = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(launcher)
-    # Validate before touching an installed package.
-    with tempfile.TemporaryDirectory() as directory:
-        probe = Path(directory) / 'runtime.json'
-        probe.write_text(json.dumps({'binary': str(binary)}))
-        selected, version = launcher.runtime(probe)
+    # Validate the requested --binary itself (not EVERETT_BIN) before touching an installed package.
+    selected, version = launcher.validate(binary)
     plugin = destination / 'plugins/everett-direct'
     plugin.mkdir(parents=True, exist_ok=True)
     for name in ['.codex-plugin', 'skills', 'scripts']:

@@ -35,6 +35,17 @@ class LauncherTests(unittest.TestCase):
         c = manifest['mcpServers']['everett_local']
         return [c['command'], *c['args']]
 
+    def test_install_records_binary_flag_not_everett_bin_override(self):
+        override = self.root / 'override'
+        override.write_text('#!/bin/sh\necho "everett 9.9.9"\n')
+        override.chmod(0o700)
+        os.environ['EVERETT_BIN'] = str(override)
+        installed = self.install()
+        recorded = json.loads((self.root / 'installation with spaces/runtime.json').read_text())['binary']
+        self.assertEqual(recorded, str(self.binary.absolute()))
+        self.assertEqual(installed['runtime'], str(self.binary.absolute()))
+        self.assertEqual(installed['version'], 'everett 2.2.1')
+
     def test_installed_command_executes_runtime_with_spaces(self):
         installed = self.install()
         result = subprocess.run(self.command(installed), capture_output=True, text=True, timeout=10)
