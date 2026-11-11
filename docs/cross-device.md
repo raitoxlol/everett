@@ -168,8 +168,8 @@ SSH login, never the restricted peer key.
 - Request frame cap: **64 KiB**, including JSON escaping and the final newline.
 - Response cap: **1 MiB**; narrow a listing if it is too large.
 - Deadline: **20 seconds** for each RPC/setup subprocess, including blocked input and lock waits.
-- Hop limit: **three end-to-end**, inherited from `EVERETT_HOPS` and recent local inbox pickup,
-  incremented once on send/reply, and never reset at a device boundary. A fourth hop exits 7.
+- Hop limit: follows `hop_limit` (off by default; three end-to-end when on; the wire bound is 64), inherited from `EVERETT_HOPS` and recent local inbox pickup,
+  incremented once on send/reply, and never reset at a device boundary. Past the limit exits 7.
   As with local delivery, an identified live session inherits its highest received hop count
   for 15 minutes; this conservative guard is not a per-conversation tracing system.
 - RPC identity uses only Everett's local private key, strict pinned host checking, and no SSH

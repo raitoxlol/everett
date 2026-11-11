@@ -190,7 +190,7 @@ pub fn allowed(policy: &Policy, imported: &Imported, owner: &str, device_id: &st
         && !imported.external
         && imported.harness == "claude"
         && imported.hops > 0
-        && imported.hops <= 3
+        && imported.hops <= crate::inbox::hop_limit().unwrap_or(crate::inbox::WIRE_MAX_HOPS)
         && policy.allow.iter().any(|rule| {
             rule.session_id == imported.session_id
                 && rule.cwd == imported.cwd
@@ -469,7 +469,7 @@ mod tests {
             }),
             ("expired hops", {
                 let mut x = imported.clone();
-                x.hops = 4;
+                x.hops = 65;
                 x
             }),
         ];

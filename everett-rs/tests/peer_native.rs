@@ -120,7 +120,7 @@ impl Pair {
         };
         cmd.env("HOME", home)
             .env("EVERETT_HOME", home)
-            .env("EVERETT_NOTIFY", "none")
+            .env("EVERETT_NOTIFY", "none").env("EVERETT_HOP_LIMIT", "on")
             .env_remove("EVERETT_SESSION_ID")
             .env_remove("EVERETT_HARNESS_NAME")
             .env_remove("EVERETT_HOPS")
@@ -583,7 +583,7 @@ fn body_hops_authorization_and_offline_are_bounded() {
     let client = p.client();
     let out = checked(p.remote_run(&["peer", "serve", "--client", &client], &(oversized + "\n")));
     assert!(out["error"]["message"].as_str().unwrap().contains("64 KiB"));
-    let request = json!({"op":"send","session":"worker","harness":"openai-dot","text":"hop","from":{"session":"source","harness":"claude","card":""},"idempotency_key":"hop-4","hops":4});
+    let request = json!({"op":"send","session":"worker","harness":"openai-dot","text":"hop","from":{"session":"source","harness":"claude","card":""},"idempotency_key":"hop-65","hops":65});
     assert_eq!(p.rpc(request)["error"]["code"], 7);
     let out = p
         .command(false)

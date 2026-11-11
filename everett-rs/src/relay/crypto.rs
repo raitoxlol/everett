@@ -97,7 +97,7 @@ impl Keys {
             Payload::Inbox { hops, .. } => *hops,
             _ => 1,
         });
-        if !(1..=3).contains(&hop) || (parent.is_none() && hop != 1) {
+        if !(1..=crate::inbox::WIRE_MAX_HOPS).contains(&hop) || (parent.is_none() && hop != 1) {
             return Err(bad("invalid relay hop/parent"));
         }
         valid(key)?;
@@ -312,7 +312,7 @@ impl Envelope {
         if let Some(parent) = &self.parent {
             valid(&parent.message_id)?;
         }
-        if self.hop < 1 || self.hop > 3 || (self.parent.is_none() != (self.hop == 1)) {
+        if self.hop < 1 || self.hop > crate::inbox::WIRE_MAX_HOPS || (self.parent.is_none() != (self.hop == 1)) {
             return Err(bad("invalid signed hop lineage"));
         }
         decode::<32>(&self.sender_fingerprint)?;

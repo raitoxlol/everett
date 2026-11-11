@@ -28,7 +28,7 @@ export const envelopeSchema = z.strictObject({
   grantId: identifier.nullable(), fromDevice: identifier, toDevice: identifier,
   messageId: identifier, idempotencyKey: identifier,
   parent: z.strictObject({ owner: z.string().max(4096), messageId: identifier }).nullable(),
-  hop: safeInteger.min(1).max(3), createdAt: safeInteger.nonnegative(), expiresAt: safeInteger.nonnegative(),
+  hop: safeInteger.min(1).max(64), createdAt: safeInteger.nonnegative(), expiresAt: safeInteger.nonnegative(),
   senderFingerprint: hex(32), recipientFingerprint: hex(32), ephemeralKey: hex(32), nonce: hex(12),
   ciphertext: z.string().min(32).max((65536 + 16) * 2).regex(/^(?:[0-9a-f]{2})+$/),
   signature: hex(64),

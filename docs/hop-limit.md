@@ -26,11 +26,11 @@ Set `hop_limit = "off"` in `~/.everett/config.toml`, or delete the line.
 
 Or `export EVERETT_HOP_LIMIT=off`.
 
-## Cross-device messages keep a cap of 3
+## Cross-device messages
 
-Messages that go through the hosted relay or an SSH peer still stop at 3 hops, whatever the
-setting. The hosted relay and older Everett versions reject envelopes past hop 3, so raising
-this needs a relay deploy and a protocol version bump first.
+Relay and SSH-peer messages follow the same setting. The wire carries hop counts up to 64
+as a sanity bound. Devices still on Everett 2.2.1 or older reject envelopes past hop 3, so
+update every device to get the full range.
 
 ## Context on every message
 
