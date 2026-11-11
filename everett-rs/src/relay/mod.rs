@@ -97,10 +97,10 @@ impl Payload {
                 if !reply_to.is_empty() {
                     valid(reply_to)?;
                 }
-                if !(1..=inbox::MAX_HOPS).contains(hops) {
+                if !(1..=inbox::WIRE_MAX_HOPS).contains(hops) {
                     return Err(EverettError::new(
                         7,
-                        "cross-device hop limit reached (maximum 3)",
+                        "cross-device hop count out of range",
                     ));
                 }
                 if text.trim().is_empty() || text.len() > peer::BODY_CAP || from_card.len() > 640 {
@@ -1180,7 +1180,7 @@ fn import_inner(keys: &Keys, envelope: &Envelope, now: i64, publish: bool) -> Re
                             message_id: reply_to.clone(),
                         })
                     || envelope.hop <= out.envelope.hop
-                    || envelope.hop > inbox::MAX_HOPS
+                    || envelope.hop > inbox::WIRE_MAX_HOPS
                     || out.session != session
                     || out.harness != harness
                 {

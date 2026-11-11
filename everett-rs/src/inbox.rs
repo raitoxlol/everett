@@ -19,9 +19,11 @@ pub const MAX_TEXT: usize = 2000;
 pub const MAX_INJECT: usize = 6000;
 pub const TTL: f64 = 7.0 * 24.0 * 3600.0;
 pub const LIVE_TTL: f64 = 24.0 * 3600.0;
-/// Hop cap when the limit is on, and the fixed cap on the cross-device wire
-/// (the hosted relay and older peers reject envelopes past hop 3).
+/// Hop cap when the limit is on (`hop_limit = "on"`).
 pub const MAX_HOPS: i64 = 3;
+/// Sanity bound on hop counts carried on the relay/peer wire. Not a policy limit:
+/// the policy is `hop_limit()`. Relay protocol v2 accepts hops up to this value.
+pub const WIRE_MAX_HOPS: i64 = 64;
 pub const HUMAN: &str = "human";
 
 fn sid_re() -> &'static Regex {
@@ -332,9 +334,9 @@ pub fn reply_hops(original: &Map<String, Value>, env_hops: i64) -> Result<i64> {
     wire_reply_hops(original, env_hops, hop_limit())
 }
 
-/// Replies over the relay or peer wire always respect MAX_HOPS: the hosted relay enforces it.
+/// Replies over the relay or peer wire: the local policy, and never past WIRE_MAX_HOPS.
 pub fn remote_reply_hops(original: &Map<String, Value>, env_hops: i64) -> Result<i64> {
-    wire_reply_hops(original, env_hops, Some(MAX_HOPS))
+    wire_reply_hops(original, env_hops, Some(hop_limit().unwrap_or(WIRE_MAX_HOPS).min(WIRE_MAX_HOPS)))
 }
 
 fn wire_reply_hops(original: &Map<String, Value>, env_hops: i64, limit: Option<i64>) -> Result<i64> {
