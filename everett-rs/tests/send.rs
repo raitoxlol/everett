@@ -488,3 +488,21 @@ fn local_reply_from_remote_derived_session_preserves_external_context_and_local_
     assert!(everett::send::hop_env_for(Some("recipient")).is_err());
     assert!(everett::send::require_local_prompt(Some("recipient")).is_err());
 }
+
+#[test]
+fn hop_limit_is_off_by_default_and_context_is_attached() {
+    let _h = lib_home();
+    use everett::{inbox, send::reply};
+    std::env::remove_var("EVERETT_HOP_LIMIT");
+    assert_eq!(inbox::hop_limit(), None);
+    std::env::set_var("EVERETT_HOPS", "9");
+    assert_eq!(hop_env().unwrap()["EVERETT_HOPS"], "10");
+    std::env::remove_var("EVERETT_HOPS");
+    let deep = inbox::post("a", "x", "b", "message", "", 9, "", "", None).unwrap();
+    assert!(reply(deep["id"].as_str().unwrap(), "fine", None).is_ok());
+    let (text, _) = inbox::render(&inbox::read("a"), None);
+    assert!(text.contains(inbox::DELIVERY_CONTEXT), "{text}");
+    assert!(text.contains("hop 9)"), "{text}");
+    std::env::set_var("EVERETT_HOP_LIMIT", "on");
+    assert_eq!(inbox::hop_limit(), Some(MAX_HOPS));
+}
