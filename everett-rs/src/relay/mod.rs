@@ -939,6 +939,10 @@ pub fn send_as(
         .max(inbox::session_hops(from))
         .max(0)
         + 1;
+    let cap = inbox::hop_limit().unwrap_or(inbox::WIRE_MAX_HOPS).min(inbox::WIRE_MAX_HOPS);
+    if hops > cap {
+        return Err(EverettError::new(7, format!("cross-device hop limit reached (maximum {})", cap)));
+    }
     if parent.is_none() && hops != 1 {
         return Err(bad(
             "remote-derived send needs signed parent context; use explicit reply",
