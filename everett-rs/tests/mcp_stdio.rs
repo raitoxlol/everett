@@ -19,7 +19,7 @@ impl Server {
             .env_clear()
             .env("HOME", fx.home())
             .env("EVERETT_HOME", fx.home())
-            .env("EVERETT_NOTIFY", "none")
+            .env("EVERETT_NOTIFY", "none").env("EVERETT_HOP_LIMIT", "on")
             .env("PATH", "/nonexistent")
             .current_dir(fx.home())
             .stdin(Stdio::piped())
@@ -1040,7 +1040,7 @@ fn registered_command_actually_serves() {
         .collect();
     let mut child = Command::new(entry["command"].as_str().unwrap())
         .args(&args)
-        .env_clear()
+        .env_clear().env("EVERETT_HOP_LIMIT", "on")
         .env("HOME", fx.home())
         .env("PATH", "/nonexistent")
         .stdin(Stdio::piped())

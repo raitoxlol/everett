@@ -337,13 +337,13 @@ pub fn hop_env() -> Result<HashMap<String, String>> {
 
 pub fn hop_env_for(caller: Option<&str>) -> Result<HashMap<String, String>> {
     let hops = caller_hops_for(caller);
-    if hops >= MAX_HOPS {
+    if let Some(limit) = inbox::hop_limit().filter(|l| hops >= *l) {
         return Err(EverettError::new(
             7,
             format!(
                 "Hop limit reached ({}/{}): this request was already forwarded {} times between \
                  sessions. Answer it here instead of forwarding again.",
-                hops, MAX_HOPS, hops
+                hops, limit, hops
             ),
         ));
     }
@@ -884,10 +884,10 @@ pub fn send_inbox_as(
     let who = sender_info_as(caller, caller_harness);
     let sender = who.get("sender").and_then(|v| v.as_str()).unwrap_or(inbox::HUMAN);
     let hops = caller_hops_for(Some(sender));
-    if hops >= MAX_HOPS {
+    if let Some(limit) = inbox::hop_limit().filter(|l| hops >= *l) {
         return Err(EverettError::new(
             7,
-            format!("Hop limit reached ({}/{}): answer here instead of forwarding again.", hops, MAX_HOPS),
+            format!("Hop limit reached ({}/{}): answer here instead of forwarding again.", hops, limit),
         ));
     }
     let message = inbox::post(
@@ -990,11 +990,11 @@ pub fn reply_as(
     let who = sender_info_as(caller, caller_harness);
     let env_hops = caller_hops_for(Some(who["sender"].as_str().unwrap_or(inbox::HUMAN)));
     if original.contains_key("relay_device") {
-        let hops = inbox::reply_hops(&original, env_hops)?;
+        let hops = inbox::remote_reply_hops(&original, env_hops)?;
         return crate::relay::retain_reply(&original, text, &who, hops);
     }
     if original.contains_key("peer_client") {
-        let hops = inbox::reply_hops(&original, env_hops)?;
+        let hops = inbox::remote_reply_hops(&original, env_hops)?;
         return crate::peer::retain_reply(&original, text, &who, hops);
     }
     let context = inbox::relay_context(who["sender"].as_str().unwrap_or(inbox::HUMAN));

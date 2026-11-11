@@ -287,7 +287,7 @@ memory. CLI resume is refused because it would fork T3's own resume point.
 Sessions that Everett spawns are recorded in `~/.everett/spawned.jsonl`, so they show in `ls` even though they ran headless.
 
 Safety rails for agents that call `send`:
-- **Hop guard.** Each delivery sets `EVERETT_HOPS` in the harness environment. A `send` from inside a session that is already 3 hops deep is refused (exit 7), which stops ping-pong loops between agents.
+- **Hop count.** Each delivery sets `EVERETT_HOPS` in the harness environment. The hop limit is off by default; turn it on with `hop_limit = "on"` in `~/.everett/config.toml` to refuse sends past 3 hops (exit 7). See [docs/hop-limit.md](docs/hop-limit.md).
 - **No self-send.** When the caller's session id is known (`EVERETT_SESSION_ID`, or the harness's own session variable), Everett refuses to send to that session.
 - **Spawning is explicit.** `NEW` starts a session only with `--spawn`.
 
@@ -411,7 +411,7 @@ See [agent support and wake](docs/agent-support.md) and the
 3. **Inbox.** `~/.everett/inbox/<session-id>.jsonl`, one message per line: `id`, `from` (the sender's session id, or `human` from a terminal), `from_harness`, `from_card`, `text`, `ts`, `reply_to`, `hops`, `kind` (`message`, `reply`, or `event`). Delivered ids go to `<session-id>.done`. Undelivered messages expire after 7 days.
 4. **Injection.** The hook adds at most 5 messages (2,000 characters each, 6,000 in total) as context, marked as coming from Everett with the sender's session and card, and marks exactly those delivered. The rest arrive at the next hook. The hook reads local files only, takes about 40 ms, and prints nothing on any error.
 5. **Replies.** The receiving agent answers with `everett_send(reply_to="<id>", text=…)` or `everett reply <id> "<text>"`. The reply lands in the sender's inbox and is injected there the same way. A sender can instead block on it: `everett send --wait 120 …` or `everett_send(wait=120)`. `everett inbox` / `everett_inbox` read an inbox directly.
-6. **Safety.** A thread can go back and forth at most 3 hops (exit 7), the calling session is never a target, and headless `everett send` runs (`EVERETT_SEND=1`) never consume inbox messages.
+6. **Safety.** With the hop limit on, a thread can go back and forth at most 3 hops (exit 7); it is off by default (docs/hop-limit.md). The calling session is never a target, and headless `everett send` runs (`EVERETT_SEND=1`) never consume inbox messages.
 
 | Harness | Next turn | Mid-task | How |
 |---|---|---|---|
@@ -573,7 +573,7 @@ For another MCP client, copy the launcher printed by a dry run. Restart clients 
 
 **Safety.**
 - The server refuses self-send. If `everett_whoami` cannot identify you, have the owner bind the MCP launch environment before sending. Do not guess another session's identity from its folder or recency.
-- `EVERETT_HOPS` travels through every delivery, and a request that has already been forwarded 3 times is refused, so two agents cannot ping-pong. A live session also inherits the hop count of messages delivered to it within the last 15 minutes (older deliveries no longer count against it).
+- `EVERETT_HOPS` travels through every delivery. With `hop_limit` on, a request that has already been forwarded 3 times is refused, so two agents cannot ping-pong (off by default; cross-device stays capped at 3). A live session also inherits the hop count of messages delivered to it within the last 15 minutes (older deliveries no longer count against it).
 - A new session starts only with `spawn: true`.
 - `everett_learn` runs the secret filter.
 - Calls are logged to `~/.everett/mcp.log` with tool name, argument names, caller id, result status and duration. Argument values and replies are not logged. Existing log entries from older versions are preserved.

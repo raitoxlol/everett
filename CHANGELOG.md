@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Hop limit is now off by default; turn it on with `hop_limit = "on"` (docs/hop-limit.md). Cross-device relay/peer messages keep their cap of 3.
+- Every delivered Everett batch now carries a short context note (agent requests, read-only by default, how to reply).
+
 - Everett Local 0.3.1: ChatGPT desktop ignored the plugin's local server when the 0.3.0 root `plugin.json`/`mcp.json` were present. The installer now writes the Codex/ChatGPT layout by default, removes stale root manifests, and keeps them behind `--portable`. Verified in ChatGPT desktop Codex mode with `mcp__everett_local__everett_whoami` and `everett_ls`.
 - Add MCP `everett_control` for owner-local session control: list, start, send to, wake and read T3 Code threads through the `t3` CLI; start headless sessions in other harnesses; read the latest messages from any harness transcript. `stop` reports per harness why it is unsupported instead of killing anything. Remote-derived callers are refused. Not exposed through the gateway.
 
