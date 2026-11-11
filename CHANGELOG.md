@@ -2,7 +2,7 @@
 
 ## Unreleased
 
-- Hop limit is now off by default; turn it on with `hop_limit = "on"` (docs/hop-limit.md). Cross-device relay/peer messages keep their cap of 3.
+- Hop limit is now off by default; turn it on with `hop_limit = "on"` (docs/hop-limit.md). Cross-device relay/peer messages follow the same setting (wire bound 64; hosted relay redeployed to accept it).
 - Every delivered Everett batch now carries a short context note (agent requests, read-only by default, how to reply).
 
 - Everett Local 0.3.1: ChatGPT desktop ignored the plugin's local server when the 0.3.0 root `plugin.json`/`mcp.json` were present. The installer now writes the Codex/ChatGPT layout by default, removes stale root manifests, and keeps them behind `--portable`. Verified in ChatGPT desktop Codex mode with `mcp__everett_local__everett_whoami` and `everett_ls`.

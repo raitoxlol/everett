@@ -255,7 +255,7 @@ fn wrong_org_missing_grant_changed_keys_ttl_and_hops_rejected() {
     );
     assert!(b.open(&rotated.device, &e, 1001).is_err());
     assert!(a
-        .seal(&b.device, "key", &payload(4), 1000, TTL, None, None)
+        .seal(&b.device, "key", &payload(65), 1000, TTL, None, None)
         .is_err());
     let parent = Some(Parent {
         owner: b.device.owner.clone(),

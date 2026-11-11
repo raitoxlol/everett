@@ -391,7 +391,7 @@ device. The receiving agent replies normally, but Everett retains that reply on 
 until the sender polls `peer status`. No reverse SSH pairing is needed for replies.
 `queued` means inbox write, `delivered` means inbox pickup (`.done`), and `replied` means a
 correlated reply exists. A timeout can leave remote delivery uncertain: retry the same explicit
-idempotency key. Requests have a 64 KiB cap, 20-second deadline, and three-hop end-to-end limit.
+idempotency key. Requests have a 64 KiB cap and 20-second deadline; hops follow `hop_limit` (docs/hop-limit.md).
 
 SSH needs no registry, account sign-in, hosted relay, or Everett listener. See
 [cross-device setup, protocol, revocation, and real-machine checks](docs/cross-device.md).
@@ -573,7 +573,7 @@ For another MCP client, copy the launcher printed by a dry run. Restart clients 
 
 **Safety.**
 - The server refuses self-send. If `everett_whoami` cannot identify you, have the owner bind the MCP launch environment before sending. Do not guess another session's identity from its folder or recency.
-- `EVERETT_HOPS` travels through every delivery. With `hop_limit` on, a request that has already been forwarded 3 times is refused, so two agents cannot ping-pong (off by default; cross-device stays capped at 3). A live session also inherits the hop count of messages delivered to it within the last 15 minutes (older deliveries no longer count against it).
+- `EVERETT_HOPS` travels through every delivery. With `hop_limit` on, a request that has already been forwarded 3 times is refused, so two agents cannot ping-pong (off by default). A live session also inherits the hop count of messages delivered to it within the last 15 minutes (older deliveries no longer count against it).
 - A new session starts only with `spawn: true`.
 - `everett_learn` runs the secret filter.
 - Calls are logged to `~/.everett/mcp.log` with tool name, argument names, caller id, result status and duration. Argument values and replies are not logged. Existing log entries from older versions are preserved.

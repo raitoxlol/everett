@@ -818,10 +818,10 @@ fn receive(client: &str, request: Request) -> Result<Value> {
     valid(&session)?;
     valid(&from.session)?;
     valid(&idempotency_key)?;
-    if !(1..=inbox::MAX_HOPS).contains(&hops) {
+    if !(1..=inbox::WIRE_MAX_HOPS).contains(&hops) {
         return Err(EverettError::new(
             7,
-            "cross-device hop limit reached (maximum 3)",
+            "cross-device hop count out of range",
         ));
     }
     let _guard = delivery_lock()?;
@@ -1025,10 +1025,11 @@ pub fn send_as(
         return Err(bad("external/untrusted forwarding requires relay or local inbox; the independent SSH wire cannot preserve this provenance"));
     }
     let hops = send::caller_hops_for(Some(sender));
-    if hops >= inbox::MAX_HOPS {
+    let cap = inbox::hop_limit().unwrap_or(inbox::WIRE_MAX_HOPS).min(inbox::WIRE_MAX_HOPS);
+    if hops >= cap {
         return Err(EverettError::new(
             7,
-            "cross-device hop limit reached (maximum 3)",
+            format!("cross-device hop limit reached (maximum {})", cap),
         ));
     }
     let hops = hops.max(0) + 1;
@@ -1095,7 +1096,7 @@ pub fn status(name: &str, message_id: &str) -> Result<Value> {
             .get("hops")
             .and_then(Value::as_i64)
             .ok_or_else(|| bad("reply missing hops"))?;
-        if !(1..=inbox::MAX_HOPS).contains(&hops)
+        if !(1..=inbox::WIRE_MAX_HOPS).contains(&hops)
             || reply.get("reply_to") != Some(&json!(message_id))
         {
             return Err(bad("invalid peer reply correlation or hop count"));
