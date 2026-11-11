@@ -131,7 +131,7 @@ fn dispatch(target: &Session, body: &str, caller: &str, transport: Transport, de
     let who = send::sender_info(Some(caller));
     let sender = who["sender"].as_str().unwrap_or(inbox::HUMAN);
     let hops = send::caller_hops_for(Some(sender));
-    if hops >= inbox::MAX_HOPS {
+    if inbox::hop_limit().is_some_and(|l| hops >= l) {
         return Err(EverettError::new(7, "Hop limit reached; nothing was queued."));
     }
     let message = inbox::post_with_deadline(&target.id, body, sender, "message", "", hops + 1,

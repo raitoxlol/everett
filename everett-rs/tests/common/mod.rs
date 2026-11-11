@@ -32,6 +32,7 @@ impl Fixture {
             .env("PATH", HERMETIC_PATH)
             .env_remove("TYPESAFE_API_KEY")
             .env_remove("EVERETT_SEND")
+            .env("EVERETT_HOP_LIMIT", "on")
             .env_remove("EVERETT_HOPS")
             .env_remove("EVERETT_SESSION_ID");
         scrub_caller_identity(&mut cmd);
@@ -49,6 +50,7 @@ impl Fixture {
             .env("PATH", HERMETIC_PATH)
             .env_remove("TYPESAFE_API_KEY")
             .env_remove("EVERETT_SEND")
+            .env("EVERETT_HOP_LIMIT", "on")
             .env_remove("EVERETT_HOPS")
             .env_remove("EVERETT_SESSION_ID")
             .stdin(std::process::Stdio::piped())
@@ -163,6 +165,7 @@ pub fn mcp_calls(
         .env("HOME", fixture.home())
         .env("EVERETT_HOME", fixture.home())
         .env("EVERETT_NOTIFY", "none")
+        .env("EVERETT_HOP_LIMIT", "on")
         .env("PATH", HERMETIC_PATH)
         .current_dir(fixture.home())
         .stdin(std::process::Stdio::piped())
@@ -246,6 +249,7 @@ pub fn lib_home() -> LibHome {
     std::env::set_var("HOME", dir.path());
     std::env::set_var("EVERETT_HOME", dir.path());
     std::env::set_var("EVERETT_NOTIFY", "none");
+    std::env::set_var("EVERETT_HOP_LIMIT", "on");
     for name in SANDBOX_UNSET.iter().chain(CALLER_IDENTITY_UNSET) {
         std::env::remove_var(name);
     }
