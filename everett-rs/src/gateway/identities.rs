@@ -196,8 +196,19 @@ pub(super) fn list(binding: &Binding) -> Result<Value, String> {
 }
 
 pub(super) fn revoke(binding: &Binding, handle: &str) -> Result<Value, String> {
-    let id = resolve(binding, handle)?;
+    if !valid_secret(handle) || !path(binding).is_file() {
+        return Err(INVALID.into());
+    }
     let con = open(binding, true)?;
+    let id: String = con
+        .query_row(
+            "SELECT session_id FROM identities WHERE scope=?1 AND handle=?2",
+            params![scope(binding), handle],
+            |r| r.get(0),
+        )
+        .optional()
+        .map_err(|_| STORE_ERROR)?
+        .ok_or(INVALID)?;
     con.execute(
         "UPDATE identities SET revoked=1 WHERE scope=?1 AND handle=?2",
         params![scope(binding), handle],
