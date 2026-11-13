@@ -625,7 +625,7 @@ fn native_stdio_journey_for_both_external_harnesses() {
 fn policy_rejects_foreign_identity_project_and_unsafe_arguments() {
     let c = ctx();
     let mut peer = c.peer(&fixture(&[]));
-    let mut cases: Vec<(&str, Value)> = ["everett_ls", "everett_route", "everett_learn", "everett_event", "everett_subscribe"]
+    let mut cases: Vec<(&str, Value)> = ["everett_ls", "everett_control", "everett_route", "everett_learn", "everett_event", "everett_subscribe"]
         .iter().map(|n| (*n, json!({}))).collect();
     cases.extend(["everett_inbox", "everett_card", "everett_send"].iter().map(|n| (*n, json!({"session_id": "other"}))));
     cases.extend([
@@ -648,6 +648,21 @@ fn policy_rejects_foreign_identity_project_and_unsafe_arguments() {
         denied(&peer.call(name, arguments));
     }
     assert!(c.records().is_empty());
+}
+
+fn conversation_metadata_cannot_replace_the_gateway_binding() {
+    let c = ctx();
+    let mut peer = c.peer(&fixture(&[]));
+    for conversation in ["chat-one", "chat-two"] {
+        let response = peer.request("tools/call", Some(json!({
+            "name": "everett_whoami", "arguments": {},
+            "_meta": {"openai/session": conversation, "openai/subject": "other-owner",
+                      "threadId": "foreign-session"}
+        })));
+        assert_eq!(success(&response)["session_id"], "dot-one");
+    }
+    assert_eq!(c.records().len(), 2);
+    assert!(c.records().iter().all(|r| r["agent_id"] == "dot-one"));
 }
 
 fn core_is_an_explicit_grant() {
@@ -905,6 +920,7 @@ type Case = (&'static str, fn());
 const CASES: &[Case] = &[
     ("native_stdio_journey_for_both_external_harnesses", native_stdio_journey_for_both_external_harnesses),
     ("policy_rejects_foreign_identity_project_and_unsafe_arguments", policy_rejects_foreign_identity_project_and_unsafe_arguments),
+    ("conversation_metadata_cannot_replace_the_gateway_binding", conversation_metadata_cannot_replace_the_gateway_binding),
     ("core_is_an_explicit_grant", core_is_an_explicit_grant),
     ("reply_authorization_fails_closed", reply_authorization_fails_closed),
     ("legacy_or_malformed_exact_id_capability_blocks_direct_send_only", legacy_or_malformed_exact_id_capability_blocks_direct_send_only),

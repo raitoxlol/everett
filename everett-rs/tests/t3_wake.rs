@@ -414,3 +414,15 @@ fn assert_fallback_commands(relative_profile: bool) {
     assert_eq!(replies[0]["text"], "<your concise result>");
     assert!(!recipient_home.join(".everett/inbox").exists());
 }
+
+#[test]
+fn t3_ping_without_a_json_receipt_keeps_message_without_claiming_dispatch() {
+    let home = lib_home();
+    plant_thread(&home.path());
+    let bin = fake_t3(&home.path(), 0);
+    fs::write(&bin, "#!/bin/sh\nprintf '%s\\n' 'USAGE: t3 <subcommand>'\n").unwrap();
+    std::env::set_var("EVERETT_T3_BIN", bin);
+    let error = send::ping_as(&session(), BODY, 30.0, Some("caller"), Some("claude")).unwrap_err();
+    assert!(error.to_string().contains("JSON receipt"), "{error}");
+    assert_eq!(inbox::pending(SESSION, None).len(), 1);
+}
