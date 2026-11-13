@@ -130,9 +130,13 @@ async function consent(browser: Browser, verifier = 'v'.repeat(64)) {
   const location = new URL(response.headers.get('Location')!, issuer);
   const requestId = location.searchParams.get('request')!;
   expect(Boolean(requestId)).toBe(true);
-  expectAuthShell(await (await browser.request(location.pathname + location.search)).text());
+  const consentPage = await (await browser.request(location.pathname + location.search)).text();
+  expectAuthShell(consentPage);
+  expect(consentPage).not.toContain('value="argos"');
+  expect(consentPage).not.toContain('Agent name');
+  expect(consentPage).toContain('Approve connection');
   const csrf = await browser.csrf(location.pathname + location.search);
-  const approved = await browser.request('/oauth/consent', form({ csrf, request_id: requestId, decision: 'approve', name: 'argos-test' }));
+  const approved = await browser.request('/oauth/consent', form({ csrf, request_id: requestId, decision: 'approve' }));
   expect(approved.status).toBe(303);
   const callback = new URL(approved.headers.get('Location')!);
   expect(callback.origin + callback.pathname).toBe(redirect);
@@ -148,7 +152,7 @@ async function introspect(token: string) {
   headers.set('Authorization', 'Bearer synthetic-introspection-test-value-only');
   const response = await fetchWorker('/oauth/introspect', { ...init, headers });
   expect(response.status).toBe(200);
-  return await response.json() as { active: boolean; sub?: string; everett_agent?: string; aud?: string; iss?: string; scope?: string; exp?: number };
+  return await response.json() as { active: boolean; sub?: string; everett_agent?: string; everett_agent_name?: string; everett_account?: string; aud?: string; iss?: string; scope?: string; exp?: number };
 }
 
 describe('Hosted device login through real Worker routes', () => {
@@ -447,6 +451,8 @@ describe('OAuth resource-bound authorization', () => {
     const checked = await introspect(tokens.access_token);
     expect(checked.active).toBe(true); expect(checked.iss).toBe(issuer); expect(checked.aud).toBe(resource);
     expect(checked.sub).toBe(checked.everett_agent); expect(checked.scope).toBe('everett');
+    expect(checked.everett_agent_name).toBe('Synthetic ChatGPT');
+    expect(typeof checked.everett_account).toBe('string');
     expect((await nativeWhoami(tokens.access_token)).status).toBe(401);
     const refreshBody = { grant_type: 'refresh_token', refresh_token: tokens.refresh_token, client_id: client, resource };
     const rotated = await fetchWorker('/oauth/token', form(refreshBody)); expect(rotated.status).toBe(200);

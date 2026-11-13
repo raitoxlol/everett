@@ -17,7 +17,7 @@ is omitted, the gateway starts the same binary with `mcp`. An explicit override
 must use an absolute executable path. Do not point it at the gateway itself. The executable and its arguments are trusted owner
 configuration, never tool-call arguments.
 
-## One process, one logical identity
+## One process, fixed access grants
 
 Create a local, owner-controlled JSON configuration. Replace these example paths
 and destination IDs with absolute paths and complete authorized session IDs:
@@ -53,18 +53,53 @@ to false removes the core tool entirely; this pass does not implement a
 project-only reader. Shared core should contain no secrets.
 
 The gateway uses `EVERETT_HOME`, or the current user's home, captured at startup.
-Every tool call uses a new SDK-managed stdio worker with that home, the fixed
+Backend tool calls use a new SDK-managed stdio worker with that home, the fixed
 working directory, and immutable `EVERETT_SESSION_ID`/`EVERETT_HARNESS_NAME`.
 It does not mutate `os.environ` or forward API keys or gateway bearer tokens to
 the backend. The SDK additionally inherits its documented basic OS environment
 (such as PATH and USER). The Rust worker is trusted local code with access to
 the owner's stores; this is not an OS sandbox against a malicious executable.
 
-Run a separate gateway process/configuration for each logical agent. A token or
-tunnel connection identifies this owner-configured binding, **not a trusted
-vendor Bot or conversation identity**. Other Bots authorized to use the same
-connector may use its binding. The gateway does not manufacture per-Bot security
-isolation from a shared owner account.
+A gateway configuration grants access to fixed destinations, a directory and
+shared core. The connection is authorized by its bearer token or OAuth approval.
+It is not a vendor-attested Bot or conversation identity. Existing clients may
+keep using the original connection identity. New chats can register separate
+logical inboxes without another account sign-in.
+
+### Register this chat
+
+1. Generate a fresh private random `registration_key` of 32 to 128 URL-safe
+   characters. Treat this key as a secret: retrying it returns the same handle.
+2. Call `everett_identity(action="create", registration_key=<key>, name=<chat name>, kind="chat")`.
+   Kind may also be `dot` or `codex`; it is self-declared, not a native provider ID.
+3. Keep the returned `identity_handle` private in this chat. Pass it on later
+   gateway calls, including `everett_whoami` and `everett_inbox`. Omit `session_id`;
+   if supplied, it must match the selected identity. Handles never grant more
+   destinations, memory, directory access or tool permissions.
+4. The server registers the returned `session_id` in the local external directory.
+   Other local clients can discover it with `everett ls` or `everett external list`.
+   The local owner must still authorize exact destination IDs before chats send
+   to one another. Registration does not grant new destinations or relay exposure.
+5. `everett_identity(action="list")` lists this authorization's identities without
+   handles. `state="registered"` is not proof that a chat is online or polling.
+   `everett_identity(action="revoke", identity_handle=<handle>)` disables one
+   identity and removes its discovery registration, retaining its inbox.
+
+Names may repeat; the server issues distinct logical IDs. Creation retries with
+the same private key and parameters return the same identity. A revoked key cannot
+create it again. Up to 256 identities, including revoked entries, are retained per
+authorization scope. The private store is `~/.everett/gateway-identities.sqlite`.
+It must be a regular file accessible only to its owner. Back it up privately with
+the profile; restarting the gateway preserves handles. Losing the store loses
+handle bindings. Do not share handles or registration keys in message bodies,
+public cards, screenshots or logs.
+
+OAuth identity scope uses the verified issuer, resource, account and client ID.
+A fresh approval for that same account and client preserves handles, while each
+request still needs a valid, unrevoked OAuth token. An older issuer without the
+`everett_account` introspection claim falls back to the token's original agent
+binding; fresh approvals on that older issuer do not preserve chat handles.
+Fixed bearer and stdio configurations retain their configured binding scope.
 
 The external-session registration contract is:
 
@@ -74,16 +109,16 @@ The external-session registration contract is:
 ```
 
 Use the native `everett external add`, `list`, and `remove` commands to manage
-registrations. The
-gateway does not write registrations, invent local CLI transcripts, or resume
-either cloud Bot. Register the same ID before end-to-end
-handoffs. External registration is durable, requires no periodic timestamp refresh,
+registrations. The gateway writes registrations only for explicitly created chat
+identities. It does not invent native provider transcripts or resume cloud Bots.
+Register the legacy connection ID manually before using its inbox for handoffs. External registration is durable, requires no periodic timestamp refresh,
 and is not filtered by local session age. A connector alone does not make a session
 discoverable to local agents.
 
 ## Allowed tools and delivery
 
-- `everett_whoami`: reads this connection's logical identity.
+- `everett_identity`: creates, lists or revokes logical chat identities under this authorization.
+- `everett_whoami`: reads the identity selected by the private handle, or the legacy connection identity.
 - `everett_core`: reads the granted global and fixed project core.
 - `everett_inbox`: reads only this binding's inbox. Existing backend semantics
   mark messages delivered unless `peek=true`; this is not a transactional work
@@ -203,13 +238,15 @@ ignores the block and keeps the fixed `agent_id`.
   `scope`, and that `sub` equals `everett_agent` and is a valid agent ID that is not
   one of the binding's destinations. The introspection secret is never passed to
   workers.
-- The token's agent ID **replaces `agent_id` for that request**: workers run with
-  `EVERETT_SESSION_ID=<token agent>`, tool schemas pin `session_id` to it, and
-  `everett_whoami` adds `gateway_auth: {mode: "oauth", agent_name, client_id}`.
-  Each separate owner approval mints a new agent with its own inbox and card.
-  Clients sharing one authorized connection also share its identity; the gateway
-  does not attest a vendor Bot or conversation. Project, cwd, destinations and
-  core grant still come from the binding.
+- The token's agent ID replaces the configured legacy `agent_id`. A private
+  `identity_handle` can select a chat registered under that authorization. Workers
+  receive only the selected `EVERETT_SESSION_ID`, never the handle or registration
+  key. `everett_whoami` retains `gateway_auth: {mode: "oauth", agent_name, client_id}`;
+  its legacy `agent_name` field labels the plugin connection, not the chat.
+  Project, cwd, destinations and core grant still come from the binding.
+- Consent authorizes the plugin connection. Its credential label comes from the
+  reviewed client metadata; it does not ask the account owner to name an agent.
+  Existing credentials, their labels and revocation behavior are preserved.
 
 The Cloudflare candidate in PR #43 implements the authorization server contract;
 this gateway port does not deploy it or configure the live issuer. Its OAuth
