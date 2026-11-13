@@ -7,12 +7,30 @@
 use std::collections::HashMap;
 use std::path::Path;
 
+use serde_json::Value;
+
 use crate::adapters::t3code;
 use crate::error::{EverettError, Result};
 use crate::proc::{is_executable, run_capture, which};
 use crate::session::{clean, home, Session};
 
 pub const SEND_TIMEOUT: f64 = 20.0;
+
+/// The JSON document in `t3` stdout. Some builds print log lines (such as a
+/// database migration warning) to stdout first, so take the first line that
+/// starts a JSON value at column 0 and parses through the end.
+pub(crate) fn parse_json_output(stdout: &str) -> Option<Value> {
+    let mut offset = 0;
+    for line in stdout.split_inclusive('\n') {
+        if line.starts_with('{') || line.starts_with('[') {
+            if let Ok(v) = serde_json::from_str(stdout[offset..].trim()) {
+                return Some(v);
+            }
+        }
+        offset += line.len();
+    }
+    None
+}
 
 /// The T3 thread that drives this provider session, if any.
 pub fn thread_id(session: &Session) -> Option<String> {
@@ -103,6 +121,10 @@ pub(crate) fn wake_with_timeout(thread: &str, session: &Session, message_id: &st
             4,
             format!("t3 thread send exited {}: {}", out.code, clean(detail, 300)),
         ));
+    }
+    if parse_json_output(out.stdout.trim()).is_none() {
+        return Err(EverettError::new(4,
+            "t3 returned no valid JSON receipt. Check that the selected CLI supports thread commands. Dispatch is unconfirmed; do not blindly retry."));
     }
     Ok(out.stdout.trim().to_string())
 }
