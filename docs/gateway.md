@@ -83,7 +83,8 @@ logical inboxes without another account sign-in.
 5. `everett_identity(action="list")` lists this authorization's identities without
    handles. `state="registered"` is not proof that a chat is online or polling.
    `everett_identity(action="revoke", identity_handle=<handle>)` disables one
-   identity and removes its discovery registration, retaining its inbox.
+   identity and removes its discovery registration, retaining its inbox. Retry the
+   same handle to finish interrupted registration cleanup; revocation is idempotent.
 
 Names may repeat; the server issues distinct logical IDs. Creation retries with
 the same private key and parameters return the same identity. A revoked key cannot
