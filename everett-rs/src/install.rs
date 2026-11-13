@@ -195,8 +195,6 @@ fn script_state(entries: &Value, script: &str) -> &'static str {
     if stale { "stale" } else { "missing" }
 }
 
-/// 'ok' | 'stale' | 'missing' for the OMP extension file (the bundled extension
-/// shells out to `everett` on PATH, so a moved binary leaves it dead).
 fn omp_extension_state() -> &'static str {
     let Ok(text) = fs::read_to_string(omp_extension_path()) else {
         return "missing";
@@ -424,7 +422,6 @@ pub fn apply(harness: &str, events: Option<&[String]>) -> std::result::Result<St
     ))
 }
 
-// ---- MCP registration (`everett install-mcp`) ----
 
 /// (command, args, env) that starts `everett mcp` from this very install.
 pub fn mcp_launch() -> (String, Vec<String>, std::collections::HashMap<String, String>) {

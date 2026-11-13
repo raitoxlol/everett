@@ -4,6 +4,7 @@ import { sha256 } from '@noble/hashes/sha256';
 import { DEVICE_LABEL_LIMIT, digest, identifier, namespace, RelayError, type Identity, type Principal } from './protocol';
 import { hostedConfig, requireOAuth, requirePublicHost, type HostedConfig, type HostedAuthEnv } from './hosted-config';
 import { authFontStyles } from './hosted-auth-fonts';
+import { boundedText } from './http-body';
 
 const MINUTE = 60000, DAY = 86400000;
 const DEVICE_MS = 10 * MINUTE, CODE_MS = 5 * MINUTE, ACCESS_MS = 15 * MINUTE, REFRESH_MS = 30 * DAY, SESSION_MS = 12 * 60 * MINUTE;
@@ -28,25 +29,6 @@ const html = (body: string, status = 200, callbackOrigin?: string) => new Respon
 } });
 
 
-async function boundedText(stream: ReadableStream<Uint8Array> | null, cap: number) {
-  if (!stream) throw new RelayError('missing_body', 400);
-  const reader = stream.getReader(), decoder = new TextDecoder('utf-8', { fatal: true, ignoreBOM: false });
-  let size = 0, text = '', timer: ReturnType<typeof setTimeout>;
-  const deadline = new Promise<never>((_, reject) => { timer = setTimeout(() => reject(new RelayError('request_timeout', 408)), 5000); });
-  try {
-    for (;;) {
-      const part = await Promise.race([reader.read(), deadline]);
-      if (part.done) return text + decoder.decode();
-      size += part.value.byteLength;
-      if (size > cap) throw new RelayError('body_too_large', 413);
-      text += decoder.decode(part.value, { stream: true });
-    }
-  } finally {
-    clearTimeout(timer!);
-    void reader.cancel().catch(() => {});
-    reader.releaseLock();
-  }
-}
 function fields(p: URLSearchParams, allowed?: string[]) {
   const result: Record<string, string> = {};
   for (const [key, value] of p) {
@@ -57,11 +39,11 @@ function fields(p: URLSearchParams, allowed?: string[]) {
 }
 async function form(request: Request, allowed?: string[]) {
   if (!request.headers.get('Content-Type')?.toLowerCase().startsWith('application/x-www-form-urlencoded')) throw new RelayError('form_required', 415);
-  return fields(new URLSearchParams(await boundedText(request.body, 16384)), allowed);
+  return fields(new URLSearchParams(await boundedText(request.body, 16384, 5000)), allowed);
 }
 async function body(request: Request) {
   if (!request.headers.get('Content-Type')?.toLowerCase().startsWith('application/json')) throw new RelayError('json_required', 415);
-  return JSON.parse(await boundedText(request.body, 16384)) as unknown;
+  return JSON.parse(await boundedText(request.body, 16384, 5000)) as unknown;
 }
 function cookieName(c: HostedConfig, suffix: string) { return `${c.secureCookies ? '__Host-' : ''}everett-${suffix}`; }
 function cookies(request: Request) {
@@ -205,7 +187,7 @@ export class HostedAuth extends DurableObject<HostedAuthEnv> {
     try {
       const response = await fetch(url, { ...init, redirect: 'manual', signal: controller.signal });
       if (!response.ok) throw new RelayError('provider_unavailable', 502);
-      const result: unknown = JSON.parse(await boundedText(response.body, 16384));
+      const result: unknown = JSON.parse(await boundedText(response.body, 16384, 5000));
       if (!result || typeof result !== 'object' || Array.isArray(result)) throw new RelayError('provider_response_invalid', 502);
       return result as Record<string, unknown>;
     } finally { clearTimeout(timeout); }
@@ -221,7 +203,7 @@ export class HostedAuth extends DurableObject<HostedAuthEnv> {
       const c = hostedConfig(this.env), url = new URL(request.url), host = requirePublicHost(url, c);
       // Caller-controlled streams must never hold the issuer's state gate.
       if (request.method === 'POST') {
-        const buffered = await boundedText(request.body, 16384);
+        const buffered = await boundedText(request.body, 16384, 5000);
         request = new Request(request, { body: buffered, redirect: 'manual' });
       }
       return await this.ctx.blockConcurrencyWhile(async () => {

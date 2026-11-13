@@ -1597,9 +1597,9 @@ fn screen_jev(
     p: &Palette,
     cfg: &mut OnboardConfig,
 ) -> TResult<Dir> {
-    let (found_key, found_source) = onboard::find_jev_key_with_source();
+    let (found_key, found_source) = crate::config::jev_key();
     if !found_key.is_empty() && cfg.jev_found_source.is_empty() {
-        cfg.jev_found_source = found_source;
+        cfg.jev_found_source = found_source.map(|source| source.as_str()).unwrap_or("").to_string();
     }
     loop {
         t.draw(|f| {

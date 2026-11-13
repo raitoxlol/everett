@@ -1,7 +1,7 @@
 mod common;
 
 use common::{fixture, lib_home, LibHome};
-use everett::onboard::{apply_jev, default_config, find_jev_key_with_source, generate_backfill_cards, missing_card_sessions, run_apply};
+use everett::onboard::{apply_jev, default_config, generate_backfill_cards, missing_card_sessions, run_apply};
 use everett::{cards, config, install, trunk_schedule};
 use serde_json::json;
 use std::os::unix::fs::PermissionsExt;
@@ -117,14 +117,14 @@ fn config_set_value_is_private_top_level_and_idempotent() {
 #[test]
 fn jev_key_sources_and_apply_report_never_echo_the_key() {
     let h = lib_home();
-    assert_eq!(find_jev_key_with_source(), (String::new(), String::new()));
+    assert_eq!(config::jev_key(), (String::new(), None));
     std::fs::create_dir_all(h.path().join(".hermes")).unwrap();
     std::fs::write(h.path().join(".hermes/.env"), "OTHER=1\nTYPESAFE_API_KEY=from-hermes\n").unwrap();
-    assert_eq!(find_jev_key_with_source(), ("from-hermes".into(), "hermes".into()));
+    assert_eq!(config::jev_key(), ("from-hermes".into(), Some(config::JevKeySource::Hermes)));
     config::set_value("typesafe_api_key", "from-config").unwrap();
-    assert_eq!(find_jev_key_with_source(), ("from-config".into(), "config".into()));
+    assert_eq!(config::jev_key(), ("from-config".into(), Some(config::JevKeySource::Config)));
     std::env::set_var("TYPESAFE_API_KEY", "from-env");
-    assert_eq!(find_jev_key_with_source(), ("from-env".into(), "env".into()));
+    assert_eq!(config::jev_key(), ("from-env".into(), Some(config::JevKeySource::Env)));
     std::env::remove_var("TYPESAFE_API_KEY");
     std::fs::remove_file(config::config_path()).unwrap();
 

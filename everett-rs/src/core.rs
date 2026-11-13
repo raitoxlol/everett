@@ -18,7 +18,8 @@ use crate::proc::{run_capture, RunOutput};
 
 /// Injectable runner for the merge LLM subprocess (tests substitute a fake).
 type LlmRunner<'a> = dyn Fn(&[String], Option<&str>, &HashMap<String, String>, f64) -> std::result::Result<RunOutput, String> + 'a;
-use crate::send::{caller_session_id, child_env, spawn_command};
+use crate::host::caller_session_id;
+use crate::execution::{child_env, HeadlessCommand};
 use crate::session::{home, now};
 use crate::timefmt::strftime_local;
 
@@ -58,7 +59,6 @@ impl Drop for FileLock {
     }
 }
 
-// ---- paths ----
 
 pub fn core_dir() -> PathBuf {
     home().join(".everett").join("core")
@@ -125,7 +125,6 @@ fn dirs_home() -> PathBuf {
     std::env::var("HOME").map(PathBuf::from).unwrap_or_else(|_| PathBuf::from("/"))
 }
 
-// ---- secret filter ----
 
 const SECRET_PATTERNS: &[(&str, &str)] = &[
     (r"-----BEGIN [A-Z ]*PRIVATE KEY-----", "a private key"),
@@ -190,7 +189,6 @@ pub fn find_secret(text: &str) -> String {
     String::new()
 }
 
-// ---- push: learn ----
 
 pub fn detect_harness() -> String {
     if std::env::var("CLAUDECODE").is_ok() || std::env::var("CLAUDE_CODE_ENTRYPOINT").is_ok() {
@@ -516,7 +514,6 @@ pub fn search(query: &str, project: Option<&str>, scope: Option<&str>, limit: us
     Ok(result)
 }
 
-// ---- merge ----
 
 pub fn words(text: &str) -> usize {
     text.split_whitespace().count()
@@ -684,14 +681,11 @@ pub fn merge_llm(
         .replace("{current}", &shown)
         .replace("{items}", &lines);
     let work = tempfile::tempdir().map_err(|e| EverettError::new(5, format!("{} merge failed to run: {}", llm, e)))?;
-    let out_file = if llm == "codex" {
-        work.path().join("out.txt").to_string_lossy().to_string()
-    } else {
-        String::new()
-    };
-    let command = spawn_command(llm, &prompt, "", &out_file)?;
+    let out_file = work.path().join("out.txt").to_string_lossy().to_string();
+    let prepared = HeadlessCommand::new(llm, &prompt, "", &out_file)?;
+    let command = &prepared.argv;
     let env = child_env(&HashMap::new());
-    let result = runner(&command, Some(&work.path().to_string_lossy()), &env, timeout)
+    let result = runner(command, Some(&work.path().to_string_lossy()), &env, timeout)
         .map_err(|e| EverettError::new(5, format!("{} merge failed to run: {}", llm, e)))?;
     if result.timed_out {
         return Err(EverettError::new(5, format!("{} merge failed to run: timed out", llm)));
@@ -709,12 +703,7 @@ pub fn merge_llm(
             .collect();
         return Err(EverettError::new(6, format!("{} merge exited {}: {}", llm, result.code, detail)));
     }
-    let text = if !out_file.is_empty() {
-        read_file(Path::new(&out_file))
-    } else {
-        String::new()
-    };
-    let text = if text.is_empty() { result.stdout.clone() } else { text };
+    let text = prepared.output().unwrap_or_else(|| result.stdout.clone());
     static BRACE_RE: OnceLock<Regex> = OnceLock::new();
     let brace = BRACE_RE.get_or_init(|| Regex::new(r"(?s)\{.*\}").unwrap());
     let data: Option<Map<String, Value>> = brace
@@ -938,7 +927,6 @@ pub fn write_vault_mirror(result: &HashMap<String, String>) -> Option<PathBuf> {
     }
 }
 
-// ---- pull: context for new sessions ----
 
 fn trim(text: &str, budget: usize) -> String {
     if budget == 0 {

@@ -1,8 +1,10 @@
 import { ZodError, z } from 'zod';
-import { bindingVerifier, boundedText, type PrincipalVerifier } from './auth';
-import { namespace, principalSchema, RelayError } from './protocol';
-import { OwnerRelay, type RelayResult } from './owner-relay';
+import { bindingVerifier, type PrincipalVerifier } from './auth';
+import { boundedText } from './http-body';
+import { namespace, operations, principalSchema, RelayError, type Operation, type RelayResult } from './protocol';
+import { OwnerRelay } from './owner-relay';
 import { HostedAuth } from './hosted-auth';
+import { hostedAuthPaths } from './hosted-config';
 export { OwnerRelay, HostedAuth };
 export interface Env {
   OWNERS: DurableObjectNamespace<OwnerRelay>;
@@ -11,8 +13,6 @@ export interface Env {
   EVERETT_ISSUER?: string;
   EVERETT_PUBLIC_HOSTS?: string;
 }
-export const operations = ['whoami', 'register', 'device', 'devices', 'exposeSession', 'sessionDirectory', 'credentials', 'memberships', 'revokeAgent', 'revokeMember', 'rotate', 'enqueue', 'pending', 'accept', 'observe', 'status'] as const;
-export type Operation = typeof operations[number];
 
 function hostedVerifier(env: Env): PrincipalVerifier {
   if (!env.EVERETT_ISSUER || !env.AUTH_STATE) return bindingVerifier(env.AUTHENTICATOR);
@@ -36,8 +36,7 @@ function relayFailure(result: Extract<RelayResult, { ok: false }>, env: Env): Re
 export async function handleRequest(request: Request, env: Env, verifier: PrincipalVerifier = hostedVerifier(env)): Promise<Response> {
   const url = new URL(request.url);
   if (request.method === 'GET' && url.pathname === '/health') return Response.json({ backend: 'cloudflare', status: env.AUTHENTICATOR || env.EVERETT_ISSUER ? 'configuration-present' : 'authentication-unconfigured' });
-  if (url.pathname === '/.well-known/oauth-authorization-server' || url.pathname === '/enroll' ||
-    ['/auth/', '/enroll/', '/v2/auth/', '/oauth/'].some(prefix => url.pathname.startsWith(prefix))) {
+  if (hostedAuthPaths(url.pathname)) {
     if (!env.EVERETT_ISSUER || !env.AUTH_STATE) return Response.json({ error: 'authentication_unconfigured' }, { status: 503, headers: { 'Cache-Control': 'no-store' } });
     return env.AUTH_STATE.get(env.AUTH_STATE.idFromName(env.EVERETT_ISSUER)).fetch(new Request(request, { redirect: 'manual' }));
   }
@@ -70,7 +69,7 @@ export async function handleRequest(request: Request, env: Env, verifier: Princi
       if (!result.ok) return relayFailure(result, env);
       return Response.json({ result: result.value }, { headers: { 'Cache-Control': 'no-store' } });
     }
-    const result: RelayResult = JSON.parse(await stub.relay(p, op as Operation, args));
+    const result = await stub.relay(p, op as Operation, args);
     if (!result.ok) return relayFailure(result, env);
     return Response.json({ result: result.value }, { headers: { 'Cache-Control': 'no-store' } });
   } catch (error) {

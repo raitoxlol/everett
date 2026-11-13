@@ -57,7 +57,7 @@ fn lock_path(target: &Path) -> PathBuf {
 
 fn open_lock(target: &Path) -> Result<fs::File> {
     if let Some(parent) = lock_path(target).parent().map(|p| p.to_path_buf()) {
-        crate::peer::private_dir(&parent)?;
+        crate::storage::private_dir(&parent)?;
     }
     let file = OpenOptions::new()
         .create(true)
@@ -107,7 +107,7 @@ fn append_locked(target: &PathBuf, line: &str) -> Result<()> {
 fn append_locked_until(target: &PathBuf, line: &str, deadline: Option<Instant>) -> Result<()> {
     check_deadline(deadline)?;
     if let Some(parent) = target.parent() {
-        crate::peer::private_dir(parent)?;
+        crate::storage::private_dir(parent)?;
     }
     let mut f = OpenOptions::new()
         .create(true)
@@ -503,10 +503,10 @@ pub fn persist_relay_context(session_id: &str, ids: &[&str]) -> Result<()> {
     let parent = target
         .parent()
         .ok_or_else(|| EverettError::new(2, "missing relay context directory"))?;
-    crate::peer::private_dir(parent)?;
+    crate::storage::private_dir(parent)?;
     // Separate from <sid>.lock: take() already holds the inbox lock. All context
     // writers (CLI, MCP, hooks) serialize the complete monotonic merge here.
-    let _provenance_guard = crate::peer::lock(&target.with_extension("lock"))?;
+    let _provenance_guard = crate::storage::lock(&target.with_extension("lock"))?;
     let old = relay_context(session_id);
     let received: Vec<_> = read(session_id)
         .into_iter()
@@ -543,7 +543,7 @@ pub fn persist_relay_context(session_id: &str, ids: &[&str]) -> Result<()> {
     };
     let external = received.iter().any(external) || old.as_ref().is_some_and(external);
     let context = json!({"relay_sender_owner":source.get("relay_sender_owner"),"relay_message_id":source.get("relay_message_id"),"relay_owner":source.get("relay_owner"),"relay_device":source.get("relay_device"),"relay_recipient_device":source.get("relay_recipient_device"),"relay_grant_id":source.get("relay_grant_id"),"hops":hops,"external":external,"untrusted":external});
-    crate::peer::save(&target, context.to_string().as_bytes())?;
+    crate::storage::save(&target, context.to_string().as_bytes())?;
     fs::File::open(parent)
         .and_then(|f| f.sync_all())
         .map_err(|e| EverettError::new(2, format!("cannot persist relay lineage: {e}")))

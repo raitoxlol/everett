@@ -108,7 +108,7 @@ pub fn instruction_prompt(agents: &[String]) -> String {
 /// harness -> session count, including CLIs that have not created a session yet.
 pub fn detect_harnesses(hours: f64) -> Vec<(String, usize)> {
     let detected = crate::doctor::detected_harnesses();
-    crate::registry::ADAPTERS
+    crate::harness::NATIVE
         .iter()
         .filter(|h| detected.iter().any(|d| d == *h))
         .map(|h| (h.to_string(), crate::registry::scan(hours, true, None, h).len()))
@@ -147,35 +147,6 @@ pub fn default_config() -> OnboardConfig {
         }
     }
     cfg
-}
-
-/// Jev key sources, in order, with which one matched: env, config file, ~/.hermes/.env.
-pub fn find_jev_key_with_source() -> (String, String) {
-    let key = std::env::var("TYPESAFE_API_KEY").unwrap_or_default().trim().to_string();
-    if !key.is_empty() {
-        return (key, "env".to_string());
-    }
-    let key = crate::config::values()
-        .ok()
-        .and_then(|v| v.get("typesafe_api_key").cloned())
-        .unwrap_or_default()
-        .trim()
-        .to_string();
-    if !key.is_empty() {
-        return (key, "config".to_string());
-    }
-    if let Ok(text) = std::fs::read_to_string(home().join(".hermes").join(".env")) {
-        for line in text.lines() {
-            let Some((name, value)) = line.split_once('=') else { continue };
-            if name.trim() == "TYPESAFE_API_KEY" {
-                let value = value.trim().trim_matches(|c| c == '"' || c == '\'');
-                if !value.is_empty() {
-                    return (value.to_string(), "hermes".to_string());
-                }
-            }
-        }
-    }
-    (String::new(), String::new())
 }
 
 fn apply_hooks(cfg: &OnboardConfig, errors: &mut Vec<String>) -> Vec<String> {
@@ -228,25 +199,25 @@ fn apply_mcp(cfg: &OnboardConfig, errors: &mut Vec<String>) -> Vec<String> {
         .collect()
 }
 
-pub fn key_source_label(source: &str) -> &'static str {
+fn key_source_label(source: Option<crate::config::JevKeySource>) -> &'static str {
     match source {
-        "env" => "TYPESAFE_API_KEY in the environment",
-        "config" => "typesafe_api_key in ~/.everett/config.toml",
-        "hermes" => "TYPESAFE_API_KEY in ~/.hermes/.env",
+        Some(crate::config::JevKeySource::Env) => "TYPESAFE_API_KEY in the environment",
+        Some(crate::config::JevKeySource::Config) => "typesafe_api_key in ~/.everett/config.toml",
+        Some(crate::config::JevKeySource::Hermes) => "TYPESAFE_API_KEY in ~/.hermes/.env",
         _ => "an unknown source",
     }
 }
 
 /// What a skip leaves in effect: routing keeps using any key already found.
 fn jev_skip_line(prefix: &str) -> String {
-    let (key, source) = find_jev_key_with_source();
+    let (key, source) = crate::config::jev_key();
     if key.is_empty() {
         format!("jev: {}; using local matching", prefix)
     } else {
         format!(
             "jev: {}; a key is still set ({}) and routing will use it (`everett doctor` tests it)",
             prefix,
-            key_source_label(&source)
+            key_source_label(source)
         )
     }
 }
@@ -423,7 +394,7 @@ pub fn summary_lines(cfg: &OnboardConfig, result: &ApplyResult) -> Vec<String> {
 /// --yes mode: read a Jev key from the named env var and stage it only if Jev accepts it.
 /// A named key replaces a saved one; a rejected key is never saved.
 fn apply_jev_key_env(cfg: &mut OnboardConfig, var: Option<&str>) {
-    cfg.jev_found_source = find_jev_key_with_source().1;
+    cfg.jev_found_source = crate::config::jev_key().1.map(|source| source.as_str()).unwrap_or("").to_string();
     cfg.jev_choice = "skip".to_string();
     let Some(var) = var else { return };
     let key = std::env::var(var).unwrap_or_default().trim().to_string();
@@ -454,7 +425,7 @@ pub fn setup_warnings(cfg: &OnboardConfig, result: &ApplyResult) -> Vec<String> 
     if cfg.detected.is_empty() {
         warnings.push(format!(
             "No supported harness was found ({}). Nothing was configured; install one and rerun `everett onboard --yes`.",
-            crate::registry::ADAPTERS.join(", ")
+            crate::harness::NATIVE.join(", ")
         ));
     } else if !hooks_on && !mcp_on {
         warnings.push(
@@ -621,9 +592,9 @@ fn run_plain(args: &crate::cli::Args) -> Result<i32, QuitOnboarding> {
     for line in JEV_LINES {
         println!("  {}", line);
     }
-    let (found_key, found_source) = find_jev_key_with_source();
+    let (found_key, found_source) = crate::config::jev_key();
     if !found_key.is_empty() {
-        cfg.jev_found_source = found_source;
+        cfg.jev_found_source = found_source.map(|source| source.as_str()).unwrap_or("").to_string();
         println!("  Jev key found ✓ ({})", cfg.jev_found_source);
         if ask_yes("  paste a different key instead?", false)? {
             plain_jev_entry(&mut cfg)?;

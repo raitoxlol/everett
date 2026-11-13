@@ -200,7 +200,7 @@ pub fn run(to: &str, hours: f64, timeout: f64, dry_run: bool) -> Report {
     let Some(deadline) = started.checked_add(budget) else {
         return report.finish(started, "invalid", 2, "--timeout is too large.");
     };
-    let caller = send::caller_session_id();
+    let caller = crate::host::caller_session_id();
     if let Err(error) = send::require_local_prompt(Some(&caller)) {
         return report.finish(started, "refused", 2, error.message);
     }

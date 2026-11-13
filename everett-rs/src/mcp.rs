@@ -8,7 +8,8 @@ use std::sync::OnceLock;
 use serde_json::{json, Map, Value};
 
 use crate::error::EverettError;
-use crate::send::{caller_identity, refuse_self};
+use crate::host::caller_identity;
+use crate::send::refuse_self;
 use crate::session::{now, Session};
 
 pub const PROTOCOL_VERSIONS: &[&str] = &["2025-06-18", "2025-03-26", "2024-11-05"];
@@ -72,7 +73,7 @@ pub fn tools() -> &'static Vec<Value> {
                     "hours": hours_prop(),
                     "spawn": {"type": "boolean", "description": "Allow starting a NEW session when routing says NEW.", "default": false},
                     "dir": s("Working directory for a spawned session."),
-                    "harness": {"type": "string", "enum": crate::send::SPAWNABLE, "description": "Harness for a spawned session."},
+                    "harness": {"type": "string", "enum": crate::harness::SPAWNABLE, "description": "Harness for a spawned session."},
                     "timeout": {"type": "number", "description": "Seconds to wait for the reply (default 300).", "minimum": 1},
                     "mode": {"type": "string", "enum": crate::send::MODES, "description": "ping (default): immediate headless delivery, a verified local Claude native nudge, or a T3 thread inbox nudge. An unavailable transport is an error, never silent queue fallback. inbox is explicit legacy queue delivery; auto selects ping for T3 threads; resume is a compatibility mode."},
                     "wait": {"type": "number", "minimum": 0, "description": "Explicit inbox mode: seconds to wait for a reply (default 0). Does not ping or wake the target."},
@@ -209,7 +210,6 @@ impl From<EverettError> for ToolFailure {
     }
 }
 
-// ---- logging ----
 
 fn log(event: &str, fields: Map<String, Value>) {
     let mut doc = Map::new();
@@ -236,7 +236,6 @@ fn log(event: &str, fields: Map<String, Value>) {
     }
 }
 
-// ---- tools ----
 
 fn brief(s: &Session) -> Map<String, Value> {
     let mut b = Map::new();
@@ -335,7 +334,7 @@ fn err2(code: i32, msg: impl Into<String>) -> ToolFailure {
 fn call_identity(params: &Map<String, Value>) -> Map<String, Value> {
     let launch = crate::host::launch_harness();
     let identity = match launch {
-        Some(h) => crate::send::caller_identity_for(h),
+        Some(h) => crate::host::caller_identity_for(h),
         None => caller_identity(),
     };
     if identity
@@ -1050,7 +1049,7 @@ fn tool_card(
     if let Some(parent) = path.parent() {
         let _ = std::fs::create_dir_all(parent);
     }
-    crate::peer::save(&path, body.as_bytes()).map_err(ToolFailure::Tool)?;
+    crate::storage::save(&path, body.as_bytes()).map_err(ToolFailure::Tool)?;
     let mut out = Map::new();
     out.insert("written".into(), json!(path.to_string_lossy()));
     out.insert("card".into(), json!(body.trim()));

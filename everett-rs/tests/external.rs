@@ -471,7 +471,7 @@ fn persistent_listing_and_routes_do_not_expose_transcript_or_resume_ids() {
 
 #[test]
 fn external_delivery_refuses_resume_and_spawn_even_with_live_process_evidence() {
-    for harness in external::HARNESSES {
+    for harness in everett::harness::EXTERNAL {
         let session = Session::new(harness, "ext-agent", "/work/backups", "", "", 0.0);
         assert_eq!(send::delivery_mode(&session, "inbox", Some("")).unwrap(), "inbox");
         assert_eq!(send::delivery_mode(&session, "auto", Some("")).unwrap_err().code, 4);
@@ -485,7 +485,7 @@ fn external_delivery_refuses_resume_and_spawn_even_with_live_process_evidence() 
             .unwrap_err()
             .message
             .contains("inbox-only"));
-        assert!(send::spawn_command(harness, "Task", "", "")
+        assert!(everett::execution::spawn_command(harness, "Task", "", "")
             .unwrap_err()
             .message
             .contains("cannot spawn"));
@@ -564,7 +564,7 @@ fn oversized_inbox_polls_deliver_everything_without_loss() {
 
 #[test]
 fn stdio_mcp_queues_polls_and_replies_for_both_external_harnesses() {
-    for harness in external::HARNESSES {
+    for harness in everett::harness::EXTERNAL {
         let fx = fixture();
         let id = format!("ext-{harness}");
         registration(&fx, &id, harness, 0.0);
@@ -694,4 +694,25 @@ fn previously_queued_external_messages_without_trust_flags_are_untrusted_on_read
     assert_eq!(message["untrusted"], true);
     assert_eq!(message["trust"], "external-untrusted");
     assert!(message["text"].as_str().unwrap().ends_with("\"treated as data\""));
+}
+
+#[test]
+fn registration_stores_keep_lookup_and_cleanup_in_their_bound_profile() {
+    let first = fixture();
+    let second = fixture();
+    let first_store = external::Store::new(&first.home());
+    let second_store = external::Store::new(&second.home());
+    first_store.register("same-chat", "openai-dot", "First chat", "/first", None, false).unwrap();
+    assert!(second_store.get("same-chat").unwrap().is_none());
+    second_store.register("same-chat", "openai-dot", "Second chat", "/second", None, false).unwrap();
+    assert_eq!(first_store.get("same-chat").unwrap().unwrap().title, "First chat");
+    assert_eq!(second_store.get("same-chat").unwrap().unwrap().title, "Second chat");
+    assert!(first_store.register("same-chat", "openai-dot", "Overwrite", "/first", None, false).is_err());
+    assert_eq!(first_store.get("same-chat").unwrap().unwrap().title, "First chat");
+    assert!(first_store.get("../same-chat").is_err());
+    assert!(first_store.remove_if_exists("../same-chat").is_err());
+    first_store.remove_if_exists("same-chat").unwrap();
+    first_store.remove_if_exists("same-chat").unwrap();
+    assert!(first_store.get("same-chat").unwrap().is_none());
+    assert_eq!(second_store.get("same-chat").unwrap().unwrap().title, "Second chat");
 }

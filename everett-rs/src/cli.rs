@@ -1,7 +1,6 @@
 //! CLI commands: thin shell over the store/parsing layer. Everything user-visible
 //! (text, json, exit code) happens here; the modules it calls stay pure of stdout.
 
-use std::collections::HashMap;
 use std::io::IsTerminal;
 use std::path::{Path, PathBuf};
 
@@ -177,47 +176,6 @@ pub fn cmd_ls(args: &Args) -> i32 {
     0
 }
 
-/// Per-harness and total counts of agent/auto/missing cards.
-pub type Coverage = (Vec<(String, HashMap<String, i64>)>, [i64; 5]);
-
-pub fn card_coverage(sessions: &[Session]) -> Coverage {
-    let mut order: Vec<String> = Vec::new();
-    let mut counts: HashMap<String, HashMap<String, i64>> = HashMap::new();
-    for harness in crate::registry::ADAPTERS {
-        order.push(harness.to_string());
-        counts.insert(harness.to_string(), HashMap::from([
-            ("total".to_string(), 0i64), ("agent".to_string(), 0), ("auto".to_string(), 0), ("missing".to_string(), 0),
-        ]));
-    }
-    for session in sessions {
-        let entry = counts.entry(session.harness.clone()).or_insert_with(|| HashMap::from([
-            ("total".to_string(), 0i64), ("agent".to_string(), 0), ("auto".to_string(), 0), ("missing".to_string(), 0),
-        ]));
-        if !order.iter().any(|o| o == &session.harness) {
-            order.push(session.harness.clone());
-        }
-        *entry.get_mut("total").unwrap() += 1;
-        let source = match session.card_source.as_deref() {
-            Some("agent") => "agent",
-            Some("auto") => "auto",
-            _ => "missing",
-        };
-        *entry.get_mut(source).unwrap() += 1;
-    }
-    let totals = [
-        counts.values().map(|m| m["total"]).sum(),
-        counts.values().map(|m| m["agent"]).sum(),
-        counts.values().map(|m| m["auto"]).sum(),
-        counts.values().map(|m| m["missing"]).sum(),
-        0,
-    ];
-    let rows = order
-        .iter()
-        .filter_map(|o| counts.get(o).map(|m| (o.clone(), m.clone())))
-        .collect();
-    (rows, totals)
-}
-
 const REGENERATE_HARNESSES: &[&str] = &["claude", "codex", "grok"];
 
 /// Rewrite every AUTO-marked card among `sessions` with the current builder. Never touches a
@@ -274,7 +232,7 @@ pub fn cmd_cards(args: &Args) -> i32 {
     }
     let hours = args.regen_hours.unwrap_or(args.hours);
     let sessions = crate::registry::scan(hours, true, None, "");
-    let (counts, totals) = card_coverage(&sessions);
+    let (counts, totals) = crate::cards::coverage(&sessions);
     println!("Sessions (last {} hours): {}", crate::fmt::g(hours), totals[0]);
     println!("Agent cards: {}", totals[1]);
     println!("Auto cards: {}", totals[2]);
@@ -302,7 +260,7 @@ fn session_label(session: &Session) -> String {
 
 pub fn cmd_route(args: &Args) -> i32 {
     let sessions = crate::registry::scan(args.hours, false, Some(crate::registry::CAP), "");
-    let caller = crate::send::caller_session_id();
+    let caller = crate::host::caller_session_id();
     let r = match crate::route::route(
         args.text.as_deref().unwrap_or(""),
         &sessions,
@@ -386,7 +344,7 @@ fn spawn_cmd(args: &Args, r: &Map<String, Value>, sessions: &[Session]) -> i32 {
         }
     };
     if args.dry_run {
-        let command = crate::send::spawn_command(
+        let command = crate::execution::spawn_command(
             &harness,
             args.text.as_deref().unwrap_or(""),
             if harness == "claude" || harness == "grok" { "<new-session-id>" } else { "" },
@@ -502,7 +460,7 @@ pub fn cmd_send(args: &Args) -> i32 {
             eprintln!("everett: --wake is available only from a local interactive terminal.");
             return 2;
         }
-        let caller = crate::send::caller_session_id();
+        let caller = crate::host::caller_session_id();
         if !caller.is_empty() || crate::send::current_hops() > 0 {
             eprintln!("everett: Claude wake is restricted to direct local human sends.");
             return 2;
@@ -558,7 +516,7 @@ pub fn cmd_send(args: &Args) -> i32 {
         r.insert("session".into(), session.to_dict());
     } else {
         let sessions = crate::registry::scan(args.hours, false, Some(crate::registry::CAP), "");
-        let caller = crate::send::caller_session_id();
+        let caller = crate::host::caller_session_id();
         let result = match crate::route::route(
             args.text.as_deref().unwrap_or(""),
             &sessions,
@@ -616,7 +574,7 @@ pub fn cmd_send(args: &Args) -> i32 {
             r.get("confidence").and_then(|v| v.as_f64()).unwrap_or(0.0)
         ))
     };
-    let caller = crate::send::caller_session_id();
+    let caller = crate::host::caller_session_id();
     if let Err(e) = crate::send::refuse_self(&session, if caller.is_empty() { None } else { Some(&caller) }) {
         eprintln!("everett: {}", e.message);
         return e.code;
@@ -648,19 +606,18 @@ pub fn cmd_send(args: &Args) -> i32 {
             eprintln!("everett: Ping requires non-empty text within 64 KiB and a positive finite timeout");
             return 2;
         }
-        let transport = if mode == "ping" && session.source == "t3code" {
-            "t3"
-        } else if mode == "ping" && crate::omp_wake::available(&session) {
-            "omp-extension"
-        } else if mode == "ping" && crate::send::attached(&session, None) {
+        let ping_transport = if mode == "ping" {
+            crate::send::ping_transport(&session, None)
+        } else {
+            crate::send::PingTransport::Headless
+        };
+        if ping_transport == crate::send::PingTransport::Attached {
             if let Err(error) = crate::claude_wake::validate_target(&session) {
                 eprintln!("everett: {}", error.message);
                 return error.code;
             }
-            "claude-bg"
-        } else {
-            "resume"
-        };
+        }
+        let transport = ping_transport.name();
         let command = if transport == "resume" {
             match crate::send::command_for(&session, args.text.as_deref().unwrap_or("")) {
                 Ok(command) => Some(command),
@@ -941,7 +898,7 @@ fn send_inbox_cmd(args: &Args, r: &Map<String, Value>, session: &Session, label:
 }
 
 pub fn cmd_reply(args: &Args) -> i32 {
-    let caller = crate::send::caller_session_id();
+    let caller = crate::host::caller_session_id();
     match crate::send::reply(
         args.id.as_deref().unwrap_or(""),
         args.text.as_deref().unwrap_or(""),
@@ -968,7 +925,7 @@ pub fn cmd_reply(args: &Args) -> i32 {
 }
 
 pub fn cmd_inbox(args: &Args) -> i32 {
-    let caller = crate::send::caller_session_id();
+    let caller = crate::host::caller_session_id();
     let sid = args
         .session
         .clone()
@@ -1122,7 +1079,7 @@ pub fn cmd_events(args: &Args) -> i32 {
 }
 
 pub fn cmd_subscribe(args: &Args) -> i32 {
-    let caller = crate::send::caller_session_id();
+    let caller = crate::host::caller_session_id();
     let subscriber = args.as_.clone().unwrap_or(caller);
     let target = crate::events::resolve_target(args.target.as_deref().unwrap_or(""));
     match crate::events::subscribe(&subscriber, &target, args.remove) {

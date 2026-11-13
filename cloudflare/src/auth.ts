@@ -1,4 +1,5 @@
 import { principalSchema, RelayError, type Principal } from './protocol';
+import { boundedText } from './http-body';
 
 export interface PrincipalVerifier {
   verify(request: Request): Promise<Principal>;
@@ -21,21 +22,4 @@ export function bindingVerifier(binding?: Fetcher): PrincipalVerifier {
       return principal;
     },
   };
-}
-
-export async function boundedText(body: ReadableStream<Uint8Array> | null, cap: number): Promise<string> {
-  if (!body) throw new RelayError('missing_body', 400);
-  const reader = body.getReader();
-  const decoder = new TextDecoder('utf-8', { fatal: true, ignoreBOM: false });
-  let size = 0, text = '';
-  try {
-    for (;;) {
-      const chunk = await reader.read();
-      if (chunk.done) break;
-      size += chunk.value.byteLength;
-      if (size > cap) { await reader.cancel(); throw new RelayError('body_too_large', 413); }
-      text += decoder.decode(chunk.value, { stream: true });
-    }
-    return text + decoder.decode();
-  } finally { reader.releaseLock(); }
 }

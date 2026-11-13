@@ -10,7 +10,7 @@ Install Everett (`install.sh`, Homebrew or cargo), run `everett onboard --yes`, 
 
 ## Driving it with the release journey
 
-Set `EVERETT_VERIFY_BINARY` to the packaged binary. Proof requires a version, a fresh registration, a successful launcher probe, thirteen tools listed, and thirteen tools called.
+Set `EVERETT_VERIFY_BINARY` to the packaged binary. Proof requires a version, a fresh registration, a successful launcher probe, every advertised tool listed and called.
 
 ## Gotchas
 
