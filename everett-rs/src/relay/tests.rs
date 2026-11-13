@@ -6,7 +6,7 @@ static NATIVE_DEVICES: Mutex<Vec<Device>> = Mutex::new(vec![]);
 
 fn configure(keys: &Keys, devices: Vec<Device>) {
     *NATIVE_DEVICES.lock().unwrap() = devices;
-    peer::private_dir(crate::cloudflare_auth::credential_path().parent().unwrap()).unwrap();
+    crate::storage::private_dir(crate::cloudflare_auth::credential_path().parent().unwrap()).unwrap();
     write(&crate::cloudflare_auth::credential_path(), &json!({
         "issuer":"https://relay.example", "agent_id":keys.device.device_id,
         "owner":keys.device.owner, "device_name":"fixture",
@@ -70,7 +70,7 @@ fn stage_unlink_fsync_failure_restores_private_ciphertext_for_retry() {
         .unwrap();
     let dir = tempfile::tempdir().unwrap();
     let ingress = dir.path().join("new/relay/ingress");
-    peer::private_dir(&ingress).unwrap();
+    crate::storage::private_dir(&ingress).unwrap();
     for child in [
         dir.path().join("new"),
         dir.path().join("new/relay"),
@@ -595,9 +595,9 @@ impl TestClient {
 }
 
 fn queued_webhook_retry(keys: &Keys) -> PathBuf {
-    peer::private_dir(&root()).unwrap();
+    crate::storage::private_dir(&root()).unwrap();
     let bearer = root().join("webhook-test.key");
-    peer::save(&bearer, b"synthetic-webhook-test-key").unwrap();
+    crate::storage::save(&bearer, b"synthetic-webhook-test-key").unwrap();
     write(&root().join("receiver-webhook.json"), &json!({
         "version":1,"enabled":true,"activated_at":1,"rules":[{
             "id":"retry-rule","owner":keys.device.owner,"recipient_device":keys.device.device_id,
@@ -606,7 +606,7 @@ fn queued_webhook_retry(keys: &Keys) -> PathBuf {
         }]
     })).unwrap();
     let ledger = root().join("receiver-webhook/ledger.json");
-    peer::private_dir(ledger.parent().unwrap()).unwrap();
+    crate::storage::private_dir(ledger.parent().unwrap()).unwrap();
     let last = milliseconds() / 1000 - 31;
     write(&ledger, &json!({"version":1,"rules":{"retry-rule":last},"messages":{
         "retry-message":{"rule_id":"retry-rule","session":"ext-webhook-test","harness":"grok-bot",
@@ -705,10 +705,10 @@ fn webhook_metadata_errors_remain_nonfatal_and_do_not_authenticate() {
     let rt = tokio::runtime::Runtime::new().unwrap();
     let mut client = TestClient::fake(vec![]);
     let ledger = queued_webhook_retry(&b);
-    peer::save(&ledger, b"{").unwrap();
+    crate::storage::save(&ledger, b"{").unwrap();
     rt.block_on(poll_receiver_webhook(&mut client, &b)).unwrap();
     queued_webhook_retry(&b);
-    peer::save(&root().join("receiver-webhook.json"), b"{").unwrap();
+    crate::storage::save(&root().join("receiver-webhook.json"), b"{").unwrap();
     rt.block_on(poll_receiver_webhook(&mut client, &b)).unwrap();
     let ledger = queued_webhook_retry(&b);
     let before = fs::read(&ledger).unwrap();
@@ -768,7 +768,7 @@ fn polling_activity_ignores_rejected_rows_and_keeps_uncertain_ingress_active() {
     let (a, b) = devices();
     configure(&b, vec![a.device.clone(), b.device.clone()]);
     let ingress = root().join("ingress");
-    peer::private_dir(&ingress).unwrap();
+    crate::storage::private_dir(&ingress).unwrap();
     let transcript = home.path().join(".codex/sessions/2026/10/12/recipient.jsonl");
     fs::create_dir_all(transcript.parent().unwrap()).unwrap();
     fs::write(transcript, include_str!("../../tests/fixtures/codex.jsonl").replace("x-1", "recipient")).unwrap();
@@ -819,7 +819,7 @@ fn newly_posted_local_requests_keep_polling_active_without_reposting() {
     let (a, b) = devices();
     configure(&a, vec![a.device.clone(), b.device.clone()]);
     let path = root().join("outgoing/posted.json");
-    peer::private_dir(path.parent().unwrap()).unwrap();
+    crate::storage::private_dir(path.parent().unwrap()).unwrap();
     let rt = tokio::runtime::Runtime::new().unwrap();
     for (age, state, active) in [
         (0, State::Queued, true),
@@ -855,8 +855,8 @@ fn relay_transport_denied_row_does_not_block_allowed_and_own_revocation_stops() 
     std::env::set_var("EVERETT_NOTIFY", "none");
     let (a, b) = devices();
     configure(&b, vec![a.device.clone(), b.device.clone()]);
-    peer::private_dir(&root().join("peers")).unwrap();
-    peer::private_dir(&root().join("ingress")).unwrap();
+    crate::storage::private_dir(&root().join("peers")).unwrap();
+    crate::storage::private_dir(&root().join("ingress")).unwrap();
     write(
         &peer_path("peer").unwrap(),
         &Paired {
@@ -1018,7 +1018,7 @@ fn relay_transport_denied_row_does_not_block_allowed_and_own_revocation_stops() 
         .is_err());
     }
 
-    peer::private_dir(&root().join("outgoing")).unwrap();
+    crate::storage::private_dir(&root().join("outgoing")).unwrap();
     let reply = Payload::Inbox {
         session: "remote-session".into(),
         harness: "claude".into(),
@@ -1082,7 +1082,7 @@ fn signed_import_schedules_exact_receiver_job_and_fake_claude_attaches_once() {
     std::env::set_var("EVERETT_NOTIFY", "none");
     let (a, b) = devices();
     configure(&b, vec![a.device.clone(), b.device.clone()]);
-    peer::private_dir(&root().join("peers")).unwrap();
+    crate::storage::private_dir(&root().join("peers")).unwrap();
     write(
         &peer_path("mac").unwrap(),
         &Paired {
@@ -1192,7 +1192,7 @@ fn receiver_skips_consumed_or_digest_changed_inbox_rows() {
     let home = tempfile::tempdir().unwrap();
     std::env::set_var("HOME", home.path());
     std::env::set_var("EVERETT_HOME", home.path());
-    peer::private_dir(&root()).unwrap();
+    crate::storage::private_dir(&root()).unwrap();
     let session_id = "38cab978-79c0-4f42-9aee-5c30d8aa6e4c";
     let local_id = format!("relay-{}", "c".repeat(64));
     let digest = "d".repeat(64);
@@ -1295,7 +1295,7 @@ fn imported_external_inbox_posts_one_webhook_without_the_message_text() {
     std::env::set_var("EVERETT_AUTH_PROVIDER", "cloudflare");
     let (a, b) = devices();
     configure(&b, vec![a.device.clone(), b.device.clone()]);
-    peer::private_dir(&root().join("peers")).unwrap();
+    crate::storage::private_dir(&root().join("peers")).unwrap();
     write(
         &peer_path("mac").unwrap(),
         &Paired {
@@ -1397,7 +1397,7 @@ fn pinned_peer_is_accepted_across_configured_relay_aliases() {
     std::env::set_var("EVERETT_HOME", home.path());
     let (a, b) = devices();
     *NATIVE_DEVICES.lock().unwrap() = vec![a.device.clone(), b.device.clone()];
-    peer::private_dir(crate::cloudflare_auth::credential_path().parent().unwrap()).unwrap();
+    crate::storage::private_dir(crate::cloudflare_auth::credential_path().parent().unwrap()).unwrap();
     write(
         &crate::cloudflare_auth::credential_path(),
         &json!({
@@ -1411,7 +1411,7 @@ fn pinned_peer_is_accepted_across_configured_relay_aliases() {
         }),
     )
     .unwrap();
-    peer::private_dir(&root().join("peers")).unwrap();
+    crate::storage::private_dir(&root().join("peers")).unwrap();
     let save = |deployment: &str| {
         write(
             &peer_path("peer").unwrap(),

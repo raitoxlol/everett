@@ -5,13 +5,13 @@ import { ed25519, x25519 } from '@noble/curves/ed25519';
 import { hkdf } from '@noble/hashes/hkdf';
 import { sha256 } from '@noble/hashes/sha256';
 import { chacha20poly1305 } from '@noble/ciphers/chacha';
-import { handleRequest, type Env, type Operation } from '../src/index';
-import type { RelayResult } from '../src/owner-relay';
+import { handleRequest, type Env } from '../src/index';
 import { bindingVerifier } from '../src/auth';
+import { boundedText } from '../src/http-body';
 import {
   namespace, deviceBytes, fingerprint, envelopeBytes, aadBytes, observationBytes,
   rotationBytes, encode, hexString, bytes, verify, validateDevice,
-  type Device, type Envelope, type Principal, type Identity, type Observation,
+  type Device, type Envelope, type Principal, type Identity, type Observation, type Operation,
 } from '../src/protocol';
 import fixture from './fixtures/relay-wire-v2.json';
 
@@ -41,7 +41,7 @@ async function agent(space: string, subject = 'alice', role: 'admin' | 'member' 
 }
 async function call(p: Principal, op: Operation, args: unknown = {}): Promise<any> {
   const stub = env.OWNERS.get(env.OWNERS.idFromName(namespace(p)));
-  const response: RelayResult = JSON.parse(await stub.relay(p, op, args));
+  const response = await stub.relay(p, op, args);
   if (!response.ok) throw new Error(response.error);
   return response.value;
 }
@@ -226,6 +226,14 @@ describe('authenticated author/session directory', () => {
 });
 
 describe('Workers boundary', () => {
+  it.each(['/enroll', '/enroll/revoke', '/auth/github', '/v2/auth/poll', '/oauth/token', '/.well-known/oauth-authorization-server'])('keeps auth route %s behind configured authentication', async path => {
+    const response = await handleRequest(new Request(`https://everett.test${path}`), env);
+    expect(response.status).toBe(503);
+    expect(await response.json()).toEqual({ error: 'authentication_unconfigured' });
+  });
+  it.each(['/enrollment', '/oauth', '/oauth-other/token'])('does not treat %s as an auth route', async path => {
+    expect((await handleRequest(new Request(`https://everett.test${path}`), env)).status).toBe(404);
+  });
   it('fails closed without authentication and has no public enrollment or principal-header bypass', async () => {
     const result = await workerExports.default.fetch(request('whoami', {}, { 'X-Everett-User': 'alice', Authorization: 'Bearer synthetic' }));
     expect(result.status).toBe(503);
@@ -255,6 +263,43 @@ describe('Workers boundary', () => {
     expect(oversized.status).toBe(413);
     const expired = await handleRequest(request('whoami'), env, { verify: async () => ({ ...a.p, expiresAt: 0 }) });
     expect(expired.status).toBe(401);
+  });
+});
+
+describe('Bounded HTTP text', () => {
+  it('decodes split UTF-8 while counting bytes and cancels oversized streams', async () => {
+    const encoded = encoder.encode('😀');
+    const body = new ReadableStream<Uint8Array>({ start(controller) {
+      controller.enqueue(encoded.slice(0, 2)); controller.enqueue(encoded.slice(2)); controller.close();
+    } });
+    expect(await boundedText(body, 4)).toBe('😀');
+    expect(body.locked).toBe(false);
+    let cancelled = false;
+    const oversized = new ReadableStream<Uint8Array>({
+      start(controller) { controller.enqueue(encoded); },
+      cancel() { cancelled = true; },
+    });
+    await expect(boundedText(oversized, 3)).rejects.toMatchObject({ code: 'body_too_large', status: 413 });
+    expect(cancelled).toBe(true);
+    expect(oversized.locked).toBe(false);
+  });
+  it('rejects missing bodies and incomplete UTF-8 rather than replacing it', async () => {
+    await expect(boundedText(null, 4)).rejects.toMatchObject({ code: 'missing_body', status: 400 });
+    const body = new ReadableStream<Uint8Array>({ start(controller) {
+      controller.enqueue(new Uint8Array([0xf0, 0x9f])); controller.close();
+    } });
+    await expect(boundedText(body, 4)).rejects.toBeInstanceOf(TypeError);
+    expect(body.locked).toBe(false);
+  });
+  it('times out and releases a stalled body without waiting for cancellation', async () => {
+    let cancelled = false;
+    const body = new ReadableStream<Uint8Array>({ cancel() {
+      cancelled = true;
+      return new Promise<void>(() => {});
+    } });
+    await expect(boundedText(body, 4, 1)).rejects.toMatchObject({ code: 'request_timeout', status: 408 });
+    expect(cancelled).toBe(true);
+    expect(body.locked).toBe(false);
   });
 });
 

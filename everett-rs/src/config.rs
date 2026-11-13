@@ -120,7 +120,47 @@ pub fn get(key: &str, env: Option<&str>, default: &str) -> String {
     }
 }
 
-/// Set a top-level (no-section) key in ~/.everett/config.toml, preserving everything else.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum JevKeySource {
+    Env,
+    Config,
+    Hermes,
+}
+
+impl JevKeySource {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Env => "env",
+            Self::Config => "config",
+            Self::Hermes => "hermes",
+        }
+    }
+}
+
+/// Resolve the first nonempty Jev key: environment, Everett config, then Hermes.
+pub fn jev_key() -> (String, Option<JevKeySource>) {
+    let key = std::env::var("TYPESAFE_API_KEY").unwrap_or_default().trim().to_string();
+    if !key.is_empty() {
+        return (key, Some(JevKeySource::Env));
+    }
+    let key = get("typesafe_api_key", None, "");
+    if !key.is_empty() {
+        return (key, Some(JevKeySource::Config));
+    }
+    if let Ok(text) = fs::read_to_string(home().join(".hermes").join(".env")) {
+        for line in text.lines() {
+            let Some((name, value)) = line.split_once('=') else { continue };
+            if name.trim() == "TYPESAFE_API_KEY" {
+                let value = value.trim().trim_matches(|c| c == '"' || c == '\'');
+                if !value.is_empty() {
+                    return (value.to_string(), Some(JevKeySource::Hermes));
+                }
+            }
+        }
+    }
+    (String::new(), None)
+}
+
 /// Inverse of toml_escape for the escapes Everett writes.
 fn toml_unescape(value: &str) -> String {
     let chars: Vec<char> = value.chars().collect();

@@ -1,12 +1,10 @@
 use std::collections::HashSet;
 use std::fs;
-use std::sync::OnceLock;
 
-use regex::Regex;
 
 use serde_json::Value;
 
-use crate::adapters::{claude, codex, devin, external, grok, hermes, omp, pi, t3code};
+use crate::adapters::{external, t3code};
 use crate::error::{EverettError, Result};
 use crate::proc::ps_commands;
 use crate::session::{home, now, Session};
@@ -15,21 +13,6 @@ use crate::{cards, events};
 pub const LIVE_WINDOW: f64 = 600.0;
 pub const CAP: usize = 40;
 pub const AUTO_PREFIXES: &[&str] = &["You are ", "Automation:"];
-
-pub const ADAPTERS: &[&str] = &["claude", "codex", "omp", "pi", "hermes", "grok", "devin"];
-
-fn adapter_scan(name: &str, since_hours: f64) -> Vec<Session> {
-    match name {
-        "claude" => claude::scan(since_hours),
-        "codex" => codex::scan(since_hours),
-        "omp" => omp::scan(since_hours),
-        "pi" => pi::scan(since_hours),
-        "hermes" => hermes::scan(since_hours),
-        "grok" => grok::scan(since_hours),
-        "devin" => devin::scan(since_hours),
-        _ => Vec::new(),
-    }
-}
 
 /// Sessions Everett started headless: shown like interactive ones.
 pub fn spawned_ids() -> HashSet<String> {
@@ -60,13 +43,6 @@ pub fn mark_running(sessions: &mut [Session], ps_out: &str, at: f64) {
     }
 }
 
-/// Only harness binaries count as "running", not greps/scripts mentioning the id.
-/// Shared with send::is_busy so ls and send agree.
-pub fn harness_bin() -> &'static Regex {
-    static RE: OnceLock<Regex> = OnceLock::new();
-    RE.get_or_init(|| Regex::new(r"(^|/)(claude|codex|omp|pi|hermes|grok|devin)(\s|$)").unwrap())
-}
-
 /// Recheck one session's running state immediately before a send.
 pub fn session_running(s: &Session, ps_out: Option<&str>, at: Option<f64>) -> bool {
     if external::is_external(&s.harness) {
@@ -75,16 +51,16 @@ pub fn session_running(s: &Session, ps_out: Option<&str>, at: Option<f64>) -> bo
     let ps = ps_out.map(|p| p.to_string()).unwrap_or_else(ps_commands);
     let now = at.unwrap_or_else(now);
     (!s.id.is_empty()
-        && ps.lines().any(|line| line.contains(&s.id) && harness_bin().is_match(line)))
+        && ps.lines().any(|line| line.contains(&s.id) && crate::harness::binary_pattern().is_match(line)))
         || (now - s.last_active) < LIVE_WINDOW
 }
 
 /// Recent local and durable external sessions; `harness` filters before the local cap.
 pub fn scan(since_hours: f64, include_auto: bool, limit: Option<usize>, harness: &str) -> Vec<Session> {
     let mut sessions: Vec<Session> = Vec::new();
-    for name in ADAPTERS {
+    for name in crate::harness::NATIVE {
         if harness.is_empty() || name == &harness {
-            sessions.extend(adapter_scan(name, since_hours));
+            sessions.extend(crate::adapters::scan(name, since_hours));
         }
     }
     sessions.extend(external::scan(harness));

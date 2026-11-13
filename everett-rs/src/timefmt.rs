@@ -78,18 +78,18 @@ mod tests {
                 1735689600.0 - 9.0 * 3600.0,
                 "naive stamp must follow local TZ"
             );
-            // Offset stamps still parse as absolute time in any zone.
             assert_eq!(epoch_from_iso("2025-01-01T00:00:00Z").unwrap(), 1735689600.0);
             return;
         }
         let out = std::process::Command::new(std::env::current_exe().unwrap())
-            .args(["naive_iso_uses_local_time_like_python", "--exact"])
+            .args(["timefmt::tests::naive_iso_uses_local_time_like_python", "--exact"])
             .env("EVERETT_TZTEST", "1")
             .env("TZ", "Asia/Tokyo")
             .output()
             .unwrap();
         assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
-        // Same-process UTC sanity check (host TZ is UTC in CI, but assert via offset form).
+        let stdout = String::from_utf8_lossy(&out.stdout);
+        assert!(stdout.contains("1 passed"), "child test did not run: {stdout}");
         assert_eq!(epoch_from_iso("2025-01-01T00:00:00Z").unwrap(), 1735689600.0);
     }
 }

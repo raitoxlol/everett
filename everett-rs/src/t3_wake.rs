@@ -4,33 +4,11 @@
 //! busy thread's next turn without interrupting it. Everett sends a fixed nudge
 //! naming the durable inbox message; the sender's text never becomes a prompt.
 
-use std::collections::HashMap;
-use std::path::Path;
-
-use serde_json::Value;
-
-use crate::adapters::t3code;
+use crate::adapters::{t3_cli, t3code};
 use crate::error::{EverettError, Result};
-use crate::proc::{is_executable, run_capture, which};
-use crate::session::{clean, home, Session};
+use crate::session::{clean, Session};
 
 pub const SEND_TIMEOUT: f64 = 20.0;
-
-/// The JSON document in `t3` stdout. Some builds print log lines (such as a
-/// database migration warning) to stdout first, so take the first line that
-/// starts a JSON value at column 0 and parses through the end.
-pub(crate) fn parse_json_output(stdout: &str) -> Option<Value> {
-    let mut offset = 0;
-    for line in stdout.split_inclusive('\n') {
-        if line.starts_with('{') || line.starts_with('[') {
-            if let Ok(v) = serde_json::from_str(stdout[offset..].trim()) {
-                return Some(v);
-            }
-        }
-        offset += line.len();
-    }
-    None
-}
 
 /// The T3 thread that drives this provider session, if any.
 pub fn thread_id(session: &Session) -> Option<String> {
@@ -40,29 +18,10 @@ pub fn thread_id(session: &Session) -> Option<String> {
         .filter(|t| !t.is_empty())
 }
 
-/// `EVERETT_T3_BIN`, else `t3` on PATH, else T3's own install location.
-pub fn binary() -> Option<String> {
-    let path = std::env::var("PATH").unwrap_or_default();
-    if let Ok(bin) = std::env::var("EVERETT_T3_BIN") {
-        return if bin.is_empty() {
-            None
-        } else if bin.contains(std::path::MAIN_SEPARATOR) {
-            (Path::new(&bin).is_file() && is_executable(&bin)).then_some(bin)
-        } else {
-            which(&bin, &path)
-        };
-    }
-    which("t3", &path).or_else(|| {
-        let installed = home().join(".t3").join("bin").join("t3");
-        let bin = installed.to_string_lossy().to_string();
-        (installed.is_file() && is_executable(&bin)).then_some(bin)
-    })
-}
-
 pub fn validate_target(session: &Session) -> Result<String> {
     let thread = thread_id(session).ok_or_else(|| EverettError::new(4,
         "No active T3 thread resolves to this provider session. Nothing was queued. Use --mode inbox for manual pickup."))?;
-    if binary().is_none() {
+    if t3_cli::binary().is_none() {
         return Err(EverettError::new(4,
             "T3 Code CLI (t3) is unavailable. Set EVERETT_T3_BIN to an executable, install t3 on PATH or in ~/.t3/bin, or use --mode inbox. Nothing was queued."));
     }
@@ -70,7 +29,7 @@ pub fn validate_target(session: &Session) -> Result<String> {
 }
 
 pub fn nudge(session: &Session, message_id: &str) -> Result<String> {
-    let (pickup, reply) = crate::claude_wake::nudge_commands(&session.id, message_id, &session.harness)?;
+    let (pickup, reply) = crate::nudge::nudge_commands(&session.id, message_id, &session.harness)?;
     Ok(format!(
         "Everett message {message_id} is waiting in your inbox. \
          Read it with everett_inbox(message_id=\"{message_id}\"), do its request, then answer with \
@@ -90,21 +49,15 @@ pub(crate) fn wake_with_timeout(thread: &str, session: &Session, message_id: &st
     if !timeout.is_finite() || timeout <= 0.0 {
         return Err(EverettError::new(4, "Timeout expired before T3 dispatch."));
     }
-    let bin = binary().ok_or_else(|| {
+    let bin = t3_cli::binary().ok_or_else(|| {
         EverettError::new(4, "T3 Code CLI (t3) not found on PATH or in ~/.t3/bin.")
     })?;
-    let argv = vec![
-        bin,
-        "thread".into(),
-        "send".into(),
-        "--json".into(),
-        thread.to_string(),
-        nudge(session, message_id)?,
-    ];
-    let env: HashMap<String, String> = std::env::vars().collect();
+    let nudge = nudge(session, message_id)?;
+    let args = ["thread", "send", "--json", thread, &nudge];
     let timeout = timeout.min(SEND_TIMEOUT);
-    let out = run_capture(&argv, None, &env, timeout)
+    let captured = t3_cli::capture(&bin, &args, timeout)
         .map_err(|e| EverettError::new(4, format!("t3 thread send failed to start: {e}")))?;
+    let out = captured.output;
     if out.timed_out {
         return Err(EverettError::new(
             4,
@@ -122,7 +75,7 @@ pub(crate) fn wake_with_timeout(thread: &str, session: &Session, message_id: &st
             format!("t3 thread send exited {}: {}", out.code, clean(detail, 300)),
         ));
     }
-    if parse_json_output(out.stdout.trim()).is_none() {
+    if captured.receipt.is_none() {
         return Err(EverettError::new(4,
             "t3 returned no valid JSON receipt. Check that the selected CLI supports thread commands. Dispatch is unconfirmed; do not blindly retry."));
     }

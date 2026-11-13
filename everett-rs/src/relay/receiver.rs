@@ -93,7 +93,7 @@ impl Lease {
         // The capability record is advisory. A failed write must not release the
         // lease or stop delivery, and it must not leave an older owner/device
         // looking like the live receiver.
-        if let Err(error) = crate::peer::save(&status, &bytes) {
+        if let Err(error) = crate::storage::save(&status, &bytes) {
             discard_status(&status);
             eprintln!(
                 "everett relay: receiver status could not be written; delivery continues: {}",

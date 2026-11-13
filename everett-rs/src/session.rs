@@ -184,7 +184,6 @@ pub fn read_edges(path: &Path) -> EdgeRows {
         return (head, tail);
     }
     let offset = CHUNK.max(size - CHUNK) as u64;
-    // Drop the tail's first line only when the window starts mid-record.
     let mut prev = [0u8; 1];
     let tail_partial = f
         .seek(SeekFrom::Start(offset - 1))
@@ -294,13 +293,11 @@ mod tests {
         let tagged = serde_json::to_string(&serde_json::json!({"type": "user", "i": 999999})).unwrap();
         // offset = CHUNK.max(size - CHUNK), so the boundary must be past CHUNK.
         let start = CHUNK + tagged.len() + 1; // tail starts at `start` → size = start + CHUNK
-        // First line pads to `start`; tagged record second; filler to start+CHUNK.
         let first = {
             let base = serde_json::to_string(&serde_json::json!({"type": "user", "i": 0})).unwrap();
             format!("{}{}\n", " ".repeat(start - base.len() - 1), base)
         };
         let mut body = first + &tagged + "\n";
-        // One filler line sized so total length is exactly start + CHUNK.
         let short = serde_json::to_string(&serde_json::json!({"type": "user", "i": 1})).unwrap();
         let need = start + CHUNK - body.len();
         assert!(need > short.len() + 1, "test setup: cannot pad to boundary");

@@ -6,14 +6,11 @@
 //! or starting promotes text to an owner prompt and reading discloses transcripts.
 //! `stop` is reported per harness; no harness exposes a safe stop to Everett yet.
 
-use std::collections::HashMap;
-
 use serde_json::{json, Map, Value};
 
 use crate::error::{EverettError, Result};
-use crate::proc::run_capture;
+use crate::adapters::t3_cli;
 use crate::session::Session;
-use crate::t3_wake::parse_json_output;
 
 /// Upper bound for a `--wait` T3 turn or a headless start.
 pub const MAX_WAIT: f64 = 1800.0;
@@ -21,18 +18,16 @@ const QUICK: f64 = 30.0;
 const MAX_MESSAGES: usize = 50;
 
 fn t3_bin() -> Result<String> {
-    crate::t3_wake::binary().ok_or_else(|| {
+    t3_cli::binary().ok_or_else(|| {
         EverettError::new(4, "T3 Code CLI (t3) is unavailable. Set EVERETT_T3_BIN or install t3 on PATH or in ~/.t3/bin.")
     })
 }
 
 /// Run `t3 <args> --json` and parse its stdout. T3 writes diagnostics to stderr.
 fn t3_json(args: &[&str], timeout: f64) -> Result<Value> {
-    let mut argv = vec![t3_bin()?];
-    argv.extend(args.iter().map(|a| a.to_string()));
-    let env: HashMap<String, String> = std::env::vars().collect();
-    let out = run_capture(&argv, None, &env, timeout)
+    let captured = t3_cli::capture(&t3_bin()?, args, timeout)
         .map_err(|e| EverettError::new(4, format!("t3 failed to start: {e}")))?;
+    let out = captured.output;
     if out.timed_out {
         return Err(EverettError::new(4, format!("t3 {} timed out after {timeout}s", args.join(" "))));
     }
@@ -42,7 +37,7 @@ fn t3_json(args: &[&str], timeout: f64) -> Result<Value> {
         let detail: String = detail.chars().rev().take(400).collect::<Vec<_>>().into_iter().rev().collect();
         return Err(EverettError::new(4, format!("t3 {} exited {}: {}", args.first().unwrap_or(&""), out.code, detail)));
     }
-    let mut value = parse_json_output(stdout).ok_or_else(|| EverettError::new(4,
+    let mut value = captured.receipt.ok_or_else(|| EverettError::new(4,
         format!("t3 returned no valid JSON receipt (exit {}). Check that the selected CLI supports thread commands. Dispatch is unconfirmed; do not blindly retry.", out.code)))?;
     if out.code == 2 {
         if let Some(map) = value.as_object_mut() {
@@ -299,14 +294,6 @@ mod tests {
         assert_eq!(texts, ["hi claude", "hello", "codex ask", "plain"]);
         assert_eq!(transcript_tail(&text, 2).len(), 2);
         assert_eq!(transcript_tail(&text, 2)[1]["text"], "plain");
-    }
-
-    #[test]
-    fn json_output_skips_leading_log_noise() {
-        let noisy = "[19:46] WARN (#20): migration diverges {\n  divergent: [\n    '73:X'\n  ]\n}\n[\n  {\"id\": \"t1\"}\n]\n";
-        assert_eq!(parse_json_output(noisy), Some(json!([{"id": "t1"}])));
-        assert_eq!(parse_json_output("{\"ok\":true}"), Some(json!({"ok": true})));
-        assert_eq!(parse_json_output("plain text"), None);
     }
 
     #[test]

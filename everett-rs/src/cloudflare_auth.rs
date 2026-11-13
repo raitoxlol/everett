@@ -1,7 +1,7 @@
 //! Native Cloudflare enrollment. OAuth gateway grants stay separate.
 use crate::cli::Args;
 use crate::error::{EverettError, Result};
-use crate::{auth, peer, session};
+use crate::{auth, session};
 use fs2::FileExt;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -223,7 +223,7 @@ pub fn load() -> Result<Option<Credential>> {
 }
 
 fn save<T: Serialize>(path: &Path, value: &T) -> Result<()> {
-    peer::private_dir_io(&root())
+    crate::storage::private_dir_io(&root())
         .map_err(|_| fail(6, "could not create the private Everett directory"))?;
     let mut temp = tempfile::NamedTempFile::new_in(root())
         .map_err(|_| fail(6, "could not create a private sign-in file"))?;
@@ -252,7 +252,7 @@ fn remove(path: &Path) -> Result<()> {
 }
 
 fn lock() -> Result<File> {
-    peer::private_dir_io(&root())
+    crate::storage::private_dir_io(&root())
         .map_err(|_| fail(6, "could not create the private Everett directory"))?;
     let file = OpenOptions::new()
         .create(true)

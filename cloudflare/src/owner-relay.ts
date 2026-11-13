@@ -1,11 +1,10 @@
 import { DurableObject } from 'cloudflare:workers';
 import { z, ZodError } from 'zod';
-import type { Env, Operation } from './index';
 import {
   DEVICE_LABEL_LIMIT, deviceSchema, envelopeSchema, observationSchema, identitySchema, principalSchema,
   namespace, identifier, validateDevice, fingerprint, rotationBytes, verify,
   envelopeBytes, observationBytes, digest, RelayError,
-  type Device, type Envelope, type Principal, type Identity, type MessageState,
+  type Device, type Envelope, type Principal, type Identity, type MessageState, type Operation, type RelayResult,
 } from './protocol';
 
 type Credential = { agent_id: string; subject: string; status: string };
@@ -13,15 +12,14 @@ type Member = { subject: string; role: 'admin' | 'member'; status: string };
 type Attempt = { message_id: string; from_device: string; to_device: string; idempotency_key: string; digest: string; state: MessageState; expires_at: number; metadata: string };
 type Metadata = Omit<Envelope, 'ciphertext' | 'signature' | 'ephemeralKey' | 'nonce' | 'createdAt'>;
 type EnrollmentResult = { ok: true; value: { owner: string; deviceId: string } } | { ok: false; error: string; status: number };
-export type RelayResult = { ok: true; value: unknown } | { ok: false; error: string; status: number };
 const empty = z.strictObject({});
 const deviceIdArgs = z.strictObject({ deviceId: identifier });
 const stateRank: Record<MessageState, number> = { queued: 0, expired: 0, delivered: 1, claimed: 2, replied: 3 };
 const watcherSchema = principalSchema.pick({ agentId: true, expiresAt: true }).extend({ fingerprint: z.string().regex(/^[0-9a-f]{64}$/) });
 const inboxChanged = JSON.stringify({ type: 'inbox_changed' });
 
-export class OwnerRelay extends DurableObject<Env> {
-  constructor(ctx: DurableObjectState, env: Env) {
+export class OwnerRelay extends DurableObject {
+  constructor(ctx: DurableObjectState, env: Cloudflare.Env) {
     super(ctx, env);
     ctx.storage.sql.exec(`
       CREATE TABLE IF NOT EXISTS owner (singleton INTEGER PRIMARY KEY CHECK(singleton=1), namespace TEXT NOT NULL);
@@ -191,7 +189,7 @@ export class OwnerRelay extends DurableObject<Env> {
     this.ctx.storage.sql.exec('INSERT INTO rates VALUES(?,?,?) ON CONFLICT(scope) DO UPDATE SET window=excluded.window,count=excluded.count', scope, window, count + 1);
   }
 
-  async relay(principalInput: Principal, op: Operation, args: unknown): Promise<string> {
+  async relay(principalInput: Principal, op: Operation, args: unknown) {
     try {
       const p = principalSchema.parse(principalInput);
       const value = await this.ctx.storage.transaction(async () => {
@@ -205,15 +203,15 @@ export class OwnerRelay extends DurableObject<Env> {
         if (attempt?.state === 'queued' && attempt.expires_at > Date.now()) this.#notify(attempt.to_device);
       }
       if (op === 'revokeAgent' || op === 'revokeMember' || op === 'rotate') this.#closeInvalidWatchers();
-      return JSON.stringify({ ok: true, value });
+      return { ok: true, value } satisfies RelayResult;
     } catch (error) {
-      if (error instanceof RelayError) return JSON.stringify({ ok: false, error: error.code, status: error.status });
-      if (error instanceof ZodError) return JSON.stringify({ ok: false, error: 'invalid_request', status: 400 });
+      if (error instanceof RelayError) return { ok: false, error: error.code, status: error.status } satisfies RelayResult;
+      if (error instanceof ZodError) return { ok: false, error: 'invalid_request', status: 400 } satisfies RelayResult;
       throw error;
     }
   }
 
-  #execute(p: Principal, op: Operation, args: unknown): unknown {
+  #execute(p: Principal, op: Operation, args: unknown) {
     const auth = this.#authorize(p), now = Date.now(), owner = namespace(p);
     switch (op) {
       case 'exposeSession': {
