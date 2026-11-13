@@ -16,7 +16,7 @@ const BIN: &str = env!("CARGO_BIN_EXE_everett");
 const TOKEN: &str = "synthetic-gateway-test-token-not-a-real-secret";
 const INTROSPECTION_SECRET: &str = "synthetic-introspection-secret-not-real-000";
 const RESOURCE: &str = "https://dot.example.com/mcp";
-const TOOLS: [&str; 5] = ["everett_core", "everett_whoami", "everett_inbox", "everett_card", "everett_send"];
+const TOOLS: [&str; 6] = ["everett_identity", "everett_core", "everett_whoami", "everett_inbox", "everett_card", "everett_send"];
 
 fn initialize() -> Value {
     json!({"protocolVersion": "2025-06-18", "capabilities": {}, "clientInfo": {"name": "synthetic-gateway-tests", "version": "0"}})
@@ -472,7 +472,7 @@ fn oauth_token_maps_to_its_dot_identity() {
         let list = body_json(&post(port, &json!({"jsonrpc": "2.0", "id": 2, "method": "tools/list"}), &auth));
         let tools = list["result"]["tools"].as_array().unwrap();
         let card = tools.iter().find(|t| t["name"] == "everett_card").unwrap();
-        assert_eq!(card["inputSchema"]["properties"]["session_id"]["enum"], json!([agent]), "{card}");
+        assert_eq!(card["inputSchema"]["properties"]["session_id"]["type"], "string", "{card}");
         let data = success(&body_json(&post(port, &whoami(), &auth)));
         assert_eq!(data["session_id"], agent);
         assert_eq!(data["gateway_auth"], json!({"mode": "oauth", "agent_name": "ChatGPT dot", "client_id": "https://chatgpt.com/oauth/client.json"}));
@@ -482,6 +482,36 @@ fn oauth_token_maps_to_its_dot_identity() {
     let agents: Vec<Value> = c.records().iter().map(|r| r["agent_id"].clone()).collect();
     assert_eq!(agents, vec![json!("agent-aaaa"), json!("agent-bbbb")]);
     assert!(c.records().iter().all(|r| r["has_secret"] == false), "introspection secret must not reach workers");
+}
+
+fn oauth_chat_identity_survives_reapproval_but_rejects_another_account() {
+    let c = ctx();
+    let issuer = fake_issuer();
+    issuer.grant(&access('a'), "agent-old", json!({"everett_account":"github:alice"}));
+    issuer.grant(&access('b'), "agent-new", json!({"everett_account":"github:alice"}));
+    issuer.grant(&access('c'), "agent-bob", json!({"everett_account":"github:bob"}));
+    issuer.grant(&access('d'), "agent-other-client", json!({"everett_account":"github:alice","client_id":"https://other.example/client"}));
+    let port = c.with_backend_oauth_server(&issuer.url);
+    let call = |token: char, name: &str, args: Value| {
+        let authorization = bearer(&access(token));
+        body_json(&post(port, &json!({"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":name,"arguments":args}}), &[("Authorization", Some(authorization.as_str()))]))
+    };
+    let create = json!({"action":"create","registration_key":"private-key-for-chat-registration-123","name":"Alice chat","kind":"chat"});
+    let identity = success(&call('a',"everett_identity",create.clone()));
+    assert_eq!(success(&call('b',"everett_identity",create.clone())),identity);
+    let own = json!({"identity_handle":identity["identity_handle"]});
+    assert_eq!(success(&call('b',"everett_whoami",own.clone()))["session_id"],identity["session_id"]);
+    denied(&call('c',"everett_whoami",own.clone()));
+    denied(&call('d',"everett_whoami",own.clone()));
+    denied(&call('c',"everett_identity",json!({"action":"revoke","identity_handle":identity["identity_handle"]})));
+    assert_eq!(success(&call('c',"everett_identity",json!({"action":"list"})))["identities"], json!([]));
+    let bob = success(&call('c',"everett_identity",create));
+    assert_ne!(bob["session_id"],identity["session_id"]);
+    assert_ne!(bob["identity_handle"],identity["identity_handle"]);
+    issuer.grant(&access('b'),"agent-new",json!({"active":false}));
+    assert_eq!(post(port,&whoami(),&[("Authorization",Some(bearer(&access('b')).as_str()))]).status,401);
+    // A new account-level approval remains required after revocation; a handle is insufficient.
+    assert_eq!(success(&call('a',"everett_whoami",own))["session_id"],identity["session_id"]);
 }
 
 fn oauth_rejects_wrong_issuer_audience_expiry_scope_identity_and_revoked_tokens() {
@@ -663,6 +693,84 @@ fn conversation_metadata_cannot_replace_the_gateway_binding() {
     }
     assert_eq!(c.records().len(), 2);
     assert!(c.records().iter().all(|r| r["agent_id"] == "dot-one"));
+}
+
+fn per_chat_identities_are_private_durable_and_revocable() {
+    let c = ctx();
+    let mut peer = c.peer(&fixture(&[]));
+    let mut identities = Vec::new();
+    for (key, kind) in [("a", "chat"), ("b", "chat"), ("c", "dot"), ("d", "codex")] {
+        let args = json!({"action":"create", "registration_key":key.repeat(32), "name":"Same name", "kind":kind});
+        let created = success(&peer.call("everett_identity", args.clone()));
+        assert!(created["session_id"].as_str().unwrap().starts_with("chat-"), "{created}");
+        assert_ne!(created["session_id"], "dot-one");
+        assert_eq!(success(&peer.call("everett_identity", args)), created);
+        let own = success(&peer.call("everett_whoami", json!({"identity_handle":created["identity_handle"]})));
+        assert_eq!(own["session_id"], created["session_id"]);
+        assert!(!own.to_string().contains(created["identity_handle"].as_str().unwrap()));
+        identities.push(created);
+    }
+    let list = success(&peer.call("everett_identity", json!({"action":"list"})));
+    assert_eq!(list["identities"].as_array().unwrap().len(), 4);
+    for identity in &identities {
+        assert!(!list.to_string().contains(identity["identity_handle"].as_str().unwrap()));
+    }
+    assert_ne!(identities[0]["session_id"], identities[1]["session_id"]);
+    denied(&peer.call("everett_inbox", json!({"identity_handle":identities[0]["identity_handle"], "session_id":identities[1]["session_id"]})));
+    denied(&peer.call("everett_control", json!({"identity_handle":identities[0]["identity_handle"],"action":"start"})));
+    drop(peer);
+    let mut peer = c.peer(&fixture(&[]));
+    assert_eq!(success(&peer.call("everett_whoami", json!({"identity_handle":identities[0]["identity_handle"]})))["session_id"], identities[0]["session_id"]);
+    success(&peer.call("everett_identity", json!({"action":"revoke","identity_handle":identities[0]["identity_handle"]})));
+    denied(&peer.call("everett_whoami", json!({"identity_handle":identities[0]["identity_handle"]})));
+    assert_eq!(success(&peer.call("everett_whoami", json!({"identity_handle":identities[1]["identity_handle"]})))["session_id"], identities[1]["session_id"]);
+    assert_eq!(success(&peer.call("everett_whoami", json!({})))["session_id"], "dot-one");
+    assert!(c.records().iter().all(|r| r["arguments"].get("identity_handle").is_none()));
+}
+
+fn chat_identities_discover_and_exchange_correlated_inbox_messages() {
+    let mut c = ctx();
+    let mut peer = c.peer(&json!({}));
+    let a = success(&peer.call("everett_identity",json!({"action":"create","registration_key":"a".repeat(32),"name":"First chat","kind":"chat"})));
+    let b = success(&peer.call("everett_identity",json!({"action":"create","registration_key":"b".repeat(32),"name":"Second chat","kind":"dot"})));
+    drop(peer);
+    let listing: Value = serde_json::from_slice(&c.cli(&["external","list"]).stdout).unwrap();
+    assert_eq!(listing.as_array().unwrap().len(),2);
+    // The local owner grants destinations; chat registration does not grant them.
+    c.config["destinations"] = json!([a["session_id"],b["session_id"]]);
+    let mut peer = c.peer(&json!({}));
+    let sent = success(&peer.call("everett_send",json!({"identity_handle":a["identity_handle"],"to":b["session_id"],"text":"Exact request"})));
+    assert_eq!(sent["delivered"],false);
+    let received = success(&peer.call("everett_inbox",json!({"identity_handle":b["identity_handle"]})));
+    assert_eq!(received["messages"][0]["id"],sent["message_id"]);
+    assert_eq!(received["messages"][0]["from"],a["session_id"]);
+    assert!(received["messages"][0]["text"].as_str().unwrap().ends_with("\"Exact request\""));
+    assert_eq!(received["messages"][0]["untrusted"],true);
+    success(&peer.call("everett_send",json!({"identity_handle":b["identity_handle"],"reply_to":sent["message_id"],"text":"Exact answer"})));
+    let reply = success(&peer.call("everett_inbox",json!({"identity_handle":a["identity_handle"]})));
+    assert_eq!(reply["messages"][0]["reply_to"],sent["message_id"]);
+    assert!(reply["messages"][0]["text"].as_str().unwrap().ends_with("\"Exact answer\""));
+    assert_eq!(success(&peer.call("everett_inbox",json!({"identity_handle":b["identity_handle"]})))["messages"],json!([]));
+}
+
+fn revoked_identity_retries_finish_failed_registration_cleanup() {
+    let c = ctx();
+    let mut peer = c.peer(&fixture(&[]));
+    let created = success(&peer.call("everett_identity",json!({"action":"create","registration_key":"r".repeat(32),"name":"Retry cleanup","kind":"chat"})));
+    let path = c.home.join(".everett/external").join(format!("{}.json",created["session_id"].as_str().unwrap()));
+    let registration = std::fs::read(&path).unwrap();
+    std::fs::remove_file(&path).unwrap();
+    std::fs::create_dir(&path).unwrap();
+    let revoke = json!({"action":"revoke","identity_handle":created["identity_handle"]});
+    denied(&peer.call("everett_identity",revoke.clone()));
+    denied(&peer.call("everett_whoami",json!({"identity_handle":created["identity_handle"]})));
+    // Repair the cleanup obstacle; the already-revoked handle must still clean up.
+    std::fs::remove_dir(&path).unwrap();
+    std::fs::write(&path,registration).unwrap();
+    assert_eq!(success(&peer.call("everett_identity",revoke.clone()))["revoked"],true);
+    assert!(!path.exists());
+    assert_eq!(success(&peer.call("everett_identity",revoke))["revoked"],true);
+    denied(&peer.call("everett_whoami",json!({"identity_handle":created["identity_handle"]})));
 }
 
 fn core_is_an_explicit_grant() {
@@ -918,6 +1026,10 @@ fn symlinked_working_directory_is_canonicalized() {
 type Case = (&'static str, fn());
 
 const CASES: &[Case] = &[
+    ("revoked_identity_retries_finish_failed_registration_cleanup", revoked_identity_retries_finish_failed_registration_cleanup),
+    ("chat_identities_discover_and_exchange_correlated_inbox_messages", chat_identities_discover_and_exchange_correlated_inbox_messages),
+    ("oauth_chat_identity_survives_reapproval_but_rejects_another_account", oauth_chat_identity_survives_reapproval_but_rejects_another_account),
+    ("per_chat_identities_are_private_durable_and_revocable", per_chat_identities_are_private_durable_and_revocable),
     ("native_stdio_journey_for_both_external_harnesses", native_stdio_journey_for_both_external_harnesses),
     ("policy_rejects_foreign_identity_project_and_unsafe_arguments", policy_rejects_foreign_identity_project_and_unsafe_arguments),
     ("conversation_metadata_cannot_replace_the_gateway_binding", conversation_metadata_cannot_replace_the_gateway_binding),
