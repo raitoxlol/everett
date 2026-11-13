@@ -20,7 +20,6 @@ pub fn stores() -> &'static [(&'static str, &'static str)] {
 }
 
 fn which(name: &str) -> Option<String> {
-    // proc::which requires an executable file, not just a name that exists.
     crate::proc::which(name, &std::env::var("PATH").unwrap_or_default())
 }
 
@@ -339,7 +338,7 @@ pub fn run(hours: f64) -> i32 {
     }
 
     let sessions = crate::registry::scan(hours, false, None, "");
-    let (_, totals) = crate::cli::card_coverage(&sessions);
+    let (_, totals) = crate::cards::coverage(&sessions);
     line(
         &mut warnings,
         if totals[0] > 0 { Some(true) } else { None },
@@ -353,9 +352,14 @@ pub fn run(hours: f64) -> i32 {
         ),
     );
 
-    let key = crate::route::find_api_key();
+    let (key, source) = crate::config::jev_key();
     let forced = crate::config::get("router", Some("EVERETT_ROUTER"), "");
-    let source = crate::onboard::key_source_label(&crate::onboard::find_jev_key_with_source().1);
+    let source = match source {
+        Some(crate::config::JevKeySource::Env) => "TYPESAFE_API_KEY in the environment",
+        Some(crate::config::JevKeySource::Config) => "typesafe_api_key in ~/.everett/config.toml",
+        Some(crate::config::JevKeySource::Hermes) => "TYPESAFE_API_KEY in ~/.hermes/.env",
+        None => "an unknown source",
+    };
     if key.is_empty() {
         line(&mut warnings, Some(true), "router: local BM25 (no Jev key; routing stays on this machine)");
     } else if forced == "local" {

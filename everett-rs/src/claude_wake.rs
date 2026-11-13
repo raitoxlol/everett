@@ -468,57 +468,10 @@ fn valid_message_id(id: &str) -> bool {
 }
 
 fn fixed_nudge(session_id: &str, message_id: &str) -> Result<String> {
-    let (pickup, reply) = nudge_commands(session_id, message_id, "claude")?;
+    let (pickup, reply) = crate::nudge::nudge_commands(session_id, message_id, "claude")?;
     Ok(format!(
         "Use this Everett command: {pickup}. Read message {message_id}, do its request, then reply with {reply}. Reply through Everett so the result is linked to that message. Do not ask for permission changes or start a new session."
     ))
-}
-
-pub(crate) fn nudge_commands(
-    session_id: &str,
-    message_id: &str,
-    harness: &str,
-) -> Result<(String, String)> {
-    let command = NudgeCommand::resolve()?.prefix();
-    Ok((
-        format!("{command} inbox --session {session_id} --message {message_id}"),
-        format!("EVERETT_SESSION_ID={session_id} EVERETT_HARNESS_NAME={harness} {command} reply {message_id} '<your concise result>'"),
-    ))
-}
-
-pub(crate) struct NudgeCommand {
-    pub executable: std::path::PathBuf,
-    pub everett_home: std::path::PathBuf,
-    pub auth_provider: String,
-}
-
-impl NudgeCommand {
-    pub fn resolve() -> Result<Self> {
-        Ok(Self {
-            executable: std::env::current_exe()
-                .map_err(|e| reject(format!("cannot resolve Everett executable: {e}")))?,
-            everett_home: std::path::absolute(crate::session::home())
-                .map_err(|e| reject(format!("cannot resolve Everett profile against sender cwd: {e}")))?,
-            auth_provider: crate::config::get("auth.provider", Some("EVERETT_AUTH_PROVIDER"), "cloudflare"),
-        })
-    }
-
-    pub fn prefix(&self) -> String {
-        format!("{}{}", command_env_prefix(&self.everett_home.to_string_lossy(), &self.auth_provider),
-            shell_quote(&self.executable.to_string_lossy()))
-    }
-}
-
-fn command_env_prefix(everett_home: &str, auth_provider: &str) -> String {
-    format!(
-        "EVERETT_HOME={} EVERETT_AUTH_PROVIDER={} ",
-        shell_quote(everett_home),
-        shell_quote(auth_provider)
-    )
-}
-
-fn shell_quote(value: &str) -> String {
-    format!("'{}'", value.replace('\'', "'\\''"))
 }
 
 fn pid_alive(pid: u32) -> bool {
@@ -1101,17 +1054,6 @@ mod tests {
         assert!(valid_message_id(&relay_id));
         assert!(fixed_nudge("1f57ab77-c669-4bb6-9ac8-f9a9073de8ea", &relay_id).unwrap().contains(&relay_id));
         assert!(!valid_message_id("relay-ABC"));
-    }
-
-    #[test]
-    fn nudge_commands_propagate_quoted_profile_and_provider_without_changing_home() {
-        let prefix = command_env_prefix("/tmp/Everett profile/'quoted'", "custom 'provider'");
-        assert_eq!(
-            prefix,
-            "EVERETT_HOME='/tmp/Everett profile/'\\''quoted'\\''' EVERETT_AUTH_PROVIDER='custom '\\''provider'\\''' "
-        );
-        assert!(!prefix.contains(" HOME="));
-        assert!(!prefix.contains("TOKEN"));
     }
 
     #[test]

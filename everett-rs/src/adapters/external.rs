@@ -8,11 +8,10 @@ use serde::{Deserialize, Serialize};
 use crate::inbox::HUMAN;
 use crate::session::{home, now, Session};
 
-pub const HARNESSES: &[&str] = &["openai-dot", "grok-bot"];
 pub const RESERVED_IDS: &[&str] = &[HUMAN, "live"];
 
 pub fn is_external(harness: &str) -> bool {
-    HARNESSES.contains(&harness)
+    crate::harness::EXTERNAL.contains(&harness)
 }
 
 pub fn valid_id(id: &str) -> bool {
@@ -35,15 +34,129 @@ pub struct Registration {
     pub device: Option<String>,
 }
 
-fn directory() -> PathBuf {
-    home().join(".everett").join("external")
+/// Registration storage bound to one Everett profile.
+pub struct Store {
+    directory: PathBuf,
 }
 
-fn path(id: &str) -> Result<PathBuf, String> {
-    if !valid_id(id) {
-        return Err(format!("Invalid or reserved external id: {id:?}"));
+impl Store {
+    pub fn new(home: &Path) -> Self {
+        Self {
+            directory: home.join(".everett").join("external"),
+        }
     }
-    Ok(directory().join(format!("{id}.json")))
+
+    fn path(&self, id: &str) -> Result<PathBuf, String> {
+        if !valid_id(id) {
+            return Err(format!("Invalid or reserved external id: {id:?}"));
+        }
+        Ok(self.directory.join(format!("{id}.json")))
+    }
+
+    pub fn exists(&self, id: &str) -> Result<bool, String> {
+        Ok(self.path(id)?.exists())
+    }
+
+    pub fn get(&self, id: &str) -> Result<Option<Registration>, String> {
+        Ok(load(&self.path(id)?))
+    }
+
+    pub fn records(&self) -> Vec<Registration> {
+        let Ok(entries) = fs::read_dir(&self.directory) else {
+            return Vec::new();
+        };
+        let mut records = Vec::new();
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.extension().and_then(|s| s.to_str()) != Some("json") {
+                continue;
+            }
+            let Some(record) = load(&path) else {
+                continue;
+            };
+            records.push(record);
+        }
+        records.sort_by(|a, b| a.id.cmp(&b.id));
+        records
+    }
+
+    /// The bound relay target (`PEER/HARNESS/SESSION`) for a registered external
+    /// inbox, if any. Sends to bound registrations leave this device through the
+    /// encrypted relay and stay queued server-side until the remote peer picks up.
+    pub fn device_target(&self, id: &str) -> Option<String> {
+        self.get(id).ok().flatten().and_then(|r| r.device)
+    }
+
+    pub fn register(
+        &self,
+        id: &str,
+        harness: &str,
+        title: &str,
+        cwd: &str,
+        device: Option<&str>,
+        replace: bool,
+    ) -> Result<Registration, String> {
+        if let Some(d) = device {
+            crate::peer::target(d).map_err(|e| e.to_string())?;
+        }
+        let target = self.path(id)?;
+        if !is_external(harness) {
+            return Err(format!(
+                "External harness must be one of {}.",
+                crate::harness::EXTERNAL.join(", ")
+            ));
+        }
+        if replace {
+            let previous =
+                load(&target).ok_or("Existing registration must be a valid regular file.")?;
+            if previous.harness != harness {
+                return Err("Remove the existing registration before changing its harness.".into());
+            }
+        }
+        let record = Registration {
+            id: id.into(),
+            harness: harness.into(),
+            title: title.into(),
+            cwd: cwd.into(),
+            updated: now(),
+            device: device.map(|d| d.to_string()),
+        };
+        let folder = &self.directory;
+        fs::DirBuilder::new()
+            .recursive(true)
+            .mode(0o700)
+            .create(folder)
+            .map_err(|e| e.to_string())?;
+        let mut temporary = tempfile::Builder::new()
+            .prefix(".registration-")
+            .tempfile_in(folder)
+            .map_err(|e| e.to_string())?;
+        serde_json::to_writer(&mut temporary, &record).map_err(|e| e.to_string())?;
+        temporary.write_all(b"\n").map_err(|e| e.to_string())?;
+        temporary.as_file().sync_all().map_err(|e| e.to_string())?;
+        if replace {
+            temporary
+                .persist(&target)
+                .map_err(|e| e.error.to_string())?;
+        } else {
+            temporary
+                .persist_noclobber(&target)
+                .map_err(|e| e.error.to_string())?;
+        }
+        Ok(record)
+    }
+
+    pub fn remove(&self, id: &str) -> Result<(), String> {
+        fs::remove_file(self.path(id)?).map_err(|e| e.to_string())
+    }
+
+    pub fn remove_if_exists(&self, id: &str) -> Result<(), String> {
+        match fs::remove_file(self.path(id)?) {
+            Ok(()) => Ok(()),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            Err(e) => Err(e.to_string()),
+        }
+    }
 }
 
 pub fn load(path: &Path) -> Option<Registration> {
@@ -67,29 +180,11 @@ pub fn load(path: &Path) -> Option<Registration> {
 }
 
 pub fn records() -> Vec<Registration> {
-    let Ok(entries) = fs::read_dir(directory()) else {
-        return Vec::new();
-    };
-    let mut records = Vec::new();
-    for entry in entries.flatten() {
-        let path = entry.path();
-        if path.extension().and_then(|s| s.to_str()) != Some("json") {
-            continue;
-        }
-        let Some(record) = load(&path) else {
-            continue;
-        };
-        records.push(record);
-    }
-    records.sort_by(|a, b| a.id.cmp(&b.id));
-    records
+    Store::new(&home()).records()
 }
 
-/// The bound relay target (`PEER/HARNESS/SESSION`) for a registered external
-/// inbox, if any. Sends to bound registrations leave this device through the
-/// encrypted relay and stay queued server-side until the remote peer picks up.
 pub fn device_target(id: &str) -> Option<String> {
-    path(id).ok().and_then(|p| load(&p)).and_then(|r| r.device)
+    Store::new(&home()).device_target(id)
 }
 
 pub fn register(
@@ -100,46 +195,11 @@ pub fn register(
     device: Option<&str>,
     replace: bool,
 ) -> Result<Registration, String> {
-    if let Some(d) = device {
-        crate::peer::target(d).map_err(|e| e.to_string())?;
-    }
-    let target = path(id)?;
-    if !is_external(harness) {
-        return Err(format!("External harness must be one of {}.", HARNESSES.join(", ")));
-    }
-    if replace {
-        let previous = load(&target).ok_or("Existing registration must be a valid regular file.")?;
-        if previous.harness != harness {
-            return Err("Remove the existing registration before changing its harness.".into());
-        }
-    }
-    let record = Registration {
-        id: id.into(),
-        harness: harness.into(),
-        title: title.into(),
-        cwd: cwd.into(),
-        updated: now(),
-        device: device.map(|d| d.to_string()),
-    };
-    let folder = directory();
-    fs::DirBuilder::new().recursive(true).mode(0o700).create(&folder).map_err(|e| e.to_string())?;
-    let mut temporary = tempfile::Builder::new()
-        .prefix(".registration-")
-        .tempfile_in(&folder)
-        .map_err(|e| e.to_string())?;
-    serde_json::to_writer(&mut temporary, &record).map_err(|e| e.to_string())?;
-    temporary.write_all(b"\n").map_err(|e| e.to_string())?;
-    temporary.as_file().sync_all().map_err(|e| e.to_string())?;
-    if replace {
-        temporary.persist(&target).map_err(|e| e.error.to_string())?;
-    } else {
-        temporary.persist_noclobber(&target).map_err(|e| e.error.to_string())?;
-    }
-    Ok(record)
+    Store::new(&home()).register(id, harness, title, cwd, device, replace)
 }
 
 pub fn remove(id: &str) -> Result<(), String> {
-    fs::remove_file(path(id)?).map_err(|e| e.to_string())
+    Store::new(&home()).remove(id)
 }
 
 pub fn scan(harness: &str) -> Vec<Session> {

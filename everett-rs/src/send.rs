@@ -9,7 +9,9 @@ use crate::adapters::{external, grok as grok_adapter, hermes};
 use crate::error::{EverettError, Result};
 use crate::proc::{ps_commands, run_capture, shlex_join, which, RunOutput};
 use crate::session::{file_mtime, now, Session};
-use crate::{cards, inbox, paths, registry};
+use crate::{cards, inbox, paths};
+use crate::execution::{child_env, HeadlessCommand};
+use crate::host::{caller_identity, caller_session_id};
 
 pub struct SendResult {
     pub command: Vec<String>,
@@ -79,10 +81,6 @@ pub fn command_for(session: &Session, text: &str) -> Result<Vec<String>> {
     }
 }
 
-fn harness_bin() -> &'static Regex {
-    crate::registry::harness_bin()
-}
-
 pub const IDLE_QUIET: f64 = 60.0;
 pub const IDLE_WAIT: f64 = 120.0;
 pub const POLL: f64 = 5.0;
@@ -92,7 +90,7 @@ pub fn is_busy(session: &Session, ps_out: &str, now: f64) -> bool {
     if !session.id.is_empty()
         && ps_out
             .lines()
-            .any(|line| line.contains(&session.id) && harness_bin().is_match(line))
+            .any(|line| line.contains(&session.id) && crate::harness::binary_pattern().is_match(line))
     {
         return true;
     }
@@ -158,16 +156,6 @@ pub fn require_harness(harness: &str, env: Option<&HashMap<String, String>>) -> 
         ));
     }
     Ok(())
-}
-
-/// Environment for a headless harness run: card hooks stay quiet, hop count carries over.
-pub fn child_env(extra: &HashMap<String, String>) -> HashMap<String, String> {
-    let mut env: HashMap<String, String> = std::env::vars().collect();
-    env.insert("EVERETT_SEND".into(), "1".into());
-    for (k, v) in extra {
-        env.insert(k.clone(), v.clone());
-    }
-    env
 }
 
 type Runner = dyn Fn(&[String], Option<&str>, &HashMap<String, String>, f64) -> std::result::Result<RunOutput, String>;
@@ -274,9 +262,6 @@ fn send_with_for(
     Ok(SendResult { command, reply: result.stdout.trim().to_string() })
 }
 
-// ---- spawning a NEW session ----
-
-pub const SPAWNABLE: &[&str] = &["claude", "codex", "omp", "pi", "hermes", "grok", "devin"];
 
 pub struct SpawnResult {
     pub command: Vec<String>,
@@ -286,51 +271,7 @@ pub struct SpawnResult {
     pub cwd: String,
 }
 
-/// Headless command that starts a NEW session with this request.
-pub fn spawn_command(harness: &str, text: &str, session_id: &str, out_file: &str) -> Result<Vec<String>> {
-    if external::is_external(harness) {
-        return Err(EverettError::new(
-            2,
-            "External agents must be registered explicitly and are inbox-only; Everett cannot spawn them.",
-        ));
-    }
-    if text.trim().is_empty() {
-        return Err(EverettError::new(2, "The request must not be empty."));
-    }
-    match harness {
-        "claude" => Ok(if session_id.is_empty() {
-            vec!["claude".into(), "--print".into(), text.into()]
-        } else {
-            vec!["claude".into(), "--session-id".into(), session_id.into(), "--print".into(), text.into()]
-        }),
-        "codex" => {
-            let mut cmd = vec!["codex".into(), "exec".into(), "--skip-git-repo-check".into()];
-            if !out_file.is_empty() {
-                cmd.push("-o".into());
-                cmd.push(out_file.into());
-            }
-            cmd.push(text.into());
-            Ok(cmd)
-        }
-        "omp" => Ok(vec!["omp".into(), "-p".into(), text.into()]),
-        "pi" => Ok(vec!["pi".into(), "-p".into(), text.into()]),
-        "hermes" => Ok(vec!["hermes".into(), "chat".into(), "-Q".into(), "-q".into(), text.into()]),
-        "grok" => Ok(if session_id.is_empty() {
-            vec!["grok".into(), "-p".into(), text.into()]
-        } else {
-            vec!["grok".into(), "--session-id".into(), session_id.into(), "-p".into(), text.into()]
-        }),
-        "devin" => Ok(vec!["devin".into(), "-p".into(), text.into()]),
-        other => Err(EverettError::new(
-            2,
-            format!("Cannot spawn harness {:?}; choose one of {}.", other, SPAWNABLE.join(", ")),
-        )),
-    }
-}
-
-pub const MAX_HOPS: i64 = 3;
-
-/// Env for a delivery: EVERETT_HOPS counts agent-to-agent forwards; refuse past MAX_HOPS.
+/// Environment for forwarding, subject to the inbox hop policy.
 pub fn hop_env() -> Result<HashMap<String, String>> {
     hop_env_for(None)
 }
@@ -398,78 +339,6 @@ pub fn guard_delivery(mode: &str, spawn: bool, caller: Option<&str>) -> Result<(
     Ok(())
 }
 
-const IDENTITY_ENV: &[(&str, &str)] = &[
-    ("EVERETT_SESSION_ID", ""),
-    ("CLAUDE_CODE_SESSION_ID", "claude"),
-    ("CLAUDE_SESSION_ID", "claude"),
-    ("CODEX_THREAD_ID", "codex"),
-    ("HERMES_SESSION_ID", "hermes"),
-    ("PI_SESSION_FILE", "pi"),
-    ("GROK_SESSION_ID", "grok"),
-];
-
-/// {session_id, harness, source} of the session running this process, if detectable.
-pub fn caller_identity() -> Map<String, Value> {
-    identity_from_env(None)
-}
-
-/// Like caller_identity, but for a server launched for `harness`: only EVERETT_SESSION_ID
-/// and that harness's own variable count, so ids inherited from an outer session are ignored.
-pub fn caller_identity_for(harness: &str) -> Map<String, Value> {
-    let mut out = identity_from_env(Some(harness));
-    if out.get("source").and_then(Value::as_str) == Some("env EVERETT_SESSION_ID")
-        && out.get("harness").and_then(Value::as_str).unwrap_or("").is_empty()
-    {
-        out.insert("harness".into(), json!(harness));
-    }
-    out
-}
-
-fn identity_from_env(only: Option<&str>) -> Map<String, Value> {
-    for (name, harness) in IDENTITY_ENV {
-        if only.is_some_and(|h| !harness.is_empty() && *harness != h) {
-            continue;
-        }
-        let Ok(value) = std::env::var(name) else { continue };
-        let value = value.trim();
-        if value.is_empty() {
-            continue;
-        }
-        let id = if *name == "PI_SESSION_FILE" {
-            Path::new(value)
-                .file_stem()
-                .map(|s| s.to_string_lossy().to_string())
-                .and_then(|stem| stem.rsplit('_').next().map(|s| s.to_string()))
-                .unwrap_or_default()
-        } else {
-            value.to_string()
-        };
-        let harness = if harness.is_empty() {
-            std::env::var("EVERETT_HARNESS_NAME").unwrap_or_default()
-        } else {
-            harness.to_string()
-        };
-        let mut out = Map::new();
-        out.insert("session_id".into(), json!(id));
-        out.insert("harness".into(), json!(harness));
-        out.insert("source".into(), json!(format!("env {}", name)));
-        return out;
-    }
-    let mut out = Map::new();
-    out.insert("session_id".into(), json!(""));
-    out.insert("harness".into(), json!(""));
-    out.insert("source".into(), json!("none"));
-    out
-}
-
-pub fn caller_session_id() -> String {
-    caller_identity()
-        .get("session_id")
-        .and_then(|v| v.as_str())
-        .unwrap_or("")
-        .to_string()
-}
-
 pub fn refuse_self(session: &Session, caller: Option<&str>) -> Result<()> {
     let caller = caller.map(|c| c.to_string()).unwrap_or_else(caller_session_id);
     if !caller.is_empty()
@@ -490,19 +359,7 @@ fn new_session_id(harness: &str, cwd: &str, since: f64, output: &str) -> String 
     if let Some(m) = re1.captures(output).or_else(|| re2.captures(output)) {
         return m[1].to_string();
     }
-    if !registry::ADAPTERS.contains(&harness) {
-        return String::new();
-    }
-    let scan = match harness {
-        "claude" => crate::adapters::claude::scan(1.0),
-        "codex" => crate::adapters::codex::scan(1.0),
-        "omp" => crate::adapters::omp::scan(1.0),
-        "pi" => crate::adapters::pi::scan(1.0),
-        "hermes" => crate::adapters::hermes::scan(1.0),
-        "grok" => crate::adapters::grok::scan(1.0),
-        "devin" => crate::adapters::devin::scan(1.0),
-        _ => Vec::new(),
-    };
+    let scan = crate::adapters::scan(harness, 1.0);
     let mut fresh: Vec<Session> = scan
         .into_iter()
         .filter(|s| {
@@ -568,32 +425,16 @@ pub fn spawn_for(
     } else {
         String::new()
     };
-    let mut command = spawn_command(harness, text, &session_id, "")?;
+    let out_file = std::env::temp_dir()
+        .join(format!("everett-codex-{}.txt", uuid::Uuid::new_v4().simple()))
+        .to_string_lossy().to_string();
+    let prepared = HeadlessCommand::new(harness, text, &session_id, &out_file)?;
     require_harness(harness, env)?;
-    let out_file = if harness == "codex" {
-        std::env::temp_dir()
-            .join(format!("everett-codex-{}.txt", uuid::Uuid::new_v4().simple()))
-            .to_string_lossy()
-            .to_string()
-    } else {
-        String::new()
-    };
-    if !out_file.is_empty() {
-        command = spawn_command(harness, text, &session_id, &out_file)?;
-    }
+    let command = prepared.argv.clone();
     let started = now();
     let child = env.cloned().unwrap_or_else(|| child_env(&HashMap::new()));
     let result = run_capture(&command, Some(cwd), &child, timeout)
-        .map_err(|e| EverettError::new(5, format!("Could not start {}: {}", harness, e)));
-    let result = match result {
-        Ok(r) => r,
-        Err(e) => {
-            if !out_file.is_empty() {
-                let _ = std::fs::remove_file(&out_file);
-            }
-            return Err(e);
-        }
-    };
+        .map_err(|e| EverettError::new(5, format!("Could not start {}: {}", harness, e)))?;
     let outcome = if result.timed_out {
         Err(EverettError::new(5, format!("{} did not reply within {}s.", harness, crate::fmt::g(timeout))))
     } else if result.code != 0 {
@@ -613,20 +454,11 @@ pub fn spawn_for(
             Err(EverettError::new(6, format!("{} exited {}.", harness, result.code)))
         }
     } else {
-        let reply = if !out_file.is_empty() {
-            std::fs::read_to_string(&out_file)
-                .ok()
-                .map(|t| t.trim().to_string())
-                .filter(|t| !t.is_empty())
-                .unwrap_or_else(|| result.stdout.trim().to_string())
-        } else {
-            result.stdout.trim().to_string()
-        };
+        let reply = prepared.output().map(|text| text.trim().to_string())
+            .filter(|text| !text.is_empty()).unwrap_or_else(|| result.stdout.trim().to_string());
         Ok(reply)
     };
-    if !out_file.is_empty() {
-        let _ = std::fs::remove_file(&out_file);
-    }
+    drop(prepared);
     let reply = outcome?;
     if session_id.is_empty() {
         session_id = new_session_id(harness, cwd, started, &format!("{}{}", result.stdout, result.stderr));
@@ -643,7 +475,6 @@ pub fn spawn_for(
     })
 }
 
-// ---- immediate ping and legacy inbox delivery ----
 
 pub const MODES: &[&str] = &["ping", "auto", "resume", "inbox"];
 pub const INBOX_HARNESSES: &[&str] = &["claude", "codex", "grok", "omp"];
@@ -657,7 +488,42 @@ pub fn attached(session: &Session, ps_out: Option<&str>) -> bool {
     !session.id.is_empty()
         && ps
             .lines()
-            .any(|line| line.contains(&session.id) && harness_bin().is_match(line))
+            .any(|line| line.contains(&session.id) && crate::harness::binary_pattern().is_match(line))
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PingTransport {
+    InboxOnly,
+    T3,
+    OmpExtension,
+    Attached,
+    Headless,
+}
+
+pub fn ping_transport(session: &Session, ps_out: Option<&str>) -> PingTransport {
+    if external::is_external(&session.harness) {
+        PingTransport::InboxOnly
+    } else if session.source == "t3code" {
+        PingTransport::T3
+    } else if crate::omp_wake::available(session) {
+        PingTransport::OmpExtension
+    } else if attached(session, ps_out) {
+        PingTransport::Attached
+    } else {
+        PingTransport::Headless
+    }
+}
+
+impl PingTransport {
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::InboxOnly => "inbox",
+            Self::T3 => "t3",
+            Self::OmpExtension => "omp-extension",
+            Self::Attached => "claude-bg",
+            Self::Headless => "resume",
+        }
+    }
 }
 
 pub fn delivery_mode(session: &Session, mode: &str, ps_out: Option<&str>) -> Result<String> {
@@ -676,18 +542,18 @@ pub fn delivery_mode_for(
     guard_delivery(mode, false, caller)?;
     let sid = caller.map(str::to_string).unwrap_or_else(caller_session_id);
     let remote_derived = inbox::relay_context(&sid).is_some();
-    if session.source == "t3code" && matches!(mode, "ping" | "auto")
-        && !remote_derived && !external::is_external(&session.harness)
+    let transport = ping_transport(session, ps_out);
+    if transport == PingTransport::T3 && matches!(mode, "ping" | "auto")
+        && !remote_derived
     {
         require_local_prompt(caller)?;
         crate::t3_wake::validate_target(session)?;
         return Ok("ping".into());
     }
-    let omp_wake = crate::omp_wake::available(session);
     if mode == "ping" {
         require_local_prompt(caller)?;
-        if external::is_external(&session.harness) || session.source == "t3code"
-            || (session.harness != "claude" && !omp_wake && attached(session, ps_out)) {
+        if matches!(transport, PingTransport::InboxOnly | PingTransport::T3)
+            || (session.harness != "claude" && transport == PingTransport::Attached) {
             return Err(EverettError::new(4, "No immediate ping transport for this session. Nothing was queued. Use --mode inbox only for legacy hooks/polling."));
         }
         return Ok("ping".into());
@@ -702,14 +568,10 @@ pub fn delivery_mode_for(
     if mode != "auto" {
         return Ok(if remote_derived { "inbox" } else { mode }.to_string());
     }
-    if omp_wake && !remote_derived {
+    if transport == PingTransport::OmpExtension && !remote_derived {
         return Ok("ping".into());
     }
-    if remote_derived
-        || external::is_external(&session.harness)
-        || session.source == "t3code"
-        || attached(session, ps_out)
-    {
+    if remote_derived || transport != PingTransport::Headless {
         return Err(EverettError::new(
             4,
             format!(
@@ -736,7 +598,8 @@ pub fn ping_as(
         return Err(EverettError::new(2, "Ping requires non-empty text within 64 KiB and a positive finite timeout"));
     }
     delivery_mode_for(session, "ping", None, caller)?;
-    if session.source == "t3code" {
+    let transport = ping_transport(session, None);
+    if transport == PingTransport::T3 {
         let thread = crate::t3_wake::validate_target(session)?;
         let mut out = send_inbox_as(session, text, 0.0, caller, caller_harness, 1.0, None)?;
         let mid = out.get("message_id").and_then(Value::as_str).unwrap_or("");
@@ -756,7 +619,7 @@ pub fn ping_as(
         out.insert("note".into(), json!("T3 accepted the inbox nudge for a new or queued turn. The durable inbox is retained; consumption and reply are not confirmed."));
         return Ok(out);
     }
-    if crate::omp_wake::available(session) {
+    if transport == PingTransport::OmpExtension {
         if caller_harness.is_some_and(external::is_external) {
             return Err(EverettError::new(2, "External callers are inbox-only."));
         }
@@ -768,7 +631,7 @@ pub fn ping_as(
         out.insert("note".into(), json!("Accepted by the live OMP watcher transport. Nudge, consumption, and reply are not confirmed."));
         return Ok(out);
     }
-    if attached(session, None) {
+    if transport == PingTransport::Attached {
         crate::claude_wake::validate_target(session).map_err(|error| EverettError::new(4,
             format!("Ping unavailable for {}: {}. Nothing was queued. Use --mode inbox for legacy delivery.", session.id, error.message)))?;
         let mut out = send_inbox_as(session, text, 0.0, caller, caller_harness, 1.0, None)?;

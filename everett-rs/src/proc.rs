@@ -93,7 +93,6 @@ fn run_inner(
         Ok(None) => {
             timed_out = true;
             code = -1;
-            // Kill the child's process group (it called setsid), not just the child.
             #[cfg(unix)]
             unsafe {
                 libc::kill(-(child.id() as i32), libc::SIGKILL);

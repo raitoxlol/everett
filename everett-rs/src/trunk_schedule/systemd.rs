@@ -161,8 +161,8 @@ pub(super) fn install(at: &str, llm: &str) -> Result<Map<String, Value>> {
         .map_err(|e| {
             EverettError::new(5, format!("cannot create {}: {e}", unit_dir().display()))
         })?;
-    crate::peer::save(&service_path(), units.service.as_bytes())?;
-    crate::peer::save(&timer_path(), units.timer.as_bytes())?;
+    crate::storage::save(&service_path(), units.service.as_bytes())?;
+    crate::storage::save(&timer_path(), units.timer.as_bytes())?;
     require_systemctl(&["daemon-reload"])?;
     require_systemctl(&["enable", "--now", &format!("{LABEL}.timer")])?;
     Ok(serde_json::from_value(json!({

@@ -200,8 +200,8 @@ pub fn configure_inbox(
     read_bearer(bearer_file)?;
     let root = policy_dir();
     crate::relay::receiver::require_account_policy(&root, &rule.owner, &identity.device_id)?;
-    crate::peer::private_dir(&root.join(DIRECTORY))?;
-    let _guard = crate::peer::lock(&root.join(DIRECTORY).join("ledger.lock"))?;
+    crate::storage::private_dir(&root.join(DIRECTORY))?;
+    let _guard = crate::storage::lock(&root.join(DIRECTORY).join("ledger.lock"))?;
     let mut policy = load_policy(&root)?;
     if !policy.enabled {
         policy.activated_at = unix_secs();
@@ -224,7 +224,7 @@ pub fn configure_inbox(
             return Err(bad("duplicate rule id"));
         }
     }
-    crate::peer::save(
+    crate::storage::save(
         &root.join(POLICY_FILE),
         &serde_json::to_vec_pretty(&policy).map_err(|_| bad("policy could not be encoded"))?,
     )?;
@@ -247,8 +247,8 @@ pub fn trust_account_inbox(session: &str, harness: &str, dry_run: bool) -> Resul
     let _guard = if dry_run {
         None
     } else {
-        crate::peer::private_dir(&root.join(DIRECTORY))?;
-        Some(crate::peer::lock(&root.join(DIRECTORY).join("ledger.lock"))?)
+        crate::storage::private_dir(&root.join(DIRECTORY))?;
+        Some(crate::storage::lock(&root.join(DIRECTORY).join("ledger.lock"))?)
     };
     let mut policy = load_policy(&root)?;
     let before = serde_json::to_vec(&policy).map_err(|_| bad("policy could not be encoded"))?;
@@ -258,7 +258,7 @@ pub fn trust_account_inbox(session: &str, harness: &str, dry_run: bool) -> Resul
     if changed && !dry_run {
         crate::relay::receiver::require_account_policy(&root, &identity.owner, &identity.device_id)?;
         backup_created = backup_account_policy(&root, &identity.owner, session, harness)?;
-        crate::peer::save(
+        crate::storage::save(
             &root.join(POLICY_FILE),
             &serde_json::to_vec_pretty(&policy).map_err(|_| bad("policy could not be encoded"))?,
         )?;
@@ -383,8 +383,8 @@ fn retry_due_at(root: &Path, now: i64) -> Result<bool> {
     if !ledger_path.exists() {
         return Ok(false);
     }
-    crate::peer::private_dir(&directory)?;
-    let _guard = crate::peer::lock(&directory.join("ledger.lock"))?;
+    crate::storage::private_dir(&directory)?;
+    let _guard = crate::storage::lock(&directory.join("ledger.lock"))?;
     let policy = load_policy(root)?;
     if !policy.enabled {
         return Ok(false);
@@ -519,8 +519,8 @@ fn evaluate(
             return Ok(report.outcome());
         }
     }
-    crate::peer::private_dir(&directory)?;
-    let _guard = crate::peer::lock(&directory.join("ledger.lock"))?;
+    crate::storage::private_dir(&directory)?;
+    let _guard = crate::storage::lock(&directory.join("ledger.lock"))?;
     let policy = load_policy(root)?;
     if !policy.enabled {
         return Ok(Outcome {
@@ -1124,7 +1124,7 @@ fn load_ledger(path: &Path) -> Result<Ledger> {
 }
 
 fn save_ledger(path: &Path, ledger: &Ledger) -> Result<()> {
-    crate::peer::save(
+    crate::storage::save(
         path,
         &serde_json::to_vec_pretty(ledger).map_err(|_| bad("ledger could not be encoded"))?,
     )
@@ -1658,7 +1658,6 @@ mod tests {
         ] {
             assert!(rule.get(field).is_some(), "{field}");
         }
-        // Stopped receiver: setup is allowed, then the same load used by webhook setup reads the file.
         crate::relay::receiver::require_account_policy(
             root.path(),
             &arrival.owner,

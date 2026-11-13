@@ -1,7 +1,8 @@
 mod common;
 
 use common::{fixture, lib_home};
-use everett::route::{find_api_key, local_route, route_with};
+use everett::config::{jev_key, JevKeySource};
+use everett::route::{local_route, route_with};
 use everett::session::Session;
 use serde_json::{json, Map, Value};
 
@@ -61,15 +62,33 @@ fn config_key_sources_and_default_harness() {
         std::fs::create_dir_all(p.parent().unwrap()).unwrap();
         std::fs::write(p, text).unwrap();
     };
-    assert_eq!(find_api_key(), "");
+    assert_eq!(jev_key().0, "");
     write(".hermes/.env", "OTHER=1\nTYPESAFE_API_KEY=\"from-hermes\"\n");
-    assert_eq!(find_api_key(), "from-hermes");
+    assert_eq!(jev_key().0, "from-hermes");
     write(".everett/config.toml", "# c\nvault = \"~/Notes\"  # mine\ndefault_harness = codex\n[jev]\napi_key = 'k-1'\n");
-    assert_eq!(find_api_key(), "k-1");
+    assert_eq!(jev_key().0, "k-1");
     std::env::set_var("TYPESAFE_API_KEY", "from-env");
-    assert_eq!(find_api_key(), "from-env");
+    assert_eq!(jev_key().0, "from-env");
     std::env::remove_var("TYPESAFE_API_KEY");
     assert_eq!(local_route("x y", &[], Some(NOW), None)["command"], "codex 'x y'");
+}
+
+#[test]
+fn empty_hermes_assignments_do_not_hide_a_usable_jev_key() {
+    let h = lib_home();
+    std::fs::create_dir_all(h.path().join(".hermes")).unwrap();
+    std::fs::write(
+        h.path().join(".hermes/.env"),
+        "TYPESAFE_API_KEY=\"\"\nTYPESAFE_API_KEY='from-hermes'\n",
+    ).unwrap();
+    assert_eq!(jev_key(), ("from-hermes".into(), Some(JevKeySource::Hermes)));
+    let jev = |_: &str, _: &Map<String, Value>, key: &str| {
+        assert_eq!(key, "from-hermes");
+        Ok(json!({"choice": "new", "confidence": 1.0}).as_object().unwrap().clone())
+    };
+    let result = route_with("fresh task", &[], None, None, &jev, None).unwrap();
+    assert_eq!(result["router"], "jev");
+    assert!(everett::onboard::apply_jev(&everett::onboard::default_config()).contains("a key is still set"));
 }
 
 #[test]

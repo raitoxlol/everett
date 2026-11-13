@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::fs;
 use std::path::PathBuf;
 
@@ -63,6 +64,47 @@ pub fn apply(sessions: &mut [Session], now: Option<f64>) {
         s.card = clean(&body, 300);
         s.card_source = Some(source.to_string());
     }
+}
+
+/// Per-harness and total counts of agent/auto/missing cards.
+pub type Coverage = (Vec<(String, HashMap<String, i64>)>, [i64; 5]);
+
+pub fn coverage(sessions: &[Session]) -> Coverage {
+    let mut order: Vec<String> = Vec::new();
+    let mut counts: HashMap<String, HashMap<String, i64>> = HashMap::new();
+    for harness in crate::harness::NATIVE {
+        order.push(harness.to_string());
+        counts.insert(harness.to_string(), HashMap::from([
+            ("total".to_string(), 0i64), ("agent".to_string(), 0), ("auto".to_string(), 0), ("missing".to_string(), 0),
+        ]));
+    }
+    for session in sessions {
+        let entry = counts.entry(session.harness.clone()).or_insert_with(|| HashMap::from([
+            ("total".to_string(), 0i64), ("agent".to_string(), 0), ("auto".to_string(), 0), ("missing".to_string(), 0),
+        ]));
+        if !order.iter().any(|o| o == &session.harness) {
+            order.push(session.harness.clone());
+        }
+        *entry.get_mut("total").unwrap() += 1;
+        let source = match session.card_source.as_deref() {
+            Some("agent") => "agent",
+            Some("auto") => "auto",
+            _ => "missing",
+        };
+        *entry.get_mut(source).unwrap() += 1;
+    }
+    let totals = [
+        counts.values().map(|m| m["total"]).sum(),
+        counts.values().map(|m| m["agent"]).sum(),
+        counts.values().map(|m| m["auto"]).sum(),
+        counts.values().map(|m| m["missing"]).sum(),
+        0,
+    ];
+    let rows = order
+        .iter()
+        .filter_map(|o| counts.get(o).map(|m| (o.clone(), m.clone())))
+        .collect();
+    (rows, totals)
 }
 
 pub const INSTRUCTION: &str = "REQUIRED — Everett card. Other agents route work to this session using a card at {path}. \

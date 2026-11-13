@@ -222,8 +222,8 @@ pub fn schedule(root: &Path, imported: Imported, now: i64) -> Result<bool> {
         return Err(bad("import has an invalid relay id or signed digest"));
     }
     let dir = jobs_path(root);
-    crate::peer::private_dir(&dir)?;
-    let _guard = crate::peer::lock(&dir.join("ledger.lock"))?;
+    crate::storage::private_dir(&dir)?;
+    let _guard = crate::storage::lock(&dir.join("ledger.lock"))?;
     let path = dir.join(format!("{}.json", imported.local_id));
     if path.exists() {
         let existing: Job = read(&path)?;
@@ -357,7 +357,7 @@ pub fn attempt<P>(
 
 fn update(root: &Path, local_id: &str, change: impl FnOnce(&mut Job) -> Result<()>) -> Result<()> {
     let dir = jobs_path(root);
-    let _guard = crate::peer::lock(&dir.join("ledger.lock"))?;
+    let _guard = crate::storage::lock(&dir.join("ledger.lock"))?;
     let path = dir.join(format!("{local_id}.json"));
     let mut job: Job = read(&path)?;
     change(&mut job)?;
@@ -369,7 +369,7 @@ fn read(path: &Path) -> Result<Job> {
 }
 
 fn write(path: &Path, job: &Job) -> Result<()> {
-    crate::peer::save(path, &serde_json::to_vec_pretty(job).map_err(bad)?)?;
+    crate::storage::save(path, &serde_json::to_vec_pretty(job).map_err(bad)?)?;
     sync_dir(
         path.parent()
             .ok_or_else(|| bad("missing ledger directory"))?,

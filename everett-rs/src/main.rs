@@ -2,23 +2,13 @@ use clap::{CommandFactory, FromArgMatches, Parser, Subcommand};
 
 use everett::cli::{self, Args};
 
-const SPAWNABLE: &[&str] = &["claude", "codex", "omp", "pi", "hermes", "grok", "devin"];
+const SPAWNABLE: &[&str] = everett::harness::SPAWNABLE;
 const ROUTERS: &[&str] = &["local", "jev"];
 const EVENT_KINDS: &[&str] = &["done", "blocked", "needs-input", "info"];
 const SCOPES: &[&str] = &["global", "project"];
 const MODES: &[&str] = everett::send::MODES;
 const LLMS: &[&str] = &["claude", "codex", "none"];
-const HARNESSES: &[&str] = &[
-    "claude",
-    "codex",
-    "omp",
-    "pi",
-    "hermes",
-    "grok",
-    "devin",
-    "openai-dot",
-    "grok-bot",
-];
+const HARNESSES: &[&str] = everett::harness::ALL;
 
 /// Top-level help lists commands by what a newcomer needs first, not by declaration order.
 const HELP_GROUPS: &[(&str, &[&str])] = &[
@@ -581,7 +571,7 @@ enum ExternalCmd {
     Add {
         #[arg(long)]
         id: String,
-        #[arg(long, value_parser = clap::builder::PossibleValuesParser::new(everett::adapters::external::HARNESSES.to_vec()))]
+        #[arg(long, value_parser = clap::builder::PossibleValuesParser::new(everett::harness::EXTERNAL.to_vec()))]
         harness: String,
         #[arg(long, default_value = "")]
         title: String,

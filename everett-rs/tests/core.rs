@@ -177,6 +177,23 @@ fn llm_merge_uses_headless_harness() {
 }
 
 #[test]
+fn codex_merge_reads_its_output_file_and_cleans_it_up() {
+    let h = lib_home();
+    learn("A fact to merge", &h);
+    let output = RefCell::new(std::path::PathBuf::new());
+    let runner = |command: &[String], _: Option<&str>, _: &HashMap<String, String>, _: f64| {
+        let index = command.iter().position(|arg| arg == "-o").expect("Codex output argument");
+        let path = std::path::PathBuf::from(&command[index + 1]);
+        std::fs::write(&path, json!({"global": "# Everett core\n\n- A fact from the output file\n"}).to_string()).unwrap();
+        *output.borrow_mut() = path;
+        Ok(RunOutput { code: 0, stdout: "diagnostic noise".into(), stderr: String::new(), timed_out: false })
+    };
+    core::merge_with("codex", false, &runner).unwrap();
+    assert!(std::fs::read_to_string(core::global_path()).unwrap().contains("A fact from the output file"));
+    assert!(!output.borrow().exists());
+}
+
+#[test]
 fn bad_llm_output_changes_nothing_and_output_is_capped() {
     let h = lib_home();
     learn("A fact", &h);

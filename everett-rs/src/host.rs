@@ -1,10 +1,11 @@
-//! Caller identity for harnesses whose MCP launch carries no session id (Pi, OMP, Devin,
-//! Hermes). The binding comes only from the process tree, live records written by Everett's
-//! own hooks, and the harness's session store -- never from tool arguments. When those do
-//! not single out one session, the caller stays unbound.
+//! Caller identity from the launch environment or the host process.
+//! When MCP launches without a session id, binding uses the process tree, live
+//! records written by Everett's hooks and the harness store, never tool arguments.
+//! Ambiguous hosts stay unbound.
 
 use std::collections::HashMap;
 use std::process::Command;
+use std::path::Path;
 use std::sync::OnceLock;
 
 use serde_json::{json, Map, Value};
@@ -13,7 +14,6 @@ use crate::session::now;
 
 /// Harnesses `everett mcp --harness` can bind by finding its host process.
 pub const DETECTABLE: &[&str] = &["pi", "omp", "devin", "hermes"];
-const HARNESSES: &[&str] = &["claude", "codex", "omp", "pi", "hermes", "grok", "devin"];
 const INTERPRETERS: &[&str] = &["node", "nodejs", "bun", "deno", "python", "python3", "sh", "bash", "zsh", "dash"];
 /// Seconds of clock and `ps etime` rounding tolerated when comparing start times.
 const SLACK: f64 = 2.0;
@@ -57,7 +57,7 @@ pub fn harness_of(args: &str) -> Option<&'static str> {
     let first = basename(tokens.next()?);
     let named = |name: &str| -> Option<&'static str> {
         let name = name.strip_suffix("-rpc").unwrap_or(name);
-        HARNESSES.iter().find(|h| **h == name).copied()
+        crate::harness::NATIVE.iter().find(|h| **h == name).copied()
     };
     if let Some(h) = named(first) {
         return Some(h);
@@ -283,4 +283,76 @@ pub fn setup_hint(harness: &str) -> String {
         "claude" | "codex" | "grok" => format!("{} binds automatically; rerun `everett install-mcp --{} --repair --apply` and restart it.", harness, harness),
         _ => "Register Everett with `everett install-mcp --<harness> --apply` (it writes the right launcher), or set EVERETT_SESSION_ID in this MCP server's launch environment; see docs/mcp-identity.md.".into(),
     }
+}
+
+const IDENTITY_ENV: &[(&str, &str)] = &[
+    ("EVERETT_SESSION_ID", ""),
+    ("CLAUDE_CODE_SESSION_ID", "claude"),
+    ("CLAUDE_SESSION_ID", "claude"),
+    ("CODEX_THREAD_ID", "codex"),
+    ("HERMES_SESSION_ID", "hermes"),
+    ("PI_SESSION_FILE", "pi"),
+    ("GROK_SESSION_ID", "grok"),
+];
+
+/// {session_id, harness, source} of the session running this process, if detectable.
+pub fn caller_identity() -> Map<String, Value> {
+    identity_from_env(None)
+}
+
+/// Like caller_identity, but for a server launched for `harness`: only EVERETT_SESSION_ID
+/// and that harness's own variable count, so ids inherited from an outer session are ignored.
+pub fn caller_identity_for(harness: &str) -> Map<String, Value> {
+    let mut out = identity_from_env(Some(harness));
+    if out.get("source").and_then(Value::as_str) == Some("env EVERETT_SESSION_ID")
+        && out.get("harness").and_then(Value::as_str).unwrap_or("").is_empty()
+    {
+        out.insert("harness".into(), json!(harness));
+    }
+    out
+}
+
+fn identity_from_env(only: Option<&str>) -> Map<String, Value> {
+    for (name, harness) in IDENTITY_ENV {
+        if only.is_some_and(|h| !harness.is_empty() && *harness != h) {
+            continue;
+        }
+        let Ok(value) = std::env::var(name) else { continue };
+        let value = value.trim();
+        if value.is_empty() {
+            continue;
+        }
+        let id = if *name == "PI_SESSION_FILE" {
+            Path::new(value)
+                .file_stem()
+                .map(|s| s.to_string_lossy().to_string())
+                .and_then(|stem| stem.rsplit('_').next().map(|s| s.to_string()))
+                .unwrap_or_default()
+        } else {
+            value.to_string()
+        };
+        let harness = if harness.is_empty() {
+            std::env::var("EVERETT_HARNESS_NAME").unwrap_or_default()
+        } else {
+            harness.to_string()
+        };
+        let mut out = Map::new();
+        out.insert("session_id".into(), json!(id));
+        out.insert("harness".into(), json!(harness));
+        out.insert("source".into(), json!(format!("env {}", name)));
+        return out;
+    }
+    let mut out = Map::new();
+    out.insert("session_id".into(), json!(""));
+    out.insert("harness".into(), json!(""));
+    out.insert("source".into(), json!("none"));
+    out
+}
+
+pub fn caller_session_id() -> String {
+    caller_identity()
+        .get("session_id")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string()
 }
