@@ -192,3 +192,20 @@ fn t3_send_carries_hops_to_the_receiving_session() {
     assert_eq!(r["isError"], true, "{r}");
     assert!(r.to_string().contains("Hop limit"), "{r}");
 }
+
+#[test]
+fn t3_without_a_json_receipt_never_claims_start_or_send_success() {
+    let fx = fixture();
+    let t3 = fake_t3(&fx, 0);
+    for exit in [0, 2] {
+        fs::write(&t3, format!("#!/bin/sh\nprintf '%s\\n' 'USAGE: t3 <subcommand>'\nexit {exit}\n")).unwrap();
+        for args in [
+            json!({"action":"start","project":"/work/p","text":"build it"}),
+            json!({"action":"send","thread":THREAD,"text":"next step"}),
+        ] {
+            let r = call(&fx, &t3, args);
+            assert_eq!(r["isError"], true, "exit {exit}: {r}");
+            assert!(r.to_string().contains("JSON receipt"), "{r}");
+        }
+    }
+}
