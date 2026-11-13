@@ -498,7 +498,7 @@ export class HostedAuth extends DurableObject<HostedAuthEnv> {
       if (!row || row.expires_at <= Date.now() || foreign || !secretPattern.test(binding) || !equal(row.binding_hash, hash(binding))) return html(`${content}<div class="auth-lead"><h1>Request expired</h1></div><section class="auth-state" data-state="expired"><h2 class="auth-state__title">This request is no longer available</h2><p>Authorization request expired or belongs to another browser.</p></section>`, 403);
       if (c.redirects.includes(row.redirect_uri)) callbackOrigin = new URL(row.redirect_uri).origin;
       content += `<div class="auth-lead"><h1>Connect ${esc(row.client_name)}</h1></div><div class="auth-action"><p class="auth-copy">Review the connection details before approving access.</p><dl class="auth-details"><div><dt>Client</dt><dd>${esc(row.client_id)}</dd></div><div><dt>Resource</dt><dd>${esc(row.resource)}</dd></div><div><dt>Redirect</dt><dd>${esc(row.redirect_uri)}</dd></div></dl>`;
-      if (row.phase === 'pending' || row.phase === 'approving') content += `<form method="post" action="/oauth/consent">${csrfField(session.csrf)}<input type="hidden" name="request_id" value="${esc(row.id)}"><label>Agent name <input name="name" required maxlength="100" value="argos"></label><button name="decision" value="approve">Approve this agent</button><button name="decision" value="deny">Deny</button></form>`;
+      if (row.phase === 'pending' || row.phase === 'approving') content += `<form method="post" action="/oauth/consent">${csrfField(session.csrf)}<input type="hidden" name="request_id" value="${esc(row.id)}"><p>Authorize this plugin connection to your Everett account. Chats register their own names and inboxes separately.</p><button name="decision" value="approve">Approve connection</button><button name="decision" value="deny">Deny</button></form>`;
       else content += '<section class="auth-state" data-state="expired"><h2 class="auth-state__title">Already decided</h2><p>This authorization was already decided. Start a new connection.</p></section>';
       content += '</div>';
     } else {
@@ -583,7 +583,7 @@ export class HostedAuth extends DurableObject<HostedAuthEnv> {
       if (!wrote) throw new RelayError('request_expired_or_browser_mismatch', 403);
       callback.searchParams.set('error', 'access_denied'); return redirect(callback.href);
     }
-    const name = cleanName.parse(p.name);
+    const name = row.client_name;
     if (this.#count('auth_codes') >= 200) throw new RelayError('code_limit', 429);
     if (row.phase === 'pending') {
       this.#credentialQuota(c, account);
@@ -681,7 +681,7 @@ export class HostedAuth extends DurableObject<HostedAuthEnv> {
     const token = this.#row<OAuthToken>('SELECT * FROM oauth_tokens WHERE token_hash=?', hash(p.token)), family = token && this.#family(token.family_id);
     if (!token || token.kind !== 'access' || token.expires_at <= Date.now() || !await this.#familyLive(c, family)) return json({ active: false });
     return json({ active: true, iss: c.issuer, aud: family!.resource, exp: Math.floor(token.expires_at / 1000), scope: 'everett', sub: family!.agent_id,
-      everett_agent: family!.agent_id, everett_agent_name: family!.name, client_id: family!.client_id, token_type: 'Bearer' });
+      everett_agent: family!.agent_id, everett_agent_name: family!.name, everett_account: this.#row<Agent>('SELECT * FROM hosted_agents WHERE agent_id=?', family!.agent_id)?.account, client_id: family!.client_id, token_type: 'Bearer' });
   }
   async #revokeToken(request: Request, c: HostedConfig) {
     this.#rate('oauth-revoke', 120);
