@@ -32,8 +32,9 @@ owning operating-system account's permissions.
    `reply_to`, and T3 sender ID. Poll again in both disposable sessions and verify
    that the test messages have cleared.
 
-Use disposable inboxes so the check does not consume unrelated messages. T3 wake
-remains unsupported.
+Use disposable inboxes so the check does not consume unrelated messages. This
+procedure verifies explicit inbox delivery. Owner-local CLI nudges require a
+compatible T3 CLI; see [T3 delivery](t3code.md#polling-and-replying).
 
 ## Verify shared core with owner authorization
 

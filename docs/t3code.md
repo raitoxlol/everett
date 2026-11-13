@@ -30,11 +30,21 @@ replaced with potentially stale legacy state.
 ## Polling and replying
 
 T3 owns its provider's resume point. Everett refuses direct provider CLI resume,
-and its route output tells you to continue in T3. Automatic delivery fails without
-queueing because Everett cannot ping or wake the receiving T3 thread.
+and its route output tells you to continue in T3. Owner-local `ping` and `auto`
+delivery use `t3 thread send` to send a fixed inbox nudge into the owning thread.
+An idle thread starts a turn; a busy thread queues the next turn. The selected
+T3 CLI must support thread commands. Everett selects `EVERETT_T3_BIN`, then
+`t3` on PATH, then `~/.t3/bin/t3`. An executable shim on PATH may still fail if
+its runtime is unavailable. Check that exact executable's `thread send --help`
+and `thread start --help`; no installer or runtime configuration is changed by
+Everett. Plain help output or a malformed JSON response cannot confirm dispatch.
+Do not blindly retry an unconfirmed send or start: the CLI might have acted before
+its response failed.
+
+The hosted ChatGPT gateway stays inbox-only and cannot use owner-local control.
 Use explicit `mode: "inbox"` when you accept polling for pickup.
 
-Inbox enqueue is **not proof of pickup**. An unread T3 send reports `queued=true`,
+Inbox enqueue is **not proof of pickup**. An explicit inbox-only T3 send reports `queued=true`,
 `delivered=false`, `wake=false`, `pickup=poll`,
 `poll_session_id`, and `hooked=false` conservatively; Everett does not verify that
 T3's SDK executes native hooks or inherits a user-installed Everett MCP server.
@@ -51,7 +61,7 @@ inside a T3-created provider session.
 5. Reply with `everett_send(reply_to=<message id>, text=...)`.
 6. The sender polls `everett_inbox()` for the reply.
 
-The receiver is not automatically woken by enqueue. Poll again at task/turn boundaries
+An explicit inbox-only send does not wake the receiver. Poll again at task/turn boundaries
 when native hook pickup has not been independently verified. A wait timeout does not
 mean the queued request was lost.
 
@@ -67,6 +77,6 @@ Queued learnings enter the shared core after the normal Everett merge workflow;
 enqueue alone does not immediately update every agent's injected context.
 
 Synthetic Rust tests cover provider-ID discovery, read-only access,
-deduplication, route guidance, explicit inbox pickup, replies, self-send rejection
-with known identity, and learning/merge/peer shared-core reads. They do not establish
+deduplication, route guidance, CLI nudge receipts, explicit inbox pickup, replies,
+self-send rejection with known identity, and learning/merge/peer shared-core reads. They do not establish
 real T3 SDK MCP registration, hook execution, automatic wakeup, or cross-device delivery.

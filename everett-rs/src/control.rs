@@ -13,6 +13,7 @@ use serde_json::{json, Map, Value};
 use crate::error::{EverettError, Result};
 use crate::proc::run_capture;
 use crate::session::Session;
+use crate::t3_wake::parse_json_output;
 
 /// Upper bound for a `--wait` T3 turn or a headless start.
 pub const MAX_WAIT: f64 = 1800.0;
@@ -41,29 +42,14 @@ fn t3_json(args: &[&str], timeout: f64) -> Result<Value> {
         let detail: String = detail.chars().rev().take(400).collect::<Vec<_>>().into_iter().rev().collect();
         return Err(EverettError::new(4, format!("t3 {} exited {}: {}", args.first().unwrap_or(&""), out.code, detail)));
     }
-    let mut value = parse_json_output(stdout).unwrap_or_else(|| json!({"output": stdout}));
+    let mut value = parse_json_output(stdout).ok_or_else(|| EverettError::new(4,
+        format!("t3 returned no valid JSON receipt (exit {}). Check that the selected CLI supports thread commands. Dispatch is unconfirmed; do not blindly retry.", out.code)))?;
     if out.code == 2 {
         if let Some(map) = value.as_object_mut() {
             map.insert("waiting_for_answer".into(), json!(true));
         }
     }
     Ok(value)
-}
-
-/// The JSON document in `t3` stdout. Some builds print log lines (such as a
-/// database migration warning) to stdout first, so take the first line that
-/// starts a JSON value at column 0 and parses through the end.
-fn parse_json_output(stdout: &str) -> Option<Value> {
-    let mut offset = 0;
-    for line in stdout.split_inclusive('\n') {
-        if line.starts_with('{') || line.starts_with('[') {
-            if let Ok(v) = serde_json::from_str(stdout[offset..].trim()) {
-                return Some(v);
-            }
-        }
-        offset += line.len();
-    }
-    None
 }
 
 fn clamp_timeout(timeout: Option<f64>, wait: bool) -> Result<f64> {

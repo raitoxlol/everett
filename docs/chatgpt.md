@@ -46,11 +46,12 @@ MCP tools. See [gateway setup](gateway.md) and [OpenAI dots](openai-dots.md).
    `private_key_jwt`. PKCE and configured client, redirect and resource checks
    still apply. Do not replace credentials or create another connector to mask
    an unexplained failure.
-3. Start a fresh conversation with the intended plugin selected. Ask it to call
-   `everett_whoami`, then `everett_ls`. Require actual tool results, not a model's
-   statement that a plugin is available. Identity must belong to that conversation
-   or the gateway's explicit external binding. An identity error needs setup,
-   not a fabricated session ID.
+3. Start a fresh conversation with the intended plugin selected. Inspect its
+   advertised tools and call `everett_whoami`. The hosted gateway does not expose
+   `everett_ls` or `everett_control`; use `everett_ls` only through the local
+   integration. Require actual tool results, not a model's statement that a plugin
+   is available. Identity must match the local conversation or the gateway's
+   explicit external binding. An identity error needs setup, not a fabricated ID.
 4. Record the connection, time, tool names, results and errors without tokens or
    message bodies. Test each existing connector independently. Discovery and
    identity do not establish message pickup, wake, reply or task completion.
@@ -65,3 +66,42 @@ These are open app verification gates, tracked in
 Public remote plugin submission requires a stable HTTPS MCP endpoint. Secure MCP
 Tunnel alone does not meet the public submission requirements in the official
 [MCP server guide](https://developers.openai.com/plugins/build/mcp-server/).
+
+## Messaging, session starts, and conversation identity
+
+The hosted gateway accepts `everett_send` only to owner-configured exact IDs or
+an authorized `reply_to`. It forces inbox-only delivery with `spawn=false` and
+`wait=0`. A queued message does not start a T3 turn. The recipient must read its
+inbox and send a correlated reply. The gateway cannot start sessions, wake T3,
+list arbitrary sessions, or read their transcripts. See [gateway permissions](gateway.md#allowed-tools-and-delivery).
+
+The local stdio tool `everett_control` can start T3 threads and send turns through
+`t3 thread start` and `t3 thread send`. It refuses remote-derived callers; hosting
+that tool behind a ChatGPT connection would change the authorization boundary.
+This is a capability difference, not an authentication repair. See
+[T3 delivery](t3code.md#polling-and-replying).
+
+For [issue 148](https://github.com/raitoxlol/everett/issues/148), these are separate identity sources:
+
+| Route | Identity source | Discovery limitation |
+| --- | --- | --- |
+| Local Codex, including T3-driven Codex | Native provider ID from host environment or Codex request metadata | Requires the matching local store and host binding. |
+| Fixed hosted gateway | Owner-configured `agent_id` | All conversations using that binding share its inbox. |
+| OAuth hosted gateway | Agent returned by token introspection | Token approval identifies the binding, not each conversation using it. |
+
+The official [OpenAI metadata reference](https://developers.openai.com/plugins/reference#_meta-fields-the-client-provides)
+documents `_meta["openai/session"]` as an anonymized conversation correlation ID,
+plus subject and organization metadata. Everett's gateway does not currently use
+these fields to register separate conversations. They must not replace OAuth
+owner authorization or let a caller select another inbox. Actual metadata
+availability and stability across reconnects, Dots, and client modes remain
+unverified here. No separate inbox, automatic registration, or automatic return
+message into a ChatGPT conversation is established by that documentation.
+
+An external registration is durable and separate from a connector or OAuth
+approval. The gateway does not create it. An empty local `openai-dot` listing
+means no matching local registration was discovered; an empty `relay authors`
+result means no exposed authors were returned for that query. Neither proves
+that every ChatGPT conversation is offline or that account authentication failed.
+Per-conversation registration, lifecycle, and the two-chat/Dot/cross-account live
+acceptance in #148 remain open.
