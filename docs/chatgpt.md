@@ -86,8 +86,8 @@ For [issue 148](https://github.com/raitoxlol/everett/issues/148), these are sepa
 | Route | Identity source | Discovery limitation |
 | --- | --- | --- |
 | Local Codex, including T3-driven Codex | Native provider ID from host environment or Codex request metadata | Requires the matching local store and host binding. |
-| Fixed hosted gateway | Owner-configured `agent_id` | All conversations using that binding share its inbox. |
-| OAuth hosted gateway | Agent returned by token introspection | Token approval identifies the binding, not each conversation using it. |
+| Fixed hosted gateway | Owner-configured `agent_id` | Legacy calls share its inbox; explicit chat handles select separate inboxes. |
+| OAuth hosted gateway | Agent returned by token introspection | Approval authorizes the plugin; explicit chat handles identify individual participants. |
 
 The official [OpenAI metadata reference](https://developers.openai.com/plugins/reference#_meta-fields-the-client-provides)
 documents `_meta["openai/session"]` as an anonymized conversation correlation ID,
@@ -99,9 +99,15 @@ unverified here. No separate inbox, automatic registration, or automatic return
 message into a ChatGPT conversation is established by that documentation.
 
 An external registration is durable and separate from a connector or OAuth
-approval. The gateway does not create it. An empty local `openai-dot` listing
+approval. Call `everett_identity` to register this chat and retain its private
+handle. See [registration and isolation](gateway.md#register-this-chat). Consent
+no longer asks you to name the agent or defaults to Argos. Existing connection
+credentials remain valid. An empty local `openai-dot` listing
 means no matching local registration was discovered; an empty `relay authors`
 result means no exposed authors were returned for that query. Neither proves
 that every ChatGPT conversation is offline or that account authentication failed.
-Per-conversation registration, lifecycle, and the two-chat/Dot/cross-account live
-acceptance in #148 remain open.
+Local gateway tests cover two chats, a Dot and a logical Codex identity, creation
+retries, restart, reapproval, cross-account rejection, revocation, discovery and a
+correlated request/reply through the real Rust backend. Actual ChatGPT metadata,
+handle retention and client-to-client live acceptance in #148 remain unverified.
+No production deployment is implied by these local checks.

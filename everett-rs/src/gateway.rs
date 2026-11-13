@@ -1,3 +1,5 @@
+mod identities;
+
 use std::{
     collections::BTreeSet,
     fs::File,
@@ -50,7 +52,7 @@ const SECURITY_HEADERS: &[&str] = &[
     "transfer-encoding",
 ];
 const BACKEND_ERROR: &str = "backend unavailable, incompatible, or request timed out";
-const INSTRUCTIONS: &str = "This connection is bound to one logical agent. Read its inbox for handoffs; reply using reply_to. Send only to authorized full IDs. No spawn/resume, automatic routing, or automatic bot wake-up. Shared core, when enabled, includes the owner's global core.";
+const INSTRUCTIONS: &str = "This connection authorizes owner-scoped gateway access. Without a private identity handle, calls use its legacy inbox. Read the selected inbox for handoffs; reply using reply_to. Send only to authorized full IDs. No spawn/resume, automatic routing, or automatic bot wake-up. Shared core, when enabled, includes the owner's global core. To register this chat separately, call everett_identity(action=create, registration_key=<fresh private random key>, name=<chat name>, kind=chat|dot|codex). Keep identity_handle private and pass it on subsequent calls; omit session_id. A name or host conversation metadata never authenticates an inbox.";
 
 #[derive(Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -80,6 +82,8 @@ struct Binding {
     backend_command: Vec<String>,
     #[serde(skip)]
     home: PathBuf,
+    #[serde(skip)]
+    identity_owner: Option<String>,
     #[serde(default = "default_workers")]
     max_workers: usize,
     #[serde(default = "default_timeout")]
@@ -352,9 +356,10 @@ impl Binding {
     }
 
     fn tools(&self) -> Vec<Tool> {
-        let own = json!({"type":"string", "enum":[self.agent_id]});
+        let own = json!({"type":"string", "description":"Must match the identity selected by identity_handle; omit to use that binding."});
         let short = json!({"type":"string", "minLength":1, "maxLength":2000});
         let specs = [
+            ("everett_identity", "Register a separate chat inbox under this connection. create requires a fresh private registration_key, name and kind; reuse the key only for a retry. list returns public cards without handles; revoke requires the private identity_handle. Names and kinds are self-declared.", json!({"action":{"type":"string","enum":["create","list","revoke"]},"registration_key":{"type":"string","minLength":32,"maxLength":128},"name":{"type":"string","minLength":1,"maxLength":100},"kind":{"type":"string","enum":["chat","dot","codex"]}}), vec!["action"]),
             ("everett_whoami", "Read this connection's logical owner-scoped identity, not vendor-attested Bot identity.", json!({}), vec![]),
             ("everett_core", "Read owner-wide GLOBAL shared core plus this connection's fixed project core.", json!({"project":{"type":"string","enum":[self.project]}}), vec![]),
             ("everett_inbox", "Read only this agent's inbox. By default mark messages delivered; use peek=true to retain them.", json!({"session_id":own,"peek":{"type":"boolean"}}), vec![]),
@@ -362,11 +367,13 @@ impl Binding {
             ("everett_send", "Queue an inbox-only message to an authorized full ID, or reply to an owned message. No automatic bot wake-up.", json!({"session_id":own,"text":{"type":"string","minLength":1,"maxLength":16000},"to":{"type":"string","enum":self.destinations},"reply_to":{"type":"string","minLength":1,"maxLength":128}}), vec!["text"]),
         ];
         specs.into_iter().filter(|(name, ..)| *name != "everett_core" || self.allow_shared_core)
-            .map(|(name, description, properties, required)| serde_json::from_value(json!({
+            .map(|(name, description, mut properties, required)| {
+                properties["identity_handle"] = json!({"type":"string","minLength":64,"maxLength":64,"description":"Private handle for this chat; omit only for the legacy connection identity."});
+                serde_json::from_value(json!({
                 "name":name,"description":description,
                 "inputSchema":{"type":"object","properties":properties,"required":required,"additionalProperties":false},
                 "annotations":{"readOnlyHint":matches!(name,"everett_core"|"everett_whoami"),"openWorldHint":false}
-            })).expect("gateway tool definitions are valid")).collect()
+            })).expect("gateway tool definitions are valid") }).collect()
     }
 }
 
@@ -418,6 +425,7 @@ struct OAuthAgent {
     agent_id: String,
     name: String,
     client_id: String,
+    account: Option<String>,
 }
 
 #[derive(Clone)]
@@ -441,6 +449,8 @@ impl Gateway {
             .ok_or("OAuth identity missing from request; reconnect and authorize again")?;
         let mut binding = (*self.binding).clone();
         binding.agent_id = agent.agent_id.clone();
+        binding.identity_owner = agent.account.as_ref().map(|account|
+            serde_json::to_string(&(account, &agent.client_id)).expect("identity owner is serializable"));
         Ok((Arc::new(binding), Some(agent)))
     }
 
@@ -449,8 +459,30 @@ impl Gateway {
         binding: &Binding,
         agent: Option<&OAuthAgent>,
         name: &str,
-        arguments: Map<String, Value>,
+        mut arguments: Map<String, Value>,
     ) -> Result<Value, String> {
+        if name == "everett_identity" {
+            let action = arguments.get("action").and_then(Value::as_str).ok_or("action is required")?;
+            let allowed: &[&str] = match action {
+                "create" => &["action", "registration_key", "name", "kind"],
+                "list" => &["action"],
+                "revoke" => &["action", "identity_handle"],
+                _ => return Err("unknown identity action".into()),
+            };
+            if arguments.keys().any(|key| !allowed.contains(&key.as_str())) { return Err("unexpected identity argument".into()); }
+            let text = |key: &str| arguments.get(key).and_then(Value::as_str).ok_or_else(|| format!("{key} is required"));
+            return match action {
+                "create" => identities::create(binding, text("registration_key")?, text("name")?, text("kind")?),
+                "list" => identities::list(binding),
+                "revoke" => identities::revoke(binding, text("identity_handle")?),
+                _ => unreachable!(),
+            };
+        }
+        let mut selected = binding.clone();
+        if let Some(handle) = arguments.remove("identity_handle") {
+            selected.agent_id = identities::resolve(binding, handle.as_str().ok_or("identity_handle must be a string")?)?;
+        }
+        let binding = &selected;
         let args = binding.authorize(name, arguments)?;
         let _permit = self
             .workers
@@ -690,8 +722,9 @@ impl OAuthVerifier {
         match (data["sub"].as_str(), data["everett_agent"].as_str(), data["client_id"].as_str()) {
             (Some(sub), Some(agent), Some(client)) if sub == agent && crate::adapters::external::valid_id(agent) => Ok(OAuthAgent {
                 agent_id: agent.to_owned(),
+                account: data["everett_account"].as_str().filter(|s| !s.is_empty() && s.len() <= 256).map(str::to_owned),
                 name: data["everett_agent_name"].as_str().unwrap_or_default().chars().take(100).collect(),
-                client_id: client.chars().take(512).collect(),
+                client_id: client.to_owned(),
             }),
             _ => denied("token carries no valid Everett agent identity"),
         }
@@ -1070,6 +1103,7 @@ mod tests {
     fn binding(home: &Path) -> Binding {
         Binding {
             agent_id: "dot-one".into(),
+            identity_owner: None,
             harness: "openai-dot".into(),
             cwd: home.into(),
             home: home.into(),
@@ -1116,7 +1150,7 @@ mod tests {
             .is_err());
         b.allow_shared_core = false;
         assert!(b.authorize("everett_core", Map::new()).is_err());
-        assert_eq!(b.tools().len(), 4);
+        assert_eq!(b.tools().len(), 5);
     }
 
     #[test]
