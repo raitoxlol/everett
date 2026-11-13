@@ -3,6 +3,9 @@ import { sha256 } from '@noble/hashes/sha256';
 import { z } from 'zod';
 
 export const DEVICE_LABEL_LIMIT = 2048;
+export const operations = ['whoami', 'register', 'device', 'devices', 'exposeSession', 'sessionDirectory', 'credentials', 'memberships', 'revokeAgent', 'revokeMember', 'rotate', 'enqueue', 'pending', 'accept', 'observe', 'status'] as const;
+export type Operation = typeof operations[number];
+export type RelayResult = { ok: true; value: unknown } | { ok: false; error: string; status: number };
 
 export const identifier = z.string().regex(/^[A-Za-z0-9_.-]{1,160}$/);
 const hex = (bytes: number) => z.string().regex(new RegExp(`^[0-9a-f]{${bytes * 2}}$`));

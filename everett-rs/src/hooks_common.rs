@@ -734,7 +734,6 @@ fn grok_stop_inner(raw: &str) -> Option<()> {
     Some(())
 }
 
-// ---- live delivery (UserPromptSubmit / PostToolUse hooks) ----
 
 const EVENTS: &[&str] = &["UserPromptSubmit", "PostToolUse"];
 

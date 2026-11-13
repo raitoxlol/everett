@@ -214,7 +214,7 @@ fn milliseconds() -> i64 {
 
 fn initialize() -> Result<()> {
     for dir in [root(), root().join("peers"), root().join("outgoing")] {
-        peer::private_dir(&dir)?;
+        crate::storage::private_dir(&dir)?;
     }
     Ok(())
 }
@@ -224,7 +224,7 @@ fn read<T: serde::de::DeserializeOwned>(path: &Path) -> Result<T> {
 }
 
 fn write(path: &Path, value: &impl Serialize) -> Result<()> {
-    peer::save(path, &serde_json::to_vec_pretty(value).map_err(bad)?)?;
+    crate::storage::save(path, &serde_json::to_vec_pretty(value).map_err(bad)?)?;
     // Atomic rename alone is not durable across a power loss.
     fs::File::open(
         path.parent()
@@ -305,7 +305,7 @@ fn keys(owner: &str) -> Result<Keys> {
     }
     let agent = identity.agent.as_str();
     valid(agent)?;
-    let _guard = peer::lock(&root().join("keys.lock"))?;
+    let _guard = crate::storage::lock(&root().join("keys.lock"))?;
     let path = key_path(owner, agent);
     let private = if path.exists() {
         read::<PrivateKeys>(&path)?
@@ -611,7 +611,7 @@ pub fn rotate() -> Result<Value> {
     let _daemon_guard = daemon_lock()?;
     let old = verified_keys(&owner)?;
     let path = key_path(&owner, &old.device.device_id);
-    let _guard = peer::lock(&root().join("keys.lock"))?;
+    let _guard = crate::storage::lock(&root().join("keys.lock"))?;
     let stage = path.with_extension("rotation");
     let (device, response) = staged_rotation(
         &path,
@@ -710,7 +710,6 @@ fn format_device_names(bundles: Value, labels: Option<Value>, owner: &str) -> Re
                     && name.chars().count() <= 100
                     && !name.chars().any(char::is_control)
             });
-        // JSON quoting escapes user-authored labels without terminal control sequences.
         let label = name
             .map(|n| json!(n).to_string())
             .unwrap_or_else(|| "(unnamed)".into());
@@ -765,7 +764,7 @@ pub fn add(
         "SSH",
         || Ok(peer::peers()?.contains_key(name)),
         || {
-            let _guard = peer::lock(&root().join("peers.lock"))?;
+            let _guard = crate::storage::lock(&root().join("peers.lock"))?;
             let pin = Paired {
                 device,
                 deployment: deployment()?,
@@ -816,7 +815,7 @@ fn prepare(
         &json!([keys.device.owner, keys.device.device_id]).to_string(),
         key,
     );
-    let _guard = peer::lock(&root().join("outgoing.lock"))?;
+    let _guard = crate::storage::lock(&root().join("outgoing.lock"))?;
     if let Some(existing) = reuse_outgoing(&path, &digest, keys, &pin)? {
         return Ok((path, existing));
     }
@@ -884,7 +883,7 @@ async fn post(client: &mut RelayClient, path: &Path, outgoing: &Outgoing) -> Res
         json!({"envelope":outgoing.envelope}),
     )
     .await?;
-    let _guard = peer::lock(&root().join("outgoing.lock"))?;
+    let _guard = crate::storage::lock(&root().join("outgoing.lock"))?;
     let mut current: Outgoing = read(path)?;
     current.posted = true;
     write(path, &current)?;
@@ -896,7 +895,7 @@ async fn observe_reply(client: &mut RelayClient, keys: &Keys, path: &Path) -> Re
     if out.posted {
         if let Some(parent) = out.reply_pending {
             signed_observation(client, keys, &parent.owner, &parent.message_id, "replied").await?;
-            let _guard = peer::lock(&root().join("outgoing.lock"))?;
+            let _guard = crate::storage::lock(&root().join("outgoing.lock"))?;
             let mut current: Outgoing = read(path)?;
             current.reply_pending = None;
             write(path, &current)?;
@@ -1123,7 +1122,7 @@ pub fn agent_status(mid: &str) -> Result<Value> {
 }
 
 fn observe(owner: &str, envelope: &Envelope, mid: &str, state: State) -> Result<()> {
-    let _guard = peer::lock(&root().join("outgoing.lock"))?;
+    let _guard = crate::storage::lock(&root().join("outgoing.lock"))?;
     let (path, mut out) = find_outgoing(owner, mid)?;
     if out.envelope.from_device != envelope.to_device
         || out.envelope.to_device != envelope.from_device
@@ -1152,7 +1151,7 @@ fn import_inner(keys: &Keys, envelope: &Envelope, now: i64, publish: bool) -> Re
         envelope.grant_id.as_deref(),
     )?;
     let payload = keys.open(&pin.device, envelope, now)?;
-    let _guard = peer::lock(&root().join("inbox.lock"))?;
+    let _guard = crate::storage::lock(&root().join("inbox.lock"))?;
     match payload {
         Payload::Delivered { .. } => {
             return Err(bad(
@@ -1555,7 +1554,7 @@ async fn reconcile(client: &mut RelayClient, keys: &Keys, rejected: &mut Rejecte
                     }
                     continue;
                 }
-                peer::save(&marker, b"observed")?;
+                crate::storage::save(&marker, b"observed")?;
             }
         }
     }
@@ -1980,7 +1979,7 @@ pub fn run() -> Result<Value> {
     let _guard = daemon_lock()?;
     let _lease = receiver::Lease::start(&root(), &owner, &keys.device.device_id)?;
     let ingress = root().join("ingress");
-    peer::private_dir(&ingress)?;
+    crate::storage::private_dir(&ingress)?;
     let outcome = tokio::runtime::Runtime::new().map_err(bad)?.block_on(async {
         let client = client(&owner).await?;
         run_native(client, &keys, &ingress, &register).await

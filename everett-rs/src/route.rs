@@ -1,5 +1,4 @@
 use std::collections::{HashMap, HashSet};
-use std::fs;
 use std::sync::OnceLock;
 use std::time::Duration;
 
@@ -9,7 +8,7 @@ use serde_json::{json, Map, Value};
 use crate::config;
 use crate::error::{EverettError, Result};
 use crate::proc::shlex_quote;
-use crate::session::{home, now, Session};
+use crate::session::{now, Session};
 
 pub const JEV_URL: &str = "https://api.typesafe.ai/v1/systemone";
 pub const JEV_MODEL: &str = "jev-1.13.0";
@@ -24,24 +23,6 @@ const STOP_WORDS: &[&str] = &[
     "a", "an", "and", "are", "as", "at", "be", "by", "for", "from", "how", "i", "in", "is", "it",
     "of", "on", "or", "our", "the", "this", "to", "we", "with",
 ];
-
-/// Jev key sources, in order: TYPESAFE_API_KEY, ~/.everett/config.toml, ~/.hermes/.env.
-pub fn find_api_key() -> String {
-    let key = config::get("typesafe_api_key", Some("TYPESAFE_API_KEY"), "");
-    if !key.is_empty() {
-        return key;
-    }
-    if let Ok(text) = fs::read_to_string(home().join(".hermes").join(".env")) {
-        for line in text.lines() {
-            if let Some((name, value)) = line.split_once('=') {
-                if name.trim() == "TYPESAFE_API_KEY" {
-                    return value.trim().trim_matches(|c| c == '"' || c == '\'').to_string();
-                }
-            }
-        }
-    }
-    String::new()
-}
 
 pub fn verify_key(key: &str) -> bool {
     check_key(key).is_ok()
@@ -492,7 +473,7 @@ pub fn route_with(
     jev: &JevFn,
     caller_id: Option<&str>,
 ) -> Result<Map<String, Value>> {
-    let key = api_key.map(|k| k.to_string()).unwrap_or_else(find_api_key);
+    let key = api_key.map(|k| k.to_string()).unwrap_or_else(|| config::jev_key().0);
     let selected = router
         .map(|r| r.to_string())
         .filter(|r| !r.is_empty())

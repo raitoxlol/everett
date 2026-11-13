@@ -63,7 +63,7 @@ fn heartbeat_after_read(session_id: &str, after_read: impl FnOnce()) -> Option<V
     {
         return None;
     }
-    let command = crate::claude_wake::NudgeCommand::resolve().ok()?;
+    let command = crate::nudge::NudgeCommand::resolve().ok()?;
     live.insert("ts".into(), json!(crate::session::now()));
     let temporary = path.with_extension(format!("{}.tmp", std::process::id()));
     fs::write(&temporary, serde_json::to_vec(&live).ok()?).ok()?;

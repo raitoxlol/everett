@@ -14,7 +14,7 @@ use crate::core::{find_secret, project_for, slug};
 use crate::error::{EverettError, Result};
 use crate::inbox;
 use crate::paths;
-use crate::send::caller_identity;
+use crate::host::caller_identity;
 use crate::session::{file_mtime, home, now};
 
 /// Injectable runner for notification commands (tests substitute a fake).
@@ -72,7 +72,6 @@ pub fn state(session_id: &str) -> Option<Map<String, Value>> {
         .and_then(|v| v.as_object().cloned())
 }
 
-// ---- record ----
 
 #[allow(clippy::too_many_arguments)]
 pub fn record(
@@ -182,7 +181,6 @@ pub fn record(
     Ok(Some(event))
 }
 
-// ---- subscriptions ----
 
 pub fn subscriptions() -> HashMap<String, Vec<String>> {
     let Ok(text) = fs::read_to_string(subs_path()) else {
@@ -330,7 +328,6 @@ pub fn route(event: &Map<String, Value>) -> Vec<String> {
     delivered
 }
 
-// ---- the human's notifier ----
 
 fn applescript(text: &str) -> String {
     format!("\"{}\"", text.replace('\\', "\\\\").replace('"', "\\\""))
@@ -488,7 +485,6 @@ pub fn maybe_escalate(at: Option<f64>) {
     let _ = check_escalations(Some(now), None);
 }
 
-// ---- reading ----
 
 pub fn read(since: f64) -> Vec<Map<String, Value>> {
     let mut out = Vec::new();
@@ -564,7 +560,6 @@ pub fn apply(sessions: &mut [crate::session::Session]) {
     }
 }
 
-// ---- automatic detection (Stop hooks) ----
 
 fn blocked_re() -> &'static Regex {
     static RE: OnceLock<Regex> = OnceLock::new();

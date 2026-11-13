@@ -145,22 +145,20 @@ pub(super) fn create(
     if revoked {
         return Err(INVALID.into());
     }
-    let target = binding
-        .home
-        .join(".everett/external")
-        .join(format!("{id}.json"));
-    if !target.exists() {
-        crate::adapters::external::register(
-            &id,
-            &binding.harness,
-            name,
-            &binding.cwd.to_string_lossy(),
-            None,
-            false,
-        )
-        .map_err(|_| {
-            "identity saved but local registration failed; retry with the same registration_key"
-        })?;
+    let registrations = crate::adapters::external::Store::new(&binding.home);
+    if !registrations.exists(&id).map_err(|_| STORE_ERROR)? {
+        registrations
+            .register(
+                &id,
+                &binding.harness,
+                name,
+                &binding.cwd.to_string_lossy(),
+                None,
+                false,
+            )
+            .map_err(|_| {
+                "identity saved but local registration failed; retry with the same registration_key"
+            })?;
     }
     tx.commit().map_err(|_| STORE_ERROR)?;
     Ok(json!({"session_id":id,"identity_handle":handle,"name":name,"kind":kind}))
@@ -214,14 +212,8 @@ pub(super) fn revoke(binding: &Binding, handle: &str) -> Result<Value, String> {
         params![scope(binding), handle],
     )
     .map_err(|_| STORE_ERROR)?;
-    let target = binding
-        .home
-        .join(".everett/external")
-        .join(format!("{id}.json"));
-    match fs::remove_file(target) {
-        Ok(()) => {}
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-        Err(_) => return Err("identity revoked but local registration cleanup failed".into()),
-    }
+    crate::adapters::external::Store::new(&binding.home)
+        .remove_if_exists(&id)
+        .map_err(|_| "identity revoked but local registration cleanup failed")?;
     Ok(json!({"session_id":id,"revoked":true}))
 }
