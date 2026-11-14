@@ -45,7 +45,7 @@ fn plant_thread(home: &Path) {
 fn fake_t3(home: &Path, exit: i32) -> PathBuf {
     let path = home.join("fake-t3");
     fs::write(&path, format!(
-        "#!/bin/sh\nprintf '%s\\n' \"$@\" > \"$HOME/t3-argv\"\nprintf '%s\\n' '{{\"accepted\":true}}'\nexit {exit}\n"
+        "#!/bin/sh\nprintf '%s\\n' \"$@\" > \"$HOME/t3-argv\"\nprintf '%s\\n' '{{\"threadId\":\"t3-thread\",\"messageId\":\"message-1\",\"runId\":\"run-1\",\"status\":\"running\",\"delivery\":\"started\"}}'\nexit {exit}\n"
     )).unwrap();
     fs::set_permissions(&path, fs::Permissions::from_mode(0o700)).unwrap();
     path
@@ -76,7 +76,7 @@ fn t3_ping_records_inbox_and_sends_only_fixed_nudge() {
     assert_eq!(result["wake"]["state"], "prompt_sent");
     assert_eq!(result["wake"]["transport"], "t3");
     assert_eq!(result["wake"]["thread_id"], THREAD);
-    assert_eq!(result["wake"]["receipt"], "{\"accepted\":true}");
+    assert_eq!(result["wake"]["receipt"], "{\"threadId\":\"t3-thread\",\"messageId\":\"message-1\",\"runId\":\"run-1\",\"status\":\"running\",\"delivery\":\"started\"}");
     let messages = inbox::pending(SESSION, None);
     assert_eq!(messages.len(), 1);
     assert_eq!(messages[0]["id"], result["message_id"]);
@@ -425,4 +425,19 @@ fn t3_ping_without_a_json_receipt_keeps_message_without_claiming_dispatch() {
     let error = send::ping_as(&session(), BODY, 30.0, Some("caller"), Some("claude")).unwrap_err();
     assert!(error.to_string().contains("JSON receipt"), "{error}");
     assert_eq!(inbox::pending(SESSION, None).len(), 1);
+}
+
+#[test]
+fn invalid_t3_dispatch_receipts_retain_inbox_without_claiming_pickup() {
+    let home = lib_home();
+    plant_thread(&home.path());
+    let bin = fake_t3(&home.path(), 0);
+    std::env::set_var("EVERETT_T3_BIN", &bin);
+    for receipt in [json!({"accepted":false}), json!({}), json!([])] {
+        fs::write(&bin, format!("#!/bin/sh\nprintf '%s\\n' '{}'\n", receipt)).unwrap();
+        let before = inbox::pending(SESSION, None).len();
+        let error = send::ping_as(&session(), BODY, 30.0, Some("caller"), Some("claude")).unwrap_err();
+        assert!(error.to_string().contains("Dispatch is unconfirmed"), "{error}");
+        assert_eq!(inbox::pending(SESSION, None).len(), before + 1);
+    }
 }

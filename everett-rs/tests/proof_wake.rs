@@ -96,7 +96,7 @@ fn t3_fixture(exit: i32) -> Fixture {
         VALUES ('provider','proof-thread','codex','codex','idle',?1,?2)",
         [&now, &json!({"driver":"codex","nativeThreadRef":{"driver":"codex","nativeId":TARGET,"strength":"strong"}}).to_string()]).unwrap();
     executable(&f, "fake-t3", &format!(
-        "#!/bin/sh\nprintf '%s\\n' \"$@\" > \"$HOME/t3-argv\"\nprintf '%s\\n' '{{\"accepted\":true}}'\nexit {exit}\n"
+        "#!/bin/sh\nprintf '%s\\n' \"$@\" > \"$HOME/t3-argv\"\nprintf '%s\\n' '{{\"threadId\":\"proof-thread\",\"messageId\":\"message-1\",\"runId\":\"run-1\",\"status\":\"running\",\"delivery\":\"started\"}}'\nexit {exit}\n"
     ));
     f
 }
@@ -187,7 +187,7 @@ fn success_reports_stages_and_preserves_unrelated_sender_inbox() {
     assert_eq!(report["status"], "passed");
     assert_eq!(report["target_resolved"]["harness"], "codex");
     assert_eq!(report["target_resolved"]["transport"], "t3");
-    assert_eq!(report["dispatched"]["receipt"]["wake"]["receipt"], "{\"accepted\":true}");
+    assert_eq!(report["dispatched"]["receipt"]["wake"]["receipt"], "{\"threadId\":\"proof-thread\",\"messageId\":\"message-1\",\"runId\":\"run-1\",\"status\":\"running\",\"delivery\":\"started\"}");
     for stage in ["target_resolved", "dispatched", "picked_up", "replied"] {
         chrono::DateTime::parse_from_rfc3339(report[stage]["at"].as_str().unwrap()).unwrap();
     }
@@ -452,7 +452,7 @@ fn canary_lock_is_inside_budget_and_never_appends_late() {
 #[test]
 fn ordinary_t3_ping_retains_twenty_second_dispatch_timeout() {
     let f = t3_fixture(0);
-    executable(&f, "fake-t3", "#!/bin/sh\ntouch \"$HOME/t3-started\"\nsleep 0.5\nprintf '{\"accepted\":true}\\n'\n");
+    executable(&f, "fake-t3", "#!/bin/sh\ntouch \"$HOME/t3-started\"\nsleep 0.5\nprintf '{\"threadId\":\"proof-thread\",\"messageId\":\"message-1\",\"runId\":\"run-1\",\"status\":\"running\",\"delivery\":\"started\"}\\n'\n");
     let out = command(&f.home()).args(["send", "--to", TARGET, "--mode", "ping", "--timeout", "0.1", "ordinary ping"]).checked_output();
     assert!(out.status.success(), "{out:?}");
     assert!(f.home().join("t3-started").exists());
@@ -554,13 +554,13 @@ fn claude_preflight_obeys_budget_before_queueing() {
 fn delayed_mcp_ping_helper() {
     if std::env::var_os("EVERETT_TEST_MCP_TIMEOUT_CHILD").is_none() { return; }
     let f = t3_fixture(0);
-    executable(&f, "fake-t3", "#!/bin/sh\nsleep 1.5\nprintf '{\"accepted\":true}\\n'\n");
+    executable(&f, "fake-t3", "#!/bin/sh\nsleep 1.5\nprintf '{\"threadId\":\"proof-thread\",\"messageId\":\"message-1\",\"runId\":\"run-1\",\"status\":\"running\",\"delivery\":\"started\"}\\n'\n");
     let binary = f.home().join("fake-t3");
     let results = common::mcp_calls(&f, &[], &[("EVERETT_T3_BIN", binary.to_str().unwrap()),
         ("EVERETT_SESSION_ID", SENDER)], &[("everett_send", json!({"to":TARGET,"text":"ordinary MCP ping","mode":"ping","timeout":1.0}))]);
     let result = common::tool_json(&results[0]);
     assert_eq!(result["pinged"], true, "results={results:?}");
-    assert_eq!(result["wake"]["receipt"], "{\"accepted\":true}");
+    assert_eq!(result["wake"]["receipt"], "{\"threadId\":\"proof-thread\",\"messageId\":\"message-1\",\"runId\":\"run-1\",\"status\":\"running\",\"delivery\":\"started\"}");
 }
 
 #[test]

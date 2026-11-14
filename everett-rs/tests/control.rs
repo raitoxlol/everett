@@ -12,8 +12,12 @@ const CLAUDE: &str = "0f2c7f4e-1111-4a3b-9c1d-123456789abc";
 /// Records argv and answers like `t3 ... --json`; exit 2 mimics "waiting for an answer".
 fn fake_t3(fx: &common::Fixture, exit: i32) -> String {
     let path = fx.home().join("fake-t3");
+    let send = common::t3_send_receipt(THREAD);
+    let start = json!({"threadId":THREAD,"projectId":"project-1","runId":"run-1"});
+    let waited = json!({"threadId":THREAD,"runId":"run-1","status":if exit == 2 { "waiting" } else { "completed" },"reply":null,"error":null});
+    let list = json!([{"threadId":THREAD}]);
     fs::write(&path, format!(
-        "#!/bin/sh\nprintf '%s\\n' \"$@\" > \"$HOME/t3-argv\"\necho 'noise' >&2\nprintf '%s\\n' '{{\"ok\":true,\"id\":\"{THREAD}\"}}'\nexit {exit}\n"
+        "#!/bin/sh\nprintf '%s\\n' \"$@\" > \"$HOME/t3-argv\"\necho 'noise' >&2\ncase \"$2\" in\nlist) receipt='{list}' ;;\nstart) receipt='{start}' ;;\n*) receipt='{send}' ;;\nesac\nfor arg in \"$@\"; do\nif [ \"$arg\" = --wait ]; then receipt='{waited}'; fi\ndone\nprintf '%s\\n' \"$receipt\"\nexit {exit}\n"
     )).unwrap();
     fs::set_permissions(&path, fs::Permissions::from_mode(0o700)).unwrap();
     path.to_string_lossy().into_owned()
@@ -35,12 +39,12 @@ fn t3_threads_start_send_and_read_use_the_t3_cli() {
     let t3 = fake_t3(&fx, 0);
 
     let r = tool_json(&call(&fx, &t3, json!({"action":"threads","project":"/work/p"})));
-    assert_eq!(r["ok"], true, "{r}");
+    assert_eq!(r["result"][0]["threadId"], THREAD, "{r}");
     assert_eq!(argv(&fx), ["thread", "list", "--json", "--project", "/work/p"]);
 
     let r = tool_json(&call(&fx, &t3, json!({"action":"start","project":"/work/p","text":"build it",
         "title":"T","provider":"codex","model":"gpt","worktree":"main","branch":"b","wait":true})));
-    assert_eq!((r["via"].clone(), r["started"].clone(), r["result"]["id"].clone()), (json!("t3"), json!(true), json!(THREAD)), "{r}");
+    assert_eq!((r["via"].clone(), r["started"].clone(), r["result"]["threadId"].clone()), (json!("t3"), json!(true), json!(THREAD)), "{r}");
     assert_eq!(argv(&fx), ["thread", "start", "--json", "--title", "T", "--provider", "codex", "--model", "gpt",
         "--worktree", "main", "--branch", "b", "--wait", "/work/p", "build it"]);
 
@@ -158,8 +162,8 @@ fn remote_derived_caller_is_refused_for_every_action() {
     let fx = fixture();
     let t3 = fake_t3(&fx, 0);
     fx.write(".everett/inbox/relay-context/caller.json", &json!({"hops": 1}).to_string());
-    for action in ["threads", "read", "stop"] {
-        let r = call(&fx, &t3, json!({"action": action, "thread": THREAD}));
+    for action in ["threads", "read", "stop", "start", "send", "wake"] {
+        let r = call(&fx, &t3, json!({"action": action, "thread": THREAD, "project":"/work/p", "text":"must not dispatch"}));
         assert_eq!(r["isError"], true, "{action}: {r}");
         assert!(r.to_string().contains("Remote-derived"), "{action}: {r}");
     }
@@ -182,8 +186,11 @@ fn t3_send_carries_hops_to_the_receiving_session() {
     drop(con);
     let send = |caller: &str, hops: &str| mcp_calls(&fx, &[], &[("EVERETT_T3_BIN", t3.as_str()), ("EVERETT_SESSION_ID", caller), ("EVERETT_HOPS", hops)],
         &[("everett_control", json!({"action":"send","thread":THREAD,"text":"go"}))])[0].clone();
+    let invalid = call(&fx, &t3, json!({"action":"send","thread":THREAD,"text":"must not send","timeout":0}));
+    assert_eq!(invalid["isError"], true, "{invalid}");
+    assert!(!fx.home().join(".everett/inbox/live/recv-session.json").exists(), "invalid arguments must not taint the receiver");
     // The fake t3 snapshots the receiver's hop record while it is still running.
-    fs::write(&t3, "#!/bin/sh\ncat \"$HOME/.everett/inbox/live/recv-session.json\" > \"$HOME/hops-during-send\" 2>/dev/null\nprintf '%s\\n' '{\"ok\":true}'\n").unwrap();
+    fs::write(&t3, format!("#!/bin/sh\ncat \"$HOME/.everett/inbox/live/recv-session.json\" > \"$HOME/hops-during-send\" 2>/dev/null\nprintf '%s\\n' '{}'\n", common::t3_send_receipt(THREAD))).unwrap();
     assert_ne!(send("caller", "2")["isError"], true);
     let during: Value = serde_json::from_str(&fs::read_to_string(fx.home().join("hops-during-send")).unwrap()).unwrap();
     assert_eq!(during["hops"], 3, "hop state must exist before the receiver runs");
@@ -208,4 +215,73 @@ fn t3_without_a_json_receipt_never_claims_start_or_send_success() {
             assert!(r.to_string().contains("JSON receipt"), "{r}");
         }
     }
+}
+
+#[test]
+fn invalid_control_timeout_never_dispatches_or_queues() {
+    let fx = fixture();
+    let t3 = fake_t3(&fx, 0);
+    fx.write(&format!(".claude/projects/p/{CLAUDE}.jsonl"), &common::jsonl(&[
+        json!({"type":"user","sessionId":CLAUDE,"cwd":fx.home(),"timestamp":chrono::Utc::now().to_rfc3339(),"message":{"role":"user","content":"hello"}}),
+    ]));
+    for timeout in [0.0, -1.0] {
+        for target in [json!({"thread":THREAD}), json!({"session":CLAUDE})] {
+            let mut args = target.as_object().unwrap().clone();
+            args.extend(json!({"action":"send","text":"must not send","timeout":timeout}).as_object().unwrap().clone());
+            let r = call(&fx, &t3, Value::Object(args));
+            assert_eq!(r["isError"], true, "{r}");
+            assert!(r.to_string().contains("timeout"), "{r}");
+        }
+    }
+    assert!(!fx.home().join("t3-argv").exists());
+    assert!(!fx.home().join(format!(".everett/inbox/{CLAUDE}.jsonl")).exists());
+}
+
+#[test]
+fn control_forwards_timeout_to_non_t3_ping() {
+    let fx = fixture();
+    let id = "codex-timeout-target";
+    fx.write(".codex/sessions/2026/11/14/target.jsonl", &common::jsonl(&[
+        json!({"type":"session_meta","payload":{"id":id,"cwd":fx.home(),"timestamp":chrono::Utc::now().to_rfc3339()}}),
+        json!({"type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"hello"}]}}),
+        json!({"type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"ready"}]}}),
+    ]));
+    fs::File::open(fx.home().join(".codex/sessions/2026/11/14/target.jsonl")).unwrap()
+        .set_modified(std::time::SystemTime::now() - std::time::Duration::from_secs(120)).unwrap();
+    let binary = fx.write("bin/codex", "#!/bin/sh\nprintf invoked > \"$HOME/codex-invoked\"\nexec sleep 1\n");
+    fs::set_permissions(binary, fs::Permissions::from_mode(0o700)).unwrap();
+    let path = format!("{}:{}", fx.home().join("bin").display(), common::HERMETIC_PATH);
+    let results = mcp_calls(&fx, &[], &[("PATH",&path),("EVERETT_SESSION_ID","caller")],
+        &[("everett_control",json!({"action":"send","session":id,"text":"go","timeout":0.05}))]);
+    assert!(fx.home().join("codex-invoked").exists(), "{}", results[0]);
+    assert_eq!(results[0]["isError"],true,"{}",results[0]);
+    assert!(results[0].to_string().contains("did not reply within 0.05s"),"{}",results[0]);
+}
+
+#[test]
+fn t3_semantically_invalid_receipts_never_confirm_dispatch() {
+    let fx = fixture();
+    let t3 = fake_t3(&fx, 0);
+    for receipt in [json!({"accepted":false}), json!({}), json!([])] {
+        fs::write(&t3, format!("#!/bin/sh\nprintf '%s\\n' '{}'\n", receipt)).unwrap();
+        for args in [
+            json!({"action":"start","project":"/work/p","text":"build it"}),
+            json!({"action":"send","thread":THREAD,"text":"next step"}),
+            json!({"action":"wake","thread":THREAD}),
+        ] {
+            let r = call(&fx, &t3, args.clone());
+            assert_eq!(r["isError"], true, "receipt {receipt}, request {args}: {r}");
+            assert!(r.to_string().contains("Dispatch is unconfirmed"), "{r}");
+        }
+    }
+}
+
+#[test]
+fn empty_t3_thread_list_is_not_a_dispatch_receipt() {
+    let fx = fixture();
+    let t3 = fake_t3(&fx, 0);
+    fs::write(&t3, "#!/bin/sh\nprintf '[]\\n'\n").unwrap();
+    let r = call(&fx, &t3, json!({"action":"threads"}));
+    assert_ne!(r["isError"], true, "{r}");
+    assert_eq!(tool_json(&r)["result"], json!([]));
 }

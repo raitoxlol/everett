@@ -24,7 +24,7 @@ fn t3_bin() -> Result<String> {
 }
 
 /// Run `t3 <args> --json` and parse its stdout. T3 writes diagnostics to stderr.
-fn t3_json(args: &[&str], timeout: f64) -> Result<Value> {
+fn t3_json(args: &[&str], timeout: f64, dispatch: Option<(t3_cli::Dispatch<'_>, bool)>) -> Result<Value> {
     let captured = t3_cli::capture(&t3_bin()?, args, timeout)
         .map_err(|e| EverettError::new(4, format!("t3 failed to start: {e}")))?;
     let out = captured.output;
@@ -39,6 +39,10 @@ fn t3_json(args: &[&str], timeout: f64) -> Result<Value> {
     }
     let mut value = captured.receipt.ok_or_else(|| EverettError::new(4,
         format!("t3 returned no valid JSON receipt (exit {}). Check that the selected CLI supports thread commands. Dispatch is unconfirmed; do not blindly retry.", out.code)))?;
+    if let Some((dispatch, wait)) = dispatch {
+        t3_cli::validate_dispatch(&value, dispatch, wait, out.code)
+            .map_err(|message| EverettError::new(4, message))?;
+    }
     if out.code == 2 {
         if let Some(map) = value.as_object_mut() {
             map.insert("waiting_for_answer".into(), json!(true));
@@ -47,7 +51,7 @@ fn t3_json(args: &[&str], timeout: f64) -> Result<Value> {
     Ok(value)
 }
 
-fn clamp_timeout(timeout: Option<f64>, wait: bool) -> Result<f64> {
+pub(crate) fn clamp_timeout(timeout: Option<f64>, wait: bool) -> Result<f64> {
     let t = timeout.unwrap_or(if wait { 600.0 } else { QUICK });
     if !t.is_finite() || t <= 0.0 {
         return Err(EverettError::new(2, "timeout must be a finite number greater than zero."));
@@ -74,7 +78,7 @@ pub fn threads(project: &str) -> Result<Value> {
     if !project.is_empty() {
         args.extend(["--project", project]);
     }
-    t3_json(&args, QUICK)
+    t3_json(&args, QUICK, None)
 }
 
 pub struct StartRequest<'a> {
@@ -116,7 +120,7 @@ pub fn start(req: &StartRequest, caller: Option<&str>) -> Result<Value> {
             args.push("--wait");
         }
         args.extend([project, req.text]);
-        let result = t3_json(&args, clamp_timeout(req.timeout, req.wait)?)?;
+        let result = t3_json(&args, clamp_timeout(req.timeout, req.wait)?, Some((t3_cli::Dispatch::Start, req.wait)))?;
         return Ok(json!({"via": "t3", "started": true, "waited": req.wait, "result": result}));
     }
     if req.harness.is_empty() {
@@ -147,6 +151,7 @@ pub fn send_t3(thread: &str, session: Option<&Session>, text: &str, wait: bool, 
     }
     let thread = thread_for(thread, session)
         .ok_or_else(|| EverettError::new(4, "No T3 thread resolves to this target."))?;
+    let timeout = clamp_timeout(timeout, wait)?;
     // T3 agents don't inherit our env; carry the hop count in their live record,
     // as inbox delivery does, so their own forwards keep counting. Record it
     // before dispatch: with wait=true the receiver runs while t3 is still open.
@@ -160,7 +165,7 @@ pub fn send_t3(thread: &str, session: Option<&Session>, text: &str, wait: bool, 
         args.push("--wait");
     }
     args.extend([thread.as_str(), text]);
-    let result = t3_json(&args, clamp_timeout(timeout, wait)?)?;
+    let result = t3_json(&args, timeout, Some((t3_cli::Dispatch::Send(&thread), wait)))?;
     Ok(json!({"via": "t3", "thread": thread, "sent": true, "waited": wait, "result": result}))
 }
 
@@ -169,7 +174,7 @@ pub fn read(thread: &str, session: Option<&Session>, messages: usize, caller: Op
     let messages = messages.clamp(1, MAX_MESSAGES);
     if let Some(thread) = thread_for(thread, session) {
         let n = messages.to_string();
-        let result = t3_json(&["thread", "show", "--json", "--messages", &n, &thread], QUICK)?;
+        let result = t3_json(&["thread", "show", "--json", "--messages", &n, &thread], QUICK, None)?;
         return Ok(json!({"via": "t3", "thread": thread, "result": result}));
     }
     let session = session.ok_or_else(|| EverettError::new(2, "read needs session or thread."))?;
