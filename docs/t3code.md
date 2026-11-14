@@ -41,6 +41,12 @@ Everett. Plain help output or a malformed JSON response cannot confirm dispatch.
 Do not blindly retry an unconfirmed send or start: the CLI might have acted before
 its response failed.
 
+Owner-local `everett_control` send and wake requests validate `timeout` before
+updating receiver hop state or dispatching. The timeout also reaches non-T3
+ping/resume subprocesses. Values must be finite and positive and are capped at
+1800 seconds; the default is 30 seconds, or 600 with `wait=true`. A timeout after
+dispatch does not establish that the recipient did nothing. Do not retry blindly.
+
 The hosted ChatGPT gateway stays inbox-only and cannot use owner-local control.
 Use explicit `mode: "inbox"` when you accept polling for pickup.
 
