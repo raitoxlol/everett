@@ -81,7 +81,13 @@ logical inboxes without another account sign-in.
    The local owner must still authorize exact destination IDs before chats send
    to one another. Registration does not grant new destinations or relay exposure.
 5. `everett_identity(action="list")` lists this authorization's identities without
-   handles. `state="registered"` is not proof that a chat is online or polling.
+   handles. `state="registered"` means the local discovery record matches the
+   identity. `state="registration_unavailable"` means that record is missing,
+   invalid, or conflicts with the identity. `availability="unknown"` makes clear
+   that neither state proves a chat is online or polling. Reuse the original
+   registration key to repair a missing record. A corrupt or conflicting record
+   fails clearly and must be repaired by the local owner; a retry never overwrites
+   it or silently changes its relay destination.
    `everett_identity(action="revoke", identity_handle=<handle>)` disables one
    identity and removes its discovery registration, retaining its inbox. Retry the
    same handle to finish interrupted registration cleanup; revocation is idempotent.

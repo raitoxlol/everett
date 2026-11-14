@@ -158,8 +158,8 @@ fn remote_derived_caller_is_refused_for_every_action() {
     let fx = fixture();
     let t3 = fake_t3(&fx, 0);
     fx.write(".everett/inbox/relay-context/caller.json", &json!({"hops": 1}).to_string());
-    for action in ["threads", "read", "stop"] {
-        let r = call(&fx, &t3, json!({"action": action, "thread": THREAD}));
+    for action in ["threads", "read", "stop", "start", "send", "wake"] {
+        let r = call(&fx, &t3, json!({"action": action, "thread": THREAD, "project":"/work/p", "text":"must not dispatch"}));
         assert_eq!(r["isError"], true, "{action}: {r}");
         assert!(r.to_string().contains("Remote-derived"), "{action}: {r}");
     }
@@ -182,6 +182,9 @@ fn t3_send_carries_hops_to_the_receiving_session() {
     drop(con);
     let send = |caller: &str, hops: &str| mcp_calls(&fx, &[], &[("EVERETT_T3_BIN", t3.as_str()), ("EVERETT_SESSION_ID", caller), ("EVERETT_HOPS", hops)],
         &[("everett_control", json!({"action":"send","thread":THREAD,"text":"go"}))])[0].clone();
+    let invalid = call(&fx, &t3, json!({"action":"send","thread":THREAD,"text":"must not send","timeout":0}));
+    assert_eq!(invalid["isError"], true, "{invalid}");
+    assert!(!fx.home().join(".everett/inbox/live/recv-session.json").exists(), "invalid arguments must not taint the receiver");
     // The fake t3 snapshots the receiver's hop record while it is still running.
     fs::write(&t3, "#!/bin/sh\ncat \"$HOME/.everett/inbox/live/recv-session.json\" > \"$HOME/hops-during-send\" 2>/dev/null\nprintf '%s\\n' '{\"ok\":true}'\n").unwrap();
     assert_ne!(send("caller", "2")["isError"], true);
@@ -208,4 +211,45 @@ fn t3_without_a_json_receipt_never_claims_start_or_send_success() {
             assert!(r.to_string().contains("JSON receipt"), "{r}");
         }
     }
+}
+
+#[test]
+fn invalid_control_timeout_never_dispatches_or_queues() {
+    let fx = fixture();
+    let t3 = fake_t3(&fx, 0);
+    fx.write(&format!(".claude/projects/p/{CLAUDE}.jsonl"), &common::jsonl(&[
+        json!({"type":"user","sessionId":CLAUDE,"cwd":fx.home(),"timestamp":chrono::Utc::now().to_rfc3339(),"message":{"role":"user","content":"hello"}}),
+    ]));
+    for timeout in [0.0, -1.0] {
+        for target in [json!({"thread":THREAD}), json!({"session":CLAUDE})] {
+            let mut args = target.as_object().unwrap().clone();
+            args.extend(json!({"action":"send","text":"must not send","timeout":timeout}).as_object().unwrap().clone());
+            let r = call(&fx, &t3, Value::Object(args));
+            assert_eq!(r["isError"], true, "{r}");
+            assert!(r.to_string().contains("timeout"), "{r}");
+        }
+    }
+    assert!(!fx.home().join("t3-argv").exists());
+    assert!(!fx.home().join(format!(".everett/inbox/{CLAUDE}.jsonl")).exists());
+}
+
+#[test]
+fn control_forwards_timeout_to_non_t3_ping() {
+    let fx = fixture();
+    let id = "codex-timeout-target";
+    fx.write(".codex/sessions/2026/11/14/target.jsonl", &common::jsonl(&[
+        json!({"type":"session_meta","payload":{"id":id,"cwd":fx.home(),"timestamp":chrono::Utc::now().to_rfc3339()}}),
+        json!({"type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"hello"}]}}),
+        json!({"type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"ready"}]}}),
+    ]));
+    fs::File::open(fx.home().join(".codex/sessions/2026/11/14/target.jsonl")).unwrap()
+        .set_modified(std::time::SystemTime::now() - std::time::Duration::from_secs(120)).unwrap();
+    let binary = fx.write("bin/codex", "#!/bin/sh\nprintf invoked > \"$HOME/codex-invoked\"\nexec sleep 1\n");
+    fs::set_permissions(binary, fs::Permissions::from_mode(0o700)).unwrap();
+    let path = format!("{}:{}", fx.home().join("bin").display(), common::HERMETIC_PATH);
+    let results = mcp_calls(&fx, &[], &[("PATH",&path),("EVERETT_SESSION_ID","caller")],
+        &[("everett_control",json!({"action":"send","session":id,"text":"go","timeout":0.05}))]);
+    assert!(fx.home().join("codex-invoked").exists(), "{}", results[0]);
+    assert_eq!(results[0]["isError"],true,"{}",results[0]);
+    assert!(results[0].to_string().contains("did not reply within 0.05s"),"{}",results[0]);
 }

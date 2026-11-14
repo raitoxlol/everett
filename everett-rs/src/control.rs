@@ -47,7 +47,7 @@ fn t3_json(args: &[&str], timeout: f64) -> Result<Value> {
     Ok(value)
 }
 
-fn clamp_timeout(timeout: Option<f64>, wait: bool) -> Result<f64> {
+pub(crate) fn clamp_timeout(timeout: Option<f64>, wait: bool) -> Result<f64> {
     let t = timeout.unwrap_or(if wait { 600.0 } else { QUICK });
     if !t.is_finite() || t <= 0.0 {
         return Err(EverettError::new(2, "timeout must be a finite number greater than zero."));
@@ -147,6 +147,7 @@ pub fn send_t3(thread: &str, session: Option<&Session>, text: &str, wait: bool, 
     }
     let thread = thread_for(thread, session)
         .ok_or_else(|| EverettError::new(4, "No T3 thread resolves to this target."))?;
+    let timeout = clamp_timeout(timeout, wait)?;
     // T3 agents don't inherit our env; carry the hop count in their live record,
     // as inbox delivery does, so their own forwards keep counting. Record it
     // before dispatch: with wait=true the receiver runs while t3 is still open.
@@ -160,7 +161,7 @@ pub fn send_t3(thread: &str, session: Option<&Session>, text: &str, wait: bool, 
         args.push("--wait");
     }
     args.extend([thread.as_str(), text]);
-    let result = t3_json(&args, clamp_timeout(timeout, wait)?)?;
+    let result = t3_json(&args, timeout)?;
     Ok(json!({"via": "t3", "thread": thread, "sent": true, "waited": wait, "result": result}))
 }
 

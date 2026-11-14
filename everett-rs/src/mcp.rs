@@ -533,17 +533,19 @@ fn tool_control(
             }, caller)
         }
         "send" | "wake" => {
+            let timeout = control::clamp_timeout(timeout, wait).map_err(ToolFailure::Tool)?;
             let text = if action == "wake" && text.trim().is_empty() {
                 "Check your Everett inbox with everett_inbox and act on pending messages.".to_string()
             } else {
                 text
             };
             if is_t3 {
-                control::send_t3(&thread, session.as_ref(), &text, wait, timeout, caller)
+                control::send_t3(&thread, session.as_ref(), &text, wait, Some(timeout), caller)
             } else {
                 let s = session.as_ref().ok_or_else(|| ToolFailure::Params("send needs session or thread".into()))?;
                 let mut forward = Map::new();
                 forward.insert("text".into(), json!(text));
+                forward.insert("timeout".into(), json!(timeout));
                 forward.insert("to".into(), json!(s.id));
                 // resolve_session looked back a week; keep tool_send's lookup window the same.
                 forward.insert("hours".into(), json!(168.0));

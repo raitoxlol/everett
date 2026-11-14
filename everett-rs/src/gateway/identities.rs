@@ -160,8 +160,25 @@ pub(super) fn create(
                 "identity saved but local registration failed; retry with the same registration_key"
             })?;
     }
+    if !registration_matches(binding, &id, name) {
+        return Err("identity saved but local registration conflicts or is invalid; repair it before retrying with the same registration_key".into());
+    }
     tx.commit().map_err(|_| STORE_ERROR)?;
     Ok(json!({"session_id":id,"identity_handle":handle,"name":name,"kind":kind}))
+}
+
+// A file's existence alone does not establish a discoverable local inbox.
+fn registration_matches(binding: &Binding, id: &str, name: &str) -> bool {
+    crate::adapters::external::Store::new(&binding.home)
+        .get(id)
+        .ok()
+        .flatten()
+        .is_some_and(|record| {
+            record.harness == binding.harness
+                && record.title == name
+                && record.cwd == binding.cwd.to_string_lossy()
+                && record.device.is_none()
+        })
 }
 
 pub(super) fn resolve(binding: &Binding, handle: &str) -> Result<String, String> {
@@ -187,9 +204,18 @@ pub(super) fn list(binding: &Binding) -> Result<Value, String> {
     let mut stmt = con.prepare("SELECT session_id,name,kind,created,revoked FROM identities WHERE scope=?1 ORDER BY created,session_id").map_err(|_| STORE_ERROR)?;
     let rows = stmt.query_map([scope(binding)], |r| Ok(json!({"session_id":r.get::<_,String>(0)?,"name":r.get::<_,String>(1)?,
         "kind":r.get::<_,String>(2)?,"created_at":r.get::<_,f64>(3)?,"state":if r.get::<_,bool>(4)? { "revoked" } else { "registered" }}))).map_err(|_| STORE_ERROR)?;
-    let identities = rows
+    let mut identities = rows
         .collect::<rusqlite::Result<Vec<_>>>()
         .map_err(|_| STORE_ERROR)?;
+    for identity in &mut identities {
+        if identity["state"] == "registered"
+            && !registration_matches(binding, identity["session_id"].as_str().unwrap(), identity["name"].as_str().unwrap())
+        {
+            identity["state"] = json!("registration_unavailable");
+        }
+        // Registration is durable metadata, not evidence of a connected receiver.
+        identity["availability"] = json!("unknown");
+    }
     Ok(json!({"identities":identities}))
 }
 
