@@ -75,9 +75,9 @@ pub(crate) fn wake_with_timeout(thread: &str, session: &Session, message_id: &st
             format!("t3 thread send exited {}: {}", out.code, clean(detail, 300)),
         ));
     }
-    if captured.receipt.is_none() {
-        return Err(EverettError::new(4,
-            "t3 returned no valid JSON receipt. Check that the selected CLI supports thread commands. Dispatch is unconfirmed; do not blindly retry."));
-    }
+    let receipt = captured.receipt.as_ref().ok_or_else(|| EverettError::new(4,
+        "t3 returned no valid JSON receipt. Check that the selected CLI supports thread commands. Dispatch is unconfirmed; do not blindly retry."))?;
+    t3_cli::validate_dispatch(receipt, t3_cli::Dispatch::Send(thread), false, out.code)
+        .map_err(|message| EverettError::new(4, message))?;
     Ok(out.stdout.trim().to_string())
 }

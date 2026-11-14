@@ -288,3 +288,8 @@ pub fn output_retrying_etxtbsy(command: &mut Command) -> Output {
         }
     }
 }
+
+/// Non-waited `t3 thread send --json`, per OrchestratorMcpThreadSendResult.
+pub fn t3_send_receipt(thread: &str) -> serde_json::Value {
+    serde_json::json!({"threadId":thread,"messageId":"message-1","runId":"run-1","status":"running","delivery":"started"})
+}
