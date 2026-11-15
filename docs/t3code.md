@@ -41,6 +41,30 @@ Everett. Plain help output or a malformed JSON response cannot confirm dispatch.
 Do not blindly retry an unconfirmed send or start: the CLI might have acted before
 its response failed.
 
+Dispatch confirmation requires the CLI's command-specific JSON receipt, not just
+parseable JSON or exit zero. Non-waited sends require a matching `threadId`,
+`messageId`, `runId`, `status`, and `delivery`. Starts require `threadId`,
+`projectId`, and a nullable `runId`. Waited results require the matching thread,
+a run ID, `status="completed"` at exit zero or `status="waiting"` at exit two,
+plus `reply` and a null `error`. A start with no run retains its launch receipt
+even with `--wait`. Negative acknowledgements, empty objects, arrays,
+wrong-target receipts, or incomplete shapes leave dispatch unconfirmed. An empty
+array remains a valid thread listing. Failed ping confirmation retains the durable
+inbox message and does not establish receiver pickup.
+
+These shapes were checked in the T3 source checkout at snapshot `8d14716`:
+`apps/server/src/cli/thread.ts` (`ThreadLaunchResult` and `finishRun`) and
+`packages/contracts/src/orchestratorMcp.ts` (`OrchestratorMcpThreadSendResult`).
+The same shapes were inspected in the locally installed T3 0.1.9 runtime.
+The snapshot is local; no public source URL for it was verified. Source inspection
+and the subprocess fixtures do not establish live thread dispatch or completion.
+
+Owner-local `everett_control` send and wake requests validate `timeout` before
+updating receiver hop state or dispatching. The timeout also reaches non-T3
+ping/resume subprocesses. Values must be finite and positive and are capped at
+1800 seconds; the default is 30 seconds, or 600 with `wait=true`. A timeout after
+dispatch does not establish that the recipient did nothing. Do not retry blindly.
+
 The hosted ChatGPT gateway stays inbox-only and cannot use owner-local control.
 Use explicit `mode: "inbox"` when you accept polling for pickup.
 
