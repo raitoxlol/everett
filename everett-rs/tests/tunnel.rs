@@ -92,12 +92,14 @@ fn expected_resource_refuses_wrong_routes_before_launching_a_client() {
         let mut settings="CONTROL_PLANE_API_KEY=synthetic-private-runtime-key\n".to_owned();
         if let Some(runtime)=runtime { settings+=&format!("CONTROL_PLANE_TUNNEL_ID={runtime}\n"); }
         write_secret(&env_file,&settings,0o600);
-        write_exec(&client,&format!("#!/bin/sh\nprintf '%s\\n' \"$@\" > {marker:?}\n"));
+        // The installed client's `run` help lists this option; `--tunnel-id`
+        // belongs to `init` and is rejected by the real run parser.
+        write_exec(&client,&format!("#!/bin/sh\n[ \"$#\" -eq 5 ] && [ \"$1\" = run ] && [ \"$2\" = --profile ] && [ \"$4\" = --control-plane.tunnel-id ] || exit 64\nprintf '%s\\n' \"$@\" > {marker:?}\n"));
         let output=Command::new(binary()).args(["tunnel","watch","--env-file",env_file.to_str().unwrap(),
             "--tunnel-client",client.to_str().unwrap(),"--expected-resource",&resource,"--max-restarts","1","--restart-delay","0"]).output().unwrap();
         let stderr=String::from_utf8_lossy(&output.stderr);
         assert!(!stderr.contains("synthetic-private-runtime-key"));
-        if runtime==Some(id) { assert!(output.status.success(),"{stderr}");assert_eq!(fs::read_to_string(&marker).unwrap(),format!("run\n--profile\neverett-dot\n--tunnel-id\n{id}\n")); }
+        if runtime==Some(id) { assert!(output.status.success(),"{stderr}");assert!(marker.exists(),"client rejected launch arguments: {stderr}");assert_eq!(fs::read_to_string(&marker).unwrap(),format!("run\n--profile\neverett-dot\n--control-plane.tunnel-id\n{id}\n")); }
         else { assert_eq!(output.status.code(),Some(2),"{stderr}");assert!(!marker.exists());assert!(stderr.contains("reconcile the gateway, runtime and connector")); }
     }
 }
