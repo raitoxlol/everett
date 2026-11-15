@@ -8,8 +8,9 @@
 //! it can stay `200 ready` while every later poll times out and ChatGPT calls
 //! sit unforwarded. A new process polls the queued work immediately.
 //!
-//! This supervisor restarts the client on exit, and when that timeout warning
-//! repeats with no recovery line. One timeout is left to the client's own retry.
+//! This supervisor restarts on exit or repeated timeout warnings, and renews
+//! connections on a bounded schedule even without diagnostic logs. Rotation
+//! is recovery insurance, not evidence that the upstream route is healthy.
 
 use std::collections::{BTreeMap, HashMap};
 use std::fs::{self, File};
@@ -81,6 +82,8 @@ pub struct WatchConfig {
     pub timeout_streak: u32,
     pub restart_delay: Duration,
     pub max_restarts: u32,
+    pub max_connection_age: Duration,
+    pub expected_resource: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -176,6 +179,12 @@ pub fn run(config: WatchConfig) -> i32 {
             return 2;
         }
     };
+    if let Some(resource) = &config.expected_resource {
+        if let Err(error) = validate_resource(resource, parsed.get("CONTROL_PLANE_TUNNEL_ID").map(String::as_str)) {
+            eprintln!("everett tunnel: {error}");
+            return 2;
+        }
+    }
     let env = child_env_from(parsed, &inherited_allowlist());
     install_stop_handler();
     let mut restarts = 0u32;
@@ -187,7 +196,10 @@ pub fn run(config: WatchConfig) -> i32 {
             Ok(supervised) => supervised,
             Err(error) => {
                 eprintln!("everett tunnel: {error}");
-                return 2;
+                if !restart_budget(restarts, config.max_restarts) { return 4; }
+                restarts += 1;
+                if !sleep_interruptible(config.restart_delay) { return 0; }
+                continue;
             }
         };
         eprintln!(
@@ -195,10 +207,15 @@ pub fn run(config: WatchConfig) -> i32 {
             config.profile
         );
         let mut watch = PollWatch::new(config.timeout_streak);
-        let action = supervise(&mut supervised, &mut watch);
+        let action = supervise(&mut supervised, &mut watch, config.max_connection_age);
         let _ = ensure_stopped(&mut supervised);
         match action {
             StopReason::Signal => return 0,
+            StopReason::ConnectionAge => {
+                if !restart_budget(restarts, config.max_restarts) { return 0; }
+                restarts += 1;
+                eprintln!("everett tunnel: renewing control-plane connection after {}s; forwarding health is unconfirmed", config.max_connection_age.as_secs());
+            }
             StopReason::PollTimeouts => {
                 if !restart_budget(restarts, config.max_restarts) {
                     eprintln!("everett tunnel: stopping after {restarts} restart(s)");
@@ -229,9 +246,23 @@ fn restart_budget(restarts: u32, max_restarts: u32) -> bool {
     max_restarts == 0 || restarts < max_restarts
 }
 
+fn validate_resource(resource: &str, tunnel_id: Option<&str>) -> Result<(), &'static str> {
+    let url = url::Url::parse(resource).map_err(|_| "expected resource must be an exact HTTPS MCP tunnel URL")?;
+    let id = url.path().strip_prefix("/v1/mcp/").filter(|id|
+        id.strip_prefix("tunnel_").is_some_and(|suffix| suffix.len() == 32 && suffix.bytes().all(|b| b.is_ascii_hexdigit())))
+        .ok_or("expected resource must contain one full tunnel ID")?;
+    if url.scheme() != "https" || url.host_str() != Some("tunnel-service.gateway.unified-0.internal.api.openai.org")
+        || url.port().is_some() || !url.username().is_empty() || url.password().is_some() || url.query().is_some() || url.fragment().is_some() {
+        return Err("expected resource must be an exact HTTPS MCP tunnel URL");
+    }
+    if tunnel_id != Some(id) { return Err("runtime CONTROL_PLANE_TUNNEL_ID differs from expected resource or is missing; reconcile the gateway, runtime and connector before starting"); }
+    Ok(())
+}
+
 enum StopReason {
     Signal,
     PollTimeouts,
+    ConnectionAge,
     Exited(i32),
 }
 
@@ -242,8 +273,11 @@ struct Supervised {
     reaped: bool,
 }
 
-fn supervise(supervised: &mut Supervised, watch: &mut PollWatch) -> StopReason {
+fn supervise(supervised: &mut Supervised, watch: &mut PollWatch, max_age: Duration) -> StopReason {
+    let started = Instant::now();
     loop {
+        if started.elapsed() >= max_age { return StopReason::ConnectionAge; }
+        if let Some(code) = reap_if_exited(supervised) { return StopReason::Exited(code); }
         if stop_requested() {
             return StopReason::Signal;
         }
@@ -260,7 +294,8 @@ fn supervise(supervised: &mut Supervised, watch: &mut PollWatch) -> StopReason {
                 }
             }
             Err(mpsc::RecvTimeoutError::Disconnected) => {
-                return StopReason::Exited(reap_exit_code(supervised));
+                // Closed log pipes do not imply that the process exited.
+                thread::sleep(Duration::from_millis(200));
             }
         }
     }
@@ -276,22 +311,6 @@ fn reap_if_exited(supervised: &mut Supervised) -> Option<i32> {
     }
 }
 
-fn reap_exit_code(supervised: &mut Supervised) -> i32 {
-    if supervised.reaped {
-        return 0;
-    }
-    match supervised.child.wait() {
-        Ok(status) => {
-            supervised.reaped = true;
-            exit_code(status)
-        }
-        Err(_) => {
-            supervised.reaped = true;
-            -1
-        }
-    }
-}
-
 fn exit_code(status: std::process::ExitStatus) -> i32 {
     status.code().unwrap_or(-1)
 }
@@ -304,6 +323,11 @@ fn spawn_client(config: &WatchConfig, env: &HashMap<String, String>) -> Result<S
         .stderr(Stdio::piped())
         .env_clear()
         .envs(env);
+    if config.expected_resource.is_some() {
+        // The guard already matched this ID to the expected resource. Pin the
+        // documented CLI option as well, rather than relying on profile/env precedence.
+        cmd.args(["--tunnel-id", &env["CONTROL_PLANE_TUNNEL_ID"]]);
+    }
     // SAFETY: runs in the forked child before exec, where no other threads exist.
     unsafe {
         cmd.pre_exec(|| {
@@ -335,7 +359,7 @@ fn spawn_client(config: &WatchConfig, env: &HashMap<String, String>) -> Result<S
         .stderr
         .take()
         .ok_or("tunnel-client stderr is missing")?;
-    let (tx, rx) = mpsc::channel();
+    let (tx, rx) = mpsc::sync_channel(256);
     let readers = vec![pump(stdout, tx.clone()), pump(stderr, tx)];
     Ok(Supervised {
         child,
@@ -345,30 +369,27 @@ fn spawn_client(config: &WatchConfig, env: &HashMap<String, String>) -> Result<S
     })
 }
 
-fn pump<R>(reader: R, tx: mpsc::Sender<String>) -> JoinHandle<()>
+fn pump<R>(reader: R, tx: mpsc::SyncSender<String>) -> JoinHandle<()>
 where
     R: Read + Send + 'static,
 {
     thread::spawn(move || {
         let mut lines = BufReader::new(reader);
-        let mut line = String::new();
+        let mut oversized = false;
         loop {
-            line.clear();
-            match lines.read_line(&mut line) {
+            // Never echo fragments of an oversized line: a later fragment
+            // could contain credential bytes without their redaction prefix.
+            let mut bytes = Vec::new();
+            match lines.by_ref().take(8192).read_until(b'\n', &mut bytes) {
                 Ok(0) | Err(_) => break,
                 Ok(_) => {
-                    if line.ends_with('\n') {
-                        line.pop();
-                        if line.ends_with('\r') {
-                            line.pop();
-                        }
+                    let ended = bytes.ends_with(b"\n");
+                    if oversized || (bytes.len() == 8192 && !ended) {
+                        oversized = !ended;
+                        continue;
                     }
-                    if line.len() > 8192 {
-                        line.truncate(8192);
-                    }
-                    if tx.send(line.clone()).is_err() {
-                        break;
-                    }
+                    let line = String::from_utf8_lossy(&bytes).trim_end().to_owned();
+                    if matches!(tx.try_send(line), Err(mpsc::TrySendError::Disconnected(_))) { break; }
                 }
             }
         }
@@ -430,6 +451,9 @@ fn validate_config(config: &WatchConfig) -> Result<(), String> {
     }
     if config.timeout_streak == 0 || config.timeout_streak > 100 {
         return Err("timeout streak must be 1..=100".into());
+    }
+    if config.max_connection_age.is_zero() || config.max_connection_age > Duration::from_secs(240) {
+        return Err("max connection age must be 1..=240 seconds".into());
     }
     if config.restart_delay > Duration::from_secs(300) {
         return Err("restart delay must be at most 300 seconds".into());
@@ -614,6 +638,30 @@ fn sleep_interruptible(total: Duration) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn resource_guard_requires_the_exact_runtime_tunnel() {
+        let id = "tunnel_11111111111111111111111111111111";
+        let resource = format!("https://tunnel-service.gateway.unified-0.internal.api.openai.org/v1/mcp/{id}");
+        assert!(validate_resource(&resource, Some(id)).is_ok());
+        for runtime in [None, Some("tunnel_22222222222222222222222222222222")] {
+            assert!(validate_resource(&resource, runtime).is_err());
+        }
+        for invalid in [resource.replace("https:","http:"), resource.replace(".api.openai.org",".evil.example"),
+            format!("{resource}?token=synthetic-private"), format!("{resource}#fragment"), format!("{resource}/"), resource.replace("https://","https://user:password@") ] {
+            let error=validate_resource(&invalid,Some(id)).unwrap_err();
+            assert!(!error.contains("synthetic-private") && !error.contains("password"));
+        }
+    }
+
+    #[test]
+    fn oversized_and_multibyte_logs_do_not_leak_fragments_or_panic() {
+        let input = format!("{}CONTROL_PLANE_API_KEY=private-test-value\nordinary\n", "界".repeat(9000));
+        let (tx, rx) = mpsc::sync_channel(256);
+        pump(std::io::Cursor::new(input.into_bytes()), tx).join().unwrap();
+        assert_eq!(rx.into_iter().collect::<Vec<_>>(), vec!["ordinary"]);
+    }
+
     use std::os::unix::fs::OpenOptionsExt;
 
     #[test]

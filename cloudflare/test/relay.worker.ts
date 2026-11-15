@@ -495,3 +495,17 @@ it('recovers queue, identity, replay and revocation from SQLite after object evi
   await expect(call(b.p, 'whoami')).rejects.toThrow('credential_or_membership_revoked');
   expect(await call(a.p, 'whoami')).toMatchObject({ deviceId: a.p.agentId });
 });
+
+it('bounds a stalled identity probe without claiming a rejected operation', async () => {
+  vi.useFakeTimers();
+  try {
+    const response = handleRequest(new Request('https://relay.test/v2/relay/whoami', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}',
+    }), env, { verify: () => new Promise(() => {}) });
+    await vi.advanceTimersByTimeAsync(10000);
+    const out = await response;
+    expect(out.status).toBe(504);
+    expect(out.headers.get('Cache-Control')).toBe('no-store');
+    expect(await out.json()).toEqual({ error: 'request_timeout', outcome: 'unconfirmed', retry: 'reconcile_before_retry' });
+  } finally { vi.useRealTimers(); }
+});

@@ -1279,6 +1279,7 @@ fn tool_whoami(
 ) -> std::result::Result<Map<String, Value>, ToolFailure> {
     let ident = identity;
     let mut out = ident.clone();
+    out.insert("runtime".into(), crate::build_info::value());
     let hops = std::env::var("EVERETT_HOPS").unwrap_or_else(|_| "0".to_string());
     out.insert("hops".into(), json!(hops.parse::<i64>().unwrap_or(0)));
     out.insert(
