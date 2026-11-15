@@ -305,7 +305,8 @@ ignores the block and keeps the fixed `agent_id`.
   "allowed_hosts": ["127.0.0.1:8788"],
   "oauth": {
     "issuer": "https://<your-worker>.workers.dev",
-    "resource": "https://<public gateway URL>/mcp"
+    "resource": "https://<public gateway URL>/mcp",
+    "owner_account": "github:OWNER_ID"
   }
 }
 ```
@@ -314,6 +315,15 @@ ignores the block and keeps the fixed `agent_id`.
   be listed in the deployment's `EVERETT_OAUTH_RESOURCES`. Both are https (plain
   http only to a loopback host). Optional: `scope` (default `everett`) and
   `introspection_endpoint` (default `<issuer>/oauth/introspect`).
+- Set `owner_account` to the exact introspected account for a gateway that serves
+  one owner's local sessions, especially when the issuer permits public enrollment.
+  Every authenticated request must carry that exact `everett_account`; missing,
+  malformed and different accounts are rejected before tools or workers run.
+  Omitting it preserves the issuer's existing account policy. This restriction is
+  separate from the exact account/client/project/model native-start grant.
+  Legacy deployment-only keys `events`, `owner_local_sessions`, `chat_identities`
+  and `oauth.owner` are unsupported and fail startup. Migrate owner metadata to
+  `oauth.owner_account`; do not remove an owner restriction just to pass parsing.
 - Set `EVERETT_OAUTH_INTROSPECTION_SECRET` (32–512 printable ASCII, same value as
   the deployment's) in the gateway's environment, and **unset**
   `EVERETT_GATEWAY_TOKEN`; startup fails if both or neither are present.
