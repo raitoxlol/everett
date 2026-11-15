@@ -72,8 +72,16 @@ Tunnel alone does not meet the public submission requirements in the official
 The hosted gateway accepts `everett_send` only to owner-configured exact IDs or
 an authorized `reply_to`. It forces inbox-only delivery with `spawn=false` and
 `wait=0`. A queued message does not start a T3 turn. The recipient must read its
-inbox and send a correlated reply. The gateway cannot start sessions, wake T3,
+inbox and send a correlated reply. The default gateway cannot start sessions, wake T3,
 list arbitrary sessions, or read their transcripts. See [gateway permissions](gateway.md#allowed-tools-and-delivery).
+
+Source also includes an opt-in [owner-authorized T3 start](gateway.md#optional-owner-authorized-native-start).
+It requires a fixed local policy and exact verified OAuth account/client; it is
+not enabled by registering an identity or installing a plugin. The separate
+`everett_start` tool requires a private handle and durable request ID, validates
+dispatch receipts, and preserves uncertainty across reconnects/crashes without
+launching twice. It grants no extra send/read/control access. No deployed hosted
+start or paid-model pickup/reply acceptance is established by the isolated tests.
 
 The local stdio tool `everett_control` can start T3 threads and send turns through
 `t3 thread start` and `t3 thread send`. It refuses remote-derived callers; hosting
@@ -111,3 +119,31 @@ retries, restart, reapproval, cross-account rejection, revocation, discovery and
 correlated request/reply through the real Rust backend. Actual ChatGPT metadata,
 handle retention and client-to-client live acceptance in #148 remain unverified.
 No production deployment is implied by these local checks.
+
+### Recovery and deployment evidence
+
+A `tunnel_client_not_seen` response establishes that the selected route has no
+recently seen client. It does not establish which binary is deployed or whether
+its credentials, host, or service manager are operational. Use the owner-managed
+`everett tunnel watch` service described in [the tunnel runbook](openai-dots.md#keep-the-tunnel-forwarding).
+Its scheduled renewal bounds silent connection wedges; `/readyz` and a running
+PID alone are not end-to-end health evidence. Do not install or restart a live
+service as part of a read-only verification.
+
+New builds report source revision and tracked-tree dirty state with `everett
+--version`. A successful `everett_whoami` reports backend `runtime`, and the
+owner gateway adds its own `gateway_runtime` and explicit inbox-only
+`capabilities`. Compare both with the intended release. Build metadata is a
+self-report, not a signed artifact attestation. Unknown or inaccessible metadata
+must remain unconfirmed; an installed local executable does not prove the
+remote deployment revision.
+
+The Cloudflare relay HTTP worker bounds requests at ten seconds and returns
+HTTP 504 `request_timeout` with outcome `unconfirmed`. A timed-out mutation may
+still finish, so reconcile by its existing idempotency key or message state
+before retrying. This deadline applies after a request reaches this worker;
+it cannot fix a connector or tunnel timeout before the worker receives it.
+
+Native session start and automatic wake remain unavailable on the registered
+hosted inbox connections. A disposable logical identity is an inbox, not a model
+session. Local fixtures do not establish ChatGPT acceptance or live model pickup.

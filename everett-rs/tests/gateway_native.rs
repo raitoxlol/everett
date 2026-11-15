@@ -185,7 +185,8 @@ fn merged(base: &Value, changes: &Value) -> Value {
 
 impl Ctx {
     fn command(&self, args: &[&str]) -> Command {
-        let mut command = Command::new(BIN);
+        let binary = std::env::var_os("EVERETT_VERIFY_BINARY").unwrap_or_else(|| BIN.into());
+        let mut command = Command::new(binary);
         command.args(args).env_clear().current_dir(&self.home);
         for (k, v) in [("HOME", self.home.to_str().unwrap()), ("EVERETT_HOME", self.home.to_str().unwrap()),
             ("PATH", "/nonexistent"), ("EVERETT_NOTIFY", "none"), ("EVERETT_ROUTER", "local"),
@@ -423,6 +424,224 @@ fn access(c: char) -> String {
     format!("eva_{}", c.to_string().repeat(64))
 }
 
+// A process fixture for the real T3 CLI's stdin and receipt contract, never a model.
+fn native_cli_fixture(args: &[String]) {
+    let home = PathBuf::from(std::env::var("HOME").unwrap());
+    let mut text = String::new();
+    std::io::stdin().read_to_string(&mut text).unwrap();
+    let mut calls = std::fs::OpenOptions::new().create(true).append(true).open(home.join("native-start-calls.jsonl")).unwrap();
+    let has_secret=["EVERETT_GATEWAY_TOKEN","EVERETT_OAUTH_INTROSPECTION_SECRET","OPENAI_API_KEY","TYPESAFE_API_KEY"].iter().any(|k|std::env::var_os(k).is_some());
+    writeln!(calls,"{}",json!({"pid":std::process::id(),"args":args,"text":text,"has_secret":has_secret})).unwrap();
+    let mode = std::fs::read_to_string(home.join("native-start-mode")).unwrap_or_default();
+    match mode.as_str() {
+        "hang" => std::thread::sleep(Duration::from_secs(30)),
+        "slow" => std::thread::sleep(Duration::from_millis(300)),
+        "rejected" => { println!("{{\"accepted\":false}}"); return; },
+        "oversized" => { println!("{}", "x".repeat(300 * 1024)); return; },
+        "empty" => { println!("{{}}"); return; },
+        "array" => { println!("[]"); return; },
+        "exit" => std::process::exit(7),
+        "no-run" => { println!("{}",json!({"threadId":"native-thread-1","projectId":"fixed-project","runId":null})); return; },
+        _ => {},
+    }
+    let project = if mode == "wrong-project" { "foreign-project" } else { "fixed-project" };
+    println!("{}",json!({"threadId":"native-thread-1","projectId":project,"runId":"native-run-1"}));
+}
+
+fn native_config(issuer: &str) -> Value {
+    json!({"oauth":{"issuer":issuer,"resource":RESOURCE}, "native_start":{
+        "owner_account":"github:alice","client_id":"https://chatgpt.com/oauth/client.json",
+        "command":std::env::current_exe().unwrap(),"project_id":"fixed-project","provider":"fixed-provider","model":"fixed-model"}})
+}
+
+fn oauth_rpc(port: u16, token: char, method: &str, params: Value) -> Value {
+    let auth = bearer(&access(token));
+    body_json(&post(port,&json!({"jsonrpc":"2.0","id":1,"method":method,"params":params}),&[("Authorization",Some(&auth))]))
+}
+
+fn native_call(port: u16, token: char, name: &str, args: Value) -> Value {
+    oauth_rpc(port,token,"tools/call",json!({"name":name,"arguments":args}))
+}
+
+fn native_identity(port: u16, key: &str) -> Value {
+    success(&native_call(port,'a',"everett_identity",json!({"action":"create","registration_key":key,"name":"Disposable fixture chat","kind":"chat"})))
+}
+
+fn native_records(c: &Ctx) -> Vec<Value> {
+    std::fs::read_to_string(c.home.join("native-start-calls.jsonl")).unwrap_or_default().lines().map(|l|serde_json::from_str(l).unwrap()).collect()
+}
+
+fn native_outcome(response: &Value) -> Value {
+    assert!(response.get("error").is_none(),"{response}");
+    let data=response["result"]["structuredContent"].clone();
+    assert!(data.is_object(),"{response}");
+    assert_eq!(response["result"]["isError"]==true,data["dispatch_confirmed"]!=true,"{response}");
+    data
+}
+
+fn owner_native_start_is_explicit_isolated_and_durable() {
+    let c = ctx();
+    let issuer = fake_issuer();
+    issuer.grant(&access('a'),"agent-old",json!({"everett_account":"github:alice"}));
+    issuer.grant(&access('b'),"agent-new",json!({"everett_account":"github:alice"}));
+    issuer.grant(&access('c'),"agent-bob",json!({"everett_account":"github:bob"}));
+    issuer.grant(&access('d'),"agent-other-client",json!({"everett_account":"github:alice","client_id":"other-client"}));
+    issuer.grant(&access('e'),"agent-no-account",json!({}));
+    let cfg = native_config(&issuer.url);
+    let port = c.spawn_http(c.oauth_command(&cfg));
+    for token in ['a','c','d','e'] {
+        let listed = oauth_rpc(port,token,"tools/list",json!({}));
+        let present = listed["result"]["tools"].as_array().unwrap().iter().any(|t| t["name"]=="everett_start");
+        assert_eq!(present,token=='a',"{listed}");
+    }
+    let identity = native_identity(port,"native-start-registration-key-12345");
+    let args = json!({"identity_handle":identity["identity_handle"],"request_id":"native-start-request-id-1234567890","text":"Synthetic request --model never-a-flag"});
+    let info=success(&native_call(port,'a',"everett_whoami",json!({"identity_handle":identity["identity_handle"]})));
+    assert_eq!(info["capabilities"]["native_session_start"],true);
+    assert_eq!(info["gateway_resource"],RESOURCE);
+    assert_eq!(info["gateway_runtime"]["version"],env!("CARGO_PKG_VERSION"));
+    for token in ['c','d','e'] { denied(&native_call(port,token,"everett_start",args.clone())); }
+    denied(&native_call(port,'a',"everett_start",json!({"request_id":args["request_id"],"text":"without handle"})));
+    for (key,value) in [("cwd",json!("/tmp")),("project",json!("foreign")),("provider",json!("other")),("model",json!("other")),("wait",json!(true)),("spawn",json!(true))] {
+        let mut bad=args.clone();bad[key]=value;denied(&native_call(port,'a',"everett_start",bad));
+    }
+    assert!(native_records(&c).is_empty());
+    let receipt = success(&native_call(port,'a',"everett_start",args.clone()));
+    assert_eq!(receipt["state"],"dispatch_confirmed");
+    assert_eq!(receipt["thread_id"],"native-thread-1");
+    for key in ["pickup_confirmed","completion_confirmed","reply_confirmed"] { assert_eq!(receipt[key],false); }
+    assert!(receipt["native_session_id"].is_null());
+    assert_eq!(success(&native_call(port,'a',"everett_start",args.clone())),receipt);
+    let mut changed=args.clone();changed["text"]=json!("changed");
+    denied(&native_call(port,'a',"everett_start",changed));
+    let restarted = c.spawn_http(c.oauth_command(&cfg));
+    assert_eq!(success(&native_call(restarted,'b',"everett_start",args.clone())),receipt);
+    let mut changed_policy=cfg.clone();changed_policy["native_start"]["model"]=json!("another-owner-model");
+    let changed_server=c.spawn_http(c.oauth_command(&changed_policy));
+    denied(&native_call(changed_server,'b',"everett_start",args.clone()));
+    let disabled_server=c.spawn_http(c.oauth_command(&json!({"oauth":{"issuer":issuer.url,"resource":RESOURCE}})));
+    denied(&native_call(disabled_server,'b',"everett_start",args.clone()));
+    assert_eq!(success(&native_call(disabled_server,'b',"everett_whoami",json!({"identity_handle":identity["identity_handle"]})))["capabilities"]["native_session_start"],false);
+    let records=native_records(&c);
+    assert_eq!(records.len(),1);
+    assert_eq!(records[0]["text"],args["text"]);
+    assert_eq!(records[0]["has_secret"],false);
+    let journal=std::fs::read(c.home.join(".everett/gateway-starts.sqlite")).unwrap();
+    for private in [args["text"].as_str().unwrap(),identity["identity_handle"].as_str().unwrap(),INTROSPECTION_SECRET] {
+        assert!(!journal.windows(private.len()).any(|w|w==private.as_bytes()),"start journal must not contain prompt, handle or token");
+    }
+    assert_eq!(records[0]["args"],json!(["thread","start","--json","--title","Everett owner request","--provider","fixed-provider","--model","fixed-model","fixed-project","-"]));
+    let second=native_identity(port,"native-start-second-chat-key-123456");
+    let mut own=args.clone();own["identity_handle"]=second["identity_handle"].clone();
+    success(&native_call(port,'a',"everett_start",own));
+    assert_eq!(native_records(&c).len(),2,"chat retry scopes must be separate");
+    success(&native_call(port,'a',"everett_identity",json!({"action":"revoke","identity_handle":identity["identity_handle"]})));
+    denied(&native_call(port,'a',"everett_start",args));
+    assert_eq!(native_records(&c).len(),2);
+    denied(&native_call(port,'a',"everett_control",json!({"action":"send","thread":"native-thread-1","text":"no"})));
+    denied(&native_call(port,'a',"everett_send",json!({"to":"native-thread-1","text":"no automatic destination grant"})));
+    issuer.grant(&access('b'),"agent-new",json!({"active":false}));
+    let forbidden=post(port,&json!({"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"everett_start","arguments":{}}}),&[("Authorization",Some(&bearer(&access('b'))))]);
+    assert_eq!(forbidden.status,401,"revoked OAuth must deny even cached starts");
+}
+
+fn native_start_policy_and_journal_fail_closed() {
+    use std::os::unix::fs::{symlink,PermissionsExt};
+    let c=ctx();let issuer=fake_issuer();
+    issuer.grant(&access('a'),"agent-one",json!({"everett_account":"github:alice"}));
+    let cfg=native_config(&issuer.url);
+    for (key,value) in [("owner_account",json!("")),("client_id",json!("")),("command",json!("relative-t3")),
+        ("project_id",json!("--injected-flag")),("model",json!("")),("provider",json!("")),("unexpected",json!(true))] {
+        let mut bad=cfg.clone();bad["native_start"][key]=value;
+        let path=c.config_path(&bad);assert_eq!(c.gateway_code(&path),Some(2));
+    }
+    let mut no_oauth=cfg.clone();no_oauth.as_object_mut().unwrap().remove("oauth");
+    assert_eq!(c.gateway_code(&c.config_path(&no_oauth)),Some(2));
+    let default=c.with_backend_oauth_server(&issuer.url);
+    let identity=native_identity(default,"native-default-denied-registration123");
+    let args=json!({"identity_handle":identity["identity_handle"],"request_id":"native-denied-request-id-123456789","text":"Synthetic test"});
+    denied(&native_call(default,'a',"everett_start",args.clone()));
+    let stdio=c.peer(&cfg).request("tools/list",None);
+    assert!(!stdio["result"]["tools"].as_array().unwrap().iter().any(|t|t["name"]=="everett_start"));
+    let port=c.spawn_http(c.oauth_command(&cfg));
+    let journal=c.home.join(".everett/gateway-starts.sqlite");
+    let other=c.home.join("untouched");std::fs::write(&other,"unchanged").unwrap();
+    symlink(&other,&journal).unwrap();
+    denied(&native_call(port,'a',"everett_start",args.clone()));
+    assert_eq!(std::fs::read_to_string(&other).unwrap(),"unchanged");
+    std::fs::remove_file(&journal).unwrap();
+    std::fs::write(&journal,"").unwrap();std::fs::set_permissions(&journal,std::fs::Permissions::from_mode(0o644)).unwrap();
+    denied(&native_call(port,'a',"everett_start",args.clone()));
+    assert!(native_records(&c).is_empty());
+    std::fs::set_permissions(&journal,std::fs::Permissions::from_mode(0o600)).unwrap();
+    success(&native_call(port,'a',"everett_start",args.clone()));
+    let con=rusqlite::Connection::open(&journal).unwrap();
+    for corrupted in [json!({"dispatch_confirmed":true}),json!([]),json!({"accepted":false})] {
+        con.execute("UPDATE starts SET result=?1",[corrupted.to_string()]).unwrap();
+        denied(&native_call(port,'a',"everett_start",args.clone()));
+        assert_eq!(native_records(&c).len(),1,"corrupt receipts must never claim dispatch or launch again");
+    }
+}
+
+fn native_start_uncertain_receipts_never_dispatch_twice() {
+    for mode in ["rejected","empty","array","wrong-project","oversized","hang","exit","no-run"] {
+        let c=ctx();let issuer=fake_issuer();
+        issuer.grant(&access('a'),"agent-one",json!({"everett_account":"github:alice"}));
+        let cfg=with(native_config(&issuer.url),json!({"timeout":1}));
+        let port=c.spawn_http(c.oauth_command(&cfg));
+        let identity=native_identity(port,"uncertain-native-registration-key-123");
+        std::fs::write(c.home.join("native-start-mode"),mode).unwrap();
+        let args=json!({"identity_handle":identity["identity_handle"],"request_id":"uncertain-native-request-key-12345","text":"Synthetic uncertain dispatch"});
+        let result=native_outcome(&native_call(port,'a',"everett_start",args.clone()));
+        assert_eq!(result["state"],"dispatch_unconfirmed","{mode}: {result}");
+        assert_eq!(result["dispatch_confirmed"],false);
+        let code=match mode { "hang"=>"cli_timeout", "oversized"=>"cli_output_too_large", "wrong-project"|"no-run"=>"destination_mismatch_or_missing_run", "exit"=>"cli_exit",_=>"invalid_receipt" };
+        assert_eq!(result["diagnostic"],code,"{mode}: {result}");
+        std::fs::remove_file(c.home.join("native-start-mode")).unwrap();
+        let restarted=c.spawn_http(c.oauth_command(&cfg));
+        assert_eq!(native_outcome(&native_call(restarted,'a',"everett_start",args)),result);
+        assert_eq!(native_records(&c).len(),1,"{mode} must not be retried automatically");
+    }
+}
+
+fn concurrent_native_start_and_gateway_crash_keep_reservation() {
+    let c=ctx();let issuer=fake_issuer();
+    issuer.grant(&access('a'),"agent-one",json!({"everett_account":"github:alice"}));
+    let cfg=native_config(&issuer.url);
+    let port=c.spawn_http(c.oauth_command(&cfg));
+    let identity=native_identity(port,"concurrent-native-registration-key123");
+    std::fs::write(c.home.join("native-start-mode"),"slow").unwrap();
+    let args=json!({"identity_handle":identity["identity_handle"],"request_id":"concurrent-native-request-key-12345","text":"Synthetic concurrent dispatch"});
+    let a=args.clone();let b=args.clone();
+    let first=std::thread::spawn(move ||native_call(port,'a',"everett_start",a));
+    let second=std::thread::spawn(move ||native_call(port,'a',"everett_start",b));
+    let results=[native_outcome(&first.join().unwrap()),native_outcome(&second.join().unwrap())];
+    assert!(results.iter().any(|r|r["dispatch_confirmed"]==true));
+    assert_eq!(native_records(&c).len(),1);
+    // An interrupted gateway leaves a committed uncertainty record before the CLI answers.
+    std::fs::write(c.home.join("native-start-mode"),"hang").unwrap();
+    let mut crash=args;crash["request_id"]=json!("interrupted-native-request-key-12345");
+    let retry=crash.clone();
+    let pending=std::thread::spawn(move || {
+        let body=json!({"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"everett_start","arguments":crash}}).to_string();
+        raw_exchange(port,format!("POST /mcp HTTP/1.1\r\nHost: 127.0.0.1:8788\r\nAuthorization: {}\r\nContent-Type: application/json\r\nAccept: application/json, text/event-stream\r\nMCP-Protocol-Version: 2025-06-18\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",bearer(&access('a')),body.len(),body).as_bytes())
+    });
+    let started=Instant::now();
+    while native_records(&c).len()<2 { assert!(started.elapsed()<Duration::from_secs(3));std::thread::sleep(Duration::from_millis(10)); }
+    c.servers.borrow_mut()[0].kill().unwrap();
+    c.servers.borrow_mut()[0].wait().unwrap();
+    // Hard-killed parents cannot run Drop. Clean up only this fixture CLI's group.
+    let fixture_pid=native_records(&c)[1]["pid"].as_i64().unwrap() as i32;
+    unsafe { libc::kill(-fixture_pid,libc::SIGKILL); }
+    let _=pending.join();
+    std::fs::remove_file(c.home.join("native-start-mode")).unwrap();
+    let restarted=c.spawn_http(c.oauth_command(&cfg));
+    let recovered=native_outcome(&native_call(restarted,'a',"everett_start",retry));
+    assert_eq!(recovered["state"],"dispatch_unconfirmed");
+    assert_eq!(recovered["diagnostic"],"interrupted_or_pending");
+    assert_eq!(native_records(&c).len(),2);
+}
+
 fn bearer(token: &str) -> String {
     format!("Bearer {token}")
 }
@@ -602,6 +821,9 @@ fn native_stdio_journey_for_both_external_harnesses() {
         want.sort();
         assert_eq!(sorted, want);
         let identity = success(&peer.call("everett_whoami", json!({})));
+        assert!(identity["gateway_runtime"]["revision"].is_string());
+        assert_eq!(identity["capabilities"]["native_session_start"], false);
+        assert_eq!(identity["capabilities"]["delivery"], "inbox");
         assert_eq!((identity["session_id"].clone(), identity["harness"].clone()), (json!("dot-one"), json!(harness)));
         let incoming = format!("message-{}", harness);
         c.inbox("agent-two", "dot-one", &incoming);
@@ -1061,6 +1283,10 @@ fn symlinked_working_directory_is_canonicalized() {
 type Case = (&'static str, fn());
 
 const CASES: &[Case] = &[
+    ("native_start_policy_and_journal_fail_closed", native_start_policy_and_journal_fail_closed),
+    ("owner_native_start_is_explicit_isolated_and_durable", owner_native_start_is_explicit_isolated_and_durable),
+    ("native_start_uncertain_receipts_never_dispatch_twice", native_start_uncertain_receipts_never_dispatch_twice),
+    ("concurrent_native_start_and_gateway_crash_keep_reservation", concurrent_native_start_and_gateway_crash_keep_reservation),
     ("revoked_identity_retries_finish_failed_registration_cleanup", revoked_identity_retries_finish_failed_registration_cleanup),
     ("identity_retry_rejects_invalid_discovery_records_and_repairs_missing_ones", identity_retry_rejects_invalid_discovery_records_and_repairs_missing_ones),
     ("chat_identities_discover_and_exchange_correlated_inbox_messages", chat_identities_discover_and_exchange_correlated_inbox_messages),
@@ -1093,6 +1319,7 @@ const CASES: &[Case] = &[
 
 fn main() {
     let args: Vec<String> = std::env::args().collect();
+    if args.get(1).map(String::as_str)==Some("thread") { native_cli_fixture(&args[1..]); return; }
     if args.get(1).map(String::as_str) == Some("--fixture-backend") {
         backend(&args[2..]);
         return;
