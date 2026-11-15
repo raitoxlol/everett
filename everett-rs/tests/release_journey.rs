@@ -166,7 +166,10 @@ fn release_journey_over_cli_and_all_mcp_tools() {
 
     let mut wire = Wire::start(&home, "verify-sender");
     let mut worker_wire = Wire::start(&home, "verify-worker");
-    assert_eq!(wire.call("everett_whoami", json!({}))["session_id"], "verify-sender");
+    let identity = wire.call("everett_whoami", json!({}));
+    assert_eq!(identity["session_id"], "verify-sender");
+    assert!(identity["runtime"]["revision"].as_str().is_some_and(|s| !s.is_empty()));
+    assert!(identity["runtime"]["dirty"].is_boolean());
     for (sid, what) in [("verify-sender", "Email templates"), ("verify-worker", "Upload retries")] {
         let caller = if sid == "verify-worker" { &mut worker_wire } else { &mut wire };
         caller.call("everett_card", json!({"session_id": sid, "what": what, "state": "Reviewing", "next": "Run checks"}));

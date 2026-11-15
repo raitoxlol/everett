@@ -4,6 +4,8 @@ The native `everett gateway` command lets an existing cloud agent call Everett's
 Rust stdio backend. The official Rust MCP SDK is compiled into the binary.
 The gateway does not
 create an OpenAI or xAI model instance.
+An optional owner grant can dispatch a native T3 run through an existing local
+T3 server. This is separate from the default inbox-only permissions.
 
 Build the native binary from this branch:
 
@@ -153,6 +155,90 @@ Backend responses must follow MCP's schema. The SDK rejects malformed initialize
 responses, including non-object experimental capability values, before any tool
 call. Missing or false exact-ID enforcement in a valid capability object blocks
 direct sends but still permits owned replies.
+
+## Optional owner-authorized native start
+
+`native_start` is disabled by default. Enabling it is an explicit permission to
+promote remote text to a model prompt under the owner's account; it can consume
+model allowance or incur provider charges. Deploying the feature, configuring
+the grant, refreshing client tool registrations, and running a live model test
+require separate owner authorization. Source and fixture tests do not establish
+that an existing hosted connector supports it.
+
+The only native operation is `everett_start`, using a fixed T3 project ID,
+provider instance and model. It does not expose `everett_control`, arbitrary
+commands, per-call paths, worktrees, provider/model overrides, automatic wake,
+transcript reads or new message destinations. Existing remote-derived callers
+remain refused by local `everett_control`.
+
+The optional block in the local gateway configuration is:
+
+```json
+{
+  "native_start": {
+    "owner_account": "github:OWNER_ID",
+    "client_id": "https://chatgpt.com/oauth/client.json",
+    "command": "/absolute/path/to/t3",
+    "project_id": "EXACT_T3_PROJECT_ID",
+    "provider": "EXACT_PROVIDER_INSTANCE_ID",
+    "model": "EXACT_MODEL_SLUG"
+  }
+}
+```
+
+Use the actual verified account and client ID. The existing OAuth block is
+required; stdio and fixed-bearer connections cannot use this grant. A token must
+still pass issuer, audience, scope, expiry and revocation checks on every request.
+Only tokens with the exact configured account/client can discover or call the
+tool. This is account/client authorization, not vendor-attested conversation
+identity. The configured CLI must support `thread start --json` and `-` for
+stdin, and must already reach the intended T3 server. No server is installed or
+started by this feature.
+
+Register a chat with `everett_identity` first. Then call:
+
+```text
+everett_start(identity_handle=<private handle>,
+              request_id=<fresh 32..128 character URL-safe ID>, text=<request>)
+```
+
+Keep the private handle and reuse exactly the same request ID and text after a
+timeout or reconnect. A private identity is required so retry scope survives
+normal account/client reapproval. Another chat cannot read or retry that chat's
+receipt. Changing the text or owner policy under the same ID is rejected.
+
+Before dispatch, the gateway commits a reservation in the private
+`~/.everett/gateway-starts.sqlite` journal. Retries and concurrent requests return
+the recorded result; they never launch again. If the gateway crashes after the
+reservation, the result remains `dispatch_unconfirmed`, even if T3 actually
+started the run. The owner must reconcile T3 before attempting a new request ID.
+Back up this journal with the gateway state; deleting it loses duplicate-start
+protection. It stores request fingerprints and bounded receipts, not prompts,
+tokens or handles. It retains at most 256 requests per issuer/resource/account/
+client scope; reaching the limit requires owner reconciliation.
+
+`state=dispatch_confirmed` requires a valid command-specific CLI receipt with
+the exact project ID and nonempty thread/run IDs. It confirms dispatch only.
+`native_session_id=null` means the gateway has not established the native
+provider's session identity. Pickup, completion and correlated reply remain
+explicitly unconfirmed. The returned thread ID is not an Everett destination;
+the owner must separately verify and authorize a full native ID for messaging.
+
+Uncertain results set MCP `isError=true`, retain the durable reservation and
+include a bounded diagnostic code: `cli_unavailable`, `cli_io_error`, `cli_exit`,
+`cli_timeout`, `cli_output_too_large`, `invalid_receipt`,
+`destination_mismatch_or_missing_run`, or `interrupted_or_pending`. Raw CLI
+output is not returned. Prompts travel over stdin, and gateway credentials are
+not forwarded to the CLI. The trusted CLI can still access the owner's stores;
+this is not an OS sandbox. Cancellation kills only the gateway-owned CLI process
+group; it cannot cancel a model run already accepted by the independent T3 server.
+
+`everett_whoami.capabilities.native_session_start` reports the configured grant
+for this caller, not CLI or model health. `gateway_resource` identifies this
+gateway's advertised OAuth resource. Real acceptance still requires a client
+call through that resource, intended-target verification, pickup and a matching
+reply. `tests/gateway_native.rs` exercises the real HTTP/SDK/journal boundary
+with a synthetic issuer and T3 subprocess; it makes no model calls.
 
 ## Private stdio / OpenAI Secure MCP Tunnel
 

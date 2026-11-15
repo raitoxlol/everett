@@ -33,7 +33,7 @@ function relayFailure(result: Extract<RelayResult, { ok: false }>, env: Env): Re
   });
 }
 
-export async function handleRequest(request: Request, env: Env, verifier: PrincipalVerifier = hostedVerifier(env)): Promise<Response> {
+async function relayRequest(request: Request, env: Env, verifier: PrincipalVerifier = hostedVerifier(env)): Promise<Response> {
   const url = new URL(request.url);
   if (request.method === 'GET' && url.pathname === '/health') return Response.json({ backend: 'cloudflare', status: env.AUTHENTICATOR || env.EVERETT_ISSUER ? 'configuration-present' : 'authentication-unconfigured' });
   if (hostedAuthPaths(url.pathname)) {
@@ -57,7 +57,7 @@ export async function handleRequest(request: Request, env: Env, verifier: Princi
       } }));
     }
     if (!request.headers.get('Content-Type')?.startsWith('application/json')) throw new RelayError('json_required', 415);
-    const args: unknown = JSON.parse(await boundedText(request.body, 150000));
+    const args: unknown = JSON.parse(await boundedText(request.body, 150000, 5000));
     const stub = env.OWNERS.get(env.OWNERS.idFromName(namespace(p)));
     if (metadata) {
       if (!env.AUTH_STATE || !env.EVERETT_ISSUER) throw new RelayError('metadata_unavailable', 404);
@@ -80,6 +80,21 @@ export async function handleRequest(request: Request, env: Env, verifier: Princi
       headers: { 'Cache-Control': 'no-store' },
     });
   }
+}
+// The deadline bounds client-visible failures, including a stalled authenticator
+// or Durable Object RPC. It does not cancel a mutation already accepted by a DO.
+export async function handleRequest(request: Request, env: Env, verifier: PrincipalVerifier = hostedVerifier(env)): Promise<Response> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      relayRequest(request, env, verifier),
+      new Promise<Response>(resolve => {
+        timer = setTimeout(() => resolve(Response.json({ error: 'request_timeout', outcome: 'unconfirmed', retry: 'reconcile_before_retry' }, {
+          status: 504, headers: { 'Cache-Control': 'no-store' },
+        })), 10000);
+      }),
+    ]);
+  } finally { clearTimeout(timer); }
 }
 export default {
   fetch(request: Request, env: Env) { return handleRequest(request, env); },

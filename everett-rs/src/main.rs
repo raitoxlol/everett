@@ -49,7 +49,7 @@ fn command() -> clap::Command {
 }
 
 #[derive(Parser)]
-#[command(name = "everett", version = env!("CARGO_PKG_VERSION"), about = "See and reach parallel coding-agent sessions.")]
+#[command(name = "everett", version = env!("CARGO_PKG_VERSION"), long_version = concat!(env!("CARGO_PKG_VERSION"), "\nrevision: ", env!("EVERETT_BUILD_REVISION"), "\ndirty: ", env!("EVERETT_BUILD_DIRTY")), about = "See and reach parallel coding-agent sessions.")]
 struct Cli {
     /// look-back window (default 72)
     #[arg(long, global = true, default_value_t = 72.0)]
@@ -562,6 +562,12 @@ enum TunnelCmd {
         /// stop after this many restarts (0 keeps going)
         #[arg(long, default_value_t = 0)]
         max_restarts: u32,
+        /// renew even a silent stuck connection before the 300-second stale barrier
+        #[arg(long, default_value_t = 240)]
+        max_connection_age: u64,
+        /// exact gateway OAuth resource; require its tunnel ID in the runtime env file
+        #[arg(long)]
+        expected_resource: Option<String>,
     },
 }
 
@@ -925,6 +931,8 @@ fn main() {
                 timeout_streak,
                 restart_delay,
                 max_restarts,
+                max_connection_age,
+                expected_resource,
             } => everett::tunnel::run(everett::tunnel::WatchConfig {
                 profile,
                 tunnel_client,
@@ -932,6 +940,8 @@ fn main() {
                 timeout_streak,
                 restart_delay: std::time::Duration::from_secs(restart_delay),
                 max_restarts,
+                max_connection_age: std::time::Duration::from_secs(max_connection_age),
+                expected_resource,
             }),
         },
 

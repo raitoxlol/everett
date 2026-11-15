@@ -1,4 +1,5 @@
 mod identities;
+mod native_start;
 
 use std::{
     collections::BTreeSet,
@@ -52,7 +53,7 @@ const SECURITY_HEADERS: &[&str] = &[
     "transfer-encoding",
 ];
 const BACKEND_ERROR: &str = "backend unavailable, incompatible, or request timed out";
-const INSTRUCTIONS: &str = "This connection authorizes owner-scoped gateway access. Without a private identity handle, calls use its legacy inbox. Read the selected inbox for handoffs; reply using reply_to. Send only to authorized full IDs. No spawn/resume, automatic routing, or automatic bot wake-up. Shared core, when enabled, includes the owner's global core. To register this chat separately, call everett_identity(action=create, registration_key=<fresh private random key>, name=<chat name>, kind=chat|dot|codex). Keep identity_handle private and pass it on subsequent calls; omit session_id. A name or host conversation metadata never authenticates an inbox.";
+const INSTRUCTIONS: &str = "This connection authorizes owner-scoped gateway access. Without a private identity handle, calls use its legacy inbox. Read the selected inbox for handoffs; reply using reply_to. Send only to authorized full IDs. Delivery is inbox-only; no automatic routing or bot wake-up. Only when everett_start is advertised has the owner separately granted a fixed-project T3 start; it requires a private identity_handle and durable request_id, confirms dispatch only, and grants no additional send/read/control access. Shared core, when enabled, includes the owner's global core. To register this chat separately, call everett_identity(action=create, registration_key=<fresh private random key>, name=<chat name>, kind=chat|dot|codex). Keep identity_handle private and pass it on subsequent calls; omit session_id. A name or host conversation metadata never authenticates an inbox.";
 
 #[derive(Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -94,6 +95,8 @@ struct Binding {
     allowed_origins: Vec<String>,
     #[serde(default)]
     oauth: Option<OAuth>,
+    #[serde(default)]
+    native_start: Option<native_start::Policy>,
 }
 
 fn default_workers() -> usize {
@@ -243,6 +246,9 @@ impl Binding {
                 || !o.scope.bytes().all(|b| b.is_ascii_graphic() && b != b'"' && b != b'\\')
         }) {
             return Err("oauth needs https issuer, resource and introspection_endpoint URLs (http only on loopback) and one scope token".into());
+        }
+        if let Some(policy) = &binding.native_start {
+            policy.validate(&binding)?;
         }
         Ok(binding)
     }
@@ -479,10 +485,18 @@ impl Gateway {
             };
         }
         let mut selected = binding.clone();
+        let private_identity = arguments.contains_key("identity_handle");
         if let Some(handle) = arguments.remove("identity_handle") {
             selected.agent_id = identities::resolve(binding, handle.as_str().ok_or("identity_handle must be a string")?)?;
         }
         let binding = &selected;
+        if name == "everett_start" {
+            if !private_identity { return Err("native start requires a private identity_handle for durable retry isolation".into()); }
+            let policy = binding.native_start.as_ref().filter(|p| p.permits(agent))
+                .ok_or("native start is not granted to this OAuth account and client")?;
+            let _permit = self.workers.try_acquire().map_err(|_| "gateway workers busy; retry later")?;
+            return native_start::start(binding, policy, arguments).await;
+        }
         let args = binding.authorize(name, arguments)?;
         let _permit = self
             .workers
@@ -543,8 +557,15 @@ impl Gateway {
                 let CallToolResponse::Complete(result) = response else { return Err(BACKEND_ERROR.into()); };
                 if result.is_error == Some(true) { return Err("backend rejected the tool call".into()); }
                 if serde_json::to_vec(&result).map_err(|_| BACKEND_ERROR)?.len() > MAX_RESULT { return Err("backend result exceeds 256 KiB".into()); }
-                let data = result.structured_content.filter(Value::is_object).ok_or("backend must return structured tool results")?;
+                let mut data = result.structured_content.filter(Value::is_object).ok_or("backend must return structured tool results")?;
                 if name == "everett_whoami" && (data["session_id"] != binding.agent_id || data["harness"] != binding.harness) { return Err("backend identity differs from binding".into()); }
+                if name == "everett_whoami" {
+                    data["gateway_runtime"] = crate::build_info::value();
+                    data["capabilities"] = json!({"native_session_start": binding.native_start.as_ref().is_some_and(|p| p.permits(agent)), "automatic_wake": false, "delivery": "inbox"});
+                    if let Some(oauth) = &binding.oauth {
+                        data["gateway_resource"] = json!(oauth.resource);
+                    }
+                }
                 if let (true, Some(agent)) = (name == "everett_whoami", agent) {
                     let mut data = data;
                     data["gateway_auth"] = json!({"mode": "oauth", "agent_name": agent.name, "client_id": agent.client_id});
@@ -581,8 +602,12 @@ impl ServerHandler for Gateway {
         _: Option<PaginatedRequestParams>,
         ctx: RequestContext<RoleServer>,
     ) -> Result<ListToolsResult, ErrorData> {
-        let (binding, _) = self.bound(&ctx).map_err(|e| ErrorData::invalid_request(e, None))?;
-        Ok(ListToolsResult::with_all_items(binding.tools()))
+        let (binding, agent) = self.bound(&ctx).map_err(|e| ErrorData::invalid_request(e, None))?;
+        let mut tools = binding.tools();
+        if binding.native_start.as_ref().is_some_and(|p| p.permits(agent.as_ref())) {
+            tools.push(native_start::tool());
+        }
+        Ok(ListToolsResult::with_all_items(tools))
     }
     async fn call_tool(
         &self,
@@ -597,7 +622,12 @@ impl ServerHandler for Gateway {
             Err(error) => Err(error),
         };
         let mut result = match outcome {
-            Ok(data) => CallToolResult::structured(data),
+            Ok(data) => {
+                let unconfirmed = request.name == "everett_start" && data["dispatch_confirmed"] != true;
+                let mut result = CallToolResult::structured(data);
+                if unconfirmed { result.is_error = Some(true); }
+                result
+            },
             Err(error) => CallToolResult::error(vec![ContentBlock::text(error)]),
         };
         if serde_json::to_vec(&result)
@@ -1116,6 +1146,7 @@ mod tests {
             allowed_hosts: default_hosts(),
             allowed_origins: vec![],
             oauth: None,
+            native_start: None,
         }
     }
 

@@ -5,6 +5,11 @@ use std::path::PathBuf;
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
+fn binary() -> PathBuf {
+    std::env::var_os("EVERETT_VERIFY_BINARY").map(PathBuf::from)
+        .unwrap_or_else(|| env!("CARGO_BIN_EXE_everett").into())
+}
+
 struct KillRecorded {
     marker: PathBuf,
     everett: Option<u32>,
@@ -54,7 +59,7 @@ fn loose_env_file_is_refused_before_start() {
     let dir = tempfile::tempdir().unwrap();
     let env_file = dir.path().join("tunnel.env");
     write_secret(&env_file, "CONTROL_PLANE_API_KEY=test-runtime-key\n", 0o644);
-    let output = Command::new(env!("CARGO_BIN_EXE_everett"))
+    let output = Command::new(binary())
         .args([
             "tunnel",
             "watch",
@@ -73,6 +78,28 @@ fn loose_env_file_is_refused_before_start() {
     assert!(stderr.contains("chmod 0600"), "{stderr}");
     assert!(!stderr.contains("test-runtime-key"), "{stderr}");
     assert!(!stderr.contains("admin-test-secret"), "{stderr}");
+}
+
+#[test]
+fn expected_resource_refuses_wrong_routes_before_launching_a_client() {
+    let id="tunnel_11111111111111111111111111111111";
+    let resource=format!("https://tunnel-service.gateway.unified-0.internal.api.openai.org/v1/mcp/{id}");
+    for runtime in [None,Some("tunnel_22222222222222222222222222222222"),Some(id)] {
+        let dir=tempfile::tempdir().unwrap();
+        let marker=dir.path().join("started");
+        let env_file=dir.path().join("tunnel.env");
+        let client=dir.path().join("fixture-tunnel");
+        let mut settings="CONTROL_PLANE_API_KEY=synthetic-private-runtime-key\n".to_owned();
+        if let Some(runtime)=runtime { settings+=&format!("CONTROL_PLANE_TUNNEL_ID={runtime}\n"); }
+        write_secret(&env_file,&settings,0o600);
+        write_exec(&client,&format!("#!/bin/sh\nprintf '%s\\n' \"$@\" > {marker:?}\n"));
+        let output=Command::new(binary()).args(["tunnel","watch","--env-file",env_file.to_str().unwrap(),
+            "--tunnel-client",client.to_str().unwrap(),"--expected-resource",&resource,"--max-restarts","1","--restart-delay","0"]).output().unwrap();
+        let stderr=String::from_utf8_lossy(&output.stderr);
+        assert!(!stderr.contains("synthetic-private-runtime-key"));
+        if runtime==Some(id) { assert!(output.status.success(),"{stderr}");assert_eq!(fs::read_to_string(&marker).unwrap(),format!("run\n--profile\neverett-dot\n--tunnel-id\n{id}\n")); }
+        else { assert_eq!(output.status.code(),Some(2),"{stderr}");assert!(!marker.exists());assert!(stderr.contains("reconcile the gateway, runtime and connector")); }
+    }
 }
 
 #[test]
@@ -111,7 +138,7 @@ sleep 30
             marker = marker.display()
         ),
     );
-    let mut child = Command::new(env!("CARGO_BIN_EXE_everett"))
+    let mut child = Command::new(binary())
         .args([
             "tunnel",
             "watch",
@@ -195,7 +222,7 @@ exit 1
             marker = marker.display()
         ),
     );
-    let mut child = Command::new(env!("CARGO_BIN_EXE_everett"))
+    let mut child = Command::new(binary())
         .args([
             "tunnel",
             "watch",
@@ -253,7 +280,7 @@ while :; do sleep 1; done
             marker = marker.display()
         ),
     );
-    let mut watcher = Command::new(env!("CARGO_BIN_EXE_everett"))
+    let mut watcher = Command::new(binary())
         .args([
             "tunnel",
             "watch",
@@ -295,4 +322,63 @@ while :; do sleep 1; done
         fs::read_to_string(&marker).unwrap().contains("graceful"),
         "client did not handle SIGTERM gracefully"
     );
+}
+
+#[test]
+fn silent_closed_pipe_and_noisy_clients_are_renewed_and_resume_pickup() {
+    for wedge in ["sleep 30", "exec 1>&- 2>&-; sleep 30", "while :; do echo unrelated; done"] {
+        let dir = tempfile::tempdir().unwrap();
+        let marker = dir.path().join("marker");
+        let pending = dir.path().join("pending");
+        let result = dir.path().join("result");
+        let env_file = dir.path().join("tunnel.env");
+        let client = dir.path().join("fake-tunnel");
+        fs::write(&pending, "request-123").unwrap();
+        write_secret(&env_file, "CONTROL_PLANE_API_KEY=test-runtime-key\n", 0o600);
+        write_exec(&client, &format!("#!/bin/sh\nprintf 'pid %s\\n' \"$$\" >> {marker:?}\nif [ -f {marker:?}.started ]; then cat {pending:?} > {result:?}; exit 0; fi\ntouch {marker:?}.started\n{wedge}\n"));
+        let mut child = Command::new(binary())
+            .args(["tunnel", "watch", "--env-file", env_file.to_str().unwrap(), "--tunnel-client", client.to_str().unwrap(),
+                "--max-connection-age", "1", "--restart-delay", "0", "--max-restarts", "1"])
+            .stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null()).spawn().unwrap();
+        let mut guard = KillRecorded { marker: marker.clone(), everett: Some(child.id()) };
+        let start = Instant::now();
+        loop {
+            if let Some(status) = child.try_wait().unwrap() {
+                guard.everett = None;
+                assert!(status.success());
+                assert_eq!(fs::read_to_string(&result).unwrap(), "request-123");
+                assert_eq!(fs::read_to_string(&marker).unwrap().lines().count(), 2);
+                break;
+            }
+            assert!(start.elapsed() < Duration::from_secs(8), "silent connection was not renewed: {wedge}");
+            std::thread::sleep(Duration::from_millis(30));
+        }
+    }
+}
+
+#[test]
+fn missing_client_can_recover_without_restarting_the_watcher() {
+    let dir = tempfile::tempdir().unwrap();
+    let marker = dir.path().join("marker");
+    let env_file = dir.path().join("tunnel.env");
+    let client = dir.path().join("temporarily-missing-client");
+    write_secret(&env_file, "CONTROL_PLANE_API_KEY=test-runtime-key\n", 0o600);
+    let mut child = Command::new(binary())
+        .args(["tunnel", "watch", "--env-file", env_file.to_str().unwrap(), "--tunnel-client", client.to_str().unwrap(),
+            "--restart-delay", "1", "--max-restarts", "1"])
+        .stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null()).spawn().unwrap();
+    let mut guard = KillRecorded { marker: marker.clone(), everett: Some(child.id()) };
+    std::thread::sleep(Duration::from_millis(300));
+    write_exec(&client, &format!("#!/bin/sh\nprintf 'recovered\\n' > {marker:?}\n"));
+    let start = Instant::now();
+    loop {
+        if let Some(status) = child.try_wait().unwrap() {
+            guard.everett = None;
+            assert!(status.success());
+            assert_eq!(fs::read_to_string(&marker).unwrap(), "recovered\n");
+            break;
+        }
+        assert!(start.elapsed() < Duration::from_secs(6));
+        std::thread::sleep(Duration::from_millis(30));
+    }
 }
