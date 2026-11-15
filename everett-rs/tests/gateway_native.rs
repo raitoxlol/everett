@@ -679,6 +679,35 @@ fn oauth_serves_protected_resource_metadata_and_challenges() {
     assert_eq!(*issuer.calls.lock().unwrap(), 0, "malformed tokens never reach the issuer");
 }
 
+fn oauth_owner_account_restricts_every_request_before_backend_dispatch() {
+    let c = ctx();
+    let issuer = fake_issuer();
+    let config = with(fixture(&[]), json!({"oauth": {
+        "issuer":issuer.url, "resource":RESOURCE, "owner_account":"github:alice"
+    }}));
+    for owner in [Value::Null, json!(""), json!("github:alice bob"), json!("a".repeat(257)), json!(false)] {
+        let mut invalid = config.clone();
+        invalid["oauth"]["owner_account"] = owner;
+        assert_eq!(c.gateway_code(&c.config_path(&invalid)), Some(2));
+    }
+    let port = c.spawn_http(c.oauth_command(&config));
+    let auth = bearer(&access('a'));
+    let auth = [("Authorization", Some(auth.as_str()))];
+    issuer.grant(&access('a'), "agent-aaaa", json!({"everett_account":"github:alice"}));
+    assert_eq!(success(&body_json(&post(port, &whoami(), &auth)))["session_id"], "agent-aaaa");
+    assert_eq!(c.records().len(), 1);
+    for account in [json!("github:bob"), Value::Null, json!(["github:alice"]), json!("github:alice ")] {
+        issuer.grant(&access('a'), "agent-aaaa", json!({"everett_account":account}));
+        for message in [whoami(), json!({"jsonrpc":"2.0","id":7,"method":"tools/list"})] {
+            assert_eq!(post(port, &message, &auth).status, 401);
+        }
+        assert_eq!(c.records().len(), 1, "denied account must never reach a worker");
+    }
+    issuer.grant(&access('a'), "agent-aaaa", json!({"everett_account":"github:alice"}));
+    assert_eq!(post(port, &whoami(), &auth).status, 200);
+    assert_eq!(c.records().len(), 2);
+}
+
 fn oauth_token_maps_to_its_dot_identity() {
     let c = ctx();
     let issuer = fake_issuer();
@@ -1314,6 +1343,7 @@ const CASES: &[Case] = &[
     ("oauth_serves_protected_resource_metadata_and_challenges", oauth_serves_protected_resource_metadata_and_challenges),
     ("oauth_token_maps_to_its_dot_identity", oauth_token_maps_to_its_dot_identity),
     ("oauth_rejects_wrong_issuer_audience_expiry_scope_identity_and_revoked_tokens", oauth_rejects_wrong_issuer_audience_expiry_scope_identity_and_revoked_tokens),
+    ("oauth_owner_account_restricts_every_request_before_backend_dispatch", oauth_owner_account_restricts_every_request_before_backend_dispatch),
     ("oauth_configuration_fails_closed_and_stdio_keeps_fixed_identity", oauth_configuration_fails_closed_and_stdio_keeps_fixed_identity),
 ];
 
