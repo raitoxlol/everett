@@ -17,6 +17,9 @@ jobs:
         working-directory: everett-rs
     steps:
       - uses: actions/checkout@v7
+      - name: Verify the single hosted plugin package and readiness checks
+        working-directory: .
+        run: python3 -m unittest discover -s plugins/everett/tests -v
       - name: Check receiver acceptance automation over isolated fixtures
         working-directory: .
         run: python3 -m unittest discover -s scripts -p test_accept_receiver_wake.py -v

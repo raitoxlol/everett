@@ -7,6 +7,8 @@ T3 Code threads are recognized through their underlying harness sessions.
 OpenAI dots and Grok Bot connect through registered external MCP inboxes.
 Hark and Muse compatibility is unverified.
 
+The [Everett hosted plugin](plugins/everett/README.md) builds one versioned package
+around one existing owner app, with no desktop interaction during builds.
 Everett Local packages the installed runtime for local plugin clients. ChatGPT
 custom MCP connections use the gateway over HTTPS or Secure MCP Tunnel. See
 [ChatGPT setup, supported modes, and verification](docs/chatgpt.md).
