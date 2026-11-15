@@ -773,6 +773,41 @@ fn revoked_identity_retries_finish_failed_registration_cleanup() {
     denied(&peer.call("everett_whoami",json!({"identity_handle":created["identity_handle"]})));
 }
 
+fn identity_retry_rejects_invalid_discovery_records_and_repairs_missing_ones() {
+    let c = ctx();
+    let mut peer = c.peer(&fixture(&[]));
+    let args = json!({"action":"create","registration_key":"s".repeat(32),"name":"Discovery retry","kind":"chat"});
+    let created = success(&peer.call("everett_identity",args.clone()));
+    let path = c.home.join(".everett/external").join(format!("{}.json",created["session_id"].as_str().unwrap()));
+    let original = std::fs::read(&path).unwrap();
+    for contents in [b"broken JSON".to_vec(), {
+        let mut record: Value = serde_json::from_slice(&original).unwrap();
+        record["device"] = json!("other/codex/foreign");
+        serde_json::to_vec(&record).unwrap()
+    }] {
+        std::fs::write(&path, &contents).unwrap();
+        denied(&peer.call("everett_identity",args.clone()));
+        assert_eq!(std::fs::read(&path).unwrap(), contents, "never overwrite a conflicting registration");
+        let listed = success(&peer.call("everett_identity",json!({"action":"list"})));
+        assert_eq!(listed["identities"][0]["state"],"registration_unavailable");
+    }
+    std::fs::remove_file(&path).unwrap();
+    assert_eq!(success(&peer.call("everett_identity",args)),created);
+    let listed = success(&peer.call("everett_identity",json!({"action":"list"})));
+    assert_eq!(listed["identities"][0]["state"],"registered");
+    assert_eq!(listed["identities"][0]["availability"],"unknown");
+    // Offline identity metadata remains durable, but never claims connectivity.
+    std::fs::remove_file(&path).unwrap();
+    let listed = success(&peer.call("everett_identity",json!({"action":"list"})));
+    assert_eq!(listed["identities"][0]["state"],"registration_unavailable");
+    let elsewhere = c.home.join("other-registration.json");
+    std::fs::write(&elsewhere,&original).unwrap();
+    std::os::unix::fs::symlink(&elsewhere,&path).unwrap();
+    denied(&peer.call("everett_identity",json!({"action":"create","registration_key":"s".repeat(32),"name":"Discovery retry","kind":"chat"})));
+    assert!(std::fs::symlink_metadata(&path).unwrap().file_type().is_symlink());
+    assert_eq!(std::fs::read(&elsewhere).unwrap(),original);
+}
+
 fn core_is_an_explicit_grant() {
     let c = ctx();
     let mut peer = c.peer(&with(fixture(&[]), json!({"allow_shared_core": false})));
@@ -1027,6 +1062,7 @@ type Case = (&'static str, fn());
 
 const CASES: &[Case] = &[
     ("revoked_identity_retries_finish_failed_registration_cleanup", revoked_identity_retries_finish_failed_registration_cleanup),
+    ("identity_retry_rejects_invalid_discovery_records_and_repairs_missing_ones", identity_retry_rejects_invalid_discovery_records_and_repairs_missing_ones),
     ("chat_identities_discover_and_exchange_correlated_inbox_messages", chat_identities_discover_and_exchange_correlated_inbox_messages),
     ("oauth_chat_identity_survives_reapproval_but_rejects_another_account", oauth_chat_identity_survives_reapproval_but_rejects_another_account),
     ("per_chat_identities_are_private_durable_and_revocable", per_chat_identities_are_private_durable_and_revocable),
