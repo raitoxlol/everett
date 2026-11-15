@@ -326,7 +326,7 @@ fn spawn_client(config: &WatchConfig, env: &HashMap<String, String>) -> Result<S
     if config.expected_resource.is_some() {
         // The guard already matched this ID to the expected resource. Pin the
         // documented CLI option as well, rather than relying on profile/env precedence.
-        cmd.args(["--tunnel-id", &env["CONTROL_PLANE_TUNNEL_ID"]]);
+        cmd.args(["--control-plane.tunnel-id", &env["CONTROL_PLANE_TUNNEL_ID"]]);
     }
     // SAFETY: runs in the forked child before exec, where no other threads exist.
     unsafe {

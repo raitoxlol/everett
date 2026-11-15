@@ -64,6 +64,12 @@ struct OAuth {
     scope: String,
     #[serde(default)]
     introspection_endpoint: Option<String>,
+    #[serde(default, deserialize_with = "configured_owner_account")]
+    owner_account: Option<String>,
+}
+
+fn configured_owner_account<'de, D: serde::Deserializer<'de>>(value: D) -> Result<Option<String>, D::Error> {
+    String::deserialize(value).map(Some)
 }
 
 fn default_scope() -> String {
@@ -244,8 +250,11 @@ impl Binding {
                 || o.scope.is_empty()
                 || o.scope.len() > 64
                 || !o.scope.bytes().all(|b| b.is_ascii_graphic() && b != b'"' && b != b'\\')
+                || o.owner_account.as_ref().is_some_and(|account| {
+                    account.is_empty() || account.len() > 256 || !account.bytes().all(|b| b.is_ascii_graphic())
+                })
         }) {
-            return Err("oauth needs https issuer, resource and introspection_endpoint URLs (http only on loopback) and one scope token".into());
+            return Err("oauth needs https issuer, resource and introspection_endpoint URLs (http only on loopback), one scope token and a nonempty printable owner_account when configured".into());
         }
         if let Some(policy) = &binding.native_start {
             policy.validate(&binding)?;
@@ -725,6 +734,9 @@ impl OAuthVerifier {
         let denied = |reason| Err((StatusCode::UNAUTHORIZED, reason));
         if data["active"] != true {
             return denied("token inactive, expired or revoked");
+        }
+        if self.config.owner_account.as_ref().is_some_and(|owner| data["everett_account"].as_str() != Some(owner.as_str())) {
+            return denied("token account is not this gateway owner");
         }
         if data["iss"] != self.config.issuer.as_str() {
             return denied("token issuer mismatch");

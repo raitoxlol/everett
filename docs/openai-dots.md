@@ -325,7 +325,7 @@ different ID cannot restore that connection.
 The optional `--expected-resource <exact HTTPS MCP tunnel URL>` startup guard
 requires the same `CONTROL_PLANE_TUNNEL_ID` in the existing private runtime env
 file. The guarded launch also pins the verified ID through the client's
-documented `--tunnel-id` option. Missing or different IDs fail with exit 2 before any client launches; the
+documented `run --control-plane.tunnel-id` option. Missing or different IDs fail with exit 2 before any client launches; the
 error prints neither env values nor the supplied URL. This lets the owner keep
 an explicit route invariant alongside the gateway configuration. The guard does
 not read a tunnel profile, change credentials, update a connector, probe live
