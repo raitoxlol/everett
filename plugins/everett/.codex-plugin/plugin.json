@@ -1,0 +1,17 @@
+{
+  "name": "everett",
+  "version": "2.2.1",
+  "description": "Find your sessions, deliver authorized work, and use an explicitly granted native T3 start through one hosted Everett app.",
+  "author": { "name": "Wright/raitoxlol" },
+  "repository": "https://github.com/raitoxlol/everett",
+  "license": "MIT",
+  "apps": "./.app.json",
+  "skills": "./skills",
+  "interface": {
+    "displayName": "Everett",
+    "shortDescription": "Your sessions and authorized handoffs",
+    "developerName": "Wright/raitoxlol",
+    "category": "Developer Tools",
+    "capabilities": []
+  }
+}
