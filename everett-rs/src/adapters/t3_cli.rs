@@ -70,7 +70,7 @@ pub(crate) fn validate_dispatch(
 /// The JSON document in `t3` stdout. Some builds print log lines (such as a
 /// database migration warning) to stdout first, so take the first line that
 /// starts a JSON value at column 0 and parses through the end.
-fn parse_json_output(stdout: &str) -> Option<Value> {
+pub(crate) fn parse_json_output(stdout: &str) -> Option<Value> {
     let mut offset = 0;
     for line in stdout.split_inclusive('\n') {
         if line.starts_with('{') || line.starts_with('[') {

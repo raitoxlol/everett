@@ -24,7 +24,9 @@ def validate(binary):
     """Check one explicit binary path; never consults EVERETT_BIN."""
     if not binary.is_absolute() or not binary.is_file() or not os.access(binary, os.X_OK):
         raise ValueError('Everett binary must be an absolute executable path. Rerun install.py --binary /path/to/everett.')
-    version = subprocess.run([str(binary), '--version'], capture_output=True, text=True, timeout=5, check=True).stdout.strip()
+    output = subprocess.run([str(binary), '--version'], capture_output=True, text=True, timeout=5, check=True).stdout.strip()
+    # New builds append provenance after the CLI's version line.
+    version = output.splitlines()[0] if output else ''
     match = re.fullmatch(r'everett (\d+)\.(\d+)\.(\d+)(?:[-+][\w.-]+)?', version)
     if not match or tuple(map(int, match.groups())) < MINIMUM:
         raise ValueError('Everett 2.2.1 or newer is required; refusing the old runtime. Rerun install.py with the current binary.')

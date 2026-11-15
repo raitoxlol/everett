@@ -242,6 +242,24 @@ owner setup through a supported product feature.
 
 ## Keep the tunnel forwarding
 
+Before changing a running service, run `python3 scripts/diagnose-tunnel-host.py`
+on the host that serves the tunnel. If downloaded separately to the Mac's
+Downloads folder, run `python3 "$HOME/Downloads/diagnose-tunnel-host.py"`.
+The read-only JSON includes matching process roles, executable fingerprints,
+Everett versions and user-service state. It omits process arguments and never
+opens profiles, credential files, logs, environment files or service definitions.
+An unavailable inventory is reported as unavailable, rather than interpreted as
+an absent service. Installed CLI and running-process artifacts are separate.
+
+The OpenAI tunnel, a Cloudflare `cloudflared` tunnel, the public Cloudflare
+native relay and the restricted MCP gateway are different dependencies. A
+successful native `/v2/relay/whoami` does not prove the gateway's `/mcp` route
+works. Match the configured MCP URL to its serving host before requesting a
+service restart. Host process evidence still needs an authenticated call through
+the actual client connection to prove restoration. The diagnostic always leaves
+forwarding health and the production revision unconfirmed until that correlation
+is available.
+
 Checked against `tunnel-client` v0.0.16
 (`pkg/controlplane/internal/poller.go`) and the upstream troubleshooting docs
 as of 2026-10-19.
@@ -277,9 +295,14 @@ vendor patch you can turn on.
 - It restarts the client after **3** consecutive `poll timed out` / `poll
   transport failed (timeout)` lines with no `poller recovered` line. One
   timeout is left to the client's own retry.
-- It does not restart because `/readyz` is ready, or because the log is quiet.
-  A healthy client is quiet at the default log level. A poll that never
-  returns and never logs is outside this check.
+- It renews the client connection every 240 seconds by default, including quiet
+  clients, closed log pipes, and clients emitting unrelated logs. This bounds
+  the lifetime of a silent wedge without pretending log silence proves failure.
+  `--max-connection-age` accepts 1..240 seconds. Healthy connections also rotate.
+  Renewal can interrupt an in-flight call; reconcile its outcome before retrying
+  a write. Default shutdown grace plus restart delay adds up to four seconds.
+- Spawn failures retry with the configured restart delay. Child log buffers and
+  queues are bounded so noisy clients cannot exhaust the watcher memory.
 - Child log lines are echoed with runtime keys, admin keys, bearer tokens, and
   `sk-…` tokens redacted. The env file is never printed.
 
@@ -291,6 +314,24 @@ everett tunnel watch \
 
 `--max-restarts 0` (the default) keeps going. Stop it with SIGTERM or Ctrl-C;
 it stops the client too.
+
+### Prevent a configured tunnel/resource mismatch
+
+For OAuth HTTP forwarding, obtain the resource from the serving gateway's
+`/.well-known/oauth-protected-resource` metadata or its `everett_whoami.gateway_resource`.
+Compare it to the client's actual configured MCP URL. A running tunnel for a
+different ID cannot restore that connection.
+
+The optional `--expected-resource <exact HTTPS MCP tunnel URL>` startup guard
+requires the same `CONTROL_PLANE_TUNNEL_ID` in the existing private runtime env
+file. The guarded launch also pins the verified ID through the client's
+documented `--tunnel-id` option. Missing or different IDs fail with exit 2 before any client launches; the
+error prints neither env values nor the supplied URL. This lets the owner keep
+an explicit route invariant alongside the gateway configuration. The guard does
+not read a tunnel profile, change credentials, update a connector, probe live
+forwarding or compare the gateway automatically. Obtain the expected value from
+the actual gateway, and apply configuration/service changes only with owner
+approval. Omitting this flag preserves existing profile-based startup.
 
 ### systemd user service (Linux)
 
@@ -348,7 +389,7 @@ restarts `tunnel-client`. Stop it with
 - External/untrusted labeling for messages from these sessions is
   [#26](https://github.com/raitoxlol/everett/pull/26), not this runbook.
 - The stuck-poll restart is an owner supervisor around `tunnel-client`. It does
-  not change OpenAI's tunnel service, and a quiet wedged poll that never logs
-  a timeout is not detected.
+  not change OpenAI's tunnel service. Scheduled renewal recovers silent wedges
+  by replacing the process; it does not attest to upstream connectivity.
 - TLS deployment, tunnel/client credentials, account permissions, and actual
   dot tool invocation were not exercised by the isolated gateway tests.

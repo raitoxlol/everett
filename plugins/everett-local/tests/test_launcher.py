@@ -52,6 +52,14 @@ class LauncherTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(result.stdout, 'mcp-started:mcp')
 
+    def test_build_provenance_does_not_prevent_install_or_launch(self):
+        self.binary.write_text('#!/bin/sh\nif [ "$1" = "--version" ]; then printf "everett 2.2.1\\nrevision: abcdef\\ndirty: true\\n"; else printf "mcp-started:%s" "$1"; fi\n')
+        installed = self.install()
+        self.assertEqual(installed['version'], 'everett 2.2.1')
+        result = subprocess.run(self.command(installed), capture_output=True, text=True, timeout=10)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout, 'mcp-started:mcp')
+
     def test_missing_override_fails_without_falling_back(self):
         installed = self.install()
         env = dict(os.environ, EVERETT_BIN=str(self.root / 'missing'))
