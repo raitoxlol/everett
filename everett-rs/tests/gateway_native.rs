@@ -441,11 +441,13 @@ fn native_cli_fixture(args: &[String]) {
         "empty" => { println!("{{}}"); return; },
         "array" => { println!("[]"); return; },
         "exit" => std::process::exit(7),
+        "invalid-id" => { println!("{}",json!({"threadId":"mcp:bad\nthread","projectId":"fixed-project","runId":"run:1"})); return; },
+        "long-id" => { println!("{}",json!({"threadId":"x".repeat(513),"projectId":"fixed-project","runId":"run:1"})); return; },
         "no-run" => { println!("{}",json!({"threadId":"native-thread-1","projectId":"fixed-project","runId":null})); return; },
         _ => {},
     }
     let project = if mode == "wrong-project" { "foreign-project" } else { "fixed-project" };
-    println!("{}",json!({"threadId":"native-thread-1","projectId":project,"runId":"native-run-1"}));
+    println!("{}",json!({"threadId":"mcp:fixture-thread","projectId":project,"runId":"run:thread:mcp%3Afixture-thread:ordinal:1"}));
 }
 
 fn native_config(issuer: &str) -> Value {
@@ -514,7 +516,8 @@ fn owner_native_start_is_explicit_isolated_and_durable() {
     assert!(native_records(&c).is_empty());
     let receipt = success(&native_call(port,'a',"everett_start",args.clone()));
     assert_eq!(receipt["state"],"dispatch_confirmed");
-    assert_eq!(receipt["thread_id"],"native-thread-1");
+    assert_eq!(receipt["thread_id"],"mcp:fixture-thread");
+    assert_eq!(receipt["run_id"],"run:thread:mcp%3Afixture-thread:ordinal:1");
     for key in ["pickup_confirmed","completion_confirmed","reply_confirmed"] { assert_eq!(receipt[key],false); }
     assert!(receipt["native_session_id"].is_null());
     assert_eq!(success(&native_call(port,'a',"everett_start",args.clone())),receipt);
@@ -544,8 +547,8 @@ fn owner_native_start_is_explicit_isolated_and_durable() {
     success(&native_call(port,'a',"everett_identity",json!({"action":"revoke","identity_handle":identity["identity_handle"]})));
     denied(&native_call(port,'a',"everett_start",args));
     assert_eq!(native_records(&c).len(),2);
-    denied(&native_call(port,'a',"everett_control",json!({"action":"send","thread":"native-thread-1","text":"no"})));
-    denied(&native_call(port,'a',"everett_send",json!({"to":"native-thread-1","text":"no automatic destination grant"})));
+    denied(&native_call(port,'a',"everett_control",json!({"action":"send","thread":receipt["thread_id"],"text":"no"})));
+    denied(&native_call(port,'a',"everett_send",json!({"to":receipt["thread_id"],"text":"no automatic destination grant"})));
     issuer.grant(&access('b'),"agent-new",json!({"active":false}));
     let forbidden=post(port,&json!({"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"everett_start","arguments":{}}}),&[("Authorization",Some(&bearer(&access('b'))))]);
     assert_eq!(forbidden.status,401,"revoked OAuth must deny even cached starts");
@@ -590,7 +593,7 @@ fn native_start_policy_and_journal_fail_closed() {
 }
 
 fn native_start_uncertain_receipts_never_dispatch_twice() {
-    for mode in ["rejected","empty","array","wrong-project","oversized","hang","exit","no-run"] {
+    for mode in ["rejected","empty","array","wrong-project","oversized","hang","exit","no-run","invalid-id","long-id"] {
         let c=ctx();let issuer=fake_issuer();
         issuer.grant(&access('a'),"agent-one",json!({"everett_account":"github:alice"}));
         let cfg=with(native_config(&issuer.url),json!({"timeout":1}));
@@ -601,7 +604,7 @@ fn native_start_uncertain_receipts_never_dispatch_twice() {
         let result=native_outcome(&native_call(port,'a',"everett_start",args.clone()));
         assert_eq!(result["state"],"dispatch_unconfirmed","{mode}: {result}");
         assert_eq!(result["dispatch_confirmed"],false);
-        let code=match mode { "hang"=>"cli_timeout", "oversized"=>"cli_output_too_large", "wrong-project"|"no-run"=>"destination_mismatch_or_missing_run", "exit"=>"cli_exit",_=>"invalid_receipt" };
+        let code=match mode { "hang"=>"cli_timeout", "oversized"=>"cli_output_too_large", "wrong-project"|"no-run"|"invalid-id"|"long-id"=>"destination_mismatch_or_missing_run", "exit"=>"cli_exit",_=>"invalid_receipt" };
         assert_eq!(result["diagnostic"],code,"{mode}: {result}");
         std::fs::remove_file(c.home.join("native-start-mode")).unwrap();
         let restarted=c.spawn_http(c.oauth_command(&cfg));
