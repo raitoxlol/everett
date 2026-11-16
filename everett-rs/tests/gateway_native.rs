@@ -468,7 +468,13 @@ fn native_identity(port: u16, key: &str) -> Value {
 }
 
 fn native_records(c: &Ctx) -> Vec<Value> {
-    std::fs::read_to_string(c.home.join("native-start-calls.jsonl")).unwrap_or_default().lines().map(|l|serde_json::from_str(l).unwrap()).collect()
+    // The fixture appends while the parent polls. A visible final fragment is
+    // not a completed record until its newline has been written.
+    let text = std::fs::read_to_string(c.home.join("native-start-calls.jsonl")).unwrap_or_default();
+    text.split_inclusive('\n')
+        .filter(|line| line.ends_with('\n'))
+        .map(|line| serde_json::from_str(line).expect("completed fixture record must be valid JSON"))
+        .collect()
 }
 
 fn native_outcome(response: &Value) -> Value {
@@ -1315,6 +1321,7 @@ const CASES: &[Case] = &[
     ("native_start_policy_and_journal_fail_closed", native_start_policy_and_journal_fail_closed),
     ("owner_native_start_is_explicit_isolated_and_durable", owner_native_start_is_explicit_isolated_and_durable),
     ("native_start_uncertain_receipts_never_dispatch_twice", native_start_uncertain_receipts_never_dispatch_twice),
+    ("native_records_waits_for_complete_fixture_lines", native_records_waits_for_complete_fixture_lines),
     ("concurrent_native_start_and_gateway_crash_keep_reservation", concurrent_native_start_and_gateway_crash_keep_reservation),
     ("revoked_identity_retries_finish_failed_registration_cleanup", revoked_identity_retries_finish_failed_registration_cleanup),
     ("identity_retry_rejects_invalid_discovery_records_and_repairs_missing_ones", identity_retry_rejects_invalid_discovery_records_and_repairs_missing_ones),
@@ -1370,4 +1377,13 @@ fn main() {
     if !failed.is_empty() {
         std::process::exit(1);
     }
+}
+
+fn native_records_waits_for_complete_fixture_lines() {
+    let c = ctx();
+    let path = c.home.join("native-start-calls.jsonl");
+    std::fs::write(&path, "{\"pid\":1}\n{\"pid\":").unwrap();
+    assert_eq!(native_records(&c), vec![json!({"pid":1})]);
+    std::fs::write(&path, "{\"pid\":1}\n{\"pid\":2}\n").unwrap();
+    assert_eq!(native_records(&c), vec![json!({"pid":1}), json!({"pid":2})]);
 }
