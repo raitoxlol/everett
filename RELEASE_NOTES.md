@@ -15,9 +15,4 @@ actual harness agents exchanging a request and correlated reply through the host
 relay. Run installation and acceptance on macOS as well as Linux. ChatGPT chat
 mode is outside this beta.
 
-The November 16 Linux audit installed 2.2.1 through install.sh. Public enrollment’s
-20 synthetic tests passed; live outside-account approval remains pending.
-Do not infer hosted delivery from health checks or MCP tool discovery.
-
-No Worker deployment, production enrollment change, merge, release tag, or
-publication is authorized by this candidate. See issue #156 for acceptance work.
+See [the changelog](CHANGELOG.md) for the full change list.
