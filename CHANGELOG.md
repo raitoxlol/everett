@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 2.3.0 — release candidate (unpublished)
+
 - Hop limit is now off by default; turn it on with `hop_limit = "on"` (docs/hop-limit.md). Cross-device relay/peer messages follow the same setting (wire bound 64; hosted relay redeployed to accept it).
 - Every delivered Everett batch now carries a short context note (agent requests, read-only by default, how to reply).
 
