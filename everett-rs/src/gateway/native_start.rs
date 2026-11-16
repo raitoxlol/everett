@@ -78,6 +78,11 @@ const STORE_ERROR: &str =
 
 const RECOVERY: &str = "Reuse this request_id and identical text to read its receipt. Do not launch under a new ID until the owner reconciles T3; a previous dispatch may have succeeded.";
 
+// T3 thread/run IDs are opaque receipt values, never Everett inbox paths.
+fn valid_receipt_id(id: &str) -> bool {
+    !id.is_empty() && id.len() <= 512 && id.bytes().all(|b| b.is_ascii_graphic())
+}
+
 fn cached_receipt(raw: &str, key: &str, policy: &Policy) -> Result<Value, String> {
     if raw.len() > MAX_RESULT {
         return Err(STORE_ERROR.into());
@@ -102,7 +107,7 @@ fn cached_receipt(raw: &str, key: &str, policy: &Policy) -> Result<Value, String
                 && value.get("native_session_id") == Some(&Value::Null)
                 && ["thread_id", "run_id"]
                     .iter()
-                    .all(|k| value[*k].as_str().is_some_and(super::valid_destination)) =>
+                    .all(|k| value[*k].as_str().is_some_and(valid_receipt_id)) =>
         {
             &[
                 "state",
@@ -379,10 +384,10 @@ async fn launch(binding: &Binding, policy: &Policy, text: &str) -> Result<Value,
         if receipt["projectId"] != policy.project_id
             || !receipt["threadId"]
                 .as_str()
-                .is_some_and(super::valid_destination)
+                .is_some_and(valid_receipt_id)
             || !receipt["runId"]
                 .as_str()
-                .is_some_and(super::valid_destination)
+                .is_some_and(valid_receipt_id)
         {
             return Err("destination_mismatch_or_missing_run");
         }
