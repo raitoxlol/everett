@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+## 2.3.0 — release candidate (unpublished)
+
+- Require structured, command-specific T3 dispatch receipts before reporting delivery, and validate control timeouts and chat discovery records (#149, #152).
+- Authorize gateway plugins separately from their registered chat identities, so chat and Codex sessions retain distinct identities (#150).
+- Give shared session, delivery, and gateway behavior clear domain owners (#151).
+- Recover tunnel connections and gate native starts on verified readiness (#153).
+- Restrict local gateway access to the configured owner account and use supported tunnel route-pinning flags (#154).
+- Package one versioned hosted Everett plugin around an existing owner app (#155).
+
 - Hop limit is now off by default; turn it on with `hop_limit = "on"` (docs/hop-limit.md). Cross-device relay/peer messages follow the same setting (wire bound 64; hosted relay redeployed to accept it).
 - Every delivered Everett batch now carries a short context note (agent requests, read-only by default, how to reply).
 
