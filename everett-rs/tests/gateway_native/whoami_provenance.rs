@@ -2,6 +2,7 @@ use super::*;
 
 pub(super) fn gateway() {
     let c=ctx(); let issuer=fake_issuer();
+    assert!(c.cli(&["external","add","--id","agent-two","--harness","openai-dot"]).status.success());
     issuer.grant(&access('a'),"legacy-client",json!({"everett_account":"private-owner","everett_agent_name":"OAuth client label"}));
     let port=c.oauth_server(&issuer.url);
     let legacy=success(&native_call(port,'a',"everett_whoami",json!({})));
@@ -43,7 +44,8 @@ pub(super) fn native() {
     for sid in ["native-one","native-two"] {
         let mut cmd=c.command(&["mcp"]);cmd.env("CODEX_THREAD_ID",sid);
         let mut peer=Wire::new(cmd);
-        let result=success(&peer.call("everett_whoami",json!({"session_id":"forged-session"})));
+        denied(&peer.call("everett_whoami",json!({"session_id":"forged-session"})));
+        let result=success(&peer.call("everett_whoami",json!({})));
         assert_eq!(result["session_id"],sid);
         assert_eq!(result["identity"]["session"]["id"],sid);
         assert_eq!(result["identity"]["session"]["provenance"],"native_host_bound");
@@ -51,7 +53,8 @@ pub(super) fn native() {
         assert_eq!(result["identity"]["account"]["status"],"unknown");
     }
     let mut peer=Wire::new(c.command(&["mcp"]));
-    let unbound=success(&peer.call("everett_whoami",json!({"session_id":"forged-session","_meta":{"threadId":"also-forged"}})));
+    denied(&peer.call("everett_whoami",json!({"session_id":"forged-session","_meta":{"threadId":"also-forged"}})));
+    let unbound=success(&peer.call("everett_whoami",json!({})));
     assert!(unbound["identity"]["session"]["id"].is_null());
     assert_eq!(unbound["identity"]["session"]["provenance"],"unbound");
     let meta=success(&peer.request("tools/call",Some(json!({"name":"everett_whoami","arguments":{},"_meta":{"threadId":"metadata-session"}}))));
