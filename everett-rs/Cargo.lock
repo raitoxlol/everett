@@ -768,6 +768,7 @@ dependencies = [
  "futures-util",
  "hex",
  "hkdf",
+ "hmac",
  "httparse",
  "hyper",
  "hyper-util",

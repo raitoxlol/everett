@@ -1412,7 +1412,19 @@ fn native_inbox_batches_encoded_results_before_consuming() {
 
 type Case = (&'static str, fn());
 
+fn events_catalog_is_authenticated_and_scoped() {
+    let c = ctx();
+    let port = c.http_server(&json!({"events":true}));
+    let request = json!({"jsonrpc":"2.0","id":1,"method":"events/list"});
+    let result = body_json(&post(port, &request, &[]));
+    assert_eq!(result["result"]["events"][0]["name"], "message.created");
+    assert_eq!(post(port, &request, &[("Authorization", None)]).status, 401);
+    let wrong = json!({"jsonrpc":"2.0","id":2,"method":"events/subscribe","params":{"name":"message.created","arguments":{"session_id":"foreign"},"delivery":{"mode":"webhook","url":"https://127.0.0.1/","secret":"synthetic"}}});
+    assert_eq!(body_json(&post(port, &wrong, &[]))["error"]["code"], -32602);
+}
+
 const CASES: &[Case] = &[
+    ("events_catalog_is_authenticated_and_scoped", events_catalog_is_authenticated_and_scoped),
     ("whoami_provenance_gateway", whoami_provenance::gateway),
     ("whoami_provenance_native", whoami_provenance::native),
     ("identity_diagnostic_native", identity_diagnostics::native),
