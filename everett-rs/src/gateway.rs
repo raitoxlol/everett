@@ -1,5 +1,6 @@
 pub mod diagnostics;
 mod identities;
+mod event_http;
 mod native_start;
 #[cfg(test)]
 mod ownership_shadow;
@@ -82,6 +83,8 @@ fn default_scope() -> String {
 #[derive(Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Binding {
+    #[serde(default)]
+    events: bool,
     agent_id: String,
     harness: String,
     cwd: PathBuf,
@@ -440,6 +443,7 @@ impl<R: AsyncRead + Unpin> AsyncRead for BoundedRead<R> {
 /// The dot identity an OAuth access token was issued to, attached to the HTTP request.
 #[derive(Clone)]
 struct OAuthAgent {
+    expires_at: u64,
     agent_id: String,
     name: String,
     client_id: String,
@@ -684,9 +688,12 @@ enum HttpAuth {
 
 #[derive(Clone)]
 struct HttpBoundary {
+    events: Option<crate::gateway_events::Events>,
+    event_scope: String,
     gateway: Gateway,
     auth: HttpAuth,
     requests: Arc<Semaphore>,
+    event_requests: Arc<Semaphore>,
 }
 
 const PROTECTED_RESOURCE: &str = "/.well-known/oauth-protected-resource";
@@ -788,6 +795,7 @@ impl OAuthVerifier {
         }
         match (data["sub"].as_str(), data["everett_agent"].as_str(), data["client_id"].as_str()) {
             (Some(sub), Some(agent), Some(client)) if sub == agent && crate::adapters::external::valid_id(agent) => Ok(OAuthAgent {
+                expires_at: data["exp"].as_u64().expect("expiry verified above"),
                 agent_id: agent.to_owned(),
                 account: data["everett_account"].as_str().filter(|s| !s.is_empty() && s.len() <= 256).map(str::to_owned),
                 name: data["everett_agent_name"].as_str().unwrap_or_default().chars().take(100).collect(),
@@ -856,6 +864,7 @@ async fn http_boundary(
         .and_then(|h| h.split_once(' '))
         .filter(|(scheme, token)| scheme.eq_ignore_ascii_case("bearer") && token.len() <= 512)
         .map(|(_, token)| token.to_owned());
+    let event_token = bearer.clone();
     let agent = match &state.auth {
         HttpAuth::Bearer(digest) => {
             if !bearer.is_some_and(|token| bool::from(digest.ct_eq(&Sha256::digest(token.as_bytes())))) {
@@ -912,6 +921,10 @@ async fn http_boundary(
         Ok(Err(_)) => return StatusCode::PAYLOAD_TOO_LARGE.into_response(),
         Err(_) => return StatusCode::GATEWAY_TIMEOUT.into_response(),
     };
+    if let Some(response) = event_http::dispatch(&state, request.method(), request.uri(), request.headers(), &bytes, agent.as_ref(), event_token).await {
+        return response;
+    }
+    let advertise_events = state.events.is_some() && serde_json::from_slice::<Value>(&bytes).ok().is_some_and(|v| v["method"] == "initialize");
     *request.body_mut() = Body::from(bytes);
     if let Some(agent) = agent {
         request.extensions_mut().insert(agent);
@@ -922,6 +935,7 @@ async fn http_boundary(
     )
     .await
     {
+        Ok(response) if advertise_events => event_http::advertise(response).await,
         Ok(response) => response,
         Err(_) => StatusCode::GATEWAY_TIMEOUT.into_response(),
     }
@@ -933,6 +947,9 @@ async fn serve(binding: Binding, transport: &str, port: u16) -> Result<(), Strin
         binding: Arc::new(binding),
         oauth: false,
     };
+    if transport == "stdio" && gateway.binding.events {
+        return Err("Events require authenticated HTTP".into());
+    }
     if transport == "stdio" {
         gateway
             .serve((
@@ -972,11 +989,22 @@ async fn serve(binding: Binding, transport: &str, port: u16) -> Result<(), Strin
         HttpAuth::Bearer(Sha256::digest(token.as_bytes()).into())
     };
     let connection_limit = gateway.binding.max_workers * 2;
+    let event_scope = match &auth {
+        HttpAuth::Bearer(digest) => hex::encode(digest),
+        HttpAuth::OAuth(v) => serde_json::to_string(&(&v.config.issuer, &v.config.resource)).unwrap(),
+    };
+    let events = if gateway.binding.events {
+        Some(crate::gateway_events::Events::open(&gateway.binding.home, &event_scope)?)
+    } else { None };
     let state = HttpBoundary {
+        events,
+        event_scope,
         auth,
         requests: Arc::new(Semaphore::new(gateway.binding.max_workers * 2)),
+        event_requests: Arc::new(Semaphore::new(gateway.binding.max_workers)),
         gateway: gateway.clone(),
     };
+    if state.events.is_some() { tokio::spawn(event_http::pump(state.clone())); }
     let mut config = StreamableHttpServerConfig::default();
     config.legacy_session_mode = false;
     config.json_response = true;
@@ -1169,6 +1197,7 @@ mod tests {
 
     fn binding(home: &Path) -> Binding {
         Binding {
+            events: false,
             agent_id: "dot-one".into(),
             identity_owner: None,
             harness: "openai-dot".into(),

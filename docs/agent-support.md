@@ -39,7 +39,7 @@ synthetic CLI/MCP tests.
 
 | Agent | Connection and delivery | Wake |
 | --- | --- | --- |
-| OpenAI dots (`openai-dot`) | Explicit registration and owner-authorized MCP gateway; inbox and reply tools | Optional owner webhook endpoint. Native OpenAI MCP Events wake is not implemented in this candidate |
+| OpenAI dots (`openai-dot`) | Explicit registration and owner-authorized MCP gateway; inbox and reply tools | Opt-in [MCP Events candidate](mcp-events.md), disabled by default; current live ChatGPT wake acceptance remains pending |
 | Grok Bot (`grok-bot`) | Explicit registration and owner-authorized MCP gateway; inbox and reply tools | Optional owner webhook routine configured through `receiver-webhook.json` |
 | Hark | Compatibility unverified; no dedicated adapter | Unverified |
 | Muse | Compatibility unverified; no dedicated adapter | Unverified |
