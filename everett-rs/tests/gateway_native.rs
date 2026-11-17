@@ -1,7 +1,7 @@
-#[path = "gateway_native/identity_diagnostics.rs"]
-mod identity_diagnostics;
 //! Native gateway journeys over stdio and HTTP. The test binary doubles as the synthetic
 //! backend (`--fixture-backend`), so no model, harness, or other runtime is involved.
+#[path = "gateway_native/identity_diagnostics.rs"]
+mod identity_diagnostics;
 use serde_json::{json, Value};
 use std::cell::{Cell, RefCell};
 use std::io::{BufRead, BufReader, Read, Write};
