@@ -34,6 +34,12 @@ def main():
     session_id = identity.get('session_id') or ''
     if not session_id:
         raise RuntimeError('everett_whoami returned no session_id; the caller session is not bound')
+    listing_result = rows[4]['result']
+    listing = listing_result.get('structuredContent')
+    if listing is None:
+        listing = json.loads(listing_result['content'][0]['text'])
+    if not isinstance(listing, dict) or not isinstance(listing.get('sessions'), list):
+        raise RuntimeError('everett_ls returned no session list')
     print(json.dumps({'success': True, 'installed_command': True, 'advertised_tools': len(names), 'identity_call': True, 'session_id': session_id, 'local_listing_call': True, 'messages_sent': 0, 'gui_client_verified': False}, indent=2))
 
 
