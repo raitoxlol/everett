@@ -6,6 +6,15 @@ permissions:
   contents: read
 
 jobs:
+  host-evidence-python39:
+    runs-on: ubuntu-24.04 # Python 3.9 packages are unavailable for Ubuntu 26.04.
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.9'
+      - run: python -m unittest discover -s scripts -p test_diagnose_tunnel_host.py -v
+
   verify:
     runs-on: ${{ matrix.os }}
     strategy:
@@ -17,6 +26,9 @@ jobs:
         working-directory: everett-rs
     steps:
       - uses: actions/checkout@v7
+      - name: Verify bounded host and poll-health evidence
+        working-directory: .
+        run: python3 -m unittest discover -s scripts -p test_diagnose_tunnel_host.py -v
       - name: Verify checksum, validation and atomic installer upgrades
         working-directory: .
         run: python3 -m unittest discover -s scripts -p test_install.py -v
