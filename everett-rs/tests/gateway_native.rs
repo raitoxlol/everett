@@ -1318,9 +1318,37 @@ fn symlinked_working_directory_is_canonicalized() {
     assert_eq!(c.records()[0]["cwd"], json!(c.home));
 }
 
+fn live_destinations_change_without_changing_cached_send_schema() {
+    let c = ctx();
+    let issuer = fake_issuer();
+    issuer.grant(&access('a'), "agent-one", json!({"everett_account":"github:alice"}));
+    let cfg = with(fixture(&[]), json!({"oauth":{"issuer":issuer.url,"resource":RESOURCE}}));
+    let first = c.spawn_http(c.oauth_command(&cfg));
+    let send_schema = |port| {
+        let response = oauth_rpc(port, 'a', "tools/list", json!({}));
+        response["result"]["tools"].as_array().unwrap().iter()
+            .find(|tool| tool["name"] == "everett_send").unwrap()["inputSchema"].clone()
+    };
+    let cached_schema = send_schema(first);
+    let changed = with(cfg, json!({"destinations":["agent-three"]}));
+    let second = c.spawn_http(c.oauth_command(&changed));
+    assert_eq!(cached_schema, send_schema(second), "owner grant updates must not stale a cached client schema");
+    assert!(cached_schema["properties"]["to"].get("enum").is_none());
+    assert_eq!(success(&native_call(first, 'a', "everett_whoami", json!({})))["authorized_destinations"], json!(["agent-two"]));
+    assert_eq!(success(&native_call(second, 'a', "everett_whoami", json!({})))["authorized_destinations"], json!(["agent-three"]));
+    let before = c.records().len();
+    for to in [json!("agent-two"), json!("agent"), json!("agent-three-suffix"), json!("foreign"), json!("") , json!(1)] {
+        denied(&native_call(second, 'a', "everett_send", json!({"to":to,"text":"must remain denied"})));
+    }
+    assert_eq!(c.records().len(), before, "denied destinations must not reach backend");
+    success(&native_call(second, 'a', "everett_send", json!({"to":"agent-three","text":"new explicit owner grant"})));
+    assert_eq!(c.records().last().unwrap()["arguments"]["to"], "agent-three");
+}
+
 type Case = (&'static str, fn());
 
 const CASES: &[Case] = &[
+    ("live_destinations_change_without_changing_cached_send_schema", live_destinations_change_without_changing_cached_send_schema),
     ("native_start_policy_and_journal_fail_closed", native_start_policy_and_journal_fail_closed),
     ("owner_native_start_is_explicit_isolated_and_durable", owner_native_start_is_explicit_isolated_and_durable),
     ("native_start_uncertain_receipts_never_dispatch_twice", native_start_uncertain_receipts_never_dispatch_twice),
