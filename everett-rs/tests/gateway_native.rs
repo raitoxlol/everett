@@ -2,6 +2,8 @@
 //! backend (`--fixture-backend`), so no model, harness, or other runtime is involved.
 #[path = "gateway_native/identity_diagnostics.rs"]
 mod identity_diagnostics;
+#[path = "gateway_native/whoami_provenance.rs"]
+mod whoami_provenance;
 use serde_json::{json, Value};
 use std::cell::{Cell, RefCell};
 use std::io::{BufRead, BufReader, Read, Write};
@@ -1411,6 +1413,8 @@ fn native_inbox_batches_encoded_results_before_consuming() {
 type Case = (&'static str, fn());
 
 const CASES: &[Case] = &[
+    ("whoami_provenance_gateway", whoami_provenance::gateway),
+    ("whoami_provenance_native", whoami_provenance::native),
     ("identity_diagnostic_native", identity_diagnostics::native),
     ("identity_diagnostic_gateway", identity_diagnostics::gateway),
     ("identity_diagnostic_invalid_input", identity_diagnostics::invalid_input),
