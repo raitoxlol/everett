@@ -28,14 +28,16 @@ fn t3_json(args: &[&str], timeout: f64, dispatch: Option<(t3_cli::Dispatch<'_>, 
     let captured = t3_cli::capture(&t3_bin()?, args, timeout)
         .map_err(|e| EverettError::new(4, format!("t3 failed to start: {e}")))?;
     let out = captured.output;
+    let uncertain = if dispatch.is_some() { format!(" {}", t3_cli::UNCONFIRMED) } else { String::new() };
     if out.timed_out {
-        return Err(EverettError::new(4, format!("t3 {} timed out after {timeout}s", args.join(" "))));
+        let command = args.iter().take(2).copied().collect::<Vec<_>>().join(" ");
+        return Err(EverettError::new(4, format!("t3 {command} timed out after {timeout}s.{uncertain}")));
     }
     let stdout = out.stdout.trim();
     if out.code != 0 && out.code != 2 {
         let detail = if stdout.is_empty() { out.stderr.trim() } else { stdout };
         let detail: String = detail.chars().rev().take(400).collect::<Vec<_>>().into_iter().rev().collect();
-        return Err(EverettError::new(4, format!("t3 {} exited {}: {}", args.first().unwrap_or(&""), out.code, detail)));
+        return Err(EverettError::new(4, format!("t3 {} exited {}: {detail}.{uncertain}", args.first().unwrap_or(&""), out.code)));
     }
     let mut value = captured.receipt.ok_or_else(|| EverettError::new(4,
         format!("t3 returned no valid JSON receipt (exit {}). Check that the selected CLI supports thread commands. Dispatch is unconfirmed; do not blindly retry.", out.code)))?;
