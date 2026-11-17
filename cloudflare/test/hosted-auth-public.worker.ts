@@ -171,8 +171,16 @@ describe('Public enrollment: account isolation', () => {
     const after = await (await nativeCall(pa.token!, 'deviceLabels')).json() as { result: { labels: Record<string, string> } };
     expect(Object.keys(after.result.labels)).toHaveLength(63);
     expect(after.result.labels[ids[0]]).toBeUndefined();
-    for (let i = 0; i < 30; i++) expect((await nativeCall(pa.token!, 'renameDevice', { name: 'caller' })).status).toBe(200);
-    expect((await nativeCall(pa.token!, 'renameDevice', { name: 'caller' })).status).toBe(429);
+    const now = Date.now();
+    vi.setSystemTime(now);
+    try {
+      for (let i = 0; i < 30; i++) expect((await nativeCall(pa.token!, 'renameDevice', { name: 'caller' })).status).toBe(200);
+      expect((await nativeCall(pa.token!, 'renameDevice', { name: 'caller' })).status).toBe(429);
+      vi.setSystemTime(now + 60_000);
+      expect((await nativeCall(pa.token!, 'renameDevice', { name: 'caller' })).status).toBe(200);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('returns labels beyond 256 enrollments for a registered relay device', async () => {
