@@ -9,8 +9,8 @@
 //! sit unforwarded. A new process polls the queued work immediately.
 //!
 //! This supervisor restarts on exit or repeated timeout warnings, and renews
-//! connections on a bounded schedule even without diagnostic logs. Rotation
-//! is recovery insurance, not evidence that the upstream route is healthy.
+//! stale connections even without diagnostic logs. An optional local health
+//! snapshot preserves fresh polling connections: killing one can strand requests.
 
 use std::collections::{BTreeMap, HashMap};
 use std::fs::{self, File};
@@ -84,6 +84,7 @@ pub struct WatchConfig {
     pub max_restarts: u32,
     pub max_connection_age: Duration,
     pub expected_resource: Option<String>,
+    pub health_url: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -207,7 +208,7 @@ pub fn run(config: WatchConfig) -> i32 {
             config.profile
         );
         let mut watch = PollWatch::new(config.timeout_streak);
-        let action = supervise(&mut supervised, &mut watch, config.max_connection_age);
+        let action = supervise(&mut supervised, &mut watch, config.max_connection_age, config.health_url.as_deref());
         let _ = ensure_stopped(&mut supervised);
         match action {
             StopReason::Signal => return 0,
@@ -273,16 +274,34 @@ struct Supervised {
     reaped: bool,
 }
 
-fn supervise(supervised: &mut Supervised, watch: &mut PollWatch, max_age: Duration) -> StopReason {
+fn supervise(supervised: &mut Supervised, watch: &mut PollWatch, max_age: Duration, health_url: Option<&str>) -> StopReason {
     let started = Instant::now();
+    let mut next_health_check = started;
+    let mut deferred = false;
+    let mut client_instance = None;
     loop {
-        if started.elapsed() >= max_age { return StopReason::ConnectionAge; }
         if let Some(code) = reap_if_exited(supervised) { return StopReason::Exited(code); }
         if stop_requested() {
             return StopReason::Signal;
         }
+        if started.elapsed() >= max_age && Instant::now() >= next_health_check {
+            if !health_url.zip(client_instance.as_deref()).is_some_and(|(url, instance)| polling_is_fresh(url, instance)) {
+                return StopReason::ConnectionAge;
+            }
+            if !deferred {
+                eprintln!("everett tunnel: retaining connection while local control-plane polling is fresh; request completion remains unconfirmed");
+                deferred = true;
+            }
+            next_health_check = Instant::now() + Duration::from_secs(2);
+        }
         match supervised.rx.recv_timeout(Duration::from_millis(200)) {
             Ok(line) => {
+                if client_instance.is_none() {
+                    client_instance = serde_json::from_str::<serde_json::Value>(&line).ok()
+                        .and_then(|value| value["client_instance_id"].as_str()
+                            .filter(|id| !id.is_empty() && id.len() <= 128 && id.bytes().all(|b| b.is_ascii_graphic()))
+                            .map(str::to_owned));
+                }
                 eprintln!("tunnel-client: {}", redact_log_line(&line));
                 if watch.observe(&line) {
                     return StopReason::PollTimeouts;
@@ -299,6 +318,37 @@ fn supervise(supervised: &mut Supervised, watch: &mut PollWatch, max_age: Durati
             }
         }
     }
+}
+
+fn polling_is_fresh(endpoint: &str, instance: &str) -> bool {
+    let agent: ureq::Agent = ureq::Agent::config_builder()
+        .timeout_global(Some(Duration::from_secs(2)))
+        .max_redirects(0)
+        .proxy(None)
+        .build().into();
+    let snapshot = (|| -> Option<serde_json::Value> {
+        let mut response = agent.get(endpoint).call().ok()?;
+        let mut bytes = Vec::new();
+        response.body_mut().as_reader().take(65537).read_to_end(&mut bytes).ok()?;
+        if bytes.len() > 65536 { return None; }
+        serde_json::from_slice(&bytes).ok()
+    })();
+    snapshot.is_some_and(|value| fresh_poll_snapshot(&value, instance, chrono::Utc::now().timestamp_millis()))
+}
+
+fn fresh_poll_snapshot(value: &serde_json::Value, instance: &str, now_ms: i64) -> bool {
+    if value["runtime"]["instance_id"] != instance || value["live"] != true || value["ready"] != true { return false; }
+    let poll = &value["components"]["control-plane"];
+    if poll["status"] != "ok" { return false; }
+    let details = &poll["details"];
+    let Some(last_success) = details["last_success"].as_str()
+        .and_then(|text| chrono::DateTime::parse_from_rfc3339(text).ok()) else { return false; };
+    let Some(deadline) = details["deadline_seconds"].as_f64()
+        .filter(|number| number.is_finite() && *number > 0.0 && *number <= 120.0) else { return false; };
+    let age_ms = now_ms.saturating_sub(last_success.timestamp_millis());
+    let current_poll_age = details["current_poll_age_seconds"].as_f64();
+    (-5000..=75000).contains(&age_ms)
+        && current_poll_age.is_some_and(|age| age.is_finite() && age >= 0.0 && age <= deadline + 5.0)
 }
 
 fn reap_if_exited(supervised: &mut Supervised) -> Option<i32> {
@@ -446,6 +496,13 @@ fn signal_group(pid: u32, signal: i32) {
 }
 
 fn validate_config(config: &WatchConfig) -> Result<(), String> {
+    if let Some(endpoint) = &config.health_url {
+        let valid = url::Url::parse(endpoint).ok().is_some_and(|url|
+            url.scheme() == "http" && matches!(url.host_str(), Some("127.0.0.1" | "[::1]"))
+                && url.username().is_empty() && url.password().is_none() && url.fragment().is_none()
+                && url.path() == "/health" && url.query() == Some("details=true"));
+        if !valid { return Err("health URL must be http://127.0.0.1:PORT/health?details=true (or IPv6 loopback), without credentials or redirects".into()); }
+    }
     if !valid_profile(&config.profile) {
         return Err("profile must be 1-64 letters, digits, '.', '_' or '-'".into());
     }
@@ -638,6 +695,46 @@ fn sleep_interruptible(total: Duration) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn health_must_prove_recent_success_and_a_bounded_current_poll() {
+        let now = chrono::Utc::now();
+        let good = serde_json::json!({"live":true,"ready":true,"runtime":{"instance_id":"owned-client"},"components":{"control-plane":{
+            "status":"ok","details":{"last_success":now.to_rfc3339(),"deadline_seconds":35,"current_poll_age_seconds":2}
+        }}});
+        assert!(fresh_poll_snapshot(&good, "owned-client", now.timestamp_millis()));
+        assert!(!fresh_poll_snapshot(&good, "different-client", now.timestamp_millis()));
+        for (pointer, value) in [
+            ("/ready", serde_json::json!(false)),
+            ("/components/control-plane/status", serde_json::json!("degraded")),
+            ("/components/control-plane/details/last_success", serde_json::json!((now - chrono::Duration::seconds(76)).to_rfc3339())),
+            ("/components/control-plane/details/last_success", serde_json::json!((now + chrono::Duration::seconds(6)).to_rfc3339())),
+            ("/components/control-plane/details/current_poll_age_seconds", serde_json::json!(41)),
+            ("/components/control-plane/details/deadline_seconds", serde_json::json!(0)),
+            ("/components/control-plane/details/last_success", serde_json::Value::Null),
+        ] {
+            let mut bad = good.clone();
+            *bad.pointer_mut(pointer).unwrap() = value;
+            assert!(!fresh_poll_snapshot(&bad, "owned-client", now.timestamp_millis()), "{pointer}");
+        }
+    }
+
+    #[test]
+    fn health_probe_only_accepts_exact_loopback_operator_endpoint() {
+        let config = |endpoint: &str| WatchConfig {
+            profile:"test".into(), tunnel_client:"tunnel-client".into(), env_file:"unused".into(),
+            timeout_streak:3, restart_delay:Duration::ZERO, max_restarts:1,
+            max_connection_age:Duration::from_secs(240), expected_resource:None, health_url:Some(endpoint.into()),
+        };
+        for endpoint in ["http://127.0.0.1:8089/health?details=true", "http://[::1]:8089/health?details=true"] {
+            assert!(validate_config(&config(endpoint)).is_ok(), "{endpoint}");
+        }
+        for endpoint in ["https://example.com/health?details=true", "http://localhost/health?details=true",
+            "http://127.0.0.1/health", "http://127.0.0.1/health?details=true#fragment",
+            "http://user:secret@127.0.0.1/health?details=true", "http://127.0.0.2/health?details=true"] {
+            assert!(validate_config(&config(endpoint)).is_err(), "{endpoint}");
+        }
+    }
 
     #[test]
     fn resource_guard_requires_the_exact_runtime_tunnel() {

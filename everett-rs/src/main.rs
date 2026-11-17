@@ -562,12 +562,15 @@ enum TunnelCmd {
         /// stop after this many restarts (0 keeps going)
         #[arg(long, default_value_t = 0)]
         max_restarts: u32,
-        /// renew even a silent stuck connection before the 300-second stale barrier
+        /// renew connections of this age unless local health proves fresh polling
         #[arg(long, default_value_t = 240)]
         max_connection_age: u64,
         /// exact gateway OAuth resource; require its tunnel ID in the runtime env file
         #[arg(long)]
         expected_resource: Option<String>,
+        /// local tunnel-client detailed health; retain fresh polling instead of blind rotation
+        #[arg(long)]
+        health_url: Option<String>,
     },
 }
 
@@ -933,6 +936,7 @@ fn main() {
                 max_restarts,
                 max_connection_age,
                 expected_resource,
+                health_url,
             } => everett::tunnel::run(everett::tunnel::WatchConfig {
                 profile,
                 tunnel_client,
@@ -942,6 +946,7 @@ fn main() {
                 max_restarts,
                 max_connection_age: std::time::Duration::from_secs(max_connection_age),
                 expected_resource,
+                health_url,
             }),
         },
 
