@@ -90,7 +90,12 @@ async fn logical(
     handle: &str,
 ) -> Result<ProvenBinding, &'static str> {
     let oauth = binding.oauth.as_ref().ok_or("legacy binding unmapped")?;
-    if oauth.issuer != verifier.config.issuer || oauth.resource != verifier.config.resource {
+    if oauth.issuer != verifier.config.issuer
+        || oauth.resource != verifier.config.resource
+        || oauth.scope != verifier.config.scope
+        || oauth.owner_account != verifier.config.owner_account
+        || oauth.introspection_endpoint != verifier.config.introspection_endpoint
+    {
         return Err("verifier does not match gateway");
     }
     let agent = verifier
