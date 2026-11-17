@@ -1,5 +1,7 @@
 //! Native gateway journeys over stdio and HTTP. The test binary doubles as the synthetic
 //! backend (`--fixture-backend`), so no model, harness, or other runtime is involved.
+#[path = "gateway_native/events.rs"]
+mod events_acceptance;
 #[path = "gateway_native/identity_diagnostics.rs"]
 mod identity_diagnostics;
 #[path = "gateway_native/whoami_provenance.rs"]
@@ -404,7 +406,10 @@ fn fake_issuer() -> FakeIssuer {
             let token = body.split('&').find_map(|kv| kv.strip_prefix("token=")).unwrap_or_default().to_string();
             let authorized = head.contains(&format!("authorization: bearer {}", INTROSPECTION_SECRET.to_lowercase()));
             let (status, reply) = if authorized {
-                ("200 OK", map.lock().unwrap().get(&token).cloned().unwrap_or(json!({"active": false})))
+                {
+                    let value = map.lock().unwrap().get(&token).cloned().unwrap_or(json!({"active":false}));
+                    (if value["fixture_unavailable"] == true { "503 Unavailable" } else { "200 OK" }, value)
+                }
             } else {
                 ("401 Unauthorized", json!({"error": "invalid_client"}))
             };
@@ -1412,7 +1417,21 @@ fn native_inbox_batches_encoded_results_before_consuming() {
 
 type Case = (&'static str, fn());
 
+fn events_catalog_is_authenticated_and_scoped() {
+    let c = ctx();
+    let port = c.http_server(&json!({"events":true}));
+    let request = json!({"jsonrpc":"2.0","id":1,"method":"events/list"});
+    let result = body_json(&post(port, &request, &[]));
+    assert_eq!(result["result"]["events"][0]["name"], "message.created");
+    assert_eq!(post(port, &request, &[("Authorization", None)]).status, 401);
+    let wrong = json!({"jsonrpc":"2.0","id":2,"method":"events/subscribe","params":{"name":"message.created","arguments":{"session_id":"foreign"},"delivery":{"mode":"webhook","url":"https://127.0.0.1/","secret":"synthetic"}}});
+    assert_eq!(body_json(&post(port, &wrong, &[]))["error"]["code"], -32602);
+}
+
 const CASES: &[Case] = &[
+    ("events_verified_token_lease", events_acceptance::verified_token_lease),
+    ("events_identity_and_lifetime", events_acceptance::identity_and_lifetime),
+    ("events_catalog_is_authenticated_and_scoped", events_catalog_is_authenticated_and_scoped),
     ("whoami_provenance_gateway", whoami_provenance::gateway),
     ("whoami_provenance_native", whoami_provenance::native),
     ("identity_diagnostic_native", identity_diagnostics::native),
