@@ -46,3 +46,6 @@ pub mod tunnel;
 
 #[cfg(test)]
 mod test_support;
+
+#[cfg(test)]
+extern crate self as everett;
