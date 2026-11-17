@@ -1,5 +1,7 @@
 mod identities;
 mod native_start;
+#[cfg(test)]
+mod ownership_shadow;
 
 use std::{
     collections::BTreeSet,
@@ -450,6 +452,16 @@ struct Gateway {
     oauth: bool,
 }
 
+impl Binding {
+    fn for_oauth(&self, agent: &OAuthAgent) -> Self {
+        let mut binding = self.clone();
+        binding.agent_id = agent.agent_id.clone();
+        binding.identity_owner = agent.account.as_ref().map(|account|
+            serde_json::to_string(&(account, &agent.client_id)).expect("identity owner is serializable"));
+        binding
+    }
+}
+
 impl Gateway {
     /// In OAuth mode the token's agent replaces the fixed `agent_id` from dot.json.
     fn bound(&self, ctx: &RequestContext<RoleServer>) -> Result<(Arc<Binding>, Option<OAuthAgent>), String> {
@@ -462,10 +474,7 @@ impl Gateway {
             .and_then(|parts| parts.extensions.get::<OAuthAgent>())
             .cloned()
             .ok_or("OAuth identity missing from request; reconnect and authorize again")?;
-        let mut binding = (*self.binding).clone();
-        binding.agent_id = agent.agent_id.clone();
-        binding.identity_owner = agent.account.as_ref().map(|account|
-            serde_json::to_string(&(account, &agent.client_id)).expect("identity owner is serializable"));
+        let binding = self.binding.for_oauth(&agent);
         Ok((Arc::new(binding), Some(agent)))
     }
 

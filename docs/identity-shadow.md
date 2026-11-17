@@ -1,8 +1,8 @@
 # Account discovery and policy shadow candidate (#148)
 
 This candidate is an offline fixture evaluator, not a production authorization path.
-`src/identity_shadow.rs` is imported only by its tests and example. The binary and
-library do not import it. No endpoint, grant, queue, credential, registration store,
+`src/identity_shadow.rs` is imported only by tests and the offline example.
+Production binary and library builds do not import it. No endpoint, grant, queue, credential, registration store,
 or inbox is changed. Inputs must be synthetic fixtures; do not export live secrets.
 
 ## Domains and trust
@@ -86,3 +86,58 @@ Held-out executable checks:
 Use `CARGO_PROFILE_DEV_DEBUG=0 CARGO_PROFILE_TEST_DEBUG=0 CARGO_INCREMENTAL=0`
 on constrained development disks. The initial default build hit ENOSPC; the
 reduced-debug build passed without removing any previous task artifacts.
+
+
+## Verified ownership adapter follow-up
+
+`gateway/ownership_shadow.rs` is compiled only under `cfg(test)`. It replaces
+caller-supplied account mappings for its projections with the existing verification
+and resolution functions. The original JSON example remains a synthetic fixture
+runner; it is not an authenticated interface and has not gained any authority.
+
+For logical chats, the adapter takes the gateway's trusted binding and verifier,
+checks that their entire OAuth verification policy matches, calls
+`OAuthVerifier::verify` on every projection, uses `Binding::for_oauth`, resolves the
+private handle through `identities::resolve`, and checks the actual registration
+through `identities::list`. Issuer, owner account and OAuth client come from these
+verified results and trusted configuration, never a tool's account/client/session
+arguments. Output contains the stable session ID and no handle or bearer token.
+Missing account provenance, revoked credentials/handles, foreign clients, unavailable
+registrations and mismatched verifier policies cannot produce a proven projection.
+
+For native sessions, existing auth proves the device owner and a hook proves the
+host-bound session ID. Neither proves historical session ownership. Consequently,
+a legacy session without an explicit registration receipt returns unmapped even
+when the current device is signed in. Fixture-only `NativeReceipt::register` models
+an explicit registration operation, separately from discovery. It derives account
+and device from `cloudflare_auth::load` plus `whoami`, and session ID from the
+existing strict hook resolver `host::live_binding`; it never falls back to cwd or
+session-file proximity. The Host argument is trusted process-inspector input,
+supplied synthetically by the test harness, not a new model/tool parameter.
+
+The receipt has private fields and no JSON deserializer. It is held only in fixture
+memory; no live receipt store or migration writer is implemented. Projection with
+that receipt rechecks the current credential and hook, including issuer, account,
+device, harness and exact session ID. An account switch, changed host binding or
+revoked credential fails instead of assigning old sessions to the last login.
+Reconnection with the same verified binding preserves the inbox ID. A future
+persisted receipt must have an operator-approved integrity and revocation design;
+this candidate does not accept unsigned receipt JSON as authority.
+
+The only production-code refactor extracts the existing OAuth binding construction
+unchanged into `Binding::for_oauth` and makes the existing hook resolver visible
+within the crate. No new runtime caller, endpoint, discovery action or registration
+write is enabled. The current authorizer remains the sole authority. Projected
+snapshots are observations at verification time, not reusable authorization grants;
+subsequent revocation must be checked again, as the adapter does.
+
+Verification uses isolated HOME/profile data and loopback fake auth servers with
+synthetic credentials. It exercises the actual native verifier, OAuth verifier,
+registration store and handle/hook resolvers for two logical chats plus two native
+sessions, account/client/session forgery, account switches, different issuers,
+revocation, reconnects, legacy-unmapped behavior, redaction and policy mismatches.
+This is authentication/resolution integration proof, not live ChatGPT host proof.
+Run `cargo test --locked --manifest-path everett-rs/Cargo.toml --lib gateway::ownership_shadow`.
+The scored reproduction initially accepted a weaker verifier than the gateway's
+owner policy; the corrected adapter rejects the mismatch. The existing library
+suite guards unchanged behavior during that hill-climb.
