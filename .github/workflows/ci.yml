@@ -17,6 +17,9 @@ jobs:
         working-directory: everett-rs
     steps:
       - uses: actions/checkout@v7
+      - name: Verify checksum, validation and atomic installer upgrades
+        working-directory: .
+        run: python3 -m unittest discover -s scripts -p test_install.py -v
       - name: Verify the single hosted plugin package and readiness checks
         working-directory: .
         run: python3 -m unittest discover -s plugins/everett/tests -v

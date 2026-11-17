@@ -24,15 +24,31 @@ fi
 archive="everett-$target.tar.gz"
 
 tmp="$(mktemp -d)"
-trap 'rm -rf "$tmp"' EXIT
+staged=""
+trap 'rm -rf "$tmp"; if [ -n "$staged" ]; then rm -f "$staged"; fi' EXIT
 curl -fsSL "$base/$archive" -o "$tmp/$archive"
 curl -fsSL "$base/$archive.sha256" -o "$tmp/$archive.sha256"
 (cd "$tmp" && if command -v sha256sum >/dev/null 2>&1; then sha256sum -c "$archive.sha256"; else shasum -a 256 -c "$archive.sha256"; fi) >/dev/null
 
 tar -xzf "$tmp/$archive" -C "$tmp"
 mkdir -p "$dir"
-install -m 755 "$tmp/everett-$target/everett" "$dir/everett"
-echo "installed $("$dir/everett" --version) to $dir/everett"
+if [ -d "$dir/everett" ]; then
+  echo "everett: install destination is a directory: $dir/everett" >&2
+  exit 1
+fi
+staged="$(mktemp "$dir/.everett-install.XXXXXX")"
+install -m 755 "$tmp/everett-$target/everett" "$staged"
+if ! installed_version="$("$staged" --version)"; then
+  echo "everett: downloaded binary failed its version check; existing installation preserved" >&2
+  exit 1
+fi
+case "$installed_version" in
+  everett\ [0-9]*) ;;
+  *) echo "everett: downloaded binary returned an invalid version; existing installation preserved" >&2; exit 1 ;;
+esac
+mv -f "$staged" "$dir/everett"
+staged=""
+echo "installed $installed_version to $dir/everett"
 case ":$PATH:" in
   *":$dir:"*) ;;
   *) echo "add $dir to your PATH" ;;
