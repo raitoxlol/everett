@@ -1345,9 +1345,71 @@ fn live_destinations_change_without_changing_cached_send_schema() {
     assert_eq!(c.records().last().unwrap()["arguments"]["to"], "agent-three");
 }
 
+fn native_inbox_batches_encoded_results_before_consuming() {
+    for text in ["x".repeat(15000), "\"\\\n🦀".repeat(1500), "\"\\\n🦀".repeat(70000)] {
+        let c = ctx();
+        assert!(c.cli(&["external", "add", "--id", "dot-one", "--harness", "openai-dot"]).status.success());
+        let count = if text.len() > 240 * 1024 { 1 } else { 10 };
+        let path = c.inbox("agent-two", "dot-one", "placeholder");
+        let ts = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs_f64();
+        let rows: Vec<Value> = (0..count).map(|i| json!({"id":format!("budget-{i}"), "to":"dot-one", "from":"agent-two", "text":text, "ts":ts})).collect();
+        std::fs::write(path, rows.iter().map(|r| format!("{r}\n")).collect::<String>()).unwrap();
+        let port = c.http_server(&json!({}));
+        let token = bearer(TOKEN);
+        let auth = [("Authorization", Some(token.as_str()))];
+        let read = |peek| {
+            let response = post(port, &json!({"jsonrpc":"2.0", "id":1, "method":"tools/call", "params":{"name":"everett_inbox", "arguments":{"peek":peek}}}), &auth);
+            assert_eq!(response.status, 200);
+            assert!(response.body.len() <= 256 * 1024, "encoded response must fit gateway budget");
+            success(&body_json(&response))
+        };
+        let peeked = read(true);
+        assert!(!peeked["messages"].as_array().unwrap().is_empty());
+        assert!(!c.home.join(".everett/inbox/dot-one.done").exists());
+        if count > 1 {
+            assert!(peeked["messages"].as_array().unwrap().len() < count);
+        }
+        let mut delivered = Vec::new();
+        for _ in 0..=count {
+            let batch = read(false);
+            let messages = batch["messages"].as_array().unwrap();
+            if messages.is_empty() { break; }
+            for message in messages {
+                let id = message["id"].as_str().unwrap().to_string();
+                assert!(!delivered.contains(&id), "a delivered message must not repeat");
+                if count > 1 {
+                    assert_eq!(message["text"], text);
+                    assert!(message.get("truncated").is_none());
+                } else {
+                    assert_eq!(message["truncated"], true);
+                    assert!(text.starts_with(message["text"].as_str().unwrap()));
+                }
+                delivered.push(id);
+            }
+            let done = std::fs::read_to_string(c.home.join(".everett/inbox/dot-one.done")).unwrap();
+            let mut actual: Vec<_> = done.lines().collect();
+            let mut expected: Vec<_> = delivered.iter().map(String::as_str).collect();
+            actual.sort(); expected.sort();
+            assert_eq!(actual, expected, "consume only IDs returned in a successful bounded batch");
+        }
+        assert_eq!(delivered.len(), count);
+        assert_eq!(read(false)["messages"], json!([]));
+    }
+    let c = ctx();
+    let path = c.inbox("agent-two", "dot-one", "oversized-metadata");
+    let mut row: Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+    row["from_card"] = json!("x".repeat(300 * 1024));
+    std::fs::write(path, format!("{row}\n")).unwrap();
+    let mut peer = c.peer(&json!({}));
+    let response = peer.call("everett_inbox", json!({}));
+    denied(&response);
+    assert!(!c.home.join(".everett/inbox/dot-one.done").exists(), "irreducible metadata must fail before consumption");
+}
+
 type Case = (&'static str, fn());
 
 const CASES: &[Case] = &[
+    ("native_inbox_batches_encoded_results_before_consuming", native_inbox_batches_encoded_results_before_consuming),
     ("live_destinations_change_without_changing_cached_send_schema", live_destinations_change_without_changing_cached_send_schema),
     ("native_start_policy_and_journal_fail_closed", native_start_policy_and_journal_fail_closed),
     ("owner_native_start_is_explicit_isolated_and_durable", owner_native_start_is_explicit_isolated_and_durable),
