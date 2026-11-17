@@ -1,3 +1,4 @@
+pub mod diagnostics;
 mod identities;
 mod native_start;
 #[cfg(test)]
@@ -578,6 +579,20 @@ impl Gateway {
                 let mut data = result.structured_content.filter(Value::is_object).ok_or("backend must return structured tool results")?;
                 if name == "everett_whoami" && (data["session_id"] != binding.agent_id || data["harness"] != binding.harness) { return Err("backend identity differs from binding".into()); }
                 if name == "everett_whoami" {
+                    let account_verified = agent.and_then(|a| a.account.as_ref()).is_some();
+                    let client_verified = agent.is_some_and(|a| !a.client_id.is_empty());
+                    data["identity"] = json!({
+                        "account": {"status": if account_verified { "verified" } else { "unknown" },
+                            "issuer": if account_verified { binding.oauth.as_ref().map(|o| &o.issuer) } else { None },
+                            "subject": null, "subject_redacted": account_verified},
+                        "client": {"kind": if agent.is_some() { "oauth_client" } else { "fixed_gateway" },
+                            "status": if client_verified { "verified" } else { "unknown" },
+                            "id": agent.map(|a| &a.client_id), "name": agent.map(|a| &a.name)},
+                        "session": {"id": binding.agent_id, "harness": binding.harness,
+                            "label": format!("{} [{}]", if private_identity { "Registered conversation" } else { "Legacy client inbox" }, binding.agent_id),
+                            "provenance": if private_identity { "owner_registered_logical" } else { "legacy_client_binding" },
+                            "ownership": if private_identity && account_verified && client_verified { "verified_account_client" } else { "unmapped" }}
+                    });
                     data["gateway_runtime"] = crate::build_info::value();
                     data["authorized_destinations"] = json!(binding.destinations);
                     data["capabilities"] = json!({"native_session_start": binding.native_start.as_ref().is_some_and(|p| p.permits(agent)), "automatic_wake": false, "delivery": "inbox"});

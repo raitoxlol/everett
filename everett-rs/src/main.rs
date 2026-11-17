@@ -20,7 +20,7 @@ const HELP_GROUPS: &[(&str, &[&str])] = &[
     ("Shared memory", &["learn", "core", "trunk", "cards"]),
     (
         "Setup and account",
-        &["install-hooks", "install-mcp", "mcp", "login", "whoami", "logout"],
+        &["install-hooks", "install-mcp", "mcp", "login", "whoami", "identity", "logout"],
     ),
     (
         "Advanced: devices and external agents",
@@ -349,6 +349,11 @@ enum Cmd {
         #[arg(long)]
         json: bool,
     },
+    /// diagnose identity mapping with read-only account verification
+    Identity {
+        #[command(subcommand)]
+        action: IdentityCmd,
+    },
     /// print the signed-in account
     Whoami {
         #[arg(long, value_parser = ["cloudflare"])]
@@ -538,6 +543,21 @@ enum RelayCmd {
     RevokeMember { subject: String },
     /// rotate both independent relay keys; requires the old signing key
     Rotate,
+}
+
+#[derive(Subcommand)]
+enum IdentityCmd {
+    /// verify existing auth and explain mapping; never register, grant, send or wake
+    Diagnose {
+        /// existing gateway config; otherwise diagnose the native account
+        #[arg(long, requires = "credentials_stdin")]
+        gateway_config: Option<std::path::PathBuf>,
+        /// read access_token and identity_handle JSON from stdin, never command arguments
+        #[arg(long, requires = "gateway_config")]
+        credentials_stdin: bool,
+        #[arg(long)]
+        json: bool,
+    },
 }
 
 #[derive(Subcommand)]
@@ -994,6 +1014,9 @@ fn main() {
             a.force = force;
             a.json = json;
             cli::cmd_login(&a)
+        }
+        Cmd::Identity { action: IdentityCmd::Diagnose { gateway_config, credentials_stdin: _, json } } => {
+            everett::gateway::diagnostics::run(gateway_config.as_deref(), json)
         }
         Cmd::Whoami { json, provider } => {
             a.auth_provider = provider;
