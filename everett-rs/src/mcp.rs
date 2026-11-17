@@ -1091,7 +1091,7 @@ fn tool_inbox(
     out.insert("session".into(), json!(sid));
     out.insert("messages".into(), json!(messages));
     let size_of = |out: &Map<String, Value>| {
-        serde_json::to_vec(&out)
+        serde_json::to_vec(&tool_result(out.clone(), false))
             .map(|v| v.len())
             .unwrap_or(usize::MAX)
     };
@@ -1178,6 +1178,9 @@ fn tool_inbox(
             }
             break;
         }
+    }
+    if size_of(&out) > MAX_TOOL_RESULT {
+        return Err(ToolFailure::Tool(EverettError::new(2, "Inbox message metadata exceeds the response limit. Nothing was consumed.")));
     }
     let ids: Vec<&str> = messages
         .iter()
@@ -1565,6 +1568,10 @@ fn call_tool(params: &Map<String, Value>) -> std::result::Result<Map<String, Val
     done.insert("ok".into(), json!(!is_error));
     done.insert("ms".into(), json!(((now() - started) * 1000.0) as i64));
     log("result", done);
+    Ok(tool_result(data, is_error))
+}
+
+fn tool_result(data: Map<String, Value>, is_error: bool) -> Map<String, Value> {
     let text = if is_error {
         data.get("error")
             .and_then(|v| v.as_str())
@@ -1579,7 +1586,7 @@ fn call_tool(params: &Map<String, Value>) -> std::result::Result<Map<String, Val
     if !is_error {
         out.insert("structuredContent".into(), Value::Object(data));
     }
-    Ok(out)
+    out
 }
 
 fn error(msg_id: &Value, code: i64, message: &str) -> Value {
