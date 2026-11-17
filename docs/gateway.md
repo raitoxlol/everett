@@ -272,6 +272,16 @@ can strand a request upstream even after the client recovers. Bound reads at the
 caller where supported; retry only non-consuming peeks after reconciliation.
 Never retry sends or starts under a new ID solely because a connection recovered.
 Neither local health nor supervisor renewal proves that any request was completed.
+For a read-only poll diagnosis, pass a detailed operator-health JSON snapshot and
+the supervised child's expected instance ID to
+`python3 scripts/diagnose-tunnel-host.py --poll-health INSTANCE < snapshot.json`.
+The command reads at most64KiB of input, makes no network requests or process
+changes, and exits nonzero for invalid, stale, mismatched or unconfirmed polling.
+It accepts variable RFC3339 fractional seconds on macOS Python3.9, distinguishes
+timestamp parse errors from missing successful polls, and always leaves request
+completion unconfirmed. Preserve intermediate observations during recovery;
+silently swallowing timestamp errors can turn healthy polling into an apparent
+timeout. A later passing run does not erase an earlier missed recovery deadline.
 The tunnel's permissions and control-plane authentication authorize reachability;
 the gateway then enforces its local binding. Restrict the tunnel to the intended
 owner/workspace. This pass does not add end-user OAuth to stdio.
