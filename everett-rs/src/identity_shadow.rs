@@ -52,6 +52,48 @@ pub struct SessionIdentity {
     pub aliases: Vec<String>,
 }
 
+impl SessionIdentity {
+    pub fn from_native(client_id: &str, record: &everett::session::Session) -> Self {
+        Self {
+            client_id: client_id.into(),
+            session_id: record.id.clone(),
+            name: record.title.clone(),
+            kind: record.harness.clone(),
+            provenance: Provenance::HostAttested,
+            registration: Registration::Registered,
+            reachability: Reachability::Unknown,
+            aliases: vec![],
+        }
+    }
+
+    pub fn from_registered(client_id: &str, record: &serde_json::Value) -> Result<Self, String> {
+        #[derive(Deserialize)]
+        struct Record {
+            session_id: String,
+            name: String,
+            kind: String,
+            state: String,
+        }
+        let record: Record = serde_json::from_value(record.clone()).map_err(|e| e.to_string())?;
+        let registration = match record.state.as_str() {
+            "registered" => Registration::Registered,
+            "registration_unavailable" => Registration::Unavailable,
+            "revoked" => Registration::Revoked,
+            _ => return Err("unsupported registration state".into()),
+        };
+        Ok(Self {
+            client_id: client_id.into(),
+            session_id: record.session_id,
+            name: record.name,
+            kind: record.kind,
+            provenance: Provenance::OwnerRegistered,
+            registration,
+            reachability: Reachability::Unknown,
+            aliases: vec![],
+        })
+    }
+}
+
 #[derive(Debug, Deserialize, Serialize)]
 pub struct Snapshot {
     pub clients: Vec<ClientDevice>,
