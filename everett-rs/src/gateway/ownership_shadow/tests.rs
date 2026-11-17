@@ -157,6 +157,7 @@ fn binding(home: &std::path::Path, server: &Server) -> Binding {
 }
 fn register_logical(binding: &Binding, owner: &str, client: &str, key: &str) -> Value {
     let selected = binding.for_oauth(&OAuthAgent {
+        expires_at: u64::MAX,
         agent_id: "legacy-chat".into(),
         name: String::new(),
         client_id: client.into(),
@@ -262,6 +263,7 @@ fn verified_ownership_journey() {
         .is_err());
     server.oauth("owner", "plugin");
     let selected = binding.for_oauth(&OAuthAgent {
+        expires_at: u64::MAX,
         agent_id: "legacy-chat".into(),
         name: String::new(),
         client_id: "plugin".into(),

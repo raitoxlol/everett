@@ -109,10 +109,11 @@ pub(super) async fn dispatch(
             if args["arguments"].is_object() && args["arguments"].get("session_id").is_none() {
                 args["arguments"]["session_id"] = json!(p.agent);
             }
+            let expires_at = agent.map(|a| a.expires_at.saturating_mul(1000).min(i64::MAX as u64) as i64);
             let events = events.clone();
             let method = method.to_owned();
             tokio::task::spawn_blocking(move || match method.as_str() {
-                "events/subscribe" => events.subscribe(&p, &args),
+                "events/subscribe" => events.subscribe_until(&p, &args, expires_at),
                 "events/unsubscribe" => events.unsubscribe(&p, &args),
                 _ => Err(crate::gateway_events::Failure {
                     code: -32601,

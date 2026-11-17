@@ -443,6 +443,7 @@ impl<R: AsyncRead + Unpin> AsyncRead for BoundedRead<R> {
 /// The dot identity an OAuth access token was issued to, attached to the HTTP request.
 #[derive(Clone)]
 struct OAuthAgent {
+    expires_at: u64,
     agent_id: String,
     name: String,
     client_id: String,
@@ -793,6 +794,7 @@ impl OAuthVerifier {
         }
         match (data["sub"].as_str(), data["everett_agent"].as_str(), data["client_id"].as_str()) {
             (Some(sub), Some(agent), Some(client)) if sub == agent && crate::adapters::external::valid_id(agent) => Ok(OAuthAgent {
+                expires_at: data["exp"].as_u64().expect("expiry verified above"),
                 agent_id: agent.to_owned(),
                 account: data["everett_account"].as_str().filter(|s| !s.is_empty() && s.len() <= 256).map(str::to_owned),
                 name: data["everett_agent_name"].as_str().unwrap_or_default().chars().take(100).collect(),
