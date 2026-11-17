@@ -420,6 +420,9 @@ impl Events {
         let tx = db
             .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
             .map_err(|_| storage())?;
+        if expires <= now() {
+            return Err(invalid("token_expired"));
+        }
         let current: Option<(String, String)> = tx
             .query_row(
                 "SELECT revision,blocked FROM subscriptions WHERE id=?",
