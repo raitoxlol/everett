@@ -35,3 +35,47 @@ tools then return a tool result with `isError: true` and a one-line fix, not a J
 
 Deprecated and removed from tool schemas. It is still accepted when it equals the bound session
 (old clients keep working); a different value is a tool error, and it never establishes identity.
+
+
+## Read-only identity diagnostics
+
+Run `everett identity diagnose` for readable output, or add `--json` for status
+fields. Native mode reads the existing credential and verifies it with the configured
+issuer. It reports the account as verified separately from session ownership.
+Historical native sessions remain `unmapped` because no supported ownership receipt
+is available. Environment session IDs and nearby session files cannot establish
+account ownership. Local session routing and existing grants remain unchanged.
+
+To diagnose an existing logical chat registration, use:
+
+```sh
+everett identity diagnose --gateway-config /absolute/path/to/binding.json --credentials-stdin --json
+```
+
+Supply a JSON object containing only `access_token` and `identity_handle` through
+stdin from the existing secure credential source, then close stdin. Input is bounded
+to 4096 bytes. Do not put either value in command arguments or paste them into logs.
+Run in the existing gateway environment containing `EVERETT_OAUTH_INTROSPECTION_SECRET`.
+No new credentials, registrations or permissions are created by this command.
+
+Gateway mode contacts the configured introspection endpoint, reuses its current
+verification rules, and resolves the private handle in the verified account/client
+scope. A successful result exposes the existing exact session ID with a stable label.
+It omits account names, display names, bearer tokens, introspection secrets and private
+handles. Unknown, foreign and revoked handles share `identity_unresolved`; missing or
+conflicting registration metadata reports `registration_unavailable`. Missing account
+provenance and fixed legacy bindings remain explicitly unmapped.
+
+`availability` stays `unknown`. Dispatch, pickup and reply stay `not_observed`.
+A mapped diagnostic is not a send grant or delivery receipt. The command does not
+invoke the backend, register, send, wake, acknowledge messages, or write local state.
+Auth verification can perform read-only network requests, like `everett whoami`.
+
+Exit 0 means the diagnostic completed, including an explained unmapped result.
+Exit 1 means verification/resolution failed or is unavailable. Exit 2 means malformed
+input, unreadable configuration/credential, or missing verifier setup. Error reports
+use fixed reason codes and do not echo input or remote error bodies.
+
+CLI verification uses isolated profiles and loopback auth fixtures in
+`gateway_native` (filter `identity_diagnostic`). Additional offline cases run with
+`EVERETT_VERIFY_BINARY=/path/to/everett python3 scripts/test_identity_diagnostics.py`.
