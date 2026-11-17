@@ -58,11 +58,10 @@ proposals do not grant wake, execute, transcript-read or shared-memory capabilit
    overrides the current decision. A future approved cutover must independently
    address authority provenance, account/device revocation freshness and consent.
 5. Only a separately approved implementation may wire this into live discovery or
-   messaging. Original Astra review is required before this candidate merges.
+   messaging.
 
 #132 remains host installation/availability work. #100 diagnostics and #103 transport
 observations remain separate. PR163 is already in the baseline and is unchanged.
-RAI-67 OAuth work and mini-duck are outside scope.
 
 ## Run
 
