@@ -379,7 +379,7 @@ impl Binding {
             ("everett_core", "Read owner-wide GLOBAL shared core plus this connection's fixed project core.", json!({"project":{"type":"string","enum":[self.project]}}), vec![]),
             ("everett_inbox", "Read only this agent's inbox. By default mark messages delivered; use peek=true to retain them.", json!({"session_id":own,"peek":{"type":"boolean"}}), vec![]),
             ("everett_card", "Update only this agent's session card.", json!({"session_id":own,"what":short,"state":short,"next":short}), vec!["what","state","next"]),
-            ("everett_send", "Queue an inbox-only message to an authorized full ID, or reply to an owned message. No automatic bot wake-up.", json!({"session_id":own,"text":{"type":"string","minLength":1,"maxLength":16000},"to":{"type":"string","enum":self.destinations},"reply_to":{"type":"string","minLength":1,"maxLength":128}}), vec!["text"]),
+            ("everett_send", "Queue an inbox-only message to an authorized full ID, or reply to an owned message. No automatic bot wake-up.", json!({"session_id":own,"text":{"type":"string","minLength":1,"maxLength":16000},"to":{"type":"string","minLength":1,"maxLength":128,"description":"Exact full ID from everett_whoami.authorized_destinations. The gateway checks the current owner allowlist on every send."},"reply_to":{"type":"string","minLength":1,"maxLength":128}}), vec!["text"]),
         ];
         specs.into_iter().filter(|(name, ..)| *name != "everett_core" || self.allow_shared_core)
             .map(|(name, description, mut properties, required)| {
@@ -570,6 +570,7 @@ impl Gateway {
                 if name == "everett_whoami" && (data["session_id"] != binding.agent_id || data["harness"] != binding.harness) { return Err("backend identity differs from binding".into()); }
                 if name == "everett_whoami" {
                     data["gateway_runtime"] = crate::build_info::value();
+                    data["authorized_destinations"] = json!(binding.destinations);
                     data["capabilities"] = json!({"native_session_start": binding.native_start.as_ref().is_some_and(|p| p.permits(agent)), "automatic_wake": false, "delivery": "inbox"});
                     if let Some(oauth) = &binding.oauth {
                         data["gateway_resource"] = json!(oauth.resource);
