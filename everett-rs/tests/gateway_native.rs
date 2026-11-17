@@ -1,3 +1,5 @@
+#[path = "gateway_native/identity_diagnostics.rs"]
+mod identity_diagnostics;
 //! Native gateway journeys over stdio and HTTP. The test binary doubles as the synthetic
 //! backend (`--fixture-backend`), so no model, harness, or other runtime is involved.
 use serde_json::{json, Value};
@@ -1409,6 +1411,9 @@ fn native_inbox_batches_encoded_results_before_consuming() {
 type Case = (&'static str, fn());
 
 const CASES: &[Case] = &[
+    ("identity_diagnostic_native", identity_diagnostics::native),
+    ("identity_diagnostic_gateway", identity_diagnostics::gateway),
+    ("identity_diagnostic_invalid_input", identity_diagnostics::invalid_input),
     ("native_inbox_batches_encoded_results_before_consuming", native_inbox_batches_encoded_results_before_consuming),
     ("live_destinations_change_without_changing_cached_send_schema", live_destinations_change_without_changing_cached_send_schema),
     ("native_start_policy_and_journal_fail_closed", native_start_policy_and_journal_fail_closed),
