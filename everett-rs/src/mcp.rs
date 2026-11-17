@@ -1296,6 +1296,26 @@ fn tool_whoami(
         .and_then(|v| v.as_str())
         .map(|s| !s.is_empty())
         .unwrap_or(false);
+    let source = ident.get("source").and_then(Value::as_str).unwrap_or("");
+    let provenance = if !has_session {
+        "unbound"
+    } else if source == "request _meta.threadId" {
+        "request_metadata"
+    } else if source == "env EVERETT_SESSION_ID" {
+        "launcher_binding"
+    } else if source.starts_with("env ") || source.starts_with("host ") {
+        "native_host_bound"
+    } else {
+        "unknown"
+    };
+    let session_id = ident.get("session_id").and_then(Value::as_str).filter(|s| !s.is_empty());
+    out.insert("identity".into(), json!({
+        "account": {"status":"unknown", "issuer":null, "subject":null, "subject_redacted":false},
+        "client": {"kind":"native_harness", "status":"unknown", "id":null, "name":ident.get("harness")},
+        "session": {"id":session_id, "harness":ident.get("harness"),
+            "label":session_id.map(|id| format!("Session [{id}]")),
+            "provenance":provenance, "ownership":"unmapped"}
+    }));
     out.insert(
         "note".into(),
         json!(if has_session { String::new() } else { unbound_message(ident) }),
