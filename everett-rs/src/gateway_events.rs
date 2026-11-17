@@ -5,7 +5,7 @@ use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use std::{
     fs::{self, File, OpenOptions},
-    io::{Read, BufRead, BufReader},
+    io::{BufRead, BufReader, Read},
     net::{IpAddr, Ipv4Addr, Ipv6Addr},
     os::unix::fs::{OpenOptionsExt, PermissionsExt},
     path::{Path, PathBuf},
@@ -160,9 +160,16 @@ impl Webhook for HttpsWebhook {
         finish_response(response)
     }
 }
-fn finish_response(mut response: ureq::http::Response<ureq::Body>) -> Result<(u16, Vec<u8>), &'static str> {
+fn finish_response(
+    mut response: ureq::http::Response<ureq::Body>,
+) -> Result<(u16, Vec<u8>), &'static str> {
     let status = response.status().as_u16();
-    let body = response.body_mut().with_config().limit(8192).read_to_vec().unwrap_or_default();
+    let body = response
+        .body_mut()
+        .with_config()
+        .limit(8192)
+        .read_to_vec()
+        .unwrap_or_default();
     Ok((status, body))
 }
 fn validate_url(raw: &str) -> Result<(), Failure> {
@@ -429,12 +436,23 @@ impl Events {
         let mut remaining = 10000 - count;
         loop {
             let mut line = Vec::new();
-            let size = (&mut reader).take(8 * 1024 * 1024 + 1).read_until(b'\n', &mut line).map_err(|_| storage())?;
-            if size == 0 { break; }
+            let size = (&mut reader)
+                .take(8 * 1024 * 1024 + 1)
+                .read_until(b'\n', &mut line)
+                .map_err(|_| storage())?;
+            if size == 0 {
+                break;
+            }
             if size > 8 * 1024 * 1024 {
-                tx.execute("UPDATE subscriptions SET blocked='record_capacity' WHERE id=?", [&lease.id]).map_err(|_| storage())?;
+                tx.execute(
+                    "UPDATE subscriptions SET blocked='record_capacity' WHERE id=?",
+                    [&lease.id],
+                )
+                .map_err(|_| storage())?;
                 tx.commit().map_err(|_| storage())?;
-                return Err(invalid("event_capacity_exceeded_unsubscribe_and_resubscribe"));
+                return Err(invalid(
+                    "event_capacity_exceeded_unsubscribe_and_resubscribe",
+                ));
             }
             let Ok(m) = serde_json::from_slice::<Value>(&line) else {
                 continue;
@@ -894,25 +912,41 @@ mod tests {
     fn forged_and_replayed_challenges_never_activate_delivery() {
         struct Replay(Mutex<Option<Vec<u8>>>);
         impl Webhook for Replay {
-            fn post(&self, _: &str, _: &[(String,String)], body: &[u8]) -> Result<(u16,Vec<u8>), &'static str> {
+            fn post(
+                &self,
+                _: &str,
+                _: &[(String, String)],
+                body: &[u8],
+            ) -> Result<(u16, Vec<u8>), &'static str> {
                 let mut prior = self.0.lock().unwrap();
-                let response = prior.clone().unwrap_or_else(|| b"{\"challenge\":\"forged\"}".to_vec());
+                let response = prior
+                    .clone()
+                    .unwrap_or_else(|| b"{\"challenge\":\"forged\"}".to_vec());
                 let request: Value = serde_json::from_slice(body).unwrap();
-                *prior = Some(serde_json::to_vec(&json!({"challenge":request["challenge"]})).unwrap());
-                Ok((200,response))
+                *prior =
+                    Some(serde_json::to_vec(&json!({"challenge":request["challenge"]})).unwrap());
+                Ok((200, response))
             }
         }
         let home = tempfile::tempdir().unwrap();
-        let events = Events::with_db(Connection::open_in_memory().unwrap(), home.path().into(), Arc::new(Replay(Mutex::new(None)))).unwrap();
+        let events = Events::with_db(
+            Connection::open_in_memory().unwrap(),
+            home.path().into(),
+            Arc::new(Replay(Mutex::new(None))),
+        )
+        .unwrap();
         for _ in 0..3 {
-            assert_eq!(events.subscribe(&principal(), &args()).unwrap_err().reason, "challenge_failed");
+            assert_eq!(
+                events.subscribe(&principal(), &args()).unwrap_err().reason,
+                "challenge_failed"
+            );
             assert!(events.leases().unwrap().is_empty());
         }
     }
 
     #[test]
     fn retries_are_bounded_and_payload_too_large_is_terminal() {
-        for status in [503,413] {
+        for status in [503, 413] {
             let home = tempfile::tempdir().unwrap();
             let fixture = Arc::new(Fixture::new());
             let events = store(home.path(), fixture.clone());
@@ -921,13 +955,20 @@ mod tests {
             fixture.status.store(status, Ordering::SeqCst);
             let lease = events.leases().unwrap().remove(0);
             for _ in 0..12 {
-                events.db.lock().unwrap().execute("UPDATE deliveries SET next=0", []).unwrap();
+                events
+                    .db
+                    .lock()
+                    .unwrap()
+                    .execute("UPDATE deliveries SET next=0", [])
+                    .unwrap();
                 events.deliver(&lease).unwrap();
             }
-            assert_eq!(fixture.requests.lock().unwrap().len(), if status == 503 {9} else {2});
+            assert_eq!(
+                fixture.requests.lock().unwrap().len(),
+                if status == 503 { 9 } else { 2 }
+            );
         }
     }
-
 }
 
 #[cfg(test)]
