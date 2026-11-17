@@ -546,9 +546,13 @@ fn oversized_inbox_polls_deliver_everything_without_loss() {
         + "\n";
     fx.write(".everett/inbox/dot-bound.jsonl", &body);
     let mut seen: Vec<String> = Vec::new();
-    for _ in 0..2 {
+    for _ in 0..6 {
         let results = mcp(&fx, &[("everett_inbox", json!({}))], "dot-bound", "openai-dot");
+        assert!(serde_json::to_vec(&results[0]).unwrap().len() <= 240 * 1024);
         let messages = data(&results[0])["messages"].as_array().unwrap();
+        if messages.is_empty() {
+            break;
+        }
         seen.extend(
             messages
                 .iter()
