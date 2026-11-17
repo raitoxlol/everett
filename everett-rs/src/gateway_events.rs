@@ -5,7 +5,7 @@ use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use std::{
     fs::{self, File, OpenOptions},
-    io::Read,
+    io::{Read, BufRead, BufReader},
     net::{IpAddr, Ipv4Addr, Ipv6Addr},
     os::unix::fs::{OpenOptionsExt, PermissionsExt},
     path::{Path, PathBuf},
@@ -150,7 +150,7 @@ impl Webhook for HttpsWebhook {
         for (name, value) in headers {
             request = request.header(name, value);
         }
-        let mut response = request.send(body).map_err(|e| {
+        let response = request.send(body).map_err(|e| {
             if matches!(e, ureq::Error::Timeout(_)) {
                 "timeout"
             } else {
@@ -162,7 +162,7 @@ impl Webhook for HttpsWebhook {
 }
 fn finish_response(mut response: ureq::http::Response<ureq::Body>) -> Result<(u16, Vec<u8>), &'static str> {
     let status = response.status().as_u16();
-    let body = response.body_mut().with_config().limit(8192).read_to_vec().map_err(|_| "invalid_response")?;
+    let body = response.body_mut().with_config().limit(8192).read_to_vec().unwrap_or_default();
     Ok((status, body))
 }
 fn validate_url(raw: &str) -> Result<(), Failure> {
@@ -413,15 +413,11 @@ impl Events {
             .home
             .join(".everett/inbox")
             .join(format!("{}.jsonl", lease.principal.agent));
-        let mut raw = String::new();
-        if let Ok(f) = File::open(inbox) {
-            f.take(8 * 1024 * 1024 + 1)
-                .read_to_string(&mut raw)
-                .map_err(|_| storage())?;
-        }
-        if raw.len() > 8 * 1024 * 1024 {
-            return Err(storage());
-        }
+        let mut reader: Box<dyn BufRead> = match File::open(inbox) {
+            Ok(file) => Box::new(BufReader::new(file)),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Box::new(std::io::empty()),
+            Err(_) => return Err(storage()),
+        };
         let tx = db.transaction().map_err(|_| storage())?;
         let count: i64 = tx
             .query_row(
@@ -431,8 +427,16 @@ impl Events {
             )
             .map_err(|_| storage())?;
         let mut remaining = 10000 - count;
-        for line in raw.lines() {
-            let Ok(m) = serde_json::from_str::<Value>(line) else {
+        loop {
+            let mut line = Vec::new();
+            let size = (&mut reader).take(8 * 1024 * 1024 + 1).read_until(b'\n', &mut line).map_err(|_| storage())?;
+            if size == 0 { break; }
+            if size > 8 * 1024 * 1024 {
+                tx.execute("UPDATE subscriptions SET blocked='record_capacity' WHERE id=?", [&lease.id]).map_err(|_| storage())?;
+                tx.commit().map_err(|_| storage())?;
+                return Err(invalid("event_capacity_exceeded_unsubscribe_and_resubscribe"));
+            }
+            let Ok(m) = serde_json::from_slice::<Value>(&line) else {
                 continue;
             };
             let Some(mid) = m["id"].as_str().filter(|id| crate::inbox::valid_id(id)) else {
