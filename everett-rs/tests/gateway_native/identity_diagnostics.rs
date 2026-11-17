@@ -41,7 +41,7 @@ pub(super) fn native() {
     let issuer=format!("http://{}",listener.local_addr().unwrap());
     let worker=std::thread::spawn(move || {
         for status in [200,401] {
-            let (mut stream,_)=listener.accept().unwrap(); let mut buf=[0;8192]; let _=stream.read(&mut buf);
+            let (mut stream,_)=listener.accept().unwrap(); consume_request(&mut stream);
             let body=if status==200 { json!({"result":{"owner":"private-owner","deviceId":"private-device","role":"member"}}) } else {json!({"error":"revoked"})}.to_string();
             write!(stream,"HTTP/1.1 {status} Test\r\nContent-Length: {}\r\nContent-Type: application/json\r\nConnection: close\r\n\r\n{body}",body.len()).unwrap();
         }
@@ -95,5 +95,28 @@ pub(super) fn invalid_input() {
         let (code,report,raw)=unchanged(&c,Some(&path),&input);
         assert_eq!(code,2);assert_eq!(report["reason"],"invalid_input");
         for secret in ["secret-malformed-json","secret-token","secret-handle","forged-owner"] {assert!(!raw.contains(secret));}
+    }
+}
+
+fn consume_request(stream: &mut std::net::TcpStream) {
+    stream.set_read_timeout(Some(Duration::from_secs(3))).unwrap();
+    let mut bytes = Vec::new();
+    let mut buf = [0; 4096];
+    let end = loop {
+        let n = stream.read(&mut buf).unwrap();
+        assert!(n > 0);
+        bytes.extend_from_slice(&buf[..n]);
+        assert!(bytes.len() <= 16384);
+        if let Some(p) = bytes.windows(4).position(|s| s == b"\r\n\r\n") { break p + 4; }
+    };
+    let headers = String::from_utf8_lossy(&bytes[..end]);
+    let length = headers.lines().filter_map(|l| l.split_once(':'))
+        .find(|(k, _)| k.eq_ignore_ascii_case("content-length"))
+        .map(|(_, v)| v.trim().parse::<usize>().unwrap()).unwrap_or(0);
+    assert!(length <= 16384);
+    while bytes.len() < end + length {
+        let n = stream.read(&mut buf).unwrap();
+        assert!(n > 0);
+        bytes.extend_from_slice(&buf[..n]);
     }
 }
