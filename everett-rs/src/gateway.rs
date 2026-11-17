@@ -693,6 +693,7 @@ struct HttpBoundary {
     gateway: Gateway,
     auth: HttpAuth,
     requests: Arc<Semaphore>,
+    event_requests: Arc<Semaphore>,
 }
 
 const PROTECTED_RESOURCE: &str = "/.well-known/oauth-protected-resource";
@@ -1000,6 +1001,7 @@ async fn serve(binding: Binding, transport: &str, port: u16) -> Result<(), Strin
         event_scope,
         auth,
         requests: Arc::new(Semaphore::new(gateway.binding.max_workers * 2)),
+        event_requests: Arc::new(Semaphore::new(gateway.binding.max_workers)),
         gateway: gateway.clone(),
     };
     if state.events.is_some() { tokio::spawn(event_http::pump(state.clone())); }
