@@ -1,9 +1,7 @@
 """Exercise the public shell installer with isolated release downloads."""
 import hashlib
 from pathlib import Path
-import shutil
 import subprocess
-import sys
 import tarfile
 import tempfile
 import unittest
@@ -87,11 +85,10 @@ class InstallTests(unittest.TestCase):
             self.assertEqual(subprocess.check_output([str(self.installed), '--version'], text=True), 'everett 9.0.0\nrevision: fixture\n')
 
     def test_upgrade_keeps_running_previous_binary_alive(self):
-        shutil.copyfile('/bin/sleep', self.installed)
-        if sys.platform == 'darwin':
-            # Copied Apple platform executables are killed outside their sealed path.
-            subprocess.run(['codesign', '--force', '--sign', '-', str(self.installed)], check=True, capture_output=True)
-        process = subprocess.Popen(['sleep', '20'], executable=str(self.installed))
+        subprocess.run(['cc', '-x', 'c', '-o', str(self.installed), '-'],
+                       input='#include <unistd.h>\nint main(void) { sleep(20); return 0; }\n',
+                       text=True, check=True, capture_output=True, timeout=20)
+        process = subprocess.Popen([str(self.installed)])
         try:
             self.release('echo "everett 9.0.0"\n')
             result = self.install()
