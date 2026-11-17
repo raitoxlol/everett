@@ -150,5 +150,16 @@ class PollHealthTests(unittest.TestCase):
             self.assertEqual(result["polling_fresh"], code == 0)
             self.assertEqual(result["request_completion"], "unconfirmed")
 
+    def test_cli_deeply_nested_input_reports_diagnostic_json_without_traceback(self):
+        raw = "[" * 1100 + "0" + "]" * 1100
+        process = subprocess.run([sys.executable, spec.origin, "--poll-health", "owned-instance"],
+                                 input=raw, text=True, capture_output=True, timeout=5)
+        self.assertEqual(process.returncode, 1)
+        self.assertEqual(process.stderr, "")
+        result = json.loads(process.stdout)
+        self.assertFalse(result["polling_fresh"])
+        self.assertEqual(result["request_completion"], "unconfirmed")
+        self.assertIn(result["reason"], ["invalid_snapshot", "invalid_snapshot_input"])
+
 if __name__ == "__main__":
     unittest.main()
