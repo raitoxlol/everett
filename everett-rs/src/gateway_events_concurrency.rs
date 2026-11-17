@@ -216,3 +216,24 @@ fn late_delivery_cannot_mutate_refreshed_subscription() {
         "replacement"
     );
 }
+
+#[test]
+fn sqlite_writer_wait_cannot_extend_verified_deadline() {
+    let home = tempfile::tempdir().unwrap();
+    let path = home.path().join("events.sqlite");
+    let (started, ready) = mpsc::channel();
+    let (release, wait) = mpsc::channel();
+    let gate = Arc::new(Gate { block: AtomicBool::new(true), started, release: Mutex::new(wait) });
+    let events = Events::with_db(Connection::open(&path).unwrap(), home.path().into(), gate).unwrap();
+    let slow = events.clone();
+    let deadline = now() + 400;
+    let thread = std::thread::spawn(move || slow.subscribe_until(&p(), &args(), Some(deadline)));
+    ready.recv_timeout(Duration::from_secs(2)).unwrap();
+    let mut writer = Connection::open(path).unwrap();
+    let tx = writer.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate).unwrap();
+    release.send(()).unwrap();
+    std::thread::sleep(Duration::from_millis(550));
+    tx.commit().unwrap();
+    assert_eq!(thread.join().unwrap().unwrap_err().reason, "token_expired");
+    assert_eq!(events.db.lock().unwrap().query_row("SELECT count(*) FROM subscriptions", [], |r| r.get::<_,i64>(0)).unwrap(), 0);
+}
