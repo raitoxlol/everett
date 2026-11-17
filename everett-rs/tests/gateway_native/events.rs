@@ -169,3 +169,40 @@ pub(super) fn identity_and_lifetime() {
         "invalid_identity_handle"
     );
 }
+
+
+pub(super) fn verified_token_lease() {
+    use sha2::{Digest, Sha256};
+    for requested in [None, Some(86_400_000)] {
+        let c=ctx(); let issuer=fake_issuer();
+        let at=std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs();
+        let expiry=at+120;
+        issuer.grant(&access('a'),"agent-a",json!({"everett_account":"github:alice","exp":expiry}));
+        issuer.grant(&access('b'),"agent-a",json!({"everett_account":"github:alice","exp":at+600}));
+        let port=c.spawn_http(c.oauth_command(&json!({"events":true,"oauth":{"issuer":issuer.url,"resource":RESOURCE}})));
+        let path=std::fs::read_dir(c.home.join(".everett/gateway-events")).unwrap().map(|e|e.unwrap().path()).find(|p|p.extension().is_some_and(|s|s=="sqlite3")).unwrap();
+        let db=Connection::open(path).unwrap(); db.busy_timeout(Duration::from_secs(2)).unwrap();
+        let scope=json!([issuer.url,RESOURCE]).to_string();
+        let owner=json!([scope,json!(["github:alice","https://chatgpt.com/oauth/client.json"]).to_string()]).to_string();
+        let url="https://callback.example/";
+        let id=format!("sub_{}",hex::encode(Sha256::digest(json!([owner,"agent-a","message.created",url]).to_string().as_bytes())));
+        let key="whsec_BwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwc=";
+        let credentials=json!({"access":access('a'),"handle":null}).to_string();
+        db.execute("INSERT INTO subscriptions(id,owner,agent,token,url,secret,rotation_until,created,expires,verified) VALUES(?,?,'agent-a',?,?,?,0,?,?,?)",params![id,owner,credentials,url,key,at as i64*1000-1000,(at+86400) as i64*1000,at as i64*1000]).unwrap();
+        db.execute("INSERT INTO deliveries(subscription,message,event,body,done) VALUES(?,'historic','evt_historic','{}',1)",[&id]).unwrap();
+        let mut args=json!({"name":"message.created","arguments":{"session_id":"agent-a"},"delivery":{"mode":"webhook","url":url,"secret":key},"exp":at+999999});
+        if let Some(ttl)=requested {args["ttlMs"]=json!(ttl);}
+        let result=oauth_rpc(port,'a',"events/subscribe",args.clone());
+        let deadline=chrono::DateTime::parse_from_rfc3339(result["result"]["refreshBefore"].as_str().expect("subscribe response")).unwrap().timestamp_millis();
+        assert_eq!(deadline,expiry as i64*1000,"advertised lease must use verified token expiry");
+        assert_eq!(result["result"]["id"],id);
+        let renewed=oauth_rpc(port,'b',"events/subscribe",args);
+        assert_eq!(renewed["result"]["id"],id);
+        assert_eq!(chrono::DateTime::parse_from_rfc3339(renewed["result"]["refreshBefore"].as_str().unwrap()).unwrap().timestamp_millis(),(at+600) as i64*1000);
+        assert_eq!(db.query_row("SELECT count(*) FROM deliveries WHERE subscription=?",[&id],|r|r.get::<_,i64>(0)).unwrap(),1);
+        issuer.grant(&access('a'),"agent-a",json!({"exp":1}));
+        let before=*issuer.calls.lock().unwrap();
+        await_condition(|| *issuer.calls.lock().unwrap()>before);
+        assert_eq!(db.query_row("SELECT count(*) FROM subscriptions WHERE id=?",[&id],|r|r.get::<_,i64>(0)).unwrap(),1);
+    }
+}
