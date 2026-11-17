@@ -75,3 +75,15 @@ See the integration fixture for complete records. Output includes discovery,
 current/proposed decisions, and `shadow_only:true`. This is offline executable
 proof only. Real ChatGPT conversation-ID availability, client registration,
 client-to-client pickup/reply and live same-owner trust are not established here.
+
+The example also accepts optional `native` and `registered` arrays of
+`{client_id, record}`. Native records use the existing `Session` serialization;
+registered records use `everett_identity list` row fields. The mapping and records
+in this runner remain fixture input, not authenticated live data.
+
+Held-out executable checks:
+`python3 scripts/check-identity-shadow.py everett-rs/target/debug/examples/identity_shadow`
+
+Use `CARGO_PROFILE_DEV_DEBUG=0 CARGO_PROFILE_TEST_DEBUG=0 CARGO_INCREMENTAL=0`
+on constrained development disks. The initial default build hit ENOSPC; the
+reduced-debug build passed without removing any previous task artifacts.
