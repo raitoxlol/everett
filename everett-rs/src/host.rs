@@ -169,7 +169,7 @@ fn find_host(want: Option<&str>) -> std::result::Result<Option<Host>, String> {
 }
 
 /// Newest live record an Everett hook wrote for this host process.
-fn live_binding(host: &Host) -> Option<String> {
+pub(crate) fn live_binding(host: &Host) -> Option<String> {
     let dir = crate::inbox::inbox_dir().join("live");
     let mut best: Option<(f64, String)> = None;
     for file in crate::paths::glob(&dir, "*.json") {
