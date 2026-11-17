@@ -2,7 +2,15 @@
 
 ## Unreleased
 
-## 2.3.0 — release candidate (unpublished)
+## 2.3.1 — maintenance candidate
+
+- Preserve a tunnel connection with fresh, matching local poll health instead of interrupting it on every scheduled renewal. Stale or unavailable health still renews the client; disconnects can leave upstream requests unresolved.
+- Accept actual opaque T3 thread/run receipt IDs without relaxing destination grants (#158).
+- Discover current destination grants through whoami instead of freezing them in cached tool schemas (#159).
+- Validate downloaded executables before atomically replacing an installation; failures preserve the previous binary (#160).
+- Qualify all four release archives on native architecture runners, including extracted-binary MCP, gateway and tunnel tests. Manual candidate builds do not publish a release.
+
+## 2.3.0 — 2026-11-16
 
 - Require structured, command-specific T3 dispatch receipts before reporting delivery, and validate control timeouts and chat discovery records (#149, #152).
 - Authorize gateway plugins separately from their registered chat identities, so chat and Codex sessions retain distinct identities (#150).

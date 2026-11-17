@@ -384,3 +384,71 @@ fn missing_client_can_recover_without_restarting_the_watcher() {
         std::thread::sleep(Duration::from_millis(30));
     }
 }
+
+#[test]
+fn fresh_poll_health_preserves_pending_work_then_stale_health_renews() {
+    use std::io::Read;
+    use std::net::TcpListener;
+    use std::sync::{Arc, atomic::{AtomicBool, Ordering}};
+
+    let dir = tempfile::tempdir().unwrap();
+    let marker = dir.path().join("marker");
+    let completed = dir.path().join("completed");
+    let env_file = dir.path().join("tunnel.env");
+    let client = dir.path().join("fake-tunnel");
+    write_secret(&env_file, "CONTROL_PLANE_API_KEY=synthetic-runtime\n", 0o600);
+    write_exec(&client, &format!(r#"#!/bin/sh
+printf 'pid %s\n' "$$" >> {marker:?}
+if [ -f {marker:?}.started ]; then exit 0; fi
+touch {marker:?}.started
+echo '{{"client_instance_id":"owned-health-fixture"}}'
+sleep 3
+echo completed > {completed:?}
+sleep 30
+"#));
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    listener.set_nonblocking(true).unwrap();
+    let url = format!("http://{}/health?details=true", listener.local_addr().unwrap());
+    let stop = Arc::new(AtomicBool::new(false));
+    let stop_server = stop.clone();
+    let done = completed.clone();
+    let server = std::thread::spawn(move || {
+        while !stop_server.load(Ordering::SeqCst) {
+            match listener.accept() {
+                Ok((mut stream, _)) => {
+                    stream.set_read_timeout(Some(Duration::from_secs(1))).unwrap();
+                    let mut bytes = [0; 2048];
+                    let _ = stream.read(&mut bytes);
+                    let last = chrono::Utc::now() - chrono::Duration::seconds(if done.exists() { 90 } else { 0 });
+                    let body = serde_json::json!({"live":true,"ready":true,"runtime":{"instance_id":"owned-health-fixture"},
+                        "components":{"control-plane":{"status":"ok","details":{"last_success":last.to_rfc3339(),
+                            "deadline_seconds":35,"current_poll_age_seconds":1}}}}).to_string();
+                    let _ = write!(stream, "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}", body.len(), body);
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => std::thread::sleep(Duration::from_millis(10)),
+                Err(_) => break,
+            }
+        }
+    });
+    let mut child = Command::new(binary()).args(["tunnel", "watch", "--env-file", env_file.to_str().unwrap(),
+        "--tunnel-client", client.to_str().unwrap(), "--max-connection-age", "1", "--restart-delay", "0",
+        "--max-restarts", "1", "--health-url", &url])
+        .stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::piped()).spawn().unwrap();
+    let mut guard = KillRecorded { marker: marker.clone(), everett: Some(child.id()) };
+    let start = Instant::now();
+    let status = loop {
+        if let Some(status) = child.try_wait().unwrap() { break Some(status); }
+        if start.elapsed() > Duration::from_secs(10) { break None; }
+        std::thread::sleep(Duration::from_millis(30));
+    };
+    stop.store(true, Ordering::SeqCst);
+    server.join().unwrap();
+    let status = status.expect("stale health did not renew the silent client");
+    guard.everett = None;
+    let output = child.wait_with_output().unwrap();
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(status.success(), "{stderr}");
+    assert!(completed.exists(), "healthy pending work was interrupted: {stderr}");
+    assert_eq!(fs::read_to_string(marker).unwrap().lines().count(), 2);
+    assert!(stderr.contains("retaining connection"), "{stderr}");
+}

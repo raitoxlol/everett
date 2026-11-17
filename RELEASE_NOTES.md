@@ -1,18 +1,16 @@
-# Everett 2.3.0 beta — unpublished candidate
+# Everett 2.3.1 maintenance update
 
-Bring the changes since 2.2.1 to outside testers using Claude Code or Codex.
+- Use matching, fresh tunnel-client operator health to retain healthy connections rather than interrupting requests during scheduled renewal. Stale or unavailable health preserves bounded renewal. Configure the health endpoint as described in docs/gateway.md; no credentials are moved or changed.
+- Accept actual T3 thread/run receipt IDs and expose live destination grants without changing the send tool schema for each grant update.
+- Validate a downloaded executable before atomically replacing a working installation. Failed validation or activation preserves the previous binary.
+- Build and exercise extracted release archives on native Linux and macOS runners for both architectures. Candidate workflow runs do not publish.
 
-- Add owner-local session control through `everett_control`.
-- Keep ChatGPT chat and Codex identities distinct and isolate owner discovery.
-- Improve tunnel recovery and package the hosted Everett plugin.
-- Make the hop cap opt-in and add context to delivered batches.
+This maintenance update does not establish public GA acceptance. Hosted tool
+registration, owner-scoped native start, receiver pickup and a correlated reply
+are separate checks. A transport disconnect can strand an upstream request even
+after local recovery. Reconcile sends and starts before retrying; never infer
+completion from a healthy connection. Older clients may need one normal tool
+refresh to adopt the stable destination schema. A new ChatGPT-mode GUI
+conversation and outside-account acceptance require their own live evidence.
 
-## Acceptance required before publication
-
-This candidate is not a verified outside-tester release. Require a fresh own-GitHub
-sign-in, proof that an outside account cannot discover Wright’s agents, and two
-actual harness agents exchanging a request and correlated reply through the hosted
-relay. Run installation and acceptance on macOS as well as Linux. ChatGPT chat
-mode is outside this beta.
-
-See [the changelog](CHANGELOG.md) for the full change list.
+See CHANGELOG.md and the client-specific setup and verification documentation.

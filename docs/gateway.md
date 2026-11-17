@@ -258,6 +258,20 @@ This has no HTTP listener. The owner-authorized tunnel runs this command inside
 the host that contains Everett's stores. Follow [OpenAI dots setup](openai-dots.md),
 including `everett tunnel watch` so a stuck control-plane poll is restarted.
 `/readyz` on the tunnel client is not proof that calls are still being forwarded.
+Configure `everett tunnel watch --health-url http://127.0.0.1:8080/health?details=true`
+with the actual tunnel-client health port. This requires its structured JSON logs
+and detailed operator health, supported by tunnel-client0.0.16. The supervisor
+matches the health snapshot to the child instance from its logs and checks recent
+successful polling and the current poll deadline. Fresh polling defers scheduled
+rotation, so a healthy client is not killed every four minutes while forwarding
+requests. Stale, malformed, unavailable or mismatched health retains the bounded
+renewal fallback. Health reads have a two-second deadline and64KiB limit, use
+loopback HTTP only and follow no redirects or proxy environment settings.
+Without this option, the existing age-based renewal remains. A client disconnect
+can strand a request upstream even after the client recovers. Bound reads at the
+caller where supported; retry only non-consuming peeks after reconciliation.
+Never retry sends or starts under a new ID solely because a connection recovered.
+Neither local health nor supervisor renewal proves that any request was completed.
 The tunnel's permissions and control-plane authentication authorize reachability;
 the gateway then enforces its local binding. Restrict the tunnel to the intended
 owner/workspace. This pass does not add end-user OAuth to stdio.
