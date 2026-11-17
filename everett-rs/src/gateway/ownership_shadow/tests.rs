@@ -18,6 +18,47 @@ struct Server {
     stop: Arc<AtomicBool>,
     thread: Option<std::thread::JoinHandle<()>>,
 }
+
+fn read_request(stream: &mut impl Read) -> std::io::Result<()> {
+    const LIMIT: usize = 16 * 1024;
+    let invalid = || std::io::Error::new(std::io::ErrorKind::InvalidData, "invalid fixture request");
+    let mut bytes = Vec::new();
+    loop {
+        if bytes.len() == LIMIT { return Err(invalid()); }
+        let mut chunk = [0; 1024];
+        let size = chunk.len().min(LIMIT - bytes.len());
+        let read = stream.read(&mut chunk[..size])?;
+        if read == 0 { return Err(std::io::ErrorKind::UnexpectedEof.into()); }
+        bytes.extend_from_slice(&chunk[..read]);
+        let Some(end) = bytes.windows(4).position(|w| w == b"\r\n\r\n") else { continue };
+        let headers = std::str::from_utf8(&bytes[..end]).map_err(|_| invalid())?;
+        let length = headers.lines().filter_map(|line| line.split_once(':'))
+            .find(|(name, _)| name.eq_ignore_ascii_case("content-length"))
+            .map(|(_, value)| value.trim().parse::<usize>().map_err(|_| invalid()))
+            .transpose()?.unwrap_or(0);
+        if length > LIMIT - (end + 4) { return Err(invalid()); }
+        if bytes.len() >= end + 4 + length { return Ok(()); }
+    }
+}
+
+#[test]
+fn fixture_issuer_drains_fragmented_request_before_reply() {
+    struct Fragmented(std::io::Cursor<Vec<u8>>);
+    impl Read for Fragmented {
+        fn read(&mut self, bytes: &mut [u8]) -> std::io::Result<usize> {
+            let size = bytes.len().min(7);
+            self.0.read(&mut bytes[..size])
+        }
+    }
+    let body = "token=synthetic-fixture-token";
+    let request = format!("POST /oauth/introspect HTTP/1.1\r\nHost: localhost\r\nContent-Length: {}\r\n\r\n{body}", body.len());
+    let mut stream = Fragmented(std::io::Cursor::new(request.as_bytes().to_vec()));
+    read_request(&mut stream).unwrap();
+    assert_eq!(stream.0.position() as usize, request.len(), "receive the complete POST before replying and closing");
+    let mut incomplete = std::io::Cursor::new(&request.as_bytes()[..request.len() - 1]);
+    assert_eq!(read_request(&mut incomplete).unwrap_err().kind(), std::io::ErrorKind::UnexpectedEof);
+}
+
 impl Server {
     fn new() -> Self {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
@@ -32,7 +73,9 @@ impl Server {
                     stream
                         .set_read_timeout(Some(Duration::from_secs(2)))
                         .unwrap();
-                    consume_request(&mut stream);
+                    if read_request(&mut stream).is_err() {
+                        continue;
+                    }
                     let (status, value) = reply.lock().unwrap().clone();
                     let body = value.to_string();
                     let _ = write!(stream, "HTTP/1.1 {status} Test\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len());
@@ -312,27 +355,4 @@ fn mismatched_verifier_policy_is_rejected() {
             registered["identity_handle"].as_str().unwrap()
         ))
         .is_err());
-}
-
-fn consume_request(stream: &mut std::net::TcpStream) {
-    stream.set_read_timeout(Some(Duration::from_secs(3))).unwrap();
-    let mut bytes = Vec::new();
-    let mut buf = [0; 4096];
-    let end = loop {
-        let n = stream.read(&mut buf).unwrap();
-        assert!(n > 0);
-        bytes.extend_from_slice(&buf[..n]);
-        assert!(bytes.len() <= 16384);
-        if let Some(p) = bytes.windows(4).position(|s| s == b"\r\n\r\n") { break p + 4; }
-    };
-    let headers = String::from_utf8_lossy(&bytes[..end]);
-    let length = headers.lines().filter_map(|l| l.split_once(':'))
-        .find(|(k, _)| k.eq_ignore_ascii_case("content-length"))
-        .map(|(_, v)| v.trim().parse::<usize>().unwrap()).unwrap_or(0);
-    assert!(length <= 16384);
-    while bytes.len() < end + length {
-        let n = stream.read(&mut buf).unwrap();
-        assert!(n > 0);
-        bytes.extend_from_slice(&buf[..n]);
-    }
 }
