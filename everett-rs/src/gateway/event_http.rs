@@ -199,7 +199,7 @@ pub(super) async fn pump(state: HttpBoundary) {
                         }
                     };
                     let expected = principal(
-                        &state,
+                        state,
                         agent.as_ref(),
                         access,
                         credentials["handle"].as_str(),
