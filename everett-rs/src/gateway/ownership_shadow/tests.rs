@@ -32,8 +32,7 @@ impl Server {
                     stream
                         .set_read_timeout(Some(Duration::from_secs(2)))
                         .unwrap();
-                    let mut bytes = [0; 8192];
-                    let _ = stream.read(&mut bytes);
+                    consume_request(&mut stream);
                     let (status, value) = reply.lock().unwrap().clone();
                     let body = value.to_string();
                     let _ = write!(stream, "HTTP/1.1 {status} Test\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len());
@@ -313,4 +312,27 @@ fn mismatched_verifier_policy_is_rejected() {
             registered["identity_handle"].as_str().unwrap()
         ))
         .is_err());
+}
+
+fn consume_request(stream: &mut std::net::TcpStream) {
+    stream.set_read_timeout(Some(Duration::from_secs(3))).unwrap();
+    let mut bytes = Vec::new();
+    let mut buf = [0; 4096];
+    let end = loop {
+        let n = stream.read(&mut buf).unwrap();
+        assert!(n > 0);
+        bytes.extend_from_slice(&buf[..n]);
+        assert!(bytes.len() <= 16384);
+        if let Some(p) = bytes.windows(4).position(|s| s == b"\r\n\r\n") { break p + 4; }
+    };
+    let headers = String::from_utf8_lossy(&bytes[..end]);
+    let length = headers.lines().filter_map(|l| l.split_once(':'))
+        .find(|(k, _)| k.eq_ignore_ascii_case("content-length"))
+        .map(|(_, v)| v.trim().parse::<usize>().unwrap()).unwrap_or(0);
+    assert!(length <= 16384);
+    while bytes.len() < end + length {
+        let n = stream.read(&mut buf).unwrap();
+        assert!(n > 0);
+        bytes.extend_from_slice(&buf[..n]);
+    }
 }
