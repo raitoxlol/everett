@@ -37,6 +37,37 @@ Deprecated and removed from tool schemas. It is still accepted when it equals th
 (old clients keep working); a different value is a tool error, and it never establishes identity.
 
 
+## Account, client and session provenance in `everett_whoami`
+
+The existing MCP tool adds an `identity` object without removing its original fields.
+`identity.account` reports verification status and the trusted issuer when available;
+its subject is always null, with `subject_redacted` indicating a verified but withheld
+account subject. `identity.client` identifies the OAuth client or native harness
+separately from `identity.session`.
+
+A gateway call with a resolved private handle reports session provenance
+`owner_registered_logical`. With verified account/client provenance its ownership is
+`verified_account_client`; otherwise ownership remains `unmapped`. Without a private
+handle the gateway reports `legacy_client_binding`, not an individual host chat.
+The old `gateway_auth.agent_name` is retained for compatibility and denotes the OAuth
+client label. Consumers should use `identity.session.label` for the selected inbox.
+Two logical registrations under one client keep distinct, stable session IDs/labels.
+
+Native MCP reports `native_host_bound` for existing harness environment/process
+bindings, `launcher_binding` for generic EVERETT_SESSION_ID, `request_metadata` for
+Codex request metadata, and `unbound` when no session is resolved. This describes
+binding provenance, not cryptographic attestation. Native account status stays unknown
+and session ownership stays unmapped; MCP does not infer ownership from the current
+login or make a new account verification request. The deprecated tool session_id field
+cannot replace the host identity; nested tool-argument metadata is rejected.
+
+These fields grant no authority and persist no receipts. The gateway reuses current
+OAuth validation, handle resolution and backend identity checks. Its existing
+`authorized_destinations` and send checks remain authoritative. Tokens and private
+handles are not included in the added object. The native CLI `everett whoami`
+continues to verify the account/device; the diagnostic command below explains the
+separate session ownership limitation.
+
 ## Read-only identity diagnostics
 
 Run `everett identity diagnose` for readable output, or add `--json` for status
