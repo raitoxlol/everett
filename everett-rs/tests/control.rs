@@ -285,3 +285,38 @@ fn empty_t3_thread_list_is_not_a_dispatch_receipt() {
     assert_ne!(r["isError"], true, "{r}");
     assert_eq!(tool_json(&r)["result"], json!([]));
 }
+
+/// A timed-out or crashed dispatch may still have reached T3, so the error must
+/// say the outcome is uncertain (never a bare failure that invites a duplicate).
+#[test]
+fn t3_timeout_or_crash_after_dispatch_reports_unconfirmed_not_failed() {
+    let fx = fixture();
+    let t3 = fake_t3(&fx, 0);
+    let send = common::t3_send_receipt(THREAD);
+    let start = json!({"threadId":THREAD,"projectId":"project-1","runId":"run-1"});
+    let late = format!("#!/bin/sh\nmkdir -p \"$HOME/t3-calls\"; : > \"$(mktemp \"$HOME/t3-calls/c.XXXXXX\")\"\nsleep 4\nprintf '%s\\n' '{send}'\n");
+    let crashed = format!("#!/bin/sh\nmkdir -p \"$HOME/t3-calls\"; : > \"$(mktemp \"$HOME/t3-calls/c.XXXXXX\")\"\ncase \"$2\" in start) printf '%s\\n' '{start}' ;; *) printf '%s\\n' '{send}' ;; esac\nexit 1\n");
+    for (name, script) in [("late ack", late), ("crash after receipt", crashed)] {
+        fs::write(&t3, script).unwrap();
+        let _ = fs::remove_dir_all(fx.home().join("t3-calls"));
+        let requests = [
+            json!({"action":"start","project":"/work/p","text":"build it","timeout":1.0}),
+            json!({"action":"send","thread":THREAD,"text":"next step","timeout":1.0}),
+            json!({"action":"wake","thread":THREAD,"timeout":1.0}),
+        ];
+        for args in &requests {
+            let r = call(&fx, &t3, args.clone());
+            assert_eq!(r["isError"], true, "{name} {args}: {r}");
+            let text = r.to_string();
+            assert!(text.contains("Dispatch is unconfirmed"), "{name} {args}: {r}");
+            if name == "late ack" {
+                assert!(!text.contains("build it") && !text.contains("next step"), "timeout exposes prompt: {r}");
+            }
+            assert!(!text.contains("\"sent\":true") && !text.contains("\"started\":true"), "{r}");
+        }
+        // At most one CLI invocation per request: Everett itself never retries.
+        // (Under load a killed fake may not log, so this bounds duplicates only.)
+        let calls = fs::read_dir(fx.home().join("t3-calls")).map(Iterator::count).unwrap_or(0);
+        assert!(calls <= requests.len(), "{name}: {calls} invocations");
+    }
+}

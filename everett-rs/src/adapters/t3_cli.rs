@@ -29,6 +29,10 @@ pub(crate) enum Dispatch<'a> {
     Send(&'a str),
 }
 
+/// Appended when a dispatch command timed out or exited abnormally: the CLI may
+/// already have delivered the turn, so callers must not treat it as a clean failure.
+pub(crate) const UNCONFIRMED: &str = "Dispatch is unconfirmed: T3 may already have received it. Check the thread before retrying; do not blindly retry.";
+
 pub(crate) fn validate_dispatch(
     value: &Value,
     dispatch: Dispatch<'_>,
