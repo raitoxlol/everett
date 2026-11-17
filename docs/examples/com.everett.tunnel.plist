@@ -13,6 +13,8 @@
     <string>everett-dot</string>
     <string>--env-file</string>
     <string>/Users/YOU/.config/everett/tunnel.env</string>
+    <string>--health-url</string>
+    <string>http://127.0.0.1:8080/health?details=true</string>
   </array>
   <key>RunAtLoad</key>
   <true/>

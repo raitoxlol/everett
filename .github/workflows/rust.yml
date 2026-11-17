@@ -6,6 +6,11 @@ on:
     tags: ['v*']
   pull_request:
   workflow_dispatch:
+    inputs:
+      build_artifacts:
+        description: Build and qualify all native release archives without publishing
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -31,11 +36,11 @@ jobs:
         run: python3 -m unittest discover -s plugins/everett-local/tests -v
 
   relay:
-    if: startsWith(github.ref, 'refs/tags/v')
+    if: startsWith(github.ref, 'refs/tags/v') || inputs.build_artifacts == true
     uses: ./.github/workflows/cloudflare.yml
 
   build:
-    if: startsWith(github.ref, 'refs/tags/v')
+    if: startsWith(github.ref, 'refs/tags/v') || inputs.build_artifacts == true
     needs: [test, relay]
     runs-on: ${{ matrix.os }}
     strategy:
@@ -45,10 +50,11 @@ jobs:
           - { target: x86_64-unknown-linux-musl, os: ubuntu-latest }
           - { target: aarch64-unknown-linux-musl, os: ubuntu-24.04-arm }
           - { target: aarch64-apple-darwin, os: macos-latest }
-          - { target: x86_64-apple-darwin, os: macos-latest }
+          - { target: x86_64-apple-darwin, os: macos-15-intel }
     steps:
       - uses: actions/checkout@v7
       - name: Check tag matches the crate version
+        if: startsWith(github.ref, 'refs/tags/v')
         shell: bash
         run: |
           crate="$(sed -n 's/^version = "\(.*\)"/\1/p' everett-rs/Cargo.toml | head -1)"
@@ -58,18 +64,6 @@ jobs:
       - run: rustup target add ${{ matrix.target }}
       - working-directory: everett-rs
         run: cargo build --release --locked --target ${{ matrix.target }}
-      - name: Exercise the packaged binary on its native architecture
-        shell: bash
-        working-directory: everett-rs
-        env:
-          RELEASE_TARGET: ${{ matrix.target }}
-        run: |
-          host_arch="$(rustc -vV | sed -n 's/^host: //p' | cut -d- -f1)"
-          if [[ "$RELEASE_TARGET" == "$host_arch-"* ]]; then
-            EVERETT_VERIFY_BINARY="$PWD/target/$RELEASE_TARGET/release/everett" cargo test --locked --test release_journey
-          else
-            echo "::notice::Cross-built $RELEASE_TARGET; execution requires a matching host."
-          fi
       - name: Package
         shell: bash
         run: |
@@ -78,12 +72,31 @@ jobs:
           cp "everett-rs/target/${{ matrix.target }}/release/everett" LICENSE README.md "dist/$name/"
           tar -C dist -czf "dist/$name.tar.gz" "$name"
           (cd dist && shasum -a 256 "$name.tar.gz" > "$name.tar.gz.sha256")
+      - name: Qualify the extracted native release archive
+        shell: bash
+        env:
+          RELEASE_TARGET: ${{ matrix.target }}
+        run: |
+          host_arch="$(rustc -vV | sed -n 's/^host: //p' | cut -d- -f1)"
+          [[ "$RELEASE_TARGET" == "$host_arch-"* ]] || { echo "native artifact runner required" >&2; exit 1; }
+          (cd dist && shasum -a 256 -c "everett-$RELEASE_TARGET.tar.gz.sha256")
+          unpacked="$RUNNER_TEMP/everett-package-$RELEASE_TARGET"
+          mkdir -p "$unpacked"
+          tar -xzf "dist/everett-$RELEASE_TARGET.tar.gz" -C "$unpacked"
+          binary="$unpacked/everett-$RELEASE_TARGET/everett"
+          "$binary" --version > "$unpacked/version.txt"
+          grep -Fx "revision: $GITHUB_SHA" "$unpacked/version.txt"
+          grep -Fx "dirty: false" "$unpacked/version.txt"
+          python3 -m unittest discover -s scripts -p test_install.py -v
+          cd everett-rs
+          EVERETT_VERIFY_BINARY="$binary" cargo test --locked --test release_journey --test gateway_native --test tunnel
       - uses: actions/upload-artifact@v7
         with:
           name: everett-${{ matrix.target }}
           path: dist/everett-*.tar.gz*
 
   release:
+    if: startsWith(github.ref, 'refs/tags/v')
     needs: build
     runs-on: ubuntu-latest
     permissions:
