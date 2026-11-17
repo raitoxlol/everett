@@ -7,7 +7,7 @@ permissions:
 
 jobs:
   host-evidence-python39:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04 # Python 3.9 packages are unavailable for Ubuntu 26.04.
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-python@v7
