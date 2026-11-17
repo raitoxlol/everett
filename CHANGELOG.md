@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+## 2.3.2 — maintenance candidate
+
+- Budget the complete encoded MCP inbox result before marking messages delivered. Large queues return bounded batches, and messages outside the returned batch remain queued (#165).
+- Warn that timed-out or abnormally exited T3 dispatches may already have delivered the turn; reconcile the thread before retrying (#163).
+- Handle fractional RFC3339 timestamps and recursive JSON input in the read-only Python 3.9 tunnel-health diagnostic (#162).
+
 ## 2.3.1 — maintenance candidate
 
 - Preserve a tunnel connection with fresh, matching local poll health instead of interrupting it on every scheduled renewal. Stale or unavailable health still renews the client; disconnects can leave upstream requests unresolved.
