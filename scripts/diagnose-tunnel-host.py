@@ -76,7 +76,7 @@ def poll_health_stdin(expected_instance):
         if len(raw) > 65536:
             raise ValueError("snapshot_too_large")
         result = poll_health(json.loads(raw.decode("utf-8")), expected_instance)
-    except (ValueError, UnicodeError):
+    except (ValueError, UnicodeError, RecursionError):
         result = {"polling_fresh": False, "request_completion": "unconfirmed", "reason": "invalid_snapshot_input"}
     print(json.dumps(result))
     return 0 if result["polling_fresh"] else 1
