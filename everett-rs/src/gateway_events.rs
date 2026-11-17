@@ -976,6 +976,58 @@ mod tests {
             );
         }
     }
+    #[test]
+    fn receipt_retry_signature_and_burst_contract() {
+        let home=tempfile::tempdir().unwrap();
+        let fixture=Arc::new(Fixture::new());
+        let events=store(home.path(),fixture.clone());
+        events.subscribe(&principal(),&args()).unwrap();
+        let lease=events.leases().unwrap().remove(0);
+        message(home.path(),"one","dot-a",now());
+        message(home.path(),"one","dot-a",now());
+        message(home.path(),"two","dot-a",now());
+        message(home.path(),"foreign","dot-b",now());
+        fixture.status.store(503,Ordering::SeqCst);
+        events.deliver(&lease).unwrap();
+        let first=fixture.requests.lock().unwrap()[1].clone();
+        std::thread::sleep(Duration::from_millis(1100));
+        events.db.lock().unwrap().execute("UPDATE deliveries SET next=0",[]).unwrap();
+        fixture.status.store(200,Ordering::SeqCst);
+        events.deliver(&lease).unwrap();
+        let second=fixture.requests.lock().unwrap()[2].clone();
+        assert_eq!(first.0,second.0,"retry preserves event ID and exact payload");
+        for name in ["webhook-timestamp","webhook-signature"] {
+            let value=|r:&ReceivedRequest|r.1.iter().find(|(n,_)|n==name).unwrap().1.clone();
+            assert_ne!(value(&first),value(&second),"fresh signing metadata");
+        }
+        events.deliver(&lease).unwrap();
+        events.deliver(&lease).unwrap();
+        let requests=fixture.requests.lock().unwrap();
+        assert_eq!(requests.len(),4,"burst sends separate requests and suppresses duplicates");
+        assert_eq!(requests[3].0["data"]["message_id"],"two");
+        drop(requests);
+        assert!(!home.path().join(".everett/inbox/dot-a.done").exists(),"2xx only acknowledges webhook receipt, never inbox processing");
+        events.unsubscribe(&principal(),&args()).unwrap();
+        events.deliver(&lease).unwrap();
+        assert_eq!(fixture.requests.lock().unwrap().len(),4);
+    }
+
+    #[test]
+    fn credential_expiring_during_verification_cannot_activate_subscription() {
+        struct Slow;
+        impl Webhook for Slow {
+            fn post(&self,_:&str,_:&[(String,String)],body:&[u8])->Result<(u16,Vec<u8>),&'static str> {
+                std::thread::sleep(Duration::from_millis(20));
+                let request:Value=serde_json::from_slice(body).unwrap();
+                Ok((200,serde_json::to_vec(&json!({"challenge":request["challenge"]})).unwrap()))
+            }
+        }
+        let home=tempfile::tempdir().unwrap();
+        let events=Events::with_db(Connection::open_in_memory().unwrap(),home.path().into(),Arc::new(Slow)).unwrap();
+        assert_eq!(events.subscribe_until(&principal(),&args(),Some(now()+5)).unwrap_err().reason,"token_expired");
+        assert!(events.leases().unwrap().is_empty());
+    }
+
 }
 
 #[cfg(test)]
