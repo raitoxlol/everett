@@ -871,9 +871,30 @@ mod tests {
             .1;
         assert_eq!(signatures.split_whitespace().count(), 2);
         drop(received);
-        rotated["ttlMs"] = json!(10);
+        let ttl_ms = 60_000;
+        rotated["ttlMs"] = json!(ttl_ms);
+        let before = now();
         events.subscribe(&principal(), &rotated).unwrap();
-        std::thread::sleep(Duration::from_millis(15));
+        let after = now();
+        {
+            let db = events.db.lock().unwrap();
+            let expires: i64 = db
+                .query_row(
+                    "SELECT expires FROM subscriptions WHERE id=?",
+                    [&lease.id],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            assert!((before + ttl_ms..=after + ttl_ms).contains(&expires));
+            assert_eq!(
+                db.execute(
+                    "UPDATE subscriptions SET expires=? WHERE id=?",
+                    params![before, lease.id]
+                )
+                .unwrap(),
+                1
+            );
+        }
         assert!(events.leases().unwrap().is_empty());
         events.subscribe(&principal(), &args()).unwrap();
         message(home.path(), "gone", "dot-a", now());
