@@ -5,6 +5,7 @@ use serde_json::{json, Value};
 use std::{
     io::{Read, Write},
     net::TcpListener,
+    os::fd::AsRawFd,
     sync::{
         atomic::{AtomicBool, Ordering},
         Mutex,
@@ -17,6 +18,26 @@ struct Server {
     response: Arc<Mutex<(u16, Value)>>,
     stop: Arc<AtomicBool>,
     thread: Option<std::thread::JoinHandle<()>>,
+}
+
+fn prepare_connection(stream: &std::net::TcpStream) -> std::io::Result<()> {
+    stream.set_nonblocking(false)?;
+    stream.set_read_timeout(Some(Duration::from_secs(2)))
+}
+
+#[test]
+fn fixture_issuer_restores_blocking_on_accepted_sockets() {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let _client = std::net::TcpStream::connect(listener.local_addr().unwrap()).unwrap();
+    let (stream, _) = listener.accept().unwrap();
+    // Emulate the listener flag inherited by accepted sockets on macOS.
+    stream.set_nonblocking(true).unwrap();
+    prepare_connection(&stream).unwrap();
+    // SAFETY: the stream owns a live descriptor; F_GETFL only reads its flags.
+    let flags = unsafe { libc::fcntl(stream.as_raw_fd(), libc::F_GETFL) };
+    assert!(flags >= 0);
+    assert_eq!(flags & libc::O_NONBLOCK, 0, "issuer reads must wait for the complete request within their timeout");
+    assert_eq!(stream.read_timeout().unwrap(), Some(Duration::from_secs(2)));
 }
 
 fn read_request(stream: &mut impl Read) -> std::io::Result<()> {
@@ -70,9 +91,7 @@ impl Server {
         let thread = std::thread::spawn(move || {
             while !done.load(Ordering::Relaxed) {
                 if let Ok((mut stream, _)) = listener.accept() {
-                    stream
-                        .set_read_timeout(Some(Duration::from_secs(2)))
-                        .unwrap();
+                    prepare_connection(&stream).unwrap();
                     if read_request(&mut stream).is_err() {
                         continue;
                     }
