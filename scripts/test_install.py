@@ -91,7 +91,7 @@ class InstallTests(unittest.TestCase):
         if sys.platform == 'darwin':
             # Copied Apple platform executables are killed outside their sealed path.
             subprocess.run(['codesign', '--force', '--sign', '-', str(self.installed)], check=True, capture_output=True)
-        process = subprocess.Popen([str(self.installed), '20'])
+        process = subprocess.Popen(['sleep', '20'], executable=str(self.installed))
         try:
             self.release('echo "everett 9.0.0"\n')
             result = self.install()
