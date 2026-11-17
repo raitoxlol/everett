@@ -136,6 +136,14 @@ discoverable to local agents.
 - `everett_send`: explicit destination or authorized `reply_to`, inbox-only,
   nonblocking, never spawn or headless resume. Idle recipients must check inboxes.
 
+`everett_whoami.authorized_destinations` lists the binding's current exact owner
+allowlist. Read it before sending. Destination grants are live policy, not a tool
+schema enum: clients cache schemas, so an enum would reject a newly authorized
+target before the gateway can check it. The gateway still rejects every full ID
+outside its allowlist before calling the backend. Existing clients with an old
+destination enum need one normal tool refresh to adopt this stable schema;
+subsequent owner grant changes do not change the send schema.
+
 Foreign `session_id`, extra arguments, arbitrary working directories, router
 selection, spawn flags, and resume modes are rejected. `ls`, `route`, learning,
 events, and subscriptions are not exposed. No cloud-boundary text is routed to
