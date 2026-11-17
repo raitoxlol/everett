@@ -64,6 +64,10 @@ pub(super) async fn dispatch(
     if !method.starts_with("events/") {
         return None;
     }
+    let permit = match state.event_requests.clone().try_acquire_owned() {
+        Ok(permit) => permit,
+        Err(_) => return Some(StatusCode::SERVICE_UNAVAILABLE.into_response()),
+    };
     if !headers
         .get("content-type")
         .and_then(|h| h.to_str().ok())
@@ -109,16 +113,20 @@ pub(super) async fn dispatch(
             if args["arguments"].is_object() && args["arguments"].get("session_id").is_none() {
                 args["arguments"]["session_id"] = json!(p.agent);
             }
-            let expires_at = agent.map(|a| a.expires_at.saturating_mul(1000).min(i64::MAX as u64) as i64);
+            let expires_at =
+                agent.map(|a| a.expires_at.saturating_mul(1000).min(i64::MAX as u64) as i64);
             let events = events.clone();
             let method = method.to_owned();
-            tokio::task::spawn_blocking(move || match method.as_str() {
-                "events/subscribe" => events.subscribe_until(&p, &args, expires_at),
-                "events/unsubscribe" => events.unsubscribe(&p, &args),
-                _ => Err(crate::gateway_events::Failure {
-                    code: -32601,
-                    reason: "method not found",
-                }),
+            tokio::task::spawn_blocking(move || {
+                let _permit = permit;
+                match method.as_str() {
+                    "events/subscribe" => events.subscribe_until(&p, &args, expires_at),
+                    "events/unsubscribe" => events.unsubscribe(&p, &args),
+                    _ => Err(crate::gateway_events::Failure {
+                        code: -32601,
+                        reason: "method not found",
+                    }),
+                }
             })
             .await
             .unwrap_or(Err(crate::gateway_events::Failure {
@@ -153,47 +161,59 @@ pub(super) async fn pump(state: HttpBoundary) {
         let Ok(Ok(leases)) = tokio::task::spawn_blocking(move || store.leases()).await else {
             continue;
         };
-        for lease in leases {
-            let credentials = lease
-                .principal
-                .token
-                .as_deref()
-                .and_then(|s| serde_json::from_str::<Value>(s).ok())
-                .unwrap_or(Value::Null);
-            let access = credentials["access"].as_str().map(str::to_owned);
-            let agent = match &state.auth {
-                HttpAuth::Bearer(_) => None,
-                HttpAuth::OAuth(verifier) => {
-                    let Some(token) = access.clone() else {
-                        events.revoke(&lease);
-                        continue;
+        use futures_util::StreamExt;
+        futures_util::stream::iter(leases)
+            .for_each_concurrent(state.gateway.binding.max_workers, |lease| {
+                let state = &state;
+                async move {
+                    let credentials = lease
+                        .principal
+                        .token
+                        .as_deref()
+                        .and_then(|s| serde_json::from_str::<Value>(s).ok())
+                        .unwrap_or(Value::Null);
+                    let access = credentials["access"].as_str().map(str::to_owned);
+                    let agent = match &state.auth {
+                        HttpAuth::Bearer(_) => None,
+                        HttpAuth::OAuth(verifier) => {
+                            let Some(token) = access.clone() else {
+                                events.revoke(&lease);
+                                return;
+                            };
+                            match verifier.verify(token).await {
+                                Ok(a)
+                                    if !state
+                                        .gateway
+                                        .binding
+                                        .destinations
+                                        .contains(&a.agent_id) =>
+                                {
+                                    Some(a)
+                                }
+                                Err((StatusCode::SERVICE_UNAVAILABLE, _)) => return,
+                                _ => {
+                                    events.revoke(&lease);
+                                    return;
+                                }
+                            }
+                        }
                     };
-                    match verifier.verify(token).await {
-                        Ok(a) if !state.gateway.binding.destinations.contains(&a.agent_id) => {
-                            Some(a)
-                        }
-                        Err((StatusCode::SERVICE_UNAVAILABLE, _)) => continue,
-                        _ => {
-                            events.revoke(&lease);
-                            continue;
-                        }
+                    let expected = principal(
+                        &state,
+                        agent.as_ref(),
+                        access,
+                        credentials["handle"].as_str(),
+                    );
+                    let store = events.clone();
+                    if !expected.is_ok_and(|p| {
+                        p.owner == lease.principal.owner && p.agent == lease.principal.agent
+                    }) {
+                        let _ = tokio::task::spawn_blocking(move || store.revoke(&lease)).await;
+                        return;
                     }
+                    let _ = tokio::task::spawn_blocking(move || store.deliver(&lease)).await;
                 }
-            };
-            let expected = principal(
-                &state,
-                agent.as_ref(),
-                access,
-                credentials["handle"].as_str(),
-            );
-            let store = events.clone();
-            if !expected
-                .is_ok_and(|p| p.owner == lease.principal.owner && p.agent == lease.principal.agent)
-            {
-                let _ = tokio::task::spawn_blocking(move || store.revoke(&lease)).await;
-                continue;
-            }
-            let _ = tokio::task::spawn_blocking(move || store.deliver(&lease)).await;
-        }
+            })
+            .await;
     }
 }

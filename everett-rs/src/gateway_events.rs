@@ -25,8 +25,24 @@ const MAX_SUBSCRIPTIONS: i64 = 64;
 #[derive(Clone)]
 pub(super) struct Events {
     db: Arc<Mutex<Connection>>,
+    pending: Arc<Mutex<std::collections::HashMap<String, String>>>,
     home: PathBuf,
     transport: Arc<dyn Webhook>,
+}
+
+struct Verification {
+    pending: Arc<Mutex<std::collections::HashMap<String, String>>>,
+    id: String,
+    revision: String,
+}
+impl Drop for Verification {
+    fn drop(&mut self) {
+        if let Ok(mut pending) = self.pending.lock() {
+            if pending.get(&self.id) == Some(&self.revision) {
+                pending.remove(&self.id);
+            }
+        }
+    }
 }
 
 #[derive(Clone)]
@@ -258,7 +274,16 @@ impl Events {
         db.busy_timeout(Duration::from_secs(2))
             .map_err(|_| storage())?;
         db.execute_batch("PRAGMA foreign_keys=ON; CREATE TABLE IF NOT EXISTS subscriptions(id TEXT PRIMARY KEY,owner TEXT NOT NULL,agent TEXT NOT NULL,token TEXT,url TEXT NOT NULL,secret TEXT NOT NULL,previous TEXT,rotation_until INTEGER NOT NULL,created INTEGER NOT NULL,expires INTEGER NOT NULL,verified INTEGER NOT NULL,blocked TEXT NOT NULL DEFAULT ''); CREATE TABLE IF NOT EXISTS deliveries(subscription TEXT REFERENCES subscriptions(id) ON DELETE CASCADE,message TEXT,event TEXT NOT NULL,body TEXT NOT NULL,attempts INTEGER NOT NULL DEFAULT 0,next INTEGER NOT NULL DEFAULT 0,done INTEGER NOT NULL DEFAULT 0,PRIMARY KEY(subscription,message));").map_err(|_| storage())?;
+        let migrated: bool = db.query_row("SELECT EXISTS(SELECT 1 FROM pragma_table_info('subscriptions') WHERE name='revision')", [], |r| r.get(0)).map_err(|_| storage())?;
+        if !migrated {
+            db.execute(
+                "ALTER TABLE subscriptions ADD COLUMN revision TEXT NOT NULL DEFAULT ''",
+                [],
+            )
+            .map_err(|_| storage())?;
+        }
         Ok(Self {
+            pending: Arc::new(Mutex::new(std::collections::HashMap::new())),
             db: Arc::new(Mutex::new(db)),
             home,
             transport,
@@ -293,7 +318,12 @@ impl Events {
     pub fn subscribe(&self, p: &Principal, args: &Value) -> Result<Value, Failure> {
         self.subscribe_until(p, args, None)
     }
-    pub fn subscribe_until(&self, p: &Principal, args: &Value, credential_expires_at: Option<i64>) -> Result<Value, Failure> {
+    pub fn subscribe_until(
+        &self,
+        p: &Principal,
+        args: &Value,
+        credential_expires_at: Option<i64>,
+    ) -> Result<Value, Failure> {
         let (id, url) = Self::identity(p, args)?;
         let key = args["delivery"]["secret"]
             .as_str()
@@ -307,17 +337,19 @@ impl Events {
                 .ok_or_else(|| invalid("invalid_ttl"))?
                 .min(DAY),
         };
-        let mut db = self.db.lock().map_err(|_| storage())?;
+        let db = self.db.lock().map_err(|_| storage())?;
         let at = now();
         let expires = credential_expires_at.map_or(at + ttl, |deadline| deadline.min(at + ttl));
-        if expires <= at { return Err(invalid("token_expired")); }
+        if expires <= at {
+            return Err(invalid("token_expired"));
+        }
         db.execute("DELETE FROM subscriptions WHERE expires<=?", [at])
             .map_err(|_| storage())?;
-        let old: Option<(String, i64, i64)> = db
+        let old: Option<(String, i64, i64, String)> = db
             .query_row(
-                "SELECT secret,created,verified FROM subscriptions WHERE id=? AND owner=?",
+                "SELECT secret,created,verified,revision FROM subscriptions WHERE id=? AND owner=?",
                 params![id, p.owner],
-                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
             )
             .optional()
             .map_err(|_| storage())?;
@@ -345,6 +377,20 @@ impl Events {
         let cached = old
             .as_ref()
             .is_some_and(|o| o.0 == key && at - o.2 < 300_000);
+        let revision = uuid::Uuid::new_v4().to_string();
+        let verification = {
+            let mut pending = self.pending.lock().map_err(|_| storage())?;
+            if !pending.contains_key(&id) && pending.len() >= MAX_SUBSCRIPTIONS as usize {
+                return Err(invalid("verification_capacity"));
+            }
+            pending.insert(id.clone(), revision.clone());
+            Verification {
+                pending: self.pending.clone(),
+                id: id.clone(),
+                revision: revision.clone(),
+            }
+        };
+        drop(db);
         if !cached {
             let challenge = uuid::Uuid::new_v4().to_string();
             let body =
@@ -364,25 +410,58 @@ impl Events {
                 return Err(callback("challenge_failed"));
             }
         }
-        if expires <= now() { return Err(invalid("token_expired")); }
+        let mut db = self.db.lock().map_err(|_| storage())?;
+        if self.pending.lock().map_err(|_| storage())?.get(&id) != Some(&verification.revision) {
+            return Err(invalid("subscription_changed_retry"));
+        }
+        if expires <= now() {
+            return Err(invalid("token_expired"));
+        }
+        let tx = db
+            .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+            .map_err(|_| storage())?;
+        let current: Option<(String, String)> = tx
+            .query_row(
+                "SELECT revision,blocked FROM subscriptions WHERE id=?",
+                [&id],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .optional()
+            .map_err(|_| storage())?;
+        if current.as_ref().map(|r| &r.0) != old.as_ref().map(|r| &r.3) {
+            return Err(invalid("subscription_changed_retry"));
+        }
+        if current.as_ref().is_some_and(|r| !r.1.is_empty()) {
+            return Err(invalid(
+                "event_capacity_exceeded_unsubscribe_and_resubscribe",
+            ));
+        }
+        if current.is_none()
+            && tx
+                .query_row("SELECT count(*) FROM subscriptions", [], |r| {
+                    r.get::<_, i64>(0)
+                })
+                .map_err(|_| storage())?
+                >= MAX_SUBSCRIPTIONS
+        {
+            return Err(invalid("subscription_limit"));
+        }
         let verified = if cached { old.as_ref().unwrap().2 } else { at };
         let created = old.as_ref().map_or(at, |o| o.1);
         let previous = old.as_ref().filter(|o| o.0 != key).map(|o| o.0.clone());
-        let tx = db.transaction().map_err(|_| storage())?;
-        tx.execute("INSERT INTO subscriptions(id,owner,agent,token,url,secret,previous,rotation_until,created,expires,verified) VALUES(?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET token=excluded.token,secret=excluded.secret,previous=CASE WHEN excluded.previous IS NULL THEN subscriptions.previous ELSE excluded.previous END,rotation_until=CASE WHEN excluded.previous IS NULL THEN subscriptions.rotation_until ELSE excluded.rotation_until END,expires=excluded.expires,verified=excluded.verified",params![id,p.owner,p.agent,p.token,url,key,previous,at+300_000,created,expires,verified]).map_err(|_|storage())?;
+        tx.execute("INSERT INTO subscriptions(id,owner,agent,token,url,secret,previous,rotation_until,created,expires,verified,revision) VALUES(?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET token=excluded.token,secret=excluded.secret,previous=CASE WHEN excluded.previous IS NULL THEN subscriptions.previous ELSE excluded.previous END,rotation_until=CASE WHEN excluded.previous IS NULL THEN subscriptions.rotation_until ELSE excluded.rotation_until END,expires=excluded.expires,verified=excluded.verified,revision=excluded.revision",params![id,p.owner,p.agent,p.token,url,key,previous,at+300_000,created,expires,verified,revision]).map_err(|_|storage())?;
         tx.commit().map_err(|_| storage())?;
         Ok(json!({"id":id,"refreshBefore":iso(expires),"cursor":null,"truncated":false}))
     }
     pub fn unsubscribe(&self, p: &Principal, args: &Value) -> Result<Value, Failure> {
         let (id, _) = Self::identity(p, args)?;
-        self.db
-            .lock()
-            .map_err(|_| storage())?
-            .execute(
-                "DELETE FROM subscriptions WHERE id=? AND owner=?",
-                params![id, p.owner],
-            )
-            .map_err(|_| storage())?;
+        let db = self.db.lock().map_err(|_| storage())?;
+        self.pending.lock().map_err(|_| storage())?.remove(&id);
+        db.execute(
+            "DELETE FROM subscriptions WHERE id=? AND owner=?",
+            params![id, p.owner],
+        )
+        .map_err(|_| storage())?;
         Ok(json!({}))
     }
     pub fn leases(&self) -> Result<Vec<Lease>, Failure> {
@@ -408,16 +487,23 @@ impl Events {
     }
     pub fn revoke(&self, lease: &Lease) {
         if let Ok(db) = self.db.lock() {
-            let _ = db.execute(
-                "DELETE FROM subscriptions WHERE id=? AND token IS ?",
-                params![lease.id, lease.principal.token],
-            );
+            let removed = db
+                .execute(
+                    "DELETE FROM subscriptions WHERE id=? AND token IS ?",
+                    params![lease.id, lease.principal.token],
+                )
+                .unwrap_or(0);
+            if removed > 0 {
+                if let Ok(mut pending) = self.pending.lock() {
+                    pending.remove(&lease.id);
+                }
+            }
         }
     }
     pub fn deliver(&self, lease: &Lease) -> Result<(), Failure> {
         let mut db = self.db.lock().map_err(|_| storage())?;
-        let record:Option<(String,String,Option<String>,i64,i64)>=db.query_row("SELECT url,secret,previous,rotation_until,created FROM subscriptions WHERE id=? AND owner=? AND expires>? AND token IS ? AND blocked=''",params![lease.id,lease.principal.owner,now(),lease.principal.token],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?))).optional().map_err(|_|storage())?;
-        let Some((url, key, previous, rotation, created)) = record else {
+        let record:Option<(String,String,Option<String>,i64,i64,String)>=db.query_row("SELECT url,secret,previous,rotation_until,created,revision FROM subscriptions WHERE id=? AND owner=? AND expires>? AND token IS ? AND blocked=''",params![lease.id,lease.principal.owner,now(),lease.principal.token],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?,r.get(5)?))).optional().map_err(|_|storage())?;
+        let Some((url, key, previous, rotation, created, revision)) = record else {
             return Ok(());
         };
         if !crate::inbox::valid_id(&lease.principal.agent) {
@@ -520,11 +606,22 @@ impl Events {
                 &key,
                 previous.as_deref().filter(|_| rotation > now()),
             )?;
+            db.execute(
+                "UPDATE deliveries SET next=? WHERE subscription=? AND message=?",
+                params![now() + 30_000, lease.id, mid],
+            )
+            .map_err(|_| storage())?;
+            drop(db);
             let status = self
                 .transport
                 .post(&url, &signed, body.as_bytes())
                 .map(|r| r.0)
                 .unwrap_or(0);
+            db = self.db.lock().map_err(|_| storage())?;
+            let unchanged: bool = db.query_row("SELECT EXISTS(SELECT 1 FROM subscriptions WHERE id=? AND revision=? AND token IS ? AND expires>? AND blocked='')",params![lease.id,revision,lease.principal.token,now()],|r|r.get(0)).map_err(|_| storage())?;
+            if !unchanged {
+                return Ok(());
+            }
             if status == 410 {
                 db.execute("DELETE FROM subscriptions WHERE id=?", [&lease.id])
                     .map_err(|_| storage())?;
@@ -978,58 +1075,96 @@ mod tests {
     }
     #[test]
     fn receipt_retry_signature_and_burst_contract() {
-        let home=tempfile::tempdir().unwrap();
-        let fixture=Arc::new(Fixture::new());
-        let events=store(home.path(),fixture.clone());
-        events.subscribe(&principal(),&args()).unwrap();
-        let lease=events.leases().unwrap().remove(0);
-        message(home.path(),"one","dot-a",now());
-        message(home.path(),"one","dot-a",now());
-        message(home.path(),"two","dot-a",now());
-        message(home.path(),"foreign","dot-b",now());
-        fixture.status.store(503,Ordering::SeqCst);
+        let home = tempfile::tempdir().unwrap();
+        let fixture = Arc::new(Fixture::new());
+        let events = store(home.path(), fixture.clone());
+        events.subscribe(&principal(), &args()).unwrap();
+        let lease = events.leases().unwrap().remove(0);
+        message(home.path(), "one", "dot-a", now());
+        message(home.path(), "one", "dot-a", now());
+        message(home.path(), "two", "dot-a", now());
+        message(home.path(), "foreign", "dot-b", now());
+        fixture.status.store(503, Ordering::SeqCst);
         events.deliver(&lease).unwrap();
-        let first=fixture.requests.lock().unwrap()[1].clone();
+        let first = fixture.requests.lock().unwrap()[1].clone();
         std::thread::sleep(Duration::from_millis(1100));
-        events.db.lock().unwrap().execute("UPDATE deliveries SET next=0",[]).unwrap();
-        fixture.status.store(200,Ordering::SeqCst);
+        events
+            .db
+            .lock()
+            .unwrap()
+            .execute("UPDATE deliveries SET next=0", [])
+            .unwrap();
+        fixture.status.store(200, Ordering::SeqCst);
         events.deliver(&lease).unwrap();
-        let second=fixture.requests.lock().unwrap()[2].clone();
-        assert_eq!(first.0,second.0,"retry preserves event ID and exact payload");
-        for name in ["webhook-timestamp","webhook-signature"] {
-            let value=|r:&ReceivedRequest|r.1.iter().find(|(n,_)|n==name).unwrap().1.clone();
-            assert_ne!(value(&first),value(&second),"fresh signing metadata");
+        let second = fixture.requests.lock().unwrap()[2].clone();
+        assert_eq!(
+            first.0, second.0,
+            "retry preserves event ID and exact payload"
+        );
+        for name in ["webhook-timestamp", "webhook-signature"] {
+            let value =
+                |r: &ReceivedRequest| r.1.iter().find(|(n, _)| n == name).unwrap().1.clone();
+            assert_ne!(value(&first), value(&second), "fresh signing metadata");
         }
         events.deliver(&lease).unwrap();
         events.deliver(&lease).unwrap();
-        let requests=fixture.requests.lock().unwrap();
-        assert_eq!(requests.len(),4,"burst sends separate requests and suppresses duplicates");
-        assert_eq!(requests[3].0["data"]["message_id"],"two");
+        let requests = fixture.requests.lock().unwrap();
+        assert_eq!(
+            requests.len(),
+            4,
+            "burst sends separate requests and suppresses duplicates"
+        );
+        assert_eq!(requests[3].0["data"]["message_id"], "two");
         drop(requests);
-        assert!(!home.path().join(".everett/inbox/dot-a.done").exists(),"2xx only acknowledges webhook receipt, never inbox processing");
-        events.unsubscribe(&principal(),&args()).unwrap();
+        assert!(
+            !home.path().join(".everett/inbox/dot-a.done").exists(),
+            "2xx only acknowledges webhook receipt, never inbox processing"
+        );
+        events.unsubscribe(&principal(), &args()).unwrap();
         events.deliver(&lease).unwrap();
-        assert_eq!(fixture.requests.lock().unwrap().len(),4);
+        assert_eq!(fixture.requests.lock().unwrap().len(), 4);
     }
 
     #[test]
     fn credential_expiring_during_verification_cannot_activate_subscription() {
         struct Slow;
         impl Webhook for Slow {
-            fn post(&self,_:&str,_:&[(String,String)],body:&[u8])->Result<(u16,Vec<u8>),&'static str> {
+            fn post(
+                &self,
+                _: &str,
+                _: &[(String, String)],
+                body: &[u8],
+            ) -> Result<(u16, Vec<u8>), &'static str> {
                 std::thread::sleep(Duration::from_millis(20));
-                let request:Value=serde_json::from_slice(body).unwrap();
-                Ok((200,serde_json::to_vec(&json!({"challenge":request["challenge"]})).unwrap()))
+                let request: Value = serde_json::from_slice(body).unwrap();
+                Ok((
+                    200,
+                    serde_json::to_vec(&json!({"challenge":request["challenge"]})).unwrap(),
+                ))
             }
         }
-        let home=tempfile::tempdir().unwrap();
-        let events=Events::with_db(Connection::open_in_memory().unwrap(),home.path().into(),Arc::new(Slow)).unwrap();
-        assert_eq!(events.subscribe_until(&principal(),&args(),Some(now()+5)).unwrap_err().reason,"token_expired");
+        let home = tempfile::tempdir().unwrap();
+        let events = Events::with_db(
+            Connection::open_in_memory().unwrap(),
+            home.path().into(),
+            Arc::new(Slow),
+        )
+        .unwrap();
+        assert_eq!(
+            events
+                .subscribe_until(&principal(), &args(), Some(now() + 5))
+                .unwrap_err()
+                .reason,
+            "token_expired"
+        );
         assert!(events.leases().unwrap().is_empty());
     }
-
 }
 
 #[cfg(test)]
 #[path = "gateway_events_regressions.rs"]
 mod regressions;
+
+#[cfg(test)]
+#[path = "gateway_events_concurrency.rs"]
+mod concurrency_tests;
