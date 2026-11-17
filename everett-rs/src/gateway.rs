@@ -1,3 +1,4 @@
+pub mod diagnostics;
 mod identities;
 mod native_start;
 #[cfg(test)]
