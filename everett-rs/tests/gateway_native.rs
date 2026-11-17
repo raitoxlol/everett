@@ -1429,6 +1429,7 @@ fn events_catalog_is_authenticated_and_scoped() {
 }
 
 const CASES: &[Case] = &[
+    ("events_verified_token_lease", events_acceptance::verified_token_lease),
     ("events_identity_and_lifetime", events_acceptance::identity_and_lifetime),
     ("events_catalog_is_authenticated_and_scoped", events_catalog_is_authenticated_and_scoped),
     ("whoami_provenance_gateway", whoami_provenance::gateway),
