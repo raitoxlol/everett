@@ -289,7 +289,11 @@ impl Events {
         );
         Ok((id, url.into()))
     }
+    #[cfg(test)]
     pub fn subscribe(&self, p: &Principal, args: &Value) -> Result<Value, Failure> {
+        self.subscribe_until(p, args, None)
+    }
+    pub fn subscribe_until(&self, p: &Principal, args: &Value, credential_expires_at: Option<i64>) -> Result<Value, Failure> {
         let (id, url) = Self::identity(p, args)?;
         let key = args["delivery"]["secret"]
             .as_str()
@@ -305,6 +309,8 @@ impl Events {
         };
         let mut db = self.db.lock().map_err(|_| storage())?;
         let at = now();
+        let expires = credential_expires_at.map_or(at + ttl, |deadline| deadline.min(at + ttl));
+        if expires <= at { return Err(invalid("token_expired")); }
         db.execute("DELETE FROM subscriptions WHERE expires<=?", [at])
             .map_err(|_| storage())?;
         let old: Option<(String, i64, i64)> = db
@@ -358,13 +364,14 @@ impl Events {
                 return Err(callback("challenge_failed"));
             }
         }
+        if expires <= now() { return Err(invalid("token_expired")); }
         let verified = if cached { old.as_ref().unwrap().2 } else { at };
         let created = old.as_ref().map_or(at, |o| o.1);
         let previous = old.as_ref().filter(|o| o.0 != key).map(|o| o.0.clone());
         let tx = db.transaction().map_err(|_| storage())?;
-        tx.execute("INSERT INTO subscriptions(id,owner,agent,token,url,secret,previous,rotation_until,created,expires,verified) VALUES(?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET token=excluded.token,secret=excluded.secret,previous=CASE WHEN excluded.previous IS NULL THEN subscriptions.previous ELSE excluded.previous END,rotation_until=CASE WHEN excluded.previous IS NULL THEN subscriptions.rotation_until ELSE excluded.rotation_until END,expires=excluded.expires,verified=excluded.verified",params![id,p.owner,p.agent,p.token,url,key,previous,at+300_000,created,at+ttl,verified]).map_err(|_|storage())?;
+        tx.execute("INSERT INTO subscriptions(id,owner,agent,token,url,secret,previous,rotation_until,created,expires,verified) VALUES(?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET token=excluded.token,secret=excluded.secret,previous=CASE WHEN excluded.previous IS NULL THEN subscriptions.previous ELSE excluded.previous END,rotation_until=CASE WHEN excluded.previous IS NULL THEN subscriptions.rotation_until ELSE excluded.rotation_until END,expires=excluded.expires,verified=excluded.verified",params![id,p.owner,p.agent,p.token,url,key,previous,at+300_000,created,expires,verified]).map_err(|_|storage())?;
         tx.commit().map_err(|_| storage())?;
-        Ok(json!({"id":id,"refreshBefore":iso(at+ttl),"cursor":null,"truncated":false}))
+        Ok(json!({"id":id,"refreshBefore":iso(expires),"cursor":null,"truncated":false}))
     }
     pub fn unsubscribe(&self, p: &Principal, args: &Value) -> Result<Value, Failure> {
         let (id, _) = Self::identity(p, args)?;
