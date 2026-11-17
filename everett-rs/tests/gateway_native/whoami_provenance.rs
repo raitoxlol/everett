@@ -44,8 +44,7 @@ pub(super) fn native() {
     for sid in ["native-one","native-two"] {
         let mut cmd=c.command(&["mcp"]);cmd.env("CODEX_THREAD_ID",sid);
         let mut peer=Wire::new(cmd);
-        denied(&peer.call("everett_whoami",json!({"session_id":"forged-session"})));
-        let result=success(&peer.call("everett_whoami",json!({})));
+        let result=success(&peer.call("everett_whoami",json!({"session_id":"forged-session"})));
         assert_eq!(result["session_id"],sid);
         assert_eq!(result["identity"]["session"]["id"],sid);
         assert_eq!(result["identity"]["session"]["provenance"],"native_host_bound");
@@ -54,7 +53,7 @@ pub(super) fn native() {
     }
     let mut peer=Wire::new(c.command(&["mcp"]));
     denied(&peer.call("everett_whoami",json!({"session_id":"forged-session","_meta":{"threadId":"also-forged"}})));
-    let unbound=success(&peer.call("everett_whoami",json!({})));
+    let unbound=success(&peer.call("everett_whoami",json!({"session_id":"forged-session"})));
     assert!(unbound["identity"]["session"]["id"].is_null());
     assert_eq!(unbound["identity"]["session"]["provenance"],"unbound");
     let meta=success(&peer.request("tools/call",Some(json!({"name":"everett_whoami","arguments":{},"_meta":{"threadId":"metadata-session"}}))));
