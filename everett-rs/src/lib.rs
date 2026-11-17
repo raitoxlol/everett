@@ -14,6 +14,7 @@ pub mod error;
 pub mod events;
 pub mod fmt;
 pub mod gateway;
+mod gateway_events;
 pub mod hooks_common;
 pub mod host;
 pub mod execution;
