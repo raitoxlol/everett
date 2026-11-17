@@ -1,5 +1,7 @@
 //! Native gateway journeys over stdio and HTTP. The test binary doubles as the synthetic
 //! backend (`--fixture-backend`), so no model, harness, or other runtime is involved.
+#[path = "gateway_native/events.rs"]
+mod events_acceptance;
 #[path = "gateway_native/identity_diagnostics.rs"]
 mod identity_diagnostics;
 #[path = "gateway_native/whoami_provenance.rs"]
@@ -404,7 +406,10 @@ fn fake_issuer() -> FakeIssuer {
             let token = body.split('&').find_map(|kv| kv.strip_prefix("token=")).unwrap_or_default().to_string();
             let authorized = head.contains(&format!("authorization: bearer {}", INTROSPECTION_SECRET.to_lowercase()));
             let (status, reply) = if authorized {
-                ("200 OK", map.lock().unwrap().get(&token).cloned().unwrap_or(json!({"active": false})))
+                {
+                    let value = map.lock().unwrap().get(&token).cloned().unwrap_or(json!({"active":false}));
+                    (if value["fixture_unavailable"] == true { "503 Unavailable" } else { "200 OK" }, value)
+                }
             } else {
                 ("401 Unauthorized", json!({"error": "invalid_client"}))
             };
@@ -1424,6 +1429,7 @@ fn events_catalog_is_authenticated_and_scoped() {
 }
 
 const CASES: &[Case] = &[
+    ("events_identity_and_lifetime", events_acceptance::identity_and_lifetime),
     ("events_catalog_is_authenticated_and_scoped", events_catalog_is_authenticated_and_scoped),
     ("whoami_provenance_gateway", whoami_provenance::gateway),
     ("whoami_provenance_native", whoami_provenance::native),
