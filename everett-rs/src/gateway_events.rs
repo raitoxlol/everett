@@ -591,20 +591,19 @@ impl Events {
         }
         tx.commit().map_err(|_| storage())?;
         let rows = {
-            let mut s=db.prepare("SELECT message,event,body,attempts FROM deliveries WHERE subscription=? AND done=0 AND next<=? LIMIT 1").map_err(|_|storage())?;
+            let mut s=db.prepare("SELECT message,event,body FROM deliveries WHERE subscription=? AND done=0 AND next<=? LIMIT 1").map_err(|_|storage())?;
             let rows = s
                 .query_map(params![lease.id, now()], |r| {
                     Ok((
                         r.get::<_, String>(0)?,
                         r.get::<_, String>(1)?,
                         r.get::<_, String>(2)?,
-                        r.get::<_, i64>(3)?,
                     ))
                 })
                 .map_err(|_| storage())?;
             rows.collect::<Result<Vec<_>, _>>().map_err(|_| storage())?
         };
-        for (mid, event, body, attempts) in rows {
+        for (mid, event, body) in rows {
             let signed = headers(
                 &lease.id,
                 &event,
@@ -614,15 +613,15 @@ impl Events {
             )?;
             let claim = uuid::Uuid::new_v4().to_string();
             let at = now();
-            let claimed = db.execute(
+            let attempts: Option<i64> = db.query_row(
                 "UPDATE deliveries SET next=?1, claim=?2
                  WHERE subscription=?3 AND message=?4 AND done=0 AND next<=?5
-                 AND EXISTS (SELECT 1 FROM subscriptions WHERE id=?3 AND revision=?6 AND token IS ?7 AND expires>?5 AND blocked='')",
+                 AND EXISTS (SELECT 1 FROM subscriptions WHERE id=?3 AND revision=?6 AND token IS ?7 AND expires>?5 AND blocked='')
+                 RETURNING attempts",
                 params![at + 30_000, claim, lease.id, mid, at, revision, lease.principal.token],
-            ).map_err(|_| storage())?;
-            if claimed == 0 {
-                return Ok(());
-            }
+                |row| row.get(0),
+            ).optional().map_err(|_| storage())?;
+            let Some(attempts) = attempts else { return Ok(()); };
             drop(db);
             let status = self
                 .transport
