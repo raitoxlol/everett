@@ -114,6 +114,10 @@ fn managed_binary(t3_home: &Path) -> Option<String> {
 
 /// `EVERETT_T3_BIN`, the active managed runtime, `t3` on PATH, then the legacy install.
 pub(crate) fn binary() -> Option<String> {
+    binary_in(&super::t3code::data_home())
+}
+
+pub(crate) fn binary_in(t3_home: &Path) -> Option<String> {
     let path = std::env::var("PATH").unwrap_or_default();
     if let Ok(bin) = std::env::var("EVERETT_T3_BIN") {
         return if bin.is_empty() {
@@ -124,8 +128,7 @@ pub(crate) fn binary() -> Option<String> {
             which(&bin, &path)
         };
     }
-    let t3_home = super::t3code::data_home();
-    managed_binary(&t3_home).or_else(|| which("t3", &path)).or_else(|| {
+    managed_binary(t3_home).or_else(|| which("t3", &path)).or_else(|| {
         let installed = t3_home.join("bin").join("t3");
         let bin = installed.to_string_lossy().to_string();
         (installed.is_file() && is_executable(&bin)).then_some(bin)
