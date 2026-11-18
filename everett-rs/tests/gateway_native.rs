@@ -780,6 +780,73 @@ fn oauth_chat_identity_survives_reapproval_but_rejects_another_account() {
     assert_eq!(success(&call('a',"everett_whoami",own))["session_id"],identity["session_id"]);
 }
 
+fn strict_gateway_keeps_conversation_inboxes_separate() {
+    let c = ctx();
+    let issuer = fake_issuer();
+    issuer.grant(&access('a'), "agent-shared", json!({"everett_account":"github:alice"}));
+    let port = c.spawn_http(c.oauth_command(&json!({
+        "oauth":{"issuer":issuer.url,"resource":RESOURCE},
+        "require_identity_handle":true, "events":true,
+    })));
+    let call = |name, args| native_call(port, 'a', name, args);
+    let directory = c.home.join(".everett/inbox");
+    std::fs::create_dir_all(&directory).unwrap();
+
+    let account = success(&call("everett_whoami", json!({})));
+    assert_eq!(account["capabilities"]["private_inbox_required"], true);
+    assert_eq!(account["session_id"], "agent-shared");
+    for (tool, args) in [
+        ("everett_inbox", json!({"session_id":"agent-shared"})),
+        ("everett_card", json!({"what":"queue","state":"working","next":"reply"})),
+        ("everett_send", json!({"to":"agent-two","text":"No fallback"})),
+    ] {
+        denied(&call(tool, args));
+    }
+    let catalog = oauth_rpc(port, 'a', "tools/list", json!({}));
+    for tool in ["everett_inbox", "everett_card", "everett_send"] {
+        let entry = catalog["result"]["tools"].as_array().unwrap().iter()
+            .find(|entry| entry["name"] == tool).unwrap();
+        assert!(entry["inputSchema"]["required"].as_array().unwrap().contains(&json!("identity_handle")));
+    }
+    let list = oauth_rpc(port, 'a', "events/list", json!({}));
+    assert_eq!(list["result"]["events"][0]["inputSchema"]["required"], json!(["identity_handle"]));
+
+    let mut conversations = Vec::new();
+    for (index, kind) in ["chat", "chat", "codex", "dot"].into_iter().enumerate() {
+        let registration = json!({"action":"create", "registration_key":format!("fixture-private-conversation-identity-{index}"),
+            "name":"Same display name", "kind":kind});
+        let identity = success(&call("everett_identity", registration.clone()));
+        assert_eq!(success(&call("everett_identity", registration)), identity);
+        let id = identity["session_id"].as_str().unwrap();
+        assert_ne!(id, "agent-shared");
+        assert!(conversations.iter().all(|previous: &Value| previous["session_id"] != id));
+        let message = json!({"id":format!("request-{index}"),"to":id,"from":"agent-two","text":"Private request",
+            "ts":std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs_f64()});
+        std::fs::write(directory.join(format!("{id}.jsonl")), format!("{message}\n")).unwrap();
+        conversations.push(identity);
+    }
+    for (index, identity) in conversations.iter().enumerate() {
+        let other = &conversations[(index + 1) % conversations.len()];
+        let handle = &identity["identity_handle"];
+        denied(&call("everett_inbox", json!({"identity_handle":handle,"session_id":other["session_id"]})));
+        denied(&call("everett_send", json!({"identity_handle":handle,"reply_to":format!("request-{}", (index + 1) % conversations.len()),"text":"Wrong inbox"})));
+        let data = success(&call("everett_inbox", json!({"identity_handle":handle})));
+        let inbox = data["messages"].as_array().unwrap();
+        assert_eq!(inbox.len(), 1);
+        assert_eq!(inbox[0]["id"], format!("request-{index}"));
+    }
+    let req = json!({"name":"message.created","arguments":{"session_id":"agent-shared"},
+        "delivery":{"mode":"webhook","url":"https://callback.example/","secret":"intentionally-invalid"}});
+    for method in ["events/subscribe", "events/unsubscribe"] {
+        let denied = oauth_rpc(port, 'a', method, req.clone());
+        assert_eq!(denied["error"]["message"], "identity_handle_required");
+    }
+    let mut req = req;
+    req["arguments"] = json!({"identity_handle":conversations[3]["identity_handle"]});
+    let result = oauth_rpc(port, 'a', "events/subscribe", req);
+    assert_eq!(result["error"]["message"], "invalid_signing_secret");
+}
+
 fn oauth_rejects_wrong_issuer_audience_expiry_scope_identity_and_revoked_tokens() {
     let c = ctx();
     let issuer = fake_issuer();
@@ -1475,6 +1542,7 @@ const CASES: &[Case] = &[
     ("identity_retry_rejects_invalid_discovery_records_and_repairs_missing_ones", identity_retry_rejects_invalid_discovery_records_and_repairs_missing_ones),
     ("chat_identities_discover_and_exchange_correlated_inbox_messages", chat_identities_discover_and_exchange_correlated_inbox_messages),
     ("oauth_chat_identity_survives_reapproval_but_rejects_another_account", oauth_chat_identity_survives_reapproval_but_rejects_another_account),
+    ("strict_gateway_keeps_conversation_inboxes_separate", strict_gateway_keeps_conversation_inboxes_separate),
     ("identity_listing_filters_same_name_registrations_by_kind", identity_listing_filters_same_name_registrations_by_kind),
     ("per_chat_identities_are_private_durable_and_revocable", per_chat_identities_are_private_durable_and_revocable),
     ("native_stdio_journey_for_both_external_harnesses", native_stdio_journey_for_both_external_harnesses),
