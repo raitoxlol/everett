@@ -543,6 +543,7 @@ Everett is mostly used by agents. `everett mcp` is a stdio MCP server (JSON-RPC 
 | `everett_whoami` | none | The caller's session id, harness, hop count, and how they were detected. |
 | `everett_inbox` | `peek?`, `message_id?`, `reply_to?` | Read and mark matching messages in your local inbox. Use `reply_to` to read only pending replies to an original request ID. |
 | `everett_status` | `message_id` | Local stdio MCP only. Check pickup and recover a retained reply from the session that sent the request. Use the original ID from `everett_send`. |
+| `everett_retry` | `message_id` | Local stdio MCP only. Nudge the original T3 thread for a still-queued ping from your session using the existing inbox request. |
 | `everett_event` | `kind`, `message`, `project?` | Records done / blocked / needs-input / info for your session. |
 | `everett_subscribe` | `target`, `unsubscribe?` | Follows a session's or project's events in your inbox. |
 | `everett_control` | `action`, `session?`, `thread?`, `text?`, `harness?`, `project?`, `wait?`, `messages?` | Owner-local control. `threads`, `start`, `send`, `wake` and `read` drive T3 Code threads through the `t3` CLI. `start` also opens headless Claude, Codex, OMP, Pi, Hermes, Grok or Devin sessions, `send`/`wake` ping other sessions through `everett_send`, and `read` returns the latest messages of any harness transcript. `stop` reports per harness why Everett can't stop it. Remote-derived callers are refused. |

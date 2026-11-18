@@ -98,6 +98,13 @@ pub fn tools() -> &'static Vec<Value> {
                 }, "required": ["message_id"], "additionalProperties": false},
             }),
             json!({
+                "name": "everett_retry",
+                "description": "Nudge the original T3 thread for a still-queued local ping you sent. Reuses the original Everett request. Check pickup and reply with everett_status.",
+                "inputSchema": {"type": "object", "properties": {
+                    "message_id": s("The original local T3 inbox request's message_id."),
+                }, "required": ["message_id"], "additionalProperties": false},
+            }),
+            json!({
                 "name": "everett_event",
                 "description": "Report what your session is doing so other sessions and the human stay aware: done (finished a task), blocked (cannot continue; say on what), needs-input (waiting on the human), or info. blocked and needs-input notify the human. Subscribers get it in their inbox. Call everett_subscribe to start following a session or project yourself.",
                 "inputSchema": {"type": "object", "properties": {
@@ -1225,6 +1232,23 @@ fn tool_inbox(
     Ok(out)
 }
 
+fn tool_retry(
+    args: &Map<String, Value>,
+    identity: &Map<String, Value>,
+) -> std::result::Result<Map<String, Value>, ToolFailure> {
+    let (sender, _) = caller_session(args, identity)?;
+    if sender.is_empty() {
+        return Err(err2(2, unbound_message(identity)));
+    }
+    if !crate::inbox::valid_id(&sender) {
+        return Err(err2(2, "Invalid host-bound session ID."));
+    }
+    if identity.get("harness").and_then(Value::as_str).is_some_and(crate::adapters::external::is_external) {
+        return Err(err2(2, "External callers are inbox-only."));
+    }
+    Ok(crate::t3_wake::retry(&sender, &str_arg(args, "message_id", true)?)?)
+}
+
 fn tool_status(
     args: &Map<String, Value>,
     identity: &Map<String, Value>,
@@ -1475,6 +1499,7 @@ fn call_handler(
         "everett_whoami" => tool_whoami(identity),
         "everett_inbox" => tool_inbox(args, identity),
         "everett_status" => tool_status(args, identity),
+        "everett_retry" => tool_retry(args, identity),
         "everett_event" => tool_event(args, identity),
         "everett_subscribe" => tool_subscribe(args, identity),
         "everett_control" => tool_control(args, identity),
