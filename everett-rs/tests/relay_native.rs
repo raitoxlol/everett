@@ -141,7 +141,9 @@ fn status_fixture(posted: bool, state: &str, expired: bool) -> (common::Fixture,
 #[test]
 fn unrelated_incomplete_receipt_does_not_hide_message_status() {
     let (f, _server, mid) = status_fixture(false, "queued", false);
+    use std::os::unix::fs::PermissionsExt;
     let broken = f.write(".everett/relay-cloudflare/outgoing/000-incomplete.json", "{");
+    fs::set_permissions(&broken, fs::Permissions::from_mode(0o600)).unwrap();
     let out = f.run(&["peer", "status", "id:agent-b", &mid]);
     assert!(out.status.success(), "{out:?}");
     let result: Value = serde_json::from_slice(&out.stdout).unwrap();
