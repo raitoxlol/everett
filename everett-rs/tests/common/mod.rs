@@ -27,6 +27,7 @@ impl Fixture {
         let mut cmd = Command::new(env!("CARGO_BIN_EXE_everett"));
         cmd.args(args)
             .env("EVERETT_HOME", self.home())
+            .env_remove("T3CODE_HOME")
             .env("HOME", self.home())
             .env("EVERETT_NOTIFY", "none")
             .env("PATH", HERMETIC_PATH)
@@ -45,6 +46,7 @@ impl Fixture {
         let mut cmd = Command::new(env!("CARGO_BIN_EXE_everett"));
         cmd.args(args)
             .env("EVERETT_HOME", self.home())
+            .env_remove("T3CODE_HOME")
             .env("HOME", self.home())
             .env("EVERETT_NOTIFY", "none")
             .env("PATH", HERMETIC_PATH)
@@ -228,6 +230,7 @@ const CALLER_IDENTITY_UNSET: &[&str] = &[
 ];
 
 const SANDBOX_UNSET: &[&str] = &[
+    "T3CODE_HOME",
     "TYPESAFE_API_KEY",
     "EVERETT_VAULT",
     "EVERETT_VAULT_DIR",

@@ -14,8 +14,23 @@ use crate::timefmt::epoch_from_iso;
 pub const SOURCE: &str = "t3code";
 pub type ThreadMap = HashMap<(String, String), (String, String)>;
 
+pub(crate) fn data_home() -> PathBuf {
+    let override_home = std::env::var("T3CODE_HOME").unwrap_or_default();
+    let configured = override_home.trim();
+    if configured.is_empty() {
+        return home().join(".t3");
+    }
+    let path = if let Some(rest) = configured.strip_prefix("~/").or((configured == "~").then_some("")) {
+        std::env::var_os("HOME")
+            .map_or_else(|| PathBuf::from(configured), |os_home| PathBuf::from(os_home).join(rest))
+    } else {
+        PathBuf::from(configured)
+    };
+    std::path::absolute(&path).unwrap_or(path)
+}
+
 pub fn db_path() -> PathBuf {
-    let state = home().join(".t3").join("userdata");
+    let state = data_home().join("userdata");
     let current = state.join("statev2.sqlite");
     if current.is_file() {
         current
