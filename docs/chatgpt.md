@@ -1,5 +1,10 @@
 # ChatGPT connections and the local plugin
 
+Use **Everett** as your hosted plugin for ChatGPT and Dots. The [hosted Everett
+bundle](../plugins/everett/README.md) points to one owner-authorized app. Use that
+same app for your chats and Dots, with a private inbox handle for each
+conversation. Use the private test connection only for route diagnostics.
+
 Everett has two connection paths. A local plugin starts the installed binary over
 stdio. A ChatGPT custom MCP connection reaches the restricted gateway through
 HTTPS or Secure MCP Tunnel. They have different installation and account checks.

@@ -16,9 +16,12 @@ random registration key. Retain the returned handle privately and pass it on
 subsequent calls. Reuse the same key only to retry that registration. A chat
 identity is a logical inbox, not a native harness session or vendor attestation.
 
-Use full authorized destination IDs for handoffs. Delivery is inbox-only and
-does not automatically wake the recipient. Read only the selected inbox; use
-`reply_to` to correlate a response. Do not send work to unrelated sessions.
+Use full IDs from `everett_whoami.authorized_destinations` for inbox handoffs.
+On a `message.created` event, call `everett_inbox` with the event's `message_id`
+and this chat's private `identity_handle`. Act on the returned message and reply
+with `everett_send(reply_to=...)` using that same message ID. An empty result
+means there is no pending work for that event in this inbox. Keep unrelated
+messages pending.
 
 For a requested native start, require both the registered `everett_start` tool
 and `capabilities.native_session_start=true` on this connection. If the grant
