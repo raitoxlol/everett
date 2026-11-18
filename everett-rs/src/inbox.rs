@@ -414,7 +414,7 @@ fn wire_reply_hops(original: &Map<String, Value>, env_hops: i64, limit: Option<i
     Ok(hops)
 }
 
-/// Poll the sender's inbox for a reply to message_id; consume and return it, or None on timeout.
+/// Poll for a correlated reply and return it even if another inbox reader consumed it.
 pub fn wait_reply(sender: &str, message_id: &str, wait: f64, poll: f64) -> Option<Map<String, Value>> {
     wait_reply_with(sender, message_id, wait, poll, now, |d| std::thread::sleep(std::time::Duration::from_secs_f64(d)))
 }
@@ -429,16 +429,24 @@ pub fn wait_reply_with(
 ) -> Option<Map<String, Value>> {
     let deadline = clock() + wait.max(0.0);
     loop {
-        for item in pending(sender, None) {
-            if item.get("reply_to").and_then(|v| v.as_str()) == Some(message_id) {
-                if let Some(id) = item.get("id").and_then(|v| v.as_str()) {
-                    if persist_relay_context(sender, &[id]).is_err() {
-                        return None;
-                    }
+        let done = done_ids(sender);
+        let at = now();
+        let reply = read(sender)
+            .into_iter()
+            .filter(|item| {
+                item.get("kind").and_then(Value::as_str) == Some("reply")
+                    && item.get("reply_to").and_then(Value::as_str) == Some(message_id)
+                    && at - item.get("ts").and_then(Value::as_f64).unwrap_or_default() < TTL
+            })
+            .min_by_key(|item| item.get("id").and_then(Value::as_str).is_some_and(|id| done.contains(id)));
+        if let Some(item) = reply {
+            if let Some(id) = item.get("id").and_then(Value::as_str) {
+                persist_relay_context(sender, &[id]).ok()?;
+                if !done.contains(id) {
                     mark_done(sender, &[id]);
                 }
-                return Some(item);
             }
+            return Some(item);
         }
         if clock() >= deadline {
             return None;
