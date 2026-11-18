@@ -1374,8 +1374,14 @@ pub fn cmd_control_threads(project: &str) -> i32 {
     print_control_result(crate::send::require_local_prompt(None).and_then(|()| crate::control::threads(project)))
 }
 
-pub fn cmd_control_read(thread: &str, messages: usize) -> i32 {
-    print_control_result(crate::control::read(thread, None, messages, None))
+pub fn cmd_control_read(thread: &str, session: Option<&str>, messages: usize) -> i32 {
+    let result = match session {
+        Some(id) => crate::send::require_local_prompt(None)
+            .and_then(|()| crate::control::resolve_session(id))
+            .and_then(|session| crate::control::read("", Some(&session), messages, None)),
+        None => crate::control::read(thread, None, messages, None),
+    };
+    print_control_result(result)
 }
 
 fn print_control_result(result: crate::error::Result<Value>) -> i32 {

@@ -436,9 +436,13 @@ enum Devices {
 
 #[derive(Subcommand)]
 enum ControlCmd {
-    /// Read recent T3 thread messages as JSON
+    /// Read recent T3 thread or local session messages as JSON
     Read {
-        thread: String,
+        #[arg(required_unless_present = "session", conflicts_with = "session")]
+        thread: Option<String>,
+        /// Local Everett session ID or unambiguous prefix
+        #[arg(long)]
+        session: Option<String>,
         #[arg(long, default_value_t = 10)]
         messages: usize,
     },
@@ -835,7 +839,9 @@ fn main() {
             ExternalCmd::List => cli::cmd_external_list(),
             ExternalCmd::Remove { id } => cli::cmd_external_remove(&id),
         },
-        Cmd::Control { action: ControlCmd::Read { thread, messages } } => cli::cmd_control_read(&thread, messages),
+        Cmd::Control { action: ControlCmd::Read { thread, session, messages } } => {
+            cli::cmd_control_read(thread.as_deref().unwrap_or_default(), session.as_deref(), messages)
+        }
         Cmd::Control { action: ControlCmd::Threads { project } } => {
             cli::cmd_control_threads(project.as_deref().unwrap_or_default())
         }
