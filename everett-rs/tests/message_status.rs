@@ -1,6 +1,6 @@
 mod common;
 
-use common::{fixture, jsonl, Fixture};
+use common::{fixture, jsonl, mcp_calls, tool_json, Fixture};
 use serde_json::{json, Value};
 
 fn run(fx: &Fixture, caller: &str, args: &[&str]) -> String {
@@ -11,6 +11,36 @@ fn run(fx: &Fixture, caller: &str, args: &[&str]) -> String {
 
 fn run_json(fx: &Fixture, caller: &str, args: &[&str]) -> Value {
     serde_json::from_str(&run(fx, caller, args)).unwrap()
+}
+
+#[test]
+fn sent_recipient_filter_recovers_requests_behind_the_global_limit() {
+    let fx = fixture();
+    let now = everett::session::now();
+    let item = |id: &str, sender, target, ts| json!({
+        "id": id, "kind": "message", "from": sender, "to": target, "text": "request", "ts": ts
+    });
+    let busy: Vec<_> = (0..50)
+        .map(|index| item(&format!("busy-{index}"), "sender", "busy", now - index as f64))
+        .collect();
+    fx.write(".everett/inbox/busy.jsonl", &jsonl(&busy));
+    fx.write(".everett/inbox/worker.jsonl", &jsonl(&[
+        item("recover", "sender", "worker", now - 60.0),
+        item("foreign", "other", "worker", now),
+    ]));
+    let all = run_json(&fx, "sender", &["sent", "--json"]);
+    assert_eq!(all["requests"].as_array().unwrap().len(), 50);
+    assert!(!all.to_string().contains("recover"));
+    let filtered = run_json(&fx, "sender", &["sent", "--to", "worker", "--json"]);
+    let requests = filtered["requests"].as_array().unwrap();
+    assert_eq!(requests.len(), 1);
+    assert_eq!(requests[0]["message_id"], "recover");
+    let mcp = mcp_calls(&fx, &[], &[("EVERETT_SESSION_ID", "sender")], &[
+        ("everett_sent", json!({"to":"worker"})),
+    ]);
+    assert_eq!(tool_json(&mcp[0])["requests"], filtered["requests"]);
+    let status = run_json(&fx, "sender", &["status", "recover", "--json"]);
+    assert_eq!(status["state"], "queued");
 }
 
 #[test]
