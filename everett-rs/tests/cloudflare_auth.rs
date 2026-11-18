@@ -1123,7 +1123,7 @@ fn one_login_authorizes_multiple_native_inboxes_and_revocation_stops_live_server
     }
     for (sid, marker) in [("native-alpha", "alpha only"), ("native-beta", "beta only")] {
         f.write(&format!(".everett/inbox/{sid}.jsonl"), &format!("{}\n",
-            json!({"id":sid,"to":sid,"from":"human","text":marker})));
+            json!({"id":sid,"to":sid,"from":"human","text":marker,"ts":everett::session::now()})));
     }
     let unsigned = a("tools/call", inbox(json!({"session_id":"native-alpha"})));
     assert_eq!(unsigned["isError"], true, "{unsigned}");
