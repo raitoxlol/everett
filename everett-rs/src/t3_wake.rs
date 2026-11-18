@@ -92,7 +92,7 @@ pub(crate) fn retry(sender: &str, message_id: &str) -> Result<Map<String, Value>
         }
         Ok(())
     }).map_err(|error| EverettError::new(error.code, format!(
-        "T3 retry not confirmed: {}. Check `everett status {message_id}` for the original request.", error.message,
+        "T3 retry not confirmed: {}", error.message,
     )))?;
     Ok(Map::from_iter([
         ("message_id".into(), json!(message_id)),

@@ -973,7 +973,16 @@ pub fn cmd_retry(message_id: &str, json: bool) -> i32 {
             }
             0
         }
-        Err(error) => { eprintln!("everett: {}", error.message); error.code }
+        Err(error) => {
+            let mut command = vec!["everett".to_owned(), "status".to_owned()];
+            if message_id.starts_with('-') {
+                command.push("--".into());
+            }
+            command.push(message_id.into());
+            let follow = crate::proc::shlex_join(&command);
+            eprintln!("everett: {} Check `{follow}` for the original request.", error.message);
+            error.code
+        }
     }
 }
 

@@ -1246,7 +1246,9 @@ fn tool_retry(
     if identity.get("harness").and_then(Value::as_str).is_some_and(crate::adapters::external::is_external) {
         return Err(err2(2, "External callers are inbox-only."));
     }
-    Ok(crate::t3_wake::retry(&sender, &str_arg(args, "message_id", true)?)?)
+    let id = str_arg(args, "message_id", true)?;
+    crate::t3_wake::retry(&sender, &id).map_err(|error| err2(error.code,
+        format!("{} Check `everett_status(message_id={id:?})` for the original request.", error.message)))
 }
 
 fn tool_status(
