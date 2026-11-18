@@ -420,3 +420,31 @@ fn cli_control_read_resolves_a_local_session_prefix() {
     assert!(!denied.status.success());
     assert!(String::from_utf8_lossy(&denied.stderr).contains("Remote-derived"));
 }
+
+#[cfg(target_os = "linux")]
+#[test]
+fn cli_reads_a_transcript_larger_than_its_memory_budget() {
+    use std::io::{BufWriter, Write};
+    use std::process::Command;
+    let fx = fixture();
+    let row = |text: &str| json!({"type":"user","sessionId":CLAUDE,"cwd":fx.home(),
+        "message":{"role":"user","content":text}}).to_string();
+    let path = fx.write(&format!(".claude/projects/p/{CLAUDE}.jsonl"), "");
+    let mut file = BufWriter::new(fs::File::create(path).unwrap());
+    let history = row(&"x".repeat(4096));
+    // The transcript alone exceeds the child's 64 MiB address-space limit.
+    for _ in 0..16_384 {
+        writeln!(file, "{history}").unwrap();
+    }
+    writeln!(file, "{}", row("latest")).unwrap();
+    file.flush().unwrap();
+    let mut cmd = Command::new("/bin/bash");
+    cmd.env_clear().env("HOME", fx.home()).env("EVERETT_HOME", fx.home())
+        .env("PATH", common::HERMETIC_PATH)
+        .args(["-c", r#"ulimit -c 0 && ulimit -v 65536 && exec "$@""#, "read-test",
+            env!("CARGO_BIN_EXE_everett"), "control", "read", "--session", CLAUDE, "--messages", "1"]);
+    let out = cmd.output().unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let result: Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(result["messages"], json!([{"role":"user","text":"latest"}]));
+}
