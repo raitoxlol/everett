@@ -39,6 +39,10 @@ It then uses the active, completely installed runtime in the Everett profile's
 its runtime is unavailable. Check that exact executable's `thread send --help`
 and `thread start --help`; no installer or runtime configuration is changed by
 Everett. Plain help output or a malformed JSON response cannot confirm dispatch.
+
+Set `T3CODE_HOME` in Everett's environment when T3 uses a separate data folder.
+Everett reads T3's session database and managed runtime from that folder. The
+Everett inbox still lives in the Everett profile.
 Do not blindly retry an unconfirmed send or start: the CLI might have acted before
 its response failed.
 

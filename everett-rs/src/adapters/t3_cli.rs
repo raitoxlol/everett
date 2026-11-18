@@ -6,7 +6,6 @@ use std::path::Path;
 use serde_json::Value;
 
 use crate::proc::{is_executable, run_capture, which, RunOutput};
-use crate::session::home;
 
 const SERVICE_LAUNCHER_PROTOCOL: u64 = 3;
 
@@ -118,7 +117,7 @@ pub(crate) fn binary() -> Option<String> {
             which(&bin, &path)
         };
     }
-    let t3_home = home().join(".t3");
+    let t3_home = super::t3code::data_home();
     managed_binary(&t3_home).or_else(|| which("t3", &path)).or_else(|| {
         let installed = t3_home.join("bin").join("t3");
         let bin = installed.to_string_lossy().to_string();
