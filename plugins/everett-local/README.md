@@ -63,10 +63,11 @@ EVERETT_VERIFY_BINARY=/absolute/path/to/everett python3 -m unittest discover -s 
 python3 tests/smoke.py --manifest "$HOME/.local/share/everett-direct-plugin/plugins/everett-direct/.mcp.json"
 ```
 
-The smoke check initializes the actual installed MCP command, lists tools and
-calls identity and local listing. It sends no messages and reads no inbox bodies.
-The runtime test uses a disposable home and synthetic session, installs the
-portable package, and calls the actual binary's identity and listing tools.
+Run `everett login` in the local plugin's Everett profile before running the
+manual smoke check. It initializes the installed MCP command, lists tools and
+calls identity and local listing without sending messages or reading inbox bodies.
+The automated runtime test installs the portable package in a disposable home
+and verifies its tools with a synthetic session and a loopback account fixture.
 It does not establish ChatGPT app loading. Public desktop directory submission
 requires approved-partner access, plus clean-machine/client installation checks
 and an explicit publishing decision. See the official
