@@ -433,7 +433,12 @@ enum CoreCmd {
     EditPath,
     History,
     /// Search learned facts from global memory and the selected project
-    Search { query: String },
+    Search {
+        query: String,
+        /// Print structured results with fact metadata
+        #[arg(long)]
+        json: bool,
+    },
 }
 
 #[derive(Subcommand)]
@@ -950,8 +955,8 @@ fn main() {
             cli::cmd_learn(&a, ttl_seconds)
         }
         Cmd::Core { action, project } => {
-            if let Some(CoreCmd::Search { query }) = action {
-                cli::cmd_core_search(&query, project.as_deref())
+            if let Some(CoreCmd::Search { query, json }) = action {
+                cli::cmd_core_search(&query, project.as_deref(), json)
             } else {
                 a.action = match action {
                 Some(CoreCmd::EditPath) => Some("edit-path".into()),
