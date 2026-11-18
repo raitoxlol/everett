@@ -137,7 +137,14 @@ pub fn cmd_ls(args: &Args) -> i32 {
     }
     let sessions = crate::registry::scan(args.hours, args.all, Some(crate::registry::CAP), args.harness.as_deref().unwrap_or(""));
     if args.json {
-        println!("{}", serde_json::to_string_pretty(&sessions.iter().map(|s| s.to_dict()).collect::<Vec<_>>()).unwrap_or_default());
+        let rows: Vec<_> = sessions.iter().map(|s| {
+            let mut row = s.to_dict();
+            if let Some(thread) = &s.t3_thread_id {
+                row["t3_thread_id"] = json!(thread);
+            }
+            row
+        }).collect();
+        println!("{}", serde_json::to_string_pretty(&rows).unwrap_or_default());
         return 0;
     }
     if sessions.is_empty() {

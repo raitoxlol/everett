@@ -441,6 +441,9 @@ fn tool_ls(
         .iter()
         .map(|s| {
             let mut b = brief(s);
+            if let Some(thread) = &s.t3_thread_id {
+                b.insert("t3_thread_id".into(), json!(thread));
+            }
             if !me.is_empty() && s.id == me {
                 b.insert("you".into(), json!(true));
             }
