@@ -272,10 +272,10 @@ fn t3_cli_text_reports_pinged() {
     let inbox: Value = serde_json::from_slice(&pending.stdout).unwrap();
     let id = inbox["messages"][0]["id"].as_str().unwrap();
     assert!(text.contains(&format!("everett status {id}")), "{text}");
+    check_failed_t3_cli_ping_follow_up();
 }
 
-#[test]
-fn failed_t3_cli_ping_prints_the_retained_follow_up_command() {
+fn check_failed_t3_cli_ping_follow_up() {
     let fx = fixture();
     plant_thread(&fx.home());
     let fake = fake_t3(&fx.home(), 1);
