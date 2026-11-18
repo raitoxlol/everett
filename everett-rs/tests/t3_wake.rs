@@ -541,6 +541,130 @@ fn t3_cli_json_failed_ping_returns_a_recovery_receipt() {
 }
 
 #[test]
+fn t3_retry_does_not_nudge_again_after_dispatch_was_confirmed() {
+    let fx = fixture();
+    plant_thread(&fx.home());
+    let bin = fake_t3(&fx.home(), 0);
+    let env = [("EVERETT_SESSION_ID", "caller"), ("EVERETT_T3_BIN", bin.to_str().unwrap())];
+    let send = fx.run_stdin(&["send", "--to", THREAD, "--json", BODY], "", &env);
+    assert!(send.status.success(), "{send:?}");
+    let sent: Value = serde_json::from_slice(&send.stdout).unwrap();
+    let id = sent["message_id"].as_str().unwrap();
+    let output = fx.home().join("t3-argv");
+    assert_argv(&fx.home(), id);
+    fs::remove_file(&output).unwrap();
+    let retry = fx.run_stdin(&["retry", id, "--json"], "", &env);
+    assert!(retry.status.success(), "{retry:?}");
+    assert!(!output.exists(), "retry sent a second T3 nudge: {retry:?}");
+    let retry: Value = serde_json::from_slice(&retry.stdout).unwrap();
+    assert_eq!(retry["already_dispatched"], true);
+    assert_eq!(retry["receipt"], sent["wake"]["receipt"]);
+    let status = fx.run_stdin(&["status", id, "--json"], "", &env);
+    let status: Value = serde_json::from_slice(&status.stdout).unwrap();
+    assert_eq!(status["state"], "queued");
+
+    let path = fx.home().join(format!(".everett/inbox/{SESSION}.jsonl"));
+    let mut old: Value = serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
+    old["ts"] = json!(everett::session::now() - everett::inbox::TTL - 1.0);
+    fs::write(&path, format!("{old}\n")).unwrap();
+    let journal = Connection::open(fx.home().join(".everett/inbox/t3-dispatch.sqlite")).unwrap();
+    journal.execute_batch("BEGIN IMMEDIATE").unwrap();
+    let hook = fx.run(&["hook", "omp_inbox", SESSION]);
+    assert!(hook.status.success(), "{hook:?}");
+    assert!(fs::read_to_string(&path).unwrap().is_empty());
+    journal.execute_batch("ROLLBACK").unwrap();
+    let hook = fx.run(&["hook", "omp_inbox", SESSION]);
+    assert!(hook.status.success(), "{hook:?}");
+    let count: i64 = journal.query_row("SELECT count(*) FROM dispatch WHERE message_id = ?1", [id], |row| row.get(0)).unwrap();
+    assert_eq!(count, 0);
+}
+
+#[test]
+fn t3_retry_does_not_nudge_again_after_dispatch_was_confirmed_or_uncertain() {
+    let fx = fixture();
+    plant_thread(&fx.home());
+    let bin = fake_t3(&fx.home(), 0);
+    let env = [("EVERETT_SESSION_ID", "caller"), ("EVERETT_T3_BIN", bin.to_str().unwrap())];
+    let run = |args: &[&str]| fx.run_stdin(args, "", &env);
+    let send = || run(&["send", "--to", THREAD, "--json", BODY]);
+    let script = fs::read_to_string(&bin).unwrap().replace("exit 0", "kill -TERM $$");
+    fs::write(&bin, script).unwrap();
+    let interrupted = send();
+    assert_eq!(interrupted.status.code(), Some(4), "{interrupted:?}");
+
+    fake_t3(&fx.home(), 0);
+    let db = Connection::open(fx.home().join(".everett/inbox/t3-dispatch.sqlite")).unwrap();
+    db.execute_batch("CREATE TRIGGER reject_confirmation BEFORE UPDATE ON dispatch BEGIN
+        SELECT RAISE(FAIL, 'injected confirmation write failure'); END").unwrap();
+    let unsaved = send();
+    assert_eq!(unsaved.status.code(), Some(4), "{unsaved:?}");
+    let script = fs::read_to_string(&bin).unwrap();
+    let without_receipt = script.lines().filter(|line| !line.contains("threadId")).collect::<Vec<_>>().join("\n");
+    fs::write(&bin, without_receipt).unwrap();
+    let missing = send();
+    assert_eq!(missing.status.code(), Some(4), "{missing:?}");
+    fake_t3(&fx.home(), 0);
+    fs::remove_file(fx.home().join("t3-argv")).unwrap();
+    for failed in [interrupted, unsaved, missing] {
+        let error = String::from_utf8_lossy(&failed.stderr);
+        assert!(error.contains("Check the original T3 thread"), "{failed:?}");
+        assert!(!error.contains("use `everett retry"), "{failed:?}");
+        let receipt: Value = serde_json::from_slice(&failed.stdout).unwrap();
+        let retry = run(&["retry", receipt["message_id"].as_str().unwrap(), "--json"]);
+        assert_eq!(retry.status.code(), Some(4), "{retry:?}");
+        assert!(!fx.home().join("t3-argv").exists());
+    }
+
+    fake_t3(&fx.home(), 1);
+    let failed = send();
+    assert_eq!(failed.status.code(), Some(4), "{failed:?}");
+    let failed: Value = serde_json::from_slice(&failed.stdout).unwrap();
+    fake_t3(&fx.home(), 0);
+    let retry = run(&["retry", failed["message_id"].as_str().unwrap(), "--json"]);
+    assert_eq!(retry.status.code(), Some(4), "{retry:?}");
+    assert!(String::from_utf8_lossy(&retry.stderr).contains("Check the original T3 thread"), "{retry:?}");
+}
+
+#[test]
+fn t3_retry_does_not_nudge_again_after_dispatch_was_confirmed_or_in_flight() {
+    let fx = fixture();
+    plant_thread(&fx.home());
+    let bin = fake_t3(&fx.home(), 1);
+    let env = [("EVERETT_SESSION_ID", "caller"), ("EVERETT_T3_BIN", bin.to_str().unwrap())];
+    let failed = fx.run_stdin(&["send", "--to", THREAD, "--json", BODY], "", &env);
+    assert_eq!(failed.status.code(), Some(4), "{failed:?}");
+    let failed: Value = serde_json::from_slice(&failed.stdout).unwrap();
+    let id = failed["message_id"].as_str().unwrap();
+    let args = ["retry", id, "--json"];
+
+    fake_t3(&fx.home(), 0);
+    let script = fs::read_to_string(&bin).unwrap().replace("exit 0", concat!(
+        "printf 'dispatch\\n' >> \"$HOME/dispatch-count\"\n",
+        "while [ ! -f \"$HOME/release-dispatch\" ]; do /bin/sleep 0.02; done\nexit 0",
+    ));
+    fs::write(&bin, script).unwrap();
+    let first = Command::new(env!("CARGO_BIN_EXE_everett"))
+        .args(args).env_clear().env("HOME", fx.home()).env("EVERETT_HOME", fx.home()).envs(env)
+        .stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::piped()).spawn().unwrap();
+    let count = fx.home().join("dispatch-count");
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    while !count.exists() && std::time::Instant::now() < deadline {
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    assert!(count.exists(), "retry never invoked T3");
+    let concurrent = fx.run_stdin(&args, "", &env);
+    fx.write("release-dispatch", "");
+    let first = first.wait_with_output().unwrap();
+    assert_eq!(concurrent.status.code(), Some(4), "{concurrent:?}");
+    assert!(first.status.success(), "{first:?}");
+    let replay = fx.run_stdin(&args, "", &env);
+    assert!(replay.status.success(), "{replay:?}");
+    let replay: Value = serde_json::from_slice(&replay.stdout).unwrap();
+    assert_eq!(replay["already_dispatched"], true);
+    assert_eq!(fs::read_to_string(count).unwrap(), "dispatch\n");
+}
+
+#[test]
 fn t3_retry_reuses_the_original_request_after_dispatch_failure() {
     let fx = fixture();
     plant_thread(&fx.home());

@@ -1004,7 +1004,8 @@ pub fn cmd_retry(message_id: &str, json: bool) -> i32 {
             if json {
                 println!("{}", serde_json::to_string_pretty(&receipt).unwrap());
             } else {
-                println!("PINGED  original request {message_id}\n  Check pickup and reply: everett status {message_id}");
+                let heading = if receipt["already_dispatched"] == true { "ALREADY PINGED" } else { "PINGED" };
+                println!("{heading}  original request {message_id}\n  Check pickup and reply: everett status {message_id}");
             }
             0
         }
