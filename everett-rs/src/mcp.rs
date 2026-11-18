@@ -90,6 +90,13 @@ pub fn tools() -> &'static Vec<Value> {
                 }, "additionalProperties": false},
             }),
             json!({
+                "name": "everett_status",
+                "description": "Check pickup and recover a retained reply for a local Everett request you sent, even after reading your inbox. Use the message_id returned by everett_send. This leaves the reply unread if it is still pending.",
+                "inputSchema": {"type": "object", "properties": {
+                    "message_id": s("The original local request's message_id."),
+                }, "required": ["message_id"], "additionalProperties": false},
+            }),
+            json!({
                 "name": "everett_event",
                 "description": "Report what your session is doing so other sessions and the human stay aware: done (finished a task), blocked (cannot continue; say on what), needs-input (waiting on the human), or info. blocked and needs-input notify the human. Subscribers get it in their inbox. Call everett_subscribe to start following a session or project yourself.",
                 "inputSchema": {"type": "object", "properties": {
@@ -1209,6 +1216,28 @@ fn tool_inbox(
     Ok(out)
 }
 
+fn tool_status(
+    args: &Map<String, Value>,
+    identity: &Map<String, Value>,
+) -> std::result::Result<Map<String, Value>, ToolFailure> {
+    let (sid, _) = caller_session(args, identity)?;
+    if sid.is_empty() {
+        return Err(err2(2, unbound_message(identity)));
+    }
+    if !crate::inbox::valid_id(&sid) {
+        return Err(ToolFailure::Params("\"session_id\" is not a valid session id".into()));
+    }
+    let id = str_arg(args, "message_id", true)?;
+    let status = crate::inbox::sent_status(&sid, &id)?;
+    let out = status.as_object().expect("sent_status returns an object").clone();
+    if serde_json::to_vec(&tool_result(out.clone(), false))
+        .map_or(true, |bytes| bytes.len() > MAX_TOOL_RESULT)
+    {
+        return Err(err2(2, "The reply exceeds the MCP response limit. Use `everett status` with the original message ID from the sending session."));
+    }
+    Ok(out)
+}
+
 fn tool_event(
     args: &Map<String, Value>,
     identity: &Map<String, Value>,
@@ -1429,6 +1458,7 @@ fn call_handler(
         "everett_card" => tool_card(args, identity),
         "everett_whoami" => tool_whoami(identity),
         "everett_inbox" => tool_inbox(args, identity),
+        "everett_status" => tool_status(args, identity),
         "everett_event" => tool_event(args, identity),
         "everett_subscribe" => tool_subscribe(args, identity),
         "everett_control" => tool_control(args, identity),
