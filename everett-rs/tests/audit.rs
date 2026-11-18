@@ -141,6 +141,7 @@ fn oversized_first_inbox_message_delivers_truncated() {
         .to_string()
             + "\n"),
     );
+    common::native_mcp_account(&fx.home());
     let out = fx.run_stdin(&["mcp"], &mcp_call_inbox("solo"), &[("EVERETT_SESSION_ID", "solo")]);
     assert_eq!(out.status.code(), Some(0), "{}", String::from_utf8_lossy(&out.stderr));
     let replies = mcp_replies(&out.stdout);
@@ -387,6 +388,7 @@ fn mcp_tool_panic_returns_internal_error_and_server_lives() {
         json!({"jsonrpc":"2.0","id":2,"method":"ping"}).to_string(),
     ]
     .join("\n");
+    common::native_mcp_account(&fx.home());
     let out = fx.run_stdin(&["mcp"], &calls, &[("EVERETT_MCP_PANIC_TEST", "1")]);
     let text = fx.stdout(&out);
     assert!(text.contains("-32603"), "{text}");

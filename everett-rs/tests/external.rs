@@ -83,6 +83,7 @@ fn mcp_gateway(
         );
     }
     let input: String = requests.iter().map(|r| r.to_string() + "\n").collect();
+    common::native_mcp_account(&fx.home());
     let output = run_gateway(fx, &["mcp"], Some(&input), caller, harness, gateway);
     assert!(
         output.status.success(),

@@ -25,6 +25,7 @@ const MAX_TOOL_RESULT: usize = 240 * 1024;
 
 const INSTRUCTIONS: &str =
     "Everett is the layer above every coding-agent session on this machine (Claude Code, Codex, OMP, Pi, Hermes, Grok CLI, Devin; OpenAI dots and Grok Bot reach it through the gateway). \
+     Run `everett login` once in the local Everett profile to enable these tools. \
      To hand off work, call everett_send with just `text` describing the task and let Everett route it -- do not \
      eyeball everett_ls and pick a target yourself. Only pass `to` when the user named a specific session, or when \
      you are replying to one. everett_ls is for a quick overview of what other sessions are doing, not for picking \
@@ -189,7 +190,7 @@ pub fn tools() -> &'static Vec<Value> {
             }),
             json!({
                 "name": "everett_agent_relay",
-                "description": "Authenticated author/session cards: authors lists opted-in account peers without pairing; expose/withdraw publishes/removes only this host-bound caller's session and card. Author and agent identity come from credentials, never tool arguments. directory lists device key bundles; devices is an alias. diagnose returns an offline, redacted snapshot of local receiver, registration, webhook and bounded cached queues, without sign-in or network calls. Identity, registration, names and revocation remain available. Only same-owner Cloudflare transport is supported. Run everett relay separately to receive legacy inbox messages.",
+                "description": "Authenticated author/session cards: authors lists opted-in account peers without pairing; expose/withdraw publishes/removes only this host-bound caller's session and card. Author and agent identity come from credentials, never tool arguments. directory lists device key bundles; devices is an alias. diagnose returns a redacted local snapshot of receiver, registration, webhook and bounded cached queues after MCP verifies the account. Use everett relay diagnose in a terminal for offline diagnostics. Identity, registration, names and revocation remain available. Only same-owner Cloudflare transport is supported. Run everett relay separately to receive legacy inbox messages.",
                 "inputSchema": {"type":"object","properties":{
                     "action":{"type":"string","enum":["diagnose","identity","register","directory","devices","authors","expose","withdraw","names","pair","unpair","credentials","memberships","revoke-membership","revoke-agent","revoke-credential"]},
                     "id":s("Provisioned agent ID; for revoke-membership, exact provider subject; for unpair, alias."),
@@ -222,7 +223,7 @@ fn tool_names() -> Vec<&'static str> {
         .collect()
 }
 
-enum ToolFailure {
+pub(crate) enum ToolFailure {
     Tool(EverettError),
     Ping(crate::send::PingFailure),
     Params(String),
@@ -577,7 +578,7 @@ fn tool_control(
                 forward.insert("to".into(), json!(s.id));
                 // resolve_session looked back a week; keep tool_send's lookup window the same.
                 forward.insert("hours".into(), json!(168.0));
-                return tool_send(&forward, identity);
+                return tool_send(&forward, identity, false);
             }
         }
         "read" => control::read(&thread, session.as_ref(), messages, caller),
@@ -587,9 +588,10 @@ fn tool_control(
     value.map(control::as_map).map_err(ToolFailure::Tool)
 }
 
-fn tool_send(
+pub(crate) fn tool_send(
     args: &Map<String, Value>,
     identity: &Map<String, Value>,
+    exact_ids: bool,
 ) -> std::result::Result<Map<String, Value>, ToolFailure> {
     use crate::send::{send_for, send_inbox_as, spawn_for};
     let text = str_arg(args, "text", true)?;
@@ -649,7 +651,6 @@ fn tool_send(
         ));
     }
     let reply_to = str_arg(args, "reply_to", false)?;
-    let exact_ids = std::env::var("EVERETT_GATEWAY_EXACT_IDS").as_deref() == Ok("1");
     if exact_ids && (spawn_ok || mode != "inbox" || (to.is_empty() && reply_to.is_empty())) {
         return Err(err2(
             2,
@@ -868,7 +869,10 @@ fn tool_send(
         return Ok(out);
     }
     if matches!(delivery, crate::send::Delivery::Inbox) {
-        let result = send_inbox_as(
+        let result = if exact_ids {
+            crate::send::send_local_inbox(&session, &text, caller, caller_harness)
+        } else {
+            send_inbox_as(
             &session,
             &text,
             wait,
@@ -880,7 +884,8 @@ fn tool_send(
             } else {
                 Some(idempotency_key.as_str())
             },
-        )
+            )
+        }
         .map_err(ToolFailure::Tool)?;
         let note = if result.get("transport").and_then(Value::as_str) == Some("relay") {
             "Queued on the encrypted relay for the remote device; no wake-up or consumption is confirmed. Poll everett peer status or read replies with everett_inbox."
@@ -969,7 +974,7 @@ fn tool_learn(args: &Map<String, Value>) -> std::result::Result<Map<String, Valu
     Ok(out)
 }
 
-fn tool_core(args: &Map<String, Value>) -> std::result::Result<Map<String, Value>, ToolFailure> {
+pub(crate) fn tool_core(args: &Map<String, Value>) -> std::result::Result<Map<String, Value>, ToolFailure> {
     let project = str_arg(args, "project", false)?;
     let action = str_arg(args, "action", false)?;
     if action == "search" {
@@ -1043,7 +1048,7 @@ fn tool_core(args: &Map<String, Value>) -> std::result::Result<Map<String, Value
     Ok(out)
 }
 
-fn tool_card(
+pub(crate) fn tool_card(
     args: &Map<String, Value>,
     identity: &Map<String, Value>,
 ) -> std::result::Result<Map<String, Value>, ToolFailure> {
@@ -1086,7 +1091,7 @@ fn tool_card(
     Ok(out)
 }
 
-fn tool_inbox(
+pub(crate) fn tool_inbox(
     args: &Map<String, Value>,
     identity: &Map<String, Value>,
 ) -> std::result::Result<Map<String, Value>, ToolFailure> {
@@ -1374,7 +1379,7 @@ fn tool_subscribe(
     Ok(out)
 }
 
-fn tool_whoami(
+pub(crate) fn tool_whoami(
     identity: &Map<String, Value>,
 ) -> std::result::Result<Map<String, Value>, ToolFailure> {
     let ident = identity;
@@ -1518,7 +1523,7 @@ fn call_handler(
     match name {
         "everett_ls" => tool_ls(args, identity),
         "everett_route" => tool_route(args, identity),
-        "everett_send" => tool_send(args, identity),
+        "everett_send" => tool_send(args, identity, std::env::var("EVERETT_GATEWAY_EXACT_IDS").as_deref() == Ok("1")),
         "everett_learn" => tool_learn(args),
         "everett_core" => tool_core(args),
         "everett_card" => tool_card(args, identity),
@@ -1534,7 +1539,27 @@ fn call_handler(
     }
 }
 
+fn verify_native_account() -> crate::error::Result<Value> {
+    use crate::cloudflare_auth as auth;
+    auth::require_provider()?;
+    let credential = auth::load()?.ok_or_else(|| {
+        EverettError::new(1, "Local Everett MCP requires an account. Run `everett login` in this Everett profile, then retry.")
+    })?;
+    let account = auth::whoami(&credential).map_err(|error| {
+        EverettError::new(error.code, format!("Cannot verify the Everett account: {}. Check with `everett whoami` or sign in again with `everett login`.", error.message))
+    })?;
+    // Detect logout or replacement while verification was in flight.
+    credential.validate_relay_binding()?;
+    Ok(account)
+}
+
 fn call_tool(params: &Map<String, Value>) -> std::result::Result<Map<String, Value>, Value> {
+    // Reload and verify per call so an already-running server observes login,
+    // logout, expiration and issuer revocation on the next request.
+    let account = match verify_native_account() {
+        Ok(account) => account,
+        Err(error) => return Ok(tool_result(Map::from_iter([("error".into(), json!(error.message))]), true)),
+    };
     let name = params.get("name").and_then(|v| v.as_str()).unwrap_or("");
     if std::env::var("EVERETT_MCP_PANIC_TEST").as_deref() == Ok("1") && name == "everett_ls" {
         panic!("injected test panic"); // tests: a panicking tool must not kill the server
@@ -1675,7 +1700,20 @@ fn call_tool(params: &Map<String, Value>) -> std::result::Result<Map<String, Val
     );
     log("call", log_fields);
     let (data, is_error) = match call_handler(name, &args, &identity) {
-        Ok(d) => (d, false),
+        Ok(mut data) => {
+            if name == "everett_whoami" {
+                let identity = data.get_mut("identity").expect("whoami returns identity");
+                identity["account"] = json!({
+                    "status":"verified", "issuer":account["issuer"],
+                    "subject":null, "subject_redacted":true
+                });
+                identity["client"] = json!({
+                    "kind":"native_device", "status":"verified",
+                    "id":account["agent_id"], "name":account["device_name"]
+                });
+            }
+            (data, false)
+        },
         Err(ToolFailure::Tool(e)) => (Map::from_iter([("error".into(), json!(e.message))]), true),
         Err(ToolFailure::Ping(failure)) => {
             let data = failure.recovery_receipt()
@@ -1775,6 +1813,10 @@ pub fn handle(message: &Value) -> Option<Value> {
                     "everettExactInboxPickup": {"enforced": true},
                 });
             }
+            if crate::gateway::scoped_worker_enabled() {
+                capabilities["experimental"][crate::gateway::WORKER_CAPABILITY] =
+                    json!({"version": crate::gateway::WORKER_PROTOCOL});
+            }
             Some(result(
                 &msg_id,
                 json!({
@@ -1787,6 +1829,12 @@ pub fn handle(message: &Value) -> Option<Value> {
         }
         "ping" => Some(result(&msg_id, json!({}))),
         "tools/list" => Some(result(&msg_id, json!({"tools": tools()}))),
+        crate::gateway::WORKER_METHOD if crate::gateway::scoped_worker_enabled() => {
+            match crate::gateway::call_scoped_worker(params) {
+                Ok(data) => Some(result(&msg_id, json!({"everettGatewayResult": data}))),
+                Err(message) => Some(error(&msg_id, INTERNAL_ERROR, &message)),
+            }
+        }
         "tools/call" => {
             // A panic in one tool must not kill the stdio server.
             let tool = params

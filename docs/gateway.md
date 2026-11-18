@@ -1,7 +1,7 @@
 # Owner-bound Rust MCP gateway
 
 The native `everett gateway` command lets an existing cloud agent call Everett's
-Rust stdio backend. The official Rust MCP SDK is compiled into the binary.
+scoped tools. The official Rust MCP SDK is compiled into the binary.
 The gateway does not
 create an OpenAI or xAI model instance.
 An optional owner grant can dispatch a native T3 run through an existing local
@@ -15,9 +15,14 @@ everett-rs/target/debug/everett gateway --help
 ```
 
 Use an installed Rust Everett binary that supports `gateway`. If `backend_command`
-is omitted, the gateway starts the same binary with `mcp`. An explicit override
-must use an absolute executable path. Do not point it at the gateway itself. The executable and its arguments are trusted owner
-configuration, never tool-call arguments.
+is omitted, the gateway starts its built-in worker in the same binary. Existing
+`backend_command` entries may also specify an Everett executable followed by
+`mcp`, including through a launcher. If the Everett child supports scoped calls,
+the gateway detects that during initialization and uses the same stdio connection
+for those calls. Older Everett and custom backends continue to use their MCP
+tools. Upgrade the gateway
+before a separately installed Everett backend so it can recognize scoped worker
+support. The owner controls the absolute executable path and arguments.
 
 ## One process, fixed access grants
 
@@ -55,12 +60,20 @@ to false removes the core tool entirely; this pass does not implement a
 project-only reader. Shared core should contain no secrets.
 
 The gateway uses `EVERETT_HOME`, or the current user's home, captured at startup.
-Backend tool calls use a new SDK-managed stdio worker with that home, the fixed
-working directory, and immutable `EVERETT_SESSION_ID`/`EVERETT_HARNESS_NAME`.
-It does not mutate `os.environ` or forward API keys or gateway bearer tokens to
-the backend. The SDK additionally inherits its documented basic OS environment
-(such as PATH and USER). The Rust worker is trusted local code with access to
-the owner's stores; this is not an OS sandbox against a malicious executable.
+Each authorized tool call starts a one-shot worker with that home, the fixed
+working directory, and the selected session and harness. The built-in worker
+handles only gateway operations and uses local inbox delivery. It requires no
+native `everett login` credential. Custom backends continue to use MCP over
+stdio. Backend processes receive basic OS environment variables such as `PATH`
+and `USER`. API keys and gateway tokens stay in the calling environment. Use
+only trusted backends because they have access to the owner's local stores.
+
+The hidden worker and the gateway-scoped stdio method trust their local launcher.
+A local process with the gateway service account's filesystem permissions can
+call them under a chosen external session ID and access that account's Everett
+stores. Run the gateway under a dedicated OS
+account with a private Everett home if untrusted local processes share the host.
+Give remote clients access only through the authenticated gateway transport.
 
 A gateway configuration grants access to fixed destinations, a directory and
 shared core. The connection is authorized by its bearer token or OAuth approval.
@@ -440,8 +453,8 @@ worker count in concurrent connections, with one request per connection and a
 45-second total deadline. It checks duplicate security headers before the HTTP
 parser can combine them. Reply authorization scans only
 this binding's inbox, capped at 8 MiB; oversized or malformed inboxes fail closed.
-Backend frames are bounded before SDK buffering, and tool results are checked
-again after SDK encoding.
+Backend input and output are bounded. Custom MCP backend frames are bounded
+before SDK buffering, and their tool results are checked after SDK encoding.
 
 `everett-rs/tests/gateway_native.rs` drives the native CLI and real loopback HTTP
 sockets with `PATH=/nonexistent` for the gateway process. Adversarial worker tests

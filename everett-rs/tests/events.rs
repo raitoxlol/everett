@@ -292,6 +292,7 @@ fn cli_event_events_subscribe_and_mcp_tools() {
         json!({"jsonrpc": "2.0", "id": 2, "method": "tools/call", "params": {"name": "everett_subscribe", "arguments": {"target": "project:web"}}}),
         json!({"jsonrpc": "2.0", "id": 3, "method": "tools/call", "params": {"name": "everett_event", "arguments": {"kind": "bogus", "message": "x"}}}),
     ];
+    common::native_mcp_account(&fx.home());
     let out = fx.run_stdin(&["mcp"], &common::jsonl(&input), &[("EVERETT_SESSION_ID", "mcp-1")]);
     let replies: Vec<Value> = fx.stdout(&out).lines().map(|l| serde_json::from_str(l).unwrap()).collect();
     assert_eq!(replies[0]["result"]["structuredContent"]["event"]["session"], "mcp-1");

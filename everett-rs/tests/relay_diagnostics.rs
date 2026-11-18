@@ -71,7 +71,7 @@ fn fresh_home_diagnostics_do_not_create_state_or_require_sign_in() {
 }
 
 #[test]
-fn cli_and_mcp_report_cached_state_without_network_secrets_or_state_changes() {
+fn cli_and_mcp_report_cached_state_with_only_the_mcp_account_check() {
     let f = fixture();
     let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     listener.set_nonblocking(true).unwrap();
@@ -150,6 +150,31 @@ fn cli_and_mcp_report_cached_state_without_network_secrets_or_state_changes() {
         json!({"jsonrpc":"2.0","method":"notifications/initialized"}),
         json!({"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"everett_agent_relay","arguments":{"action":"diagnose"}}})
     ].iter().map(|row| format!("{row}\n")).collect::<String>();
+    assert_eq!(listener.accept().unwrap_err().kind(), std::io::ErrorKind::WouldBlock);
+    listener.set_nonblocking(false).unwrap();
+    let issuer = std::thread::spawn(move || {
+        use std::io::{BufRead, BufReader, Read};
+        let (mut stream, _) = listener.accept().unwrap();
+        let mut reader = BufReader::new(&mut stream);
+        let mut line = String::new();
+        reader.read_line(&mut line).unwrap();
+        assert!(line.starts_with("POST /v2/relay/whoami "));
+        let mut length = 0;
+        loop {
+            line.clear();
+            reader.read_line(&mut line).unwrap();
+            if line == "\r\n" || line.is_empty() {
+                break;
+            }
+            if let Some(value) = line.to_ascii_lowercase().strip_prefix("content-length:") {
+                length = value.trim().parse().unwrap();
+            }
+        }
+        reader.read_exact(&mut vec![0; length]).unwrap();
+        let body = r#"{"result":{"owner":"private-owner","deviceId":"agent-test","role":"admin"}}"#;
+        write!(stream, "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}", body.len(), body).unwrap();
+        listener
+    });
     let mut child = command(&f, &["mcp"])
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -189,6 +214,8 @@ fn cli_and_mcp_report_cached_state_without_network_secrets_or_state_changes() {
     ] {
         assert!(!encoded.contains(secret), "diagnostics exposed {secret}");
     }
+    let listener = issuer.join().unwrap();
+    listener.set_nonblocking(true).unwrap();
     assert_eq!(
         listener.accept().unwrap_err().kind(),
         std::io::ErrorKind::WouldBlock

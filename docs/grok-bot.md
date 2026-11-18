@@ -117,7 +117,8 @@ file. Replies still arrive through the relay listener into the sender's inbox.
 
 The owner must connect a supported MCP endpoint and ask the Bot to poll. For a
 local Grok Bot **Command** integration, launch `everett mcp` on the machine
-holding these registrations/inboxes. Supply `EVERETT_SESSION_ID=ext-grok-wright`
+holding these registrations/inboxes. Run `everett login` once in the Everett
+profile used by that process. Supply `EVERETT_SESSION_ID=ext-grok-wright`
 and `EVERETT_HARNESS_NAME=grok-bot` in that process's environment. These are
 logical identity labels, not secrets. The owner should test the endpoint in
 their own conversation before scheduling unattended work.
@@ -129,8 +130,8 @@ alone does not provide Remote HTTPS transport, TLS, credential provisioning,
 or cross-device synchronization.
 
 Use the native [`everett gateway`](gateway.md) command for the restricted stdio
-or authenticated loopback HTTP connection. It defaults to the same binary's MCP
-backend. The owner must provide TLS and reachability
+or authenticated loopback HTTP connection. It defaults to the same binary's
+scoped gateway worker. The owner must provide TLS and reachability
 for a Remote HTTPS connector.
 
 ## Poll and reply through MCP
@@ -161,15 +162,29 @@ export HOME="$scratch" EVERETT_HOME="$scratch" EVERETT_NOTIFY=none
 everett external add --id ext-grok-acceptance --harness grok-bot --title 'Grok Bot inbox'
 everett send 'check backup status' --to ext-grok-acceptance --mode inbox --json
 # expect "mode":"inbox", "queued":true, "wake":false
-EVERETT_SESSION_ID=ext-grok-acceptance EVERETT_HARNESS_NAME=grok-bot everett mcp
+python3 - "$scratch" <<'PYTHON'
+import json
+from pathlib import Path
+import sys
+
+root = Path(sys.argv[1]).resolve()
+(root / "gateway.json").write_text(json.dumps({
+    "agent_id": "ext-grok-acceptance",
+    "harness": "grok-bot",
+    "cwd": str(root),
+    "project": "everett",
+    "destinations": ["human"],
+    "allow_shared_core": False,
+}))
+PYTHON
+everett gateway --config "$scratch/gateway.json"
 ```
 
 In that MCP session, `everett_whoami` must return `session_id`
 `ext-grok-acceptance` and harness `grok-bot`; `everett_inbox` returns the queued
 message; `everett_send` with its `reply_to` queues the answer, which then appears
-in the sender's `everett inbox`. Verified 2026-11-10 with Everett 2.2.1. Grok's own
-side (the Bot calling this endpoint, and webhook wake) still has to be tested
-from your Grok account.
+in the sender's `everett inbox`. This checks the local gateway. Test the Bot
+connection and webhook wake from your Grok account.
 
 ## Grok Bot 0.77 reachability
 

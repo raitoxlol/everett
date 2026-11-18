@@ -69,7 +69,7 @@ impl NativeFixture {
                 let args: Value = serde_json::from_slice(&body).unwrap();
                 let caller = if caller_a { &a } else { &b };
                 let result = if whoami {
-                    json!({"owner":caller.owner,"deviceId":caller.device_id})
+                    json!({"owner":caller.owner,"deviceId":caller.device_id,"role":"member"})
                 } else if revoked_device.load(Ordering::Relaxed) {
                     Value::Null
                 } else if status_request {
@@ -348,6 +348,7 @@ fn same_and_cross_org_offline_encrypted_inbox_pickup_reply_and_provenance_withou
             assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
             let responses = String::from_utf8(output.stdout).unwrap();
             let response: Value = serde_json::from_str(responses.lines().last().unwrap()).unwrap();
+            assert_ne!(response["result"]["isError"], true, "{response}");
             let incoming = &response["result"]["structuredContent"]["messages"][0];
             assert_eq!(incoming["external"] == true, external, "{response}");
             assert_eq!(incoming["text"].as_str().unwrap().starts_with("[EXTERNAL / UNTRUSTED"), external);
