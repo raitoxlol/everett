@@ -1229,11 +1229,18 @@ fn tool_status(
     }
     let id = str_arg(args, "message_id", true)?;
     let status = crate::inbox::sent_status(&sid, &id)?;
-    let out = status.as_object().expect("sent_status returns an object").clone();
+    let mut out = status.as_object().expect("sent_status returns an object").clone();
     if serde_json::to_vec(&tool_result(out.clone(), false))
         .map_or(true, |bytes| bytes.len() > MAX_TOOL_RESULT)
     {
-        return Err(err2(2, "The reply exceeds the MCP response limit. Use `everett status` with the original message ID from the sending session."));
+        let binding = format!("EVERETT_SESSION_ID={sid}");
+        let argv = ["env", &binding, "everett", "status", "--", &id].map(str::to_owned);
+        out.insert("reply".into(), Value::Null);
+        out.insert("reply_omitted".into(), json!(true));
+        out.insert("recovery_command".into(), json!(crate::proc::shlex_join(&argv)));
+        out.insert("note".into(), json!("The reply exceeds the MCP response limit. Run the recovery command in the same Everett profile to read it."));
+    } else {
+        crate::inbox::persist_status_reply_context(&sid, &status["reply"])?;
     }
     Ok(out)
 }
