@@ -1455,6 +1455,7 @@ fn events_catalog_is_authenticated_and_scoped() {
 }
 
 const CASES: &[Case] = &[
+    ("dot_picks_up_only_the_event_message_and_replies", dot_picks_up_only_the_event_message_and_replies),
     ("events_verified_token_lease", events_acceptance::verified_token_lease),
     ("events_identity_and_lifetime", events_acceptance::identity_and_lifetime),
     ("events_catalog_is_authenticated_and_scoped", events_catalog_is_authenticated_and_scoped),
@@ -1501,6 +1502,35 @@ const CASES: &[Case] = &[
     ("oauth_owner_account_restricts_every_request_before_backend_dispatch", oauth_owner_account_restricts_every_request_before_backend_dispatch),
     ("oauth_configuration_fails_closed_and_stdio_keeps_fixed_identity", oauth_configuration_fails_closed_and_stdio_keeps_fixed_identity),
 ];
+
+fn dot_picks_up_only_the_event_message_and_replies() {
+    let c = ctx();
+    assert!(c.cli(&["external", "add", "--id", "dot-one", "--harness", "openai-dot"]).status.success());
+    let path = c.inbox("agent-two", "dot-one", "event-message");
+    let event = std::fs::read_to_string(&path).unwrap();
+    std::fs::write(&path, event.replace("event-message", "unrelated") + &event).unwrap();
+    let port = c.http_server(&json!({"events":true}));
+    let call = |name, args| body_json(&post(port, &json!({"jsonrpc":"2.0","id":1,"method":"tools/call",
+        "params":{"name":name,"arguments":args}}), &[]));
+    let rejected = call("everett_inbox", json!({"message_id":"../foreign"}));
+    denied(&rejected);
+    denied(&call("everett_inbox", json!({"session_id":"agent-two","message_id":"event-message"})));
+    let picked = success(&call("everett_inbox", json!({"message_id":"event-message"})));
+    let items = picked["messages"].as_array().unwrap();
+    assert_eq!(items.len(), 1);
+    assert_eq!(items[0]["id"], "event-message");
+    assert_eq!(success(&call("everett_inbox", json!({"message_id":"event-message"})))["messages"], json!([]));
+    let remaining = success(&call("everett_inbox", json!({"peek":true})));
+    let items = remaining["messages"].as_array().unwrap();
+    assert_eq!(items.len(), 1);
+    assert_eq!(items[0]["id"], "unrelated");
+    let reply = success(&call("everett_send", json!({"reply_to":"event-message","text":"Dot response"})));
+    assert_eq!(reply["to"], "agent-two");
+    let received = std::fs::read_to_string(c.home.join(".everett/inbox/agent-two.jsonl")).unwrap();
+    let received: Value = serde_json::from_str(&received).unwrap();
+    assert_eq!(received["reply_to"], "event-message");
+    assert_eq!(received["text"], "Dot response");
+}
 
 fn main() {
     let args: Vec<String> = std::env::args().collect();
