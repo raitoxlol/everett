@@ -425,9 +425,15 @@ fn cmd_remote_send(args: &Args, to: &str) -> i32 {
         return 4;
     }
     if args.dry_run {
-        return match crate::peer::target(to) {
-            Ok((peer, _, _)) => {
-                println!("{}", json!({"peer":peer,"target":to,"mode":"inbox","dry_run":true,"pickup":if crate::relay::configured(peer) {"Cloudflare relay"} else {"status polling"}}));
+        return match crate::peer::target(to).and_then(|(peer, _, _)| {
+            crate::peer::uses_cloudflare(peer).map(|relay| (peer, relay))
+        }) {
+            Ok((peer, relay)) => {
+                println!("{}", json!({
+                    "peer":peer, "target":to, "mode":"inbox", "dry_run":true,
+                    "transport":if relay { "cloudflare" } else { "ssh" },
+                    "pickup":if relay { "Cloudflare relay" } else { "status polling" }
+                }));
                 0
             }
             Err(e) => { eprintln!("everett: {e}"); e.code }

@@ -940,6 +940,14 @@ fn receipt_path(name: &str, message_id: &str) -> Result<PathBuf> {
     Ok(dir.join(format!("{name}-{message_id}.json")))
 }
 
+pub(crate) fn uses_cloudflare(name: &str) -> Result<bool> {
+    if !peers()?.contains_key(name) && crate::relay::same_owner_enabled() {
+        return Ok(true);
+    }
+    assert_alias_unambiguous(name)?;
+    Ok(crate::relay::configured(name))
+}
+
 pub fn send(value: &str, text: &str, key: Option<&str>, caller: Option<&str>) -> Result<Value> {
     send_as(value, text, key, caller, None)
 }
@@ -952,11 +960,7 @@ pub fn send_as(
     caller_harness: Option<&str>,
 ) -> Result<Value> {
     let (name, harness, session) = target(value)?;
-    if !peers()?.contains_key(name) && crate::relay::same_owner_enabled() {
-        return crate::relay::send_as(value, text, key, caller, caller_harness);
-    }
-    assert_alias_unambiguous(name)?;
-    if crate::relay::configured(name) {
+    if uses_cloudflare(name)? {
         return crate::relay::send_as(value, text, key, caller, caller_harness);
     }
     let who = send::sender_info_as(caller, caller_harness);
@@ -1013,11 +1017,7 @@ pub fn send_as(
 }
 
 pub fn status(name: &str, message_id: &str) -> Result<Value> {
-    if !peers()?.contains_key(name) && crate::relay::same_owner_enabled() {
-        return crate::relay::status(name, message_id);
-    }
-    assert_alias_unambiguous(name)?;
-    if crate::relay::configured(name) {
+    if uses_cloudflare(name)? {
         return crate::relay::status(name, message_id);
     }
     let receipt: Receipt =
