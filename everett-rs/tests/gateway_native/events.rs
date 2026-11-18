@@ -25,7 +25,7 @@ pub(super) fn identity_and_lifetime() {
         );
     }
     let port = c.spawn_http(
-        c.oauth_command(&json!({"events":true,"oauth":{"issuer":issuer.url,"resource":RESOURCE}})),
+        c.oauth_command(&json!({"events":true,"require_identity_handle":true,"oauth":{"issuer":issuer.url,"resource":RESOURCE}})),
     );
     let identity = success(&native_call(
         port,
@@ -81,6 +81,21 @@ pub(super) fn identity_and_lifetime() {
         db.execute("INSERT INTO subscriptions(id,owner,agent,token,url,secret,rotation_until,created,expires,verified) VALUES('fixture',?,?,?,'https://127.0.0.1/','unused-synthetic',0,?,?,?)",params![owner,identity["session_id"].as_str().unwrap(),credentials('b'),at,at+60000,at]).unwrap();
     };
     seed();
+    // The strict gateway must leave this legacy lease and its pending delivery
+    // alone even after its stored OAuth token is revoked.
+    db.execute(
+        "INSERT INTO subscriptions(id,owner,agent,token,url,secret,rotation_until,created,expires,verified)
+         SELECT 'legacy',owner,'agent-a',?,url,secret,rotation_until,created,expires,verified
+         FROM subscriptions WHERE id='fixture'",
+        [json!({"access":access('a'),"handle":null}).to_string()],
+    )
+    .unwrap();
+    db.execute(
+        "INSERT INTO deliveries(subscription,message,event,body)
+         VALUES('legacy','pending','evt_legacy','{}')",
+        [],
+    )
+    .unwrap();
     db.execute(
         "UPDATE subscriptions SET secret=? WHERE id='fixture'",
         ["whsec_BwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwc="],
@@ -140,6 +155,17 @@ pub(super) fn identity_and_lifetime() {
     assert_eq!(
         oauth_rpc(port, 'b', "events/subscribe", request)["error"]["message"],
         "invalid_identity_handle"
+    );
+
+    assert_eq!(
+        db.query_row(
+            "SELECT attempts FROM deliveries WHERE subscription='legacy' AND done=0",
+            [],
+            |r| r.get::<_, i64>(0),
+        )
+        .unwrap(),
+        0,
+        "strict mode must retain and skip pending delivery on legacy leases"
     );
 
     let c = ctx();

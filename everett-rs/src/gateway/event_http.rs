@@ -1,5 +1,5 @@
 use super::*;
-use crate::gateway_events::{Events, Principal};
+use crate::gateway_events::{Events, Failure, Principal};
 
 fn principal(
     state: &HttpBoundary,
@@ -89,23 +89,33 @@ pub(super) async fn dispatch(
         .get_mut("arguments")
         .and_then(Value::as_object_mut)
         .and_then(|a| a.remove("identity_handle"));
-    let selected = if handle.as_ref().is_some_and(|h| !h.is_string()) {
-        Err("invalid identity handle".into())
-    } else {
-        principal(state, agent, token, handle.as_ref().and_then(Value::as_str))
+    let invalid_handle = Failure {
+        code: -32602,
+        reason: "invalid_identity_handle",
+    };
+    let selected = match handle.as_ref() {
+        None if state.gateway.binding.require_identity_handle && method == "events/subscribe" =>
+        {
+            Err(Failure {
+                code: -32602,
+                reason: "identity_handle_required",
+            })
+        }
+        Some(value) if !value.is_string() => Err(invalid_handle),
+        _ => principal(state, agent, token, handle.as_ref().and_then(Value::as_str))
+            .map_err(|_| invalid_handle),
     };
     let result = match selected {
-        Err(_) => Err(crate::gateway_events::Failure {
-            code: -32602,
-            reason: "invalid_identity_handle",
-        }),
+        Err(error) => Err(error),
         Ok(p) if method == "events/list" => {
             let mut catalog = Events::catalog(&p.agent);
-            catalog["events"][0]["inputSchema"]["properties"]["identity_handle"] = json!({"type":"string","description":"Private handle selecting your registered inbox. Omit session_id when using a handle."});
-            catalog["events"][0]["inputSchema"]
-                .as_object_mut()
-                .unwrap()
-                .remove("required");
+            let schema = &mut catalog["events"][0]["inputSchema"];
+            schema["properties"]["identity_handle"] = json!({"type":"string","description":"Private handle selecting your registered inbox. Omit session_id when using a handle."});
+            if state.gateway.binding.require_identity_handle {
+                schema["required"] = json!(["identity_handle"]);
+            } else {
+                schema.as_object_mut().unwrap().remove("required");
+            }
             catalog["events"][0]["inputSchema"]["properties"]["session_id"] = json!({"type":"string","description":"Must match the selected inbox; may be omitted."});
             Ok(catalog)
         }
@@ -172,6 +182,10 @@ pub(super) async fn pump(state: HttpBoundary) {
                         .as_deref()
                         .and_then(|s| serde_json::from_str::<Value>(s).ok())
                         .unwrap_or(Value::Null);
+                    let handle = credentials["handle"].as_str();
+                    if state.gateway.binding.require_identity_handle && handle.is_none() {
+                        return;
+                    }
                     let access = credentials["access"].as_str().map(str::to_owned);
                     let agent = match &state.auth {
                         HttpAuth::Bearer(_) => None,
@@ -202,7 +216,7 @@ pub(super) async fn pump(state: HttpBoundary) {
                         state,
                         agent.as_ref(),
                         access,
-                        credentials["handle"].as_str(),
+                        handle,
                     );
                     let store = events.clone();
                     if !expected.is_ok_and(|p| {
