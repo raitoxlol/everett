@@ -297,8 +297,6 @@ pub fn read_db(path: &Path, since_hours: f64) -> Result<(Vec<Session>, bool), St
     Ok((out, have_nodes))
 }
 
-/// One ATIF transcript file -> Session, for when sessions.db is missing or too old
-/// to carry message_nodes.
 pub fn transcript_messages(path: &Path, limit: usize) -> Result<Vec<Value>, String> {
     let file = fs::File::open(path).map_err(|e| e.to_string())?;
     let transcript: Value = serde_json::from_reader(std::io::BufReader::new(file)).map_err(|e| e.to_string())?;
@@ -325,6 +323,8 @@ pub fn transcript_messages(path: &Path, limit: usize) -> Result<Vec<Value>, Stri
     Ok(tail)
 }
 
+/// One ATIF transcript file -> Session, for when sessions.db is missing or too old
+/// to carry message_nodes.
 pub fn read_transcript(path: &Path) -> Option<Session> {
     let obj: Map<String, Value> = fs::read_to_string(path)
         .ok()
