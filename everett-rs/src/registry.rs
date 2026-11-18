@@ -102,7 +102,7 @@ fn name(s: &Session) -> String {
     head.trim().to_lowercase()
 }
 
-/// Resolve `send --to`: exact id, unique id prefix, exact title, card name or project folder.
+/// Resolve `send --to`: exact session or T3 thread ID, id prefix, title, card or project.
 pub fn find(target: &str, sessions: &[Session]) -> Result<Session> {
     let target = target.trim();
     if target.is_empty() {
@@ -111,8 +111,15 @@ pub fn find(target: &str, sessions: &[Session]) -> Result<Session> {
     if let Some(s) = sessions.iter().find(|s| s.id == target) {
         return Ok(s.clone());
     }
+    let aliases: Vec<_> = sessions.iter().filter(|s| s.t3_thread_id.as_deref() == Some(target)).collect();
+    if aliases.is_empty() && t3code::has_thread(target)? {
+        return Err(EverettError::new(2, format!(
+            "no session matches T3 thread \"{target}\" because it has no eligible provider session in the look-back window."
+        )));
+    }
     let target_fold = target.to_lowercase();
     let passes: Vec<Vec<&Session>> = vec![
+        aliases,
         sessions.iter().filter(|s| s.id.starts_with(target)).collect(),
         sessions.iter().filter(|s| s.title.trim().to_lowercase() == target_fold).collect(),
         sessions.iter().filter(|s| name(s) == target_fold).collect(),
