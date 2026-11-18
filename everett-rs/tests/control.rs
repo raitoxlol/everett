@@ -398,3 +398,25 @@ fn cli_control_read_requests_recent_thread_messages_only_for_local_callers() {
     assert!(!read().status.success());
     assert!(!fx.home().join("t3-argv").exists());
 }
+
+#[test]
+fn cli_control_read_resolves_a_local_session_prefix() {
+    let fx = fixture();
+    let rows = ["first", "latest"].map(|text| json!({
+        "type":"user", "sessionId":CLAUDE, "cwd":fx.home(), "timestamp":"2026-11-10T00:00:00Z",
+        "message":{"role":"user","content":text}
+    }));
+    fx.write(&format!(".claude/projects/p/{CLAUDE}.jsonl"), &common::jsonl(&rows));
+    let args = ["control", "read", "--session", &CLAUDE[..12], "--messages", "1"];
+    let out = fx.run(&args);
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let result: Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(result["session_id"], CLAUDE);
+    assert_eq!(result["messages"], json!([{"role":"user","text":"latest"}]));
+    assert!(!fx.run(&["control","read",THREAD,"--session",CLAUDE]).status.success());
+    assert!(!fx.run(&["control","read"]).status.success());
+    fx.write(".everett/inbox/relay-context/caller.json", r#"{"hops":1}"#);
+    let denied = fx.run_stdin(&["control","read","--session","unknown"], "", &[("EVERETT_SESSION_ID","caller")]);
+    assert!(!denied.status.success());
+    assert!(String::from_utf8_lossy(&denied.stderr).contains("Remote-derived"));
+}
