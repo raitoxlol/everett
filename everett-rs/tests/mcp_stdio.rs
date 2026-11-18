@@ -193,6 +193,7 @@ fn round_trip_over_pipes() {
             "everett_inbox",
             "everett_learn",
             "everett_ls",
+            "everett_retry",
             "everett_route",
             "everett_send",
             "everett_status",

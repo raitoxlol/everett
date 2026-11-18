@@ -379,7 +379,7 @@ pub(crate) fn queued_local_request(sender: &str, message_id: &str) -> Result<(St
         || sent_reply(read_inbox(sender, true)?, sender, &target, message_id).is_some()
         || read_acknowledgments(&done_path(&target))?.split_whitespace().any(|id| id == message_id)
     {
-        return Err(EverettError::new(2, format!("This request is no longer queued. Check `everett status {message_id}`.")));
+        return Err(EverettError::new(2, "This request is no longer queued."));
     }
     Ok((target, request))
 }
