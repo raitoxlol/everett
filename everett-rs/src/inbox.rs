@@ -858,6 +858,7 @@ fn compact(session_id: &str) {
         if fs::write(&tmp, &body).and_then(|_| fs::rename(&tmp, &target)).is_err() {
             return;
         }
+        let _ = crate::t3_wake::forget_retired_dispatches(session_id, &keep_ids, &target);
     }
     let live_done: Vec<String> = done.iter().filter(|id| keep_ids.contains(id.as_str())).cloned().collect();
     if live_done.len() != done.len() {

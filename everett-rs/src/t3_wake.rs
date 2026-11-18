@@ -7,8 +7,11 @@
 use crate::adapters::{t3_cli, t3code};
 use crate::error::{EverettError, Result};
 use crate::session::{clean, Session};
+use rusqlite::{params, Connection, OptionalExtension, TransactionBehavior};
 use serde_json::{json, Map, Value};
+use std::collections::HashSet;
 use std::path::Path;
+use std::time::Duration;
 
 pub const SEND_TIMEOUT: f64 = 20.0;
 
@@ -68,8 +71,113 @@ pub fn wake(thread: &str, session: &Session, message_id: &str) -> Result<String>
     wake_with_timeout(thread, session, message_id, SEND_TIMEOUT)
 }
 
-pub(crate) fn wake_bound(binding: &Binding, session: &Session, message_id: &str) -> Result<String> {
-    wake_checked(&binding.thread, &binding.data_home, session, message_id, SEND_TIMEOUT, || Ok(()))
+pub(crate) struct DispatchFailure {
+    pub error: EverettError,
+    pub retryable: bool,
+}
+
+impl DispatchFailure {
+    fn uncertain(message: impl Into<String>) -> Self {
+        Self { error: EverettError::new(4, message), retryable: false }
+    }
+}
+
+impl From<EverettError> for DispatchFailure {
+    fn from(error: EverettError) -> Self {
+        Self { error, retryable: true }
+    }
+}
+
+pub(crate) fn wake_bound(binding: &Binding, session: &Session, message_id: &str) -> std::result::Result<String, DispatchFailure> {
+    let (receipt, _) = dispatch_once(&session.id, message_id, || {
+        wake_checked(&binding.thread, &binding.data_home, session, message_id, SEND_TIMEOUT, || Ok(()))
+    })?;
+    Ok(receipt)
+}
+
+fn journal_error(error: rusqlite::Error) -> DispatchFailure {
+    DispatchFailure {
+        error: EverettError::new(4, format!("Cannot record T3 dispatch confirmation: {error}")),
+        retryable: false,
+    }
+}
+
+fn journal_path() -> std::path::PathBuf {
+    crate::inbox::inbox_dir().join("t3-dispatch.sqlite")
+}
+
+pub(crate) fn forget_retired_dispatches(target: &str, live_ids: &HashSet<&str>, mailbox: &Path) -> rusqlite::Result<()> {
+    if !journal_path().is_file() {
+        return Ok(());
+    }
+    let mut journal = Connection::open_with_flags(journal_path(), rusqlite::OpenFlags::SQLITE_OPEN_READ_WRITE)?;
+    journal.busy_timeout(Duration::from_millis(50))?;
+    let transaction = journal.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    let retired = {
+        let mut query = transaction.prepare("SELECT message_id FROM dispatch WHERE target = ?1")?;
+        let mut rows = query.query([target])?;
+        let mut retired = Vec::new();
+        while let Some(row) = rows.next()? {
+            let id: String = row.get(0)?;
+            if !live_ids.contains(id.as_str()) {
+                retired.push(id);
+            }
+        }
+        retired
+    };
+    // The mailbox lock is held by compaction. Confirm durable retirement before forgetting receipts.
+    if retired.is_empty()
+        || std::fs::File::open(mailbox).and_then(|file| file.sync_all()).is_err()
+        || std::fs::File::open(crate::inbox::inbox_dir()).and_then(|dir| dir.sync_all()).is_err()
+    {
+        return Ok(());
+    }
+    for id in retired {
+        transaction.execute("DELETE FROM dispatch WHERE target = ?1 AND message_id = ?2", params![target, id])?;
+    }
+    transaction.commit()
+}
+
+fn dispatch_once(
+    target: &str, message_id: &str, dispatch: impl FnOnce() -> std::result::Result<String, DispatchFailure>,
+) -> std::result::Result<(String, bool), DispatchFailure> {
+    let mut journal = Connection::open(journal_path())
+        .map_err(journal_error)?;
+    journal.busy_timeout(Duration::from_secs(1)).map_err(journal_error)?;
+    journal.execute_batch("CREATE TABLE IF NOT EXISTS dispatch (
+        target TEXT NOT NULL, message_id TEXT NOT NULL, receipt TEXT,
+        PRIMARY KEY (target, message_id)
+    )").map_err(journal_error)?;
+    let reserve = journal.transaction_with_behavior(TransactionBehavior::Immediate).map_err(journal_error)?;
+    let recorded: Option<Option<String>> = reserve.query_row(
+        "SELECT receipt FROM dispatch WHERE target = ?1 AND message_id = ?2", params![target, message_id],
+        |row| row.get(0),
+    ).optional().map_err(journal_error)?;
+    match recorded {
+        Some(Some(receipt)) => return Ok((receipt, true)),
+        Some(None) => return Err(DispatchFailure {
+            error: EverettError::new(4, "T3 dispatch is in progress or its confirmation could not be saved. Check the original request and the T3 thread."),
+            retryable: false,
+        }),
+        None => {}
+    }
+    reserve.execute("INSERT INTO dispatch (target, message_id) VALUES (?1, ?2)",
+        params![target, message_id]).map_err(journal_error)?;
+    reserve.commit().map_err(journal_error)?;
+
+    match dispatch() {
+        Ok(receipt) => {
+            journal.execute("UPDATE dispatch SET receipt = ?3 WHERE target = ?1 AND message_id = ?2",
+                params![target, message_id, receipt]).map_err(journal_error)?;
+            Ok((receipt, false))
+        }
+        Err(failure) if failure.retryable => {
+            journal.execute("DELETE FROM dispatch WHERE target = ?1 AND message_id = ?2",
+                params![target, message_id]).map_err(journal_error)?;
+            Err(failure)
+        }
+        Err(failure) => Err(failure),
+    }
 }
 
 pub(crate) fn retry(sender: &str, message_id: &str) -> Result<Map<String, Value>> {
@@ -84,40 +192,42 @@ pub(crate) fn retry(sender: &str, message_id: &str) -> Result<Map<String, Value>
         return Err(EverettError::new(4, "The T3 data folder changed since the original ping."));
     }
     let session = Session::new(harness, &target, "", "", "", 0.0);
-    let receipt = wake_checked(thread, data_home, &session, message_id, SEND_TIMEOUT, || {
+    let (receipt, already_dispatched) = dispatch_once(&target, message_id, || wake_checked(thread, data_home, &session, message_id, SEND_TIMEOUT, || {
         crate::send::require_local_prompt(Some(sender))?;
         let (current_target, current_request) = crate::inbox::queued_local_request(sender, message_id)?;
         if current_target != target || current_request != request {
             return Err(EverettError::new(2, "The original request changed before dispatch."));
         }
         Ok(())
-    }).map_err(|error| EverettError::new(error.code, format!(
-        "T3 retry not confirmed: {}", error.message,
-    )))?;
+    })).map_err(|failure| {
+        let follow_up = if failure.retryable { "" } else { " Check the original T3 thread before any further dispatch." };
+        EverettError::new(failure.error.code, format!("T3 retry not confirmed: {}.{follow_up}", failure.error.message.trim_end_matches('.')))
+    })?;
     Ok(Map::from_iter([
         ("message_id".into(), json!(message_id)),
         ("to".into(), json!(target)),
         ("thread_id".into(), json!(thread)),
         ("state".into(), json!("prompt_sent")),
         ("receipt".into(), json!(receipt)),
+        ("already_dispatched".into(), json!(already_dispatched)),
     ]))
 }
 
 pub(crate) fn wake_with_timeout(thread: &str, session: &Session, message_id: &str, timeout: f64) -> Result<String> {
-    wake_checked(thread, &resolved_data_home()?, session, message_id, timeout, || Ok(()))
+    wake_checked(thread, &resolved_data_home()?, session, message_id, timeout, || Ok(())).map_err(|failure| failure.error)
 }
 
 fn wake_checked(
     thread: &str, data_home: &str, session: &Session, message_id: &str, timeout: f64,
     preflight: impl FnOnce() -> Result<()>,
-) -> Result<String> {
+) -> std::result::Result<String, DispatchFailure> {
     if !timeout.is_finite() || timeout <= 0.0 {
-        return Err(EverettError::new(4, "Timeout expired before T3 dispatch."));
+        return Err(EverettError::new(4, "Timeout expired before T3 dispatch.").into());
     }
     let home = Path::new(data_home);
     let db_path = t3code::db_path_in(home);
     if thread_id_in(session, &db_path).as_deref() != Some(thread) {
-        return Err(EverettError::new(4, "The T3 thread binding changed before dispatch. No nudge was sent."));
+        return Err(EverettError::new(4, "The T3 thread binding changed before dispatch. No nudge was sent.").into());
     }
     let bin = t3_cli::binary_in(home).ok_or_else(|| {
         EverettError::new(4, "T3 Code CLI (t3) not found on PATH or in ~/.t3/bin.")
@@ -130,10 +240,7 @@ fn wake_checked(
         .map_err(|e| EverettError::new(4, format!("t3 thread send failed to start: {e}")))?;
     let out = captured.output;
     if out.timed_out {
-        return Err(EverettError::new(
-            4,
-            format!("t3 thread send timed out after {timeout}s"),
-        ));
+        return Err(DispatchFailure::uncertain(format!("t3 thread send timed out after {timeout}s")));
     }
     if out.code != 0 {
         let detail = if out.stderr.trim().is_empty() {
@@ -141,14 +248,16 @@ fn wake_checked(
         } else {
             out.stderr.trim()
         };
-        return Err(EverettError::new(
-            4,
-            format!("t3 thread send exited {}: {}", out.code, clean(detail, 300)),
-        ));
+        let error = EverettError::new(4, if out.code < 0 {
+            format!("T3 dispatch was interrupted. Check the T3 thread for the nudge: {}", clean(detail, 300))
+        } else {
+            format!("t3 thread send exited {}: {}", out.code, clean(detail, 300))
+        });
+        return Err(DispatchFailure { error, retryable: out.code > 0 });
     }
-    let receipt = captured.receipt.as_ref().ok_or_else(|| EverettError::new(4,
+    let receipt = captured.receipt.as_ref().ok_or_else(|| DispatchFailure::uncertain(
         "t3 returned no valid JSON receipt. Check that the selected CLI supports thread commands. Dispatch is unconfirmed; do not blindly retry."))?;
     t3_cli::validate_dispatch(receipt, t3_cli::Dispatch::Send(thread), false, out.code)
-        .map_err(|message| EverettError::new(4, message))?;
+        .map_err(DispatchFailure::uncertain)?;
     Ok(out.stdout.trim().to_string())
 }
