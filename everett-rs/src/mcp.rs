@@ -1770,8 +1770,10 @@ pub fn handle(message: &Value) -> Option<Value> {
             log("initialize", f);
             let mut capabilities = json!({"tools": {"listChanged": false}});
             if std::env::var("EVERETT_GATEWAY_EXACT_IDS").as_deref() == Ok("1") {
-                capabilities["experimental"] =
-                    json!({"everettExactDestinationIds": {"enforced": true}});
+                capabilities["experimental"] = json!({
+                    "everettExactDestinationIds": {"enforced": true},
+                    "everettExactInboxPickup": {"enforced": true},
+                });
             }
             Some(result(
                 &msg_id,
