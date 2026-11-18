@@ -2249,6 +2249,8 @@ pub fn run(
     }
     enable_raw_mode()?;
     let _guard = TermGuard;
+    // Register the resize listener before drawing the first frame. Poll leaves queued input intact.
+    event::poll(Duration::ZERO)?;
     let mut stdout = io::stdout();
     execute!(stdout, EnterAlternateScreen, cursor::Hide)?;
     let backend = CrosstermBackend::new(stdout);
