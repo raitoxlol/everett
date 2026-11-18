@@ -64,6 +64,34 @@ pub(super) fn modern_discovery_and_lifecycle() {
     assert_eq!(invalid.status, 400);
     assert_eq!(body_json(&invalid)["error"]["code"], -32602);
 
+    const UNSUPPORTED_VERSION: &str = "2026-01-01";
+    let mut unsupported = event_list.clone();
+    unsupported["params"]["_meta"]["io.modelcontextprotocol/protocolVersion"] = json!(UNSUPPORTED_VERSION);
+    for rpc in [&unsupported, &missing_metadata] {
+        let response = post(port, rpc, &[
+            ("MCP-Protocol-Version", Some(UNSUPPORTED_VERSION)), ("Mcp-Method", Some("events/list")),
+        ]);
+        assert_eq!(response.status, 400);
+        let body = body_json(&response);
+        assert_eq!(body["error"]["code"], -32022);
+        assert_eq!(body["error"]["data"]["requested"], UNSUPPORTED_VERSION);
+    }
+
+    let poll = post(port, &request("events/poll", json!({})), &[
+        ("MCP-Protocol-Version", Some(VERSION)), ("Mcp-Method", Some("events/poll")),
+    ]);
+    assert_eq!(poll.status, 404);
+    assert_eq!(body_json(&poll)["error"]["code"], -32601);
+    let invalid_params = json!({"name":"message.created","arguments":{"session_id":"foreign"},"delivery":{"mode":"webhook","url":"https://callback.example/"}});
+    let rejected = post(port, &request("events/subscribe", invalid_params.clone()), &[
+        ("MCP-Protocol-Version", Some(VERSION)), ("Mcp-Method", Some("events/subscribe")),
+    ]);
+    assert_eq!(rejected.status, 400);
+    assert_eq!(body_json(&rejected)["error"]["code"], -32602);
+    let legacy_rejected = post(port, &json!({"jsonrpc":"2.0","id":1,"method":"events/subscribe","params":invalid_params}), &[("MCP-Protocol-Version", None)]);
+    assert_eq!(legacy_rejected.status, 200);
+    assert_eq!(body_json(&legacy_rejected)["error"]["code"], -32602);
+
     let catalog = call(port, "events/list", json!({}));
     assert_eq!(catalog["resultType"], "complete");
     assert_eq!(catalog["events"][0]["name"], "message.created");
