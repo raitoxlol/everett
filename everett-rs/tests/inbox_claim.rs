@@ -16,6 +16,15 @@ fn failed_inbox_claim_returns_no_work_and_can_be_retried() {
     let cli = |args: &[&str]| fx.run_stdin(args, "", &worker);
     let mcp = |args| mcp_calls(&fx, &[], &worker, &[("everett_inbox", args)]).remove(0);
 
+    for args in [
+        vec!["inbox", "--session", "bad/session", "--json"],
+        vec!["inbox", "--session", "bad/session", "--json", "--peek"],
+    ] {
+        let invalid = cli(&args);
+        assert_eq!(invalid.status.code(), Some(2), "{invalid:?}");
+        assert!(invalid.stdout.is_empty(), "{invalid:?}");
+    }
+
     let rejected = cli(&["inbox", "--json"]);
     assert!(!rejected.status.success(), "{rejected:?}");
     assert!(rejected.stdout.is_empty(), "{rejected:?}");
