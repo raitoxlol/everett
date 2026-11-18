@@ -1,5 +1,6 @@
 use super::*;
 use crate::gateway_events::{Events, Failure, Principal};
+use rmcp::transport::common::http_header::{HEADER_MCP_METHOD, HEADER_MCP_PROTOCOL_VERSION};
 
 fn principal(
     state: &HttpBoundary,
@@ -46,6 +47,51 @@ pub(super) async fn advertise(response: Response) -> Response {
     Response::from_parts(parts, Body::from(bytes))
 }
 
+fn modern_request(
+    headers: &axum::http::HeaderMap,
+    method: &str,
+    args: &Value,
+) -> Result<bool, ErrorData> {
+    let meta: RequestMetaObject = serde_json::from_value(args["_meta"].clone()).unwrap_or_default();
+    let requested = meta.protocol_version();
+    let header = headers.get(HEADER_MCP_PROTOCOL_VERSION).and_then(|h| h.to_str().ok());
+    let modern = ProtocolVersion::V_2026_07_28;
+    if ![header, requested.as_ref().map(ProtocolVersion::as_str)]
+        .into_iter()
+        .flatten()
+        .any(|v| v >= modern.as_str())
+    {
+        return Ok(false);
+    }
+    let missing = meta.missing_required_keys(&modern);
+    let Some(requested) = requested.filter(|_| missing.is_empty()) else {
+        return Err(ErrorData::invalid_params(
+            format!("request _meta is missing or has malformed required fields: {}", missing.join(", ")),
+            None,
+        ));
+    };
+    if header != Some(requested.as_str()) || headers.get_all(HEADER_MCP_PROTOCOL_VERSION).iter().count() != 1 {
+        return Err(ErrorData::header_mismatch("MCP-Protocol-Version must match request _meta", None));
+    }
+    if headers.get(HEADER_MCP_METHOD).and_then(|h| h.to_str().ok()) != Some(method)
+        || headers.get_all(HEADER_MCP_METHOD).iter().count() != 1
+    {
+        return Err(ErrorData::header_mismatch("Mcp-Method must match the request method", None));
+    }
+    if !ProtocolVersion::KNOWN_VERSIONS.contains(&requested) {
+        return Err(ErrorData::unsupported_protocol_version(requested, ProtocolVersion::KNOWN_VERSIONS));
+    }
+    Ok(true)
+}
+
+fn response(status: StatusCode, body: Value) -> Response {
+    (
+        status,
+        [("content-type", "application/json"), ("cache-control", "no-store")],
+        body.to_string(),
+    ).into_response()
+}
+
 pub(super) async fn dispatch(
     state: &HttpBoundary,
     method: &Method,
@@ -85,6 +131,13 @@ pub(super) async fn dispatch(
         return Some(StatusCode::BAD_REQUEST.into_response());
     }
     let mut args = rpc.get("params").cloned().unwrap_or(json!({}));
+    let modern = match modern_request(headers, method, &args) {
+        Ok(modern) => modern,
+        Err(error) => return Some(response(
+            StatusCode::BAD_REQUEST,
+            json!({"jsonrpc":"2.0","id":rpc["id"],"error":error}),
+        )),
+    };
     let handle = args
         .get_mut("arguments")
         .and_then(Value::as_object_mut)
@@ -146,21 +199,17 @@ pub(super) async fn dispatch(
         }
     };
     let body = match result {
-        Ok(value) => json!({"jsonrpc":"2.0","id":rpc["id"],"result":value}),
+        Ok(mut value) => {
+            if modern {
+                value["resultType"] = json!("complete");
+            }
+            json!({"jsonrpc":"2.0","id":rpc["id"],"result":value})
+        }
         Err(e) => {
             json!({"jsonrpc":"2.0","id":rpc["id"],"error":{"code":e.code,"message":e.reason,"data":{"reason":e.reason}}})
         }
     };
-    Some(
-        (
-            [
-                ("content-type", "application/json"),
-                ("cache-control", "no-store"),
-            ],
-            body.to_string(),
-        )
-            .into_response(),
-    )
+    Some(response(StatusCode::OK, body))
 }
 
 pub(super) async fn pump(state: HttpBoundary) {

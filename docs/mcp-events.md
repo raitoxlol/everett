@@ -5,9 +5,9 @@ The authenticated HTTP gateway optionally supports `message.created` using the
 Events is disabled by default. The binding's `events` boolean enables the candidate;
 this change does not enable it in any live configuration.
 
-The existing Streamable HTTP initialize response advertises `events`. The same
-authenticated `/mcp` endpoint accepts `events/list`, `events/subscribe`, and
-`events/unsubscribe`. No polling interface replaces webhook delivery.
+The authenticated `/mcp` endpoint advertises `events` through Streamable HTTP
+`initialize` and MCP 2.0 `server/discover`. Both protocols use `events/list`,
+`events/subscribe`, and `events/unsubscribe` on that endpoint.
 
 Subscriptions select the connection inbox or a registered inbox using its private
 `identity_handle`. An optional `session_id` must match that selection. Account,

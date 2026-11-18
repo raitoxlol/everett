@@ -1003,7 +1003,12 @@ async fn http_boundary(
     if let Some(response) = event_http::dispatch(&state, request.method(), request.uri(), request.headers(), &bytes, agent.as_ref(), event_token).await {
         return response;
     }
-    let advertise_events = state.events.is_some() && serde_json::from_slice::<Value>(&bytes).ok().is_some_and(|v| v["method"] == "initialize");
+    let advertise_events = state.events.is_some()
+        && request.method() == Method::POST
+        && request.uri().path() == "/mcp"
+        && serde_json::from_slice::<Value>(&bytes).is_ok_and(|v| {
+            matches!(v["method"].as_str(), Some("initialize" | "server/discover"))
+        });
     *request.body_mut() = Body::from(bytes);
     if let Some(agent) = agent {
         request.extensions_mut().insert(agent);
