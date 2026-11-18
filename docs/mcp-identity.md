@@ -4,6 +4,8 @@ Everett tools that act as "you" (`everett_card`, `everett_inbox`, `everett_event
 `everett_subscribe`, replies and delivery through `everett_send`) need to know which session is
 calling. Everett binds the caller from the host, never from tool arguments. Check the result with
 `everett_whoami`: `session_id`, `harness`, `source`, and a `note` with the fix when unbound.
+Run `everett login` once per local Everett profile before calling native MCP tools.
+See [native MCP sign-in](auth.md#native-mcp-sign-in).
 
 | Harness | How it binds | Setup |
 | --- | --- | --- |
@@ -42,8 +44,8 @@ Deprecated and removed from tool schemas. It is still accepted when it equals th
 The existing MCP tool adds an `identity` object without removing its original fields.
 `identity.account` reports verification status and the trusted issuer when available;
 its subject is always null, with `subject_redacted` indicating a verified but withheld
-account subject. `identity.client` identifies the OAuth client or native harness
-separately from `identity.session`.
+account subject. `identity.client` identifies the OAuth client or signed-in native
+device separately from `identity.session`.
 
 A gateway call with a resolved private handle reports session provenance
 `owner_registered_logical`. With verified account/client provenance its ownership is
@@ -56,10 +58,10 @@ Two logical registrations under one client keep distinct, stable session IDs/lab
 Native MCP reports `native_host_bound` for existing harness environment/process
 bindings, `launcher_binding` for generic EVERETT_SESSION_ID, `request_metadata` for
 Codex request metadata, and `unbound` when no session is resolved. This describes
-binding provenance, not cryptographic attestation. Native account status stays unknown
-and session ownership stays unmapped; MCP does not infer ownership from the current
-login or make a new account verification request. The deprecated tool session_id field
-cannot replace the host identity; nested tool-argument metadata is rejected.
+binding provenance. Native tool calls verify the saved account with the configured
+relay. The verified account and device describe the login, and session ownership
+stays `unmapped`. The deprecated tool `session_id` field cannot replace the host
+identity. Nested tool-argument metadata is rejected.
 
 These fields grant no authority and persist no receipts. The gateway reuses current
 OAuth validation, handle resolution and backend identity checks. Its existing

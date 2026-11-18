@@ -98,6 +98,21 @@ verification boundaries. Dots/Grok client OAuth has its own consent/grant;
 Hark/Muse compatibility remains unverified.
 
 
+## Native MCP sign-in
+
+Run `everett login` once with the same Everett profile (`EVERETT_HOME` or `HOME`)
+used by your harnesses. They share the saved credential. Tool calls verify it
+with the configured relay each time, including in already-running `everett mcp`
+processes. Initialization and tool discovery work while signed out. Tool execution
+requires a current credential and a successful online check. Signing out locally,
+expiry, or server revocation takes effect on the next tool call.
+
+The harness provides the conversation binding for its inbox. The account and device
+reported by `everett_whoami` describe the sign-in, and each conversation retains its
+own session ID. Hosted gateway clients authenticate through the gateway's configured
+transport. See [gateway authentication](gateway.md).
+
+
 ## Private storage and revocation
 
 Protect the local OS account: it holds the native bearer credential and unencrypted

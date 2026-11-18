@@ -161,6 +161,7 @@ impl Pair {
     }
 
     fn remote_mcp(&self, input: &str) -> Output {
+        common::native_mcp_account(self.remote.path());
         let mut cmd = self.command(true);
         cmd.arg("mcp")
             .env("EVERETT_SESSION_ID", "worker")
@@ -679,6 +680,7 @@ fn mcp_new_remote_send_is_idempotent_and_never_wakes() {
     let p = Pair::new();
     checked(p.add());
     let calls: String = (1..=2).map(|id| json!({"jsonrpc":"2.0","id":id,"method":"tools/call","params":{"name":"everett_send","arguments":{"to":"linux/openai-dot/worker","mode":"inbox","text":MESSAGE,"idempotency_key":"mcp-new","session_id":"local-sender"}}}).to_string() + "\n").collect();
+    common::native_mcp_account(p.local.path());
     let mut child = p
         .command(false)
         .arg("mcp")
@@ -775,6 +777,7 @@ fn bound_external_send_returns_relay_transport() {
     let call = json!({"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"everett_send","arguments":{"to":"ext-worker","text":"Relay ping","mode":"inbox","idempotency_key":"bound-relay-mcp","session_id":"local-sender"}}})
         .to_string()
         + "\n";
+    common::native_mcp_account(p.local.path());
     let mut child = p
         .command(false)
         .arg("mcp")

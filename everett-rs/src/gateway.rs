@@ -2,6 +2,8 @@ pub mod diagnostics;
 mod identities;
 mod event_http;
 mod native_start;
+mod worker;
+pub use worker::run as run_internal_worker;
 #[cfg(test)]
 mod ownership_shadow;
 
@@ -270,7 +272,7 @@ impl Binding {
         Ok(binding)
     }
 
-    fn reply_destination(&self, message_id: &str) -> Result<String, String> {
+    fn reply_message(&self, message_id: &str) -> Result<Value, String> {
         if message_id.is_empty() || message_id.chars().count() > 128 {
             return Err("invalid reply message ID".into());
         }
@@ -296,7 +298,10 @@ impl Binding {
         if !self.destinations.contains(sender) {
             return Err("reply destination is not authorized".into());
         }
-        Ok(sender.into())
+        if matches[0].get("relay_device").is_some() || matches[0].get("peer_client").is_some() {
+            return Err("gateway replies require a local inbox message".into());
+        }
+        Ok(matches.pop().expect("one authorized message"))
     }
 
     fn authorize(
@@ -365,7 +370,7 @@ impl Binding {
                 (Some(to), None)
                     if to.as_str().is_some_and(|to| self.destinations.contains(to)) => {}
                 (None, Some(reply)) => {
-                    self.reply_destination(reply.as_str().ok_or("invalid reply message ID")?)?;
+                    self.reply_message(reply.as_str().ok_or("invalid reply message ID")?)?;
                 }
                 _ => {
                     return Err(
@@ -546,9 +551,14 @@ impl Gateway {
             .workers
             .try_acquire()
             .map_err(|_| "gateway workers busy; retry later")?;
+        let built_in = worker::is_builtin(&binding.backend_command);
         let mut command = Command::new(&binding.backend_command[0]);
+        if built_in {
+            command.arg("gateway-worker");
+        } else {
+            command.args(&binding.backend_command[1..]);
+        }
         command
-            .args(&binding.backend_command[1..])
             .env_clear()
             .current_dir(&binding.cwd)
             .stdin(Stdio::piped())
@@ -573,9 +583,13 @@ impl Gateway {
             .env("EVERETT_HOPS", "0")
             .env("EVERETT_GATEWAY_EXACT_IDS", "1");
         let mut child = command.spawn().map_err(|_| BACKEND_ERROR)?;
-        let stdout = child.stdout.take().ok_or(BACKEND_ERROR)?;
-        let stdin = child.stdin.take().ok_or(BACKEND_ERROR)?;
         let operation = async {
+            let stdout = child.stdout.take().ok_or(BACKEND_ERROR)?;
+            let stdin = child.stdin.take().ok_or(BACKEND_ERROR)?;
+            if built_in {
+                let request = worker::Call::authorized(binding, name, &args)?;
+                return worker::dispatch(request, stdin, stdout).await;
+            }
             let peer = ()
                 .serve((
                     BoundedRead {
@@ -604,48 +618,13 @@ impl Gateway {
                         return Err("backend lacks exact inbox pickup; update the Everett backend to use message_id".into());
                     }
                 }
-                if let Some(reply) = args.get("reply_to").and_then(Value::as_str) { binding.reply_destination(reply)?; }
+                if let Some(reply) = args.get("reply_to").and_then(Value::as_str) { binding.reply_message(reply)?; }
                 let response = peer.call_tool_once(CallToolRequestParams::new(name.to_owned()).with_arguments(args))
                     .await.map_err(|_| BACKEND_ERROR)?;
                 let CallToolResponse::Complete(result) = response else { return Err(BACKEND_ERROR.into()); };
                 if result.is_error == Some(true) { return Err("backend rejected the tool call".into()); }
                 if serde_json::to_vec(&result).map_err(|_| BACKEND_ERROR)?.len() > MAX_RESULT { return Err("backend result exceeds 256 KiB".into()); }
-                let mut data = result.structured_content.filter(Value::is_object).ok_or("backend must return structured tool results")?;
-                if name == "everett_whoami" && (data["session_id"] != binding.agent_id || data["harness"] != binding.harness) { return Err("backend identity differs from binding".into()); }
-                if name == "everett_whoami" {
-                    let account_verified = agent.and_then(|a| a.account.as_ref()).is_some();
-                    let client_verified = agent.is_some_and(|a| !a.client_id.is_empty());
-                    data["identity"] = json!({
-                        "account": {"status": if account_verified { "verified" } else { "unknown" },
-                            "issuer": if account_verified { binding.oauth.as_ref().map(|o| &o.issuer) } else { None },
-                            "subject": null, "subject_redacted": account_verified},
-                        "client": {"kind": if agent.is_some() { "oauth_client" } else { "fixed_gateway" },
-                            "status": if client_verified { "verified" } else { "unknown" },
-                            "id": agent.map(|a| &a.client_id), "name": agent.map(|a| &a.name)},
-                        "session": {"id": binding.agent_id, "harness": binding.harness,
-                            "label": format!("{} [{}]", if private_identity { "Registered conversation" } else if binding.require_identity_handle { "Gateway connection" } else { "Legacy client inbox" }, binding.agent_id),
-                            "provenance": if private_identity { "owner_registered_logical" } else { "legacy_client_binding" },
-                            "ownership": if private_identity && account_verified && client_verified { "verified_account_client" } else { "unmapped" }}
-                    });
-                    data["gateway_runtime"] = crate::build_info::value();
-                    data["authorized_destinations"] = json!(binding.destinations);
-                    data["capabilities"] = json!({"native_session_start": binding.native_start.as_ref().is_some_and(|p| p.permits(agent)), "automatic_wake": false, "delivery": "inbox"});
-                    if binding.require_identity_handle {
-                        data["capabilities"]["private_inbox_required"] = json!(true);
-                    }
-                    if let Some(oauth) = &binding.oauth {
-                        data["gateway_resource"] = json!(oauth.resource);
-                    }
-                }
-                if let (true, Some(agent)) = (name == "everett_whoami", agent) {
-                    let mut data = data;
-                    data["gateway_auth"] = json!({"mode": "oauth", "agent_name": agent.name, "client_id": agent.client_id});
-                    return Ok(data);
-                }
-                if name == "everett_core" {
-                    return Ok(json!({"core":data["core"].as_str().ok_or("backend must return shared core text")?}));
-                }
-                Ok(data)
+                result.structured_content.filter(Value::is_object).ok_or_else(|| "backend must return structured tool results".into())
             }.await;
             peer.cancellation_token().cancel();
             result
@@ -655,7 +634,42 @@ impl Gateway {
             .unwrap_or_else(|_| Err(BACKEND_ERROR.into()));
         let _ = child.kill().await;
         let _ = child.wait().await;
-        result
+        let mut data = result?;
+        if name == "everett_whoami" && (data["session_id"] != binding.agent_id || data["harness"] != binding.harness) { return Err("backend identity differs from binding".into()); }
+        if name == "everett_whoami" {
+            let account_verified = agent.and_then(|a| a.account.as_ref()).is_some();
+            let client_verified = agent.is_some_and(|a| !a.client_id.is_empty());
+            data["identity"] = json!({
+                "account": {"status": if account_verified { "verified" } else { "unknown" },
+                    "issuer": if account_verified { binding.oauth.as_ref().map(|o| &o.issuer) } else { None },
+                    "subject": null, "subject_redacted": account_verified},
+                "client": {"kind": if agent.is_some() { "oauth_client" } else { "fixed_gateway" },
+                    "status": if client_verified { "verified" } else { "unknown" },
+                    "id": agent.map(|a| &a.client_id), "name": agent.map(|a| &a.name)},
+                "session": {"id": binding.agent_id, "harness": binding.harness,
+                    "label": format!("{} [{}]", if private_identity { "Registered conversation" } else if binding.require_identity_handle { "Gateway connection" } else { "Legacy client inbox" }, binding.agent_id),
+                    "provenance": if private_identity { "owner_registered_logical" } else { "legacy_client_binding" },
+                    "ownership": if private_identity && account_verified && client_verified { "verified_account_client" } else { "unmapped" }}
+            });
+            data["gateway_runtime"] = crate::build_info::value();
+            data["authorized_destinations"] = json!(binding.destinations);
+            data["capabilities"] = json!({"native_session_start": binding.native_start.as_ref().is_some_and(|p| p.permits(agent)), "automatic_wake": false, "delivery": "inbox"});
+            if binding.require_identity_handle {
+                data["capabilities"]["private_inbox_required"] = json!(true);
+            }
+            if let Some(oauth) = &binding.oauth {
+                data["gateway_resource"] = json!(oauth.resource);
+            }
+        }
+        if let (true, Some(agent)) = (name == "everett_whoami", agent) {
+            let mut data = data;
+            data["gateway_auth"] = json!({"mode": "oauth", "agent_name": agent.name, "client_id": agent.client_id});
+            return Ok(data);
+        }
+        if name == "everett_core" {
+            return Ok(json!({"core":data["core"].as_str().ok_or("backend must return shared core text")?}));
+        }
+        Ok(data)
     }
 }
 
@@ -1327,18 +1341,20 @@ mod tests {
         let path = folder.join("dot-one.jsonl");
         let own = json!({"id":"one","to":"dot-one","from":"agent-two"}).to_string() + "\n";
         std::fs::write(&path, &own).unwrap();
-        assert_eq!(b.reply_destination("one").unwrap(), "agent-two");
+        assert_eq!(b.reply_message("one").unwrap()["from"], "agent-two");
         for invalid in [
             own.clone() + &own,
+            json!({"id":"one","to":"dot-one","from":"agent-two","relay_device":"remote"}).to_string(),
+            json!({"id":"one","to":"dot-one","from":"agent-two","peer_client":"remote"}).to_string(),
             "not json\n".into(),
             json!({"id":"one","to":"foreign","from":"agent-two"}).to_string(),
             json!({"id":"one","to":"dot-one","from":"foreign"}).to_string(),
         ] {
             std::fs::write(&path, invalid).unwrap();
-            assert!(b.reply_destination("one").is_err());
+            assert!(b.reply_message("one").is_err());
         }
         std::fs::write(&path, vec![b' '; MAX_INBOX + 1]).unwrap();
-        assert!(b.reply_destination("one").is_err());
+        assert!(b.reply_message("one").is_err());
     }
 
     #[test]

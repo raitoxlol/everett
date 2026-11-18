@@ -6,6 +6,7 @@ mod events_acceptance;
 mod identity_diagnostics;
 #[path = "gateway_native/whoami_provenance.rs"]
 mod whoami_provenance;
+mod common;
 use serde_json::{json, Value};
 use std::cell::{Cell, RefCell};
 use std::io::{BufRead, BufReader, Read, Write};
@@ -191,6 +192,9 @@ fn merged(base: &Value, changes: &Value) -> Value {
 
 impl Ctx {
     fn command(&self, args: &[&str]) -> Command {
+        if args.first() == Some(&"mcp") {
+            common::native_mcp_account(&self.home);
+        }
         let binary = std::env::var_os("EVERETT_VERIFY_BINARY").unwrap_or_else(|| BIN.into());
         let mut command = Command::new(binary);
         command.args(args).env_clear().current_dir(&self.home);

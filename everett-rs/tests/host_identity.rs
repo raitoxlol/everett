@@ -83,6 +83,7 @@ fn store_guess_never_matches_an_empty_cwd_and_refuses_ambiguity() {
 
 /// initialize + tools/call over stdio for any launcher, returning each raw response.
 fn mcp_via(fx: &Fixture, program: &std::path::Path, args: &[&str], calls: &[(&str, Value)]) -> Vec<Value> {
+    common::native_mcp_account(&fx.home());
     let mut child = spawn_retrying(fx, program, args);
     let mut stdin = child.stdin.take().unwrap();
     let mut stdout = BufReader::new(child.stdout.take().unwrap());

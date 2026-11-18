@@ -1107,16 +1107,17 @@ fn one_login_authorizes_multiple_native_inboxes_and_revocation_stops_live_server
             .unwrap();
         let mut input = child.stdin.take().unwrap();
         let mut output = BufReader::new(child.stdout.take().unwrap());
-        move |method: &str, params: Value| -> Value {
+        let request = move |method: &str, params: Value| -> Value {
             writeln!(input, "{}", json!({"jsonrpc":"2.0","id":1,"method":method,"params":params})).unwrap();
             let mut line = String::new();
             output.read_line(&mut line).unwrap();
             serde_json::from_str::<Value>(&line).unwrap()["result"].clone()
-        }
+        };
+        (child, request)
     };
     let inbox = |args: Value| json!({"name":"everett_inbox","arguments":args});
-    let mut a = start("native-alpha");
-    let mut b = start("native-beta");
+    let (mut alpha, mut a) = start("native-alpha");
+    let (mut beta, mut b) = start("native-beta");
     for server in [&mut a, &mut b] {
         assert_eq!(server("initialize", json!({}))["serverInfo"]["name"], "everett");
         assert!(server("tools/list", json!({}))["tools"].is_array());
@@ -1157,6 +1158,9 @@ fn one_login_authorizes_multiple_native_inboxes_and_revocation_stops_live_server
         assert_eq!(revoked["isError"], true, "{revoked}");
         assert!(revoked.to_string().contains("revoked"), "{revoked}");
     }
+    drop((a, b));
+    assert!(alpha.wait().unwrap().success());
+    assert!(beta.wait().unwrap().success());
     assert_eq!(issuer.requests().iter().filter(|(path, _, _)| path == "/v2/auth/device").count(), 1);
     assert!(issuer.requests().iter().filter(|(path, _, _)| path == "/v2/relay/whoami")
         .all(|(_, headers, _)| headers.to_ascii_lowercase().contains(&format!("authorization: bearer {TOKEN}"))));
