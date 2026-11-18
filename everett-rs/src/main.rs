@@ -265,6 +265,9 @@ enum Cmd {
     /// push a fact to the shared core inbox (secrets are rejected)
     Learn {
         fact: String,
+        /// Keep the fact searchable locally for this many seconds (1 to 31536000).
+        #[arg(long)]
+        ttl_seconds: Option<u64>,
         #[arg(long)]
         project: Option<String>,
         #[arg(long, value_parser = clap::builder::PossibleValuesParser::new(SCOPES.to_vec()))]
@@ -920,6 +923,7 @@ fn main() {
             cli::cmd_trunk(&a)
         }
         Cmd::Learn {
+            ttl_seconds,
             fact,
             project,
             scope,
@@ -927,7 +931,7 @@ fn main() {
             a.fact = Some(fact);
             a.project = project;
             a.scope = scope;
-            cli::cmd_learn(&a)
+            cli::cmd_learn(&a, ttl_seconds)
         }
         Cmd::Core { action, project } => {
             a.action = Some(action);
