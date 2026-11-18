@@ -331,6 +331,43 @@ fn t3_wake_refuses_to_nudge_a_rebound_thread_after_enqueue() {
 }
 
 #[test]
+fn t3_custom_home_drives_projection_and_runtime_without_moving_inbox() {
+    let fx = fixture();
+    let os_home = fixture();
+    plant_thread(&os_home.home());
+    let t3_home = os_home.home().join("t3 data");
+    fs::rename(os_home.home().join(".t3"), &t3_home).unwrap();
+    let runtime = t3_home.join("runtime");
+    let installed = runtime.join("versions/0.1.10");
+    fs::create_dir_all(&installed).unwrap();
+    fs::write(runtime.join("service-state.json"), r#"{"protocol":3,"activeVersion":"0.1.10"}"#).unwrap();
+    fs::write(installed.join(".install-complete"), "0.1.10\n").unwrap();
+    fs::rename(fake_t3(&fx.home(), 0), installed.join("t3")).unwrap();
+    let os_path = os_home.home();
+    let env = [
+        ("HOME", os_path.to_str().unwrap()),
+        ("T3CODE_HOME", " ~/t3 data "),
+        ("EVERETT_SESSION_ID", "caller"),
+    ];
+
+    let preview = fx.run_stdin(&["send", "--to", THREAD, "--dry-run", "--json", BODY], "", &env);
+    assert!(preview.status.success(), "{preview:?}");
+    let result: Value = serde_json::from_slice(&preview.stdout).unwrap();
+    assert_eq!(result["session"]["id"], SESSION);
+    assert_eq!(result["thread_id"], THREAD);
+    assert!(!fx.home().join(".everett/inbox").exists());
+
+    let sent = fx.run_stdin(&["send", "--to", THREAD, "--json", BODY], "", &env);
+    assert!(sent.status.success(), "{sent:?}");
+    let result: Value = serde_json::from_slice(&sent.stdout).unwrap();
+    assert_eq!(result["pinged"], true);
+    assert_argv(&os_path, result["message_id"].as_str().unwrap());
+    assert!(fx.home().join(format!(".everett/inbox/{SESSION}.jsonl")).is_file());
+    assert!(!os_path.join(".everett/inbox").exists());
+    assert!(!t3_home.join(".everett/inbox").exists());
+}
+
+#[test]
 fn t3_cli_text_reports_pinged() {
     let fx = fixture();
     plant_thread(&fx.home());
