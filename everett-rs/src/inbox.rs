@@ -278,6 +278,12 @@ pub fn find_in(session_id: &str, message_id: &str) -> Option<Map<String, Value>>
     })
 }
 
+pub(crate) fn is_reply_to(item: &Map<String, Value>, message_id: &str) -> bool {
+    !message_id.is_empty()
+        && item.get("kind").and_then(Value::as_str) == Some("reply")
+        && item.get("reply_to").and_then(Value::as_str) == Some(message_id)
+}
+
 pub fn sent_status(sender: &str, message_id: &str) -> Result<Value> {
     let unknown = || EverettError::new(2, "No retained local request with that ID from this sender.");
     let request = find(message_id)
@@ -295,8 +301,7 @@ pub fn sent_status(sender: &str, message_id: &str) -> Result<Value> {
         .into_iter()
         .filter(|item| {
             let author = item.get("from").and_then(Value::as_str);
-            item.get("kind").and_then(Value::as_str) == Some("reply")
-                && item.get("reply_to").and_then(Value::as_str) == Some(message_id)
+            is_reply_to(item, message_id)
                 && item.get("to").and_then(Value::as_str) == Some(sender)
                 && (author == Some(target) || author == Some(HUMAN))
                 && !item.contains_key("relay_device")
@@ -434,8 +439,7 @@ pub fn wait_reply_with(
         let reply = read(sender)
             .into_iter()
             .filter(|item| {
-                item.get("kind").and_then(Value::as_str) == Some("reply")
-                    && item.get("reply_to").and_then(Value::as_str) == Some(message_id)
+                is_reply_to(item, message_id)
                     && at - item.get("ts").and_then(Value::as_f64).unwrap_or_default() < TTL
             })
             .min_by_key(|item| item.get("id").and_then(Value::as_str).is_some_and(|id| done.contains(id)));

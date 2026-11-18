@@ -87,6 +87,7 @@ pub fn tools() -> &'static Vec<Value> {
                 "inputSchema": {"type": "object", "properties": {
                     "peek": {"type": "boolean", "description": "Do not mark them delivered.", "default": false},
                     "message_id": s("Read only this exact message id from your host-bound inbox."),
+                    "reply_to": s("Read only pending replies to this original Everett message ID."),
                 }, "additionalProperties": false},
             }),
             json!({
@@ -1091,9 +1092,13 @@ fn tool_inbox(
         ));
     }
     let message_id = str_arg(args, "message_id", false)?;
+    let reply_to = str_arg(args, "reply_to", false)?;
     let mut items = crate::inbox::pending(&sid, None);
     if args.contains_key("message_id") {
         items.retain(|m| m.get("id").and_then(Value::as_str) == Some(message_id.as_str()));
+    }
+    if args.contains_key("reply_to") {
+        items.retain(|item| crate::inbox::is_reply_to(item, &reply_to));
     }
     let mut messages: Vec<Value> = Vec::new();
     let mut out = Map::new();
