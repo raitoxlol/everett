@@ -14,6 +14,42 @@ fn run_json(fx: &Fixture, caller: &str, args: &[&str]) -> Value {
 }
 
 #[test]
+fn sender_can_recover_lost_request_ids_without_reading_the_target_inbox() {
+    let fx = fixture();
+    let now = everett::session::now();
+    let item = |id, sender, target, ts| json!({
+        "id": id, "kind": "message", "from": sender, "to": target,
+        "text": format!("private body {id}"), "ts": ts
+    });
+    let mut remote = item("remote", "sender", "worker", now);
+    remote["relay_device"] = json!("peer-device");
+    let mut forwarded = item("forwarded", "sender", "worker", now - 120.0);
+    forwarded["relay_lineage"] = json!({"relay_message_id": "upstream", "external": true});
+    forwarded["external"] = json!(true);
+    let mut reply = item("reply", "sender", "worker", now);
+    reply["kind"] = json!("reply");
+    fx.write(".everett/inbox/worker.jsonl", &jsonl(&[
+        item("older", "sender", "worker", now - 60.0),
+        item("newest", "sender", "worker", now),
+        item("foreign", "other", "worker", now),
+        item("expired", "sender", "worker", now - 8.0 * 86400.0),
+        item("mismatched", "sender", "other", now),
+        remote, reply, forwarded,
+    ]));
+    let sent = run_json(&fx, "sender", &["sent", "--json"]);
+    let requests = sent["requests"].as_array().unwrap();
+    let ids: Vec<_> = requests.iter().map(|request| request["message_id"].as_str().unwrap()).collect();
+    assert_eq!(ids, ["newest", "older", "forwarded"]);
+    assert_eq!(requests[0]["to"], "worker");
+    assert!(!sent.to_string().contains("private body"));
+    let status = run_json(&fx, "sender", &["status", ids[0], "--json"]);
+    assert_eq!(status["state"], "queued");
+    let forwarded = run_json(&fx, "sender", &["status", ids[2], "--json"]);
+    assert_eq!(forwarded["state"], "queued");
+    assert_eq!(run_json(&fx, "worker", &["sent", "--json"])["requests"], json!([]));
+}
+
+#[test]
 fn sender_can_follow_a_local_request_and_recover_its_read_reply() {
     let fx = fixture();
     fx.write(

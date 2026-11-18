@@ -335,19 +335,48 @@ pub(crate) fn is_reply_to(item: &Map<String, Value>, message_id: &str) -> bool {
         && item.get("reply_to").and_then(Value::as_str) == Some(message_id)
 }
 
+fn sent_target<'a>(request: &'a Map<String, Value>, sender: &str) -> Option<&'a str> {
+    if request.get("kind").and_then(Value::as_str) != Some("message")
+        || request.get("from").and_then(Value::as_str) != Some(sender)
+        || request.contains_key("relay_device")
+        || request.contains_key("peer_client")
+    {
+        return None;
+    }
+    request.get("to").and_then(Value::as_str).filter(|id| valid_id(id))
+}
+
 fn sent_request(sender: &str, message_id: &str) -> Result<(String, Map<String, Value>)> {
     let unknown = || EverettError::new(2, "No retained local request with that ID from this sender.");
-    let request = find(message_id)
-        .filter(|item| {
-            item.get("kind").and_then(Value::as_str) == Some("message")
-                && item.get("from").and_then(Value::as_str) == Some(sender)
-                && !item.contains_key("relay_device")
-                && !item.contains_key("peer_client")
-        })
-        .ok_or_else(unknown)?;
-    let target = request.get("to").and_then(Value::as_str)
-        .filter(|id| valid_id(id)).ok_or_else(unknown)?.to_owned();
+    let request = find(message_id).ok_or_else(unknown)?;
+    let target = sent_target(&request, sender).ok_or_else(unknown)?.to_owned();
     Ok((target, request))
+}
+
+#[derive(serde::Serialize)]
+pub(crate) struct SentRequest {
+    pub message_id: String,
+    pub to: String,
+    pub ts: f64,
+}
+
+pub(crate) fn recent_sent_requests(sender: &str) -> Vec<SentRequest> {
+    let at = now();
+    let mut requests = Vec::new();
+    for file in paths::glob(&inbox_dir(), "*.jsonl") {
+        let Some(target) = file.file_stem().and_then(|stem| stem.to_str()).filter(|id| valid_id(id)) else { continue };
+        for request in read(target) {
+            if sent_target(&request, sender) != Some(target) {
+                continue;
+            }
+            let Some(id) = request.get("id").and_then(Value::as_str).filter(|id| valid_id(id)) else { continue };
+            let Some(ts) = request.get("ts").and_then(Value::as_f64).filter(|ts| at - ts < TTL) else { continue };
+            requests.push(SentRequest { message_id: id.into(), to: target.into(), ts });
+        }
+    }
+    requests.sort_by(|a, b| b.ts.total_cmp(&a.ts).then_with(|| a.message_id.cmp(&b.message_id)));
+    requests.truncate(50);
+    requests
 }
 
 fn sent_reply(messages: Vec<Map<String, Value>>, sender: &str, target: &str, message_id: &str) -> Option<Map<String, Value>> {

@@ -15,7 +15,7 @@ const HELP_GROUPS: &[(&str, &[&str])] = &[
     ("Start here", &["onboard", "dashboard", "ls", "doctor"]),
     (
         "Work across sessions",
-        &["send", "route", "inbox", "reply", "status", "retry", "proof", "event", "events", "subscribe"],
+        &["send", "route", "inbox", "reply", "sent", "status", "retry", "proof", "event", "events", "subscribe"],
     ),
     ("Shared memory", &["learn", "core", "trunk", "cards"]),
     (
@@ -224,6 +224,8 @@ enum Cmd {
     },
     /// answer an Everett inbox message (goes to the sender's inbox)
     Reply { id: String, text: String },
+    /// list up to 50 recent local requests you sent
+    Sent { #[arg(long)] json: bool },
     /// show pickup and any reply for a local request you sent
     Status {
         message_id: String,
@@ -935,6 +937,7 @@ fn main() {
             a.text = Some(text);
             cli::cmd_reply(&a)
         }
+        Cmd::Sent { json } => cli::cmd_sent(json),
         Cmd::Status { message_id, json } => cli::cmd_status(&message_id, json),
         Cmd::Retry { message_id, json } => cli::cmd_retry(&message_id, json),
         Cmd::Inbox {
