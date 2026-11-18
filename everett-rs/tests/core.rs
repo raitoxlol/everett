@@ -357,3 +357,20 @@ fn cli_search_finds_temporary_facts_in_the_selected_project() {
     assert!(!fx.run(&["core", "search"]).status.success());
     assert!(!fx.run(&["core", "show", "meeting"]).status.success());
 }
+
+#[test]
+fn cli_search_json_reports_fact_scope_and_expiry() {
+    let fx = fixture();
+    assert!(fx.run(&["learn", "Room booking", "--project", "atlas", "--ttl-seconds", "120"]).status.success());
+    let search = |query: &str| {
+        let out = fx.run(&["core", "search", query, "--project", "atlas", "--json"]);
+        assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+        serde_json::from_slice::<Value>(&out.stdout).unwrap()
+    };
+    let result = search("booking");
+    assert_eq!(result["project"], "atlas");
+    assert_eq!(result["facts"][0]["text"], "Room booking");
+    assert_eq!(result["facts"][0]["scope"], "project");
+    assert!(result["facts"][0]["expires_at"].is_number());
+    assert_eq!(search("unmatched")["facts"], json!([]));
+}
