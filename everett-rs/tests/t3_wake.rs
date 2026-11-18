@@ -344,9 +344,9 @@ fn t3_custom_home_drives_projection_and_runtime_without_moving_inbox() {
     fs::write(installed.join(".install-complete"), "0.1.10\n").unwrap();
     fs::rename(fake_t3(&fx.home(), 0), installed.join("t3")).unwrap();
     let os_path = os_home.home();
-    let env = [
+    let mut env = [
         ("HOME", os_path.to_str().unwrap()),
-        ("T3CODE_HOME", " ~/t3 data "),
+        ("T3CODE_HOME", " ~//t3 data "),
         ("EVERETT_SESSION_ID", "caller"),
     ];
 
@@ -357,6 +357,11 @@ fn t3_custom_home_drives_projection_and_runtime_without_moving_inbox() {
     assert_eq!(result["thread_id"], THREAD);
     assert!(!fx.home().join(".everett/inbox").exists());
 
+    let nested = os_path.join("other/nested");
+    fs::create_dir_all(&nested).unwrap();
+    std::os::unix::fs::symlink(nested, os_path.join("link")).unwrap();
+    let via_link = os_path.join("link/../t3 data");
+    env[1].1 = via_link.to_str().unwrap();
     let sent = fx.run_stdin(&["send", "--to", THREAD, "--json", BODY], "", &env);
     assert!(sent.status.success(), "{sent:?}");
     let result: Value = serde_json::from_slice(&sent.stdout).unwrap();
