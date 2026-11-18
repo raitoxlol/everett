@@ -1654,12 +1654,9 @@ fn call_tool(params: &Map<String, Value>) -> std::result::Result<Map<String, Val
         Ok(d) => (d, false),
         Err(ToolFailure::Tool(e)) => (Map::from_iter([("error".into(), json!(e.message))]), true),
         Err(ToolFailure::Ping(failure)) => {
-            let mut d = Map::from_iter([("error".into(), json!(failure.error.message))]);
-            if let Some(id) = failure.retained_message_id {
-                d.insert("message_id".into(), json!(id));
-                d.insert("state".into(), json!("dispatch_unconfirmed"));
-            }
-            (d, true)
+            let data = failure.recovery_receipt()
+                .unwrap_or_else(|| Map::from_iter([("error".into(), json!(failure.error.message))]));
+            (data, true)
         }
         Err(ToolFailure::Params(m)) => return Err(json!({"code": INVALID_PARAMS, "message": m})),
     };
