@@ -972,10 +972,16 @@ pub fn cmd_reply(args: &Args) -> i32 {
     }
 }
 
-pub fn cmd_sent(json: bool) -> i32 {
+pub fn cmd_sent(to: Option<&str>, json: bool) -> i32 {
     let caller = crate::host::caller_session_id();
     let sender = if caller.is_empty() { crate::inbox::HUMAN } else { &caller };
-    let requests = crate::inbox::recent_sent_requests(sender);
+    let requests = match crate::inbox::recent_sent_requests(sender, to) {
+        Ok(requests) => requests,
+        Err(error) => {
+            eprintln!("everett: {}", error.message);
+            return error.code;
+        }
+    };
     if json {
         println!("{}", serde_json::to_string_pretty(&json!({"requests": requests})).unwrap());
     } else if requests.is_empty() {
