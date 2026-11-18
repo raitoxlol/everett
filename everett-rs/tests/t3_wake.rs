@@ -577,7 +577,8 @@ fn t3_retry_binding_matches_original_send_when_profile_link_changes() {
     let replacement = fixture();
     plant_thread(&original.home());
     plant_thread(&replacement.home());
-    let original_root = original.home().join(".t3");
+    let original_root = original.home().join("profile ");
+    fs::rename(original.home().join(".t3"), &original_root).unwrap();
     let profile = fx.home().join("linked-t3");
     symlink(&original_root, &profile).unwrap();
     let bin = fake_t3(&fx.home(), 0);
@@ -597,7 +598,8 @@ fn t3_retry_binding_matches_original_send_when_profile_link_changes() {
     drop(lock);
     let sent = send.wait_with_output().unwrap();
     assert!(sent.status.success(), "{sent:?}");
-    assert_eq!(fs::read_to_string(fx.home().join("t3-root")).unwrap(), original_root.to_str().unwrap());
+    let dispatched_root = fs::read_to_string(fx.home().join("t3-root")).unwrap();
+    assert_eq!(fs::canonicalize(dispatched_root.trim()).unwrap(), original_root);
 }
 
 #[cfg(target_os = "linux")]
