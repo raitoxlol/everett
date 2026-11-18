@@ -7,7 +7,7 @@
 use crate::adapters::{t3_cli, t3code};
 use crate::error::{EverettError, Result};
 use crate::session::{clean, Session};
-use serde_json::{json, Value};
+use serde_json::{json, Map, Value};
 use std::path::Path;
 
 pub const SEND_TIMEOUT: f64 = 20.0;
@@ -72,7 +72,7 @@ pub(crate) fn wake_bound(binding: &Binding, session: &Session, message_id: &str)
     wake_checked(&binding.thread, &binding.data_home, session, message_id, SEND_TIMEOUT, || Ok(()))
 }
 
-pub(crate) fn retry(sender: &str, message_id: &str) -> Result<Value> {
+pub(crate) fn retry(sender: &str, message_id: &str) -> Result<Map<String, Value>> {
     crate::send::require_local_prompt(Some(sender))?;
     let (target, request) = crate::inbox::queued_local_request(sender, message_id)?;
     let missing_binding = || EverettError::new(2, "This request has no original T3 ping binding. Use inbox pickup.");
@@ -94,7 +94,13 @@ pub(crate) fn retry(sender: &str, message_id: &str) -> Result<Value> {
     }).map_err(|error| EverettError::new(error.code, format!(
         "T3 retry not confirmed: {}. Check `everett status {message_id}` for the original request.", error.message,
     )))?;
-    Ok(json!({"message_id": message_id, "to": target, "thread_id": thread, "state": "prompt_sent", "receipt": receipt}))
+    Ok(Map::from_iter([
+        ("message_id".into(), json!(message_id)),
+        ("to".into(), json!(target)),
+        ("thread_id".into(), json!(thread)),
+        ("state".into(), json!("prompt_sent")),
+        ("receipt".into(), json!(receipt)),
+    ]))
 }
 
 pub(crate) fn wake_with_timeout(thread: &str, session: &Session, message_id: &str, timeout: f64) -> Result<String> {
