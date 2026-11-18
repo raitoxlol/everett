@@ -51,4 +51,18 @@ fn local_mcp_sender_can_follow_pickup_and_recover_a_consumed_reply() {
     let inbox = call(&sender, "everett_inbox", json!({}));
     assert_eq!(tool_json(&inbox)["messages"][0]["reply_to"], id);
     assert_eq!(status(), before);
+
+    let sent = call(&sender, "everett_send", json!({"to": "worker", "text": "Send the build output", "mode": "inbox"}));
+    let receipt = tool_json(&sent);
+    let id = receipt["message_id"].as_str().unwrap();
+    let reply = "abc\\\n".repeat(24_000);
+    let result = call(&worker, "everett_send", json!({"reply_to": id, "text": reply}));
+    assert_ne!(result["isError"], true, "{result}");
+    let status = call(&sender, "everett_status", json!({"message_id": id}));
+    assert_eq!(status["isError"], true, "{status}");
+    assert!(status.to_string().contains("exceeds the MCP response limit"), "{status}");
+    let cli = fx.run_stdin(&["inbox", "--peek", "--json"], "", &sender);
+    let inbox: serde_json::Value = serde_json::from_slice(&cli.stdout).unwrap();
+    assert_eq!(inbox["messages"][0]["reply_to"], id);
+    assert_eq!(inbox["messages"][0]["text"], reply.trim());
 }
