@@ -83,6 +83,12 @@ fn sender_can_follow_a_local_request_and_recover_its_read_reply() {
     assert_eq!(replied["reply"]["from"], "human");
     assert_eq!(replied["reply"]["text"], terminal_reply);
 
+    let before = run(&fx, "sender", &["status", id]);
+    assert!(before.contains("Inbox pickup unconfirmed") && before.contains("Reply from human"), "{before}");
+    run(&fx, worker, &["inbox", "--message", id, "--json"]);
+    let after = run(&fx, "sender", &["status", id]);
+    assert!(after.contains("Inbox pickup observed") && after.contains("Reply from human"), "{after}");
+
     run(&fx, worker, &["reply", id, "Confirmed in the code."]);
     let replied = status();
     assert_eq!(replied["reply"]["from"], worker);
