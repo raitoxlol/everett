@@ -233,12 +233,18 @@ fn t3_mcp_retry_reuses_the_host_bound_senders_request() {
     let call = |sender, name, args| {
         mcp_calls(&fx, &[], &[("EVERETT_SESSION_ID", sender), ("EVERETT_T3_BIN", fake.to_str().unwrap())], &[(name, args)]).remove(0)
     };
+    let missing_target = call("caller", "everett_send", json!({"to":"missing-target","text":BODY}));
+    assert_eq!(missing_target["isError"], true, "{missing_target}");
+    assert!(missing_target.get("structuredContent").is_none(), "{missing_target}");
     let failure = call("caller", "everett_send", json!({"to":THREAD,"text":BODY}));
     assert_eq!(failure["isError"], true, "{failure}");
     let inbox_path = fx.home().join(format!(".everett/inbox/{SESSION}.jsonl"));
     let inbox = fs::read_to_string(&inbox_path).unwrap();
     let request: Value = serde_json::from_str(&inbox).unwrap();
-    let id = request["id"].as_str().unwrap();
+    let retained = &failure["structuredContent"];
+    let id = retained["message_id"].as_str().expect("send failure must return the retained ID");
+    assert_eq!(retained["state"], "dispatch_unconfirmed");
+    assert_eq!(request["id"], id);
     let args = json!({"message_id":id});
     assert!(failure.to_string().contains("everett_retry"), "{failure}");
     assert!(failure.to_string().contains(id), "{failure}");
