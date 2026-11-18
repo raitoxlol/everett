@@ -7,8 +7,10 @@
 use crate::adapters::{t3_cli, t3code};
 use crate::error::{EverettError, Result};
 use crate::session::{clean, Session};
+use rusqlite::{params, Connection, OptionalExtension, TransactionBehavior};
 use serde_json::{json, Map, Value};
 use std::path::Path;
+use std::time::Duration;
 
 pub const SEND_TIMEOUT: f64 = 20.0;
 
@@ -69,7 +71,55 @@ pub fn wake(thread: &str, session: &Session, message_id: &str) -> Result<String>
 }
 
 pub(crate) fn wake_bound(binding: &Binding, session: &Session, message_id: &str) -> Result<String> {
-    wake_checked(&binding.thread, &binding.data_home, session, message_id, SEND_TIMEOUT, || Ok(()))
+    let (receipt, _) = dispatch_once(&session.id, message_id, || {
+        wake_checked(&binding.thread, &binding.data_home, session, message_id, SEND_TIMEOUT, || Ok(()))
+    })?;
+    Ok(receipt)
+}
+
+fn journal_error(error: rusqlite::Error) -> EverettError {
+    EverettError::new(4, format!("Cannot record T3 dispatch confirmation: {error}"))
+}
+
+fn dispatch_once(
+    target: &str, message_id: &str, dispatch: impl FnOnce() -> Result<String>,
+) -> Result<(String, bool)> {
+    let mut journal = Connection::open(crate::inbox::inbox_dir().join("t3-dispatch.sqlite"))
+        .map_err(journal_error)?;
+    journal.busy_timeout(Duration::from_secs(1)).map_err(journal_error)?;
+    journal.execute_batch("CREATE TABLE IF NOT EXISTS dispatch (
+        target TEXT NOT NULL, message_id TEXT NOT NULL, expires_at REAL NOT NULL, receipt TEXT,
+        PRIMARY KEY (target, message_id)
+    )").map_err(journal_error)?;
+    let reserve = journal.transaction_with_behavior(TransactionBehavior::Immediate).map_err(journal_error)?;
+    let now = crate::session::now();
+    reserve.execute("DELETE FROM dispatch WHERE expires_at <= ?1", [now]).map_err(journal_error)?;
+    let recorded: Option<Option<String>> = reserve.query_row(
+        "SELECT receipt FROM dispatch WHERE target = ?1 AND message_id = ?2", params![target, message_id],
+        |row| row.get(0),
+    ).optional().map_err(journal_error)?;
+    match recorded {
+        Some(Some(receipt)) => return Ok((receipt, true)),
+        Some(None) => return Err(EverettError::new(4,
+            "T3 dispatch is in progress or its confirmation could not be saved. Check the original request before another attempt.")),
+        None => {}
+    }
+    reserve.execute("INSERT INTO dispatch (target, message_id, expires_at) VALUES (?1, ?2, ?3)",
+        params![target, message_id, now + crate::inbox::TTL]).map_err(journal_error)?;
+    reserve.commit().map_err(journal_error)?;
+
+    match dispatch() {
+        Ok(receipt) => {
+            journal.execute("UPDATE dispatch SET receipt = ?3 WHERE target = ?1 AND message_id = ?2",
+                params![target, message_id, receipt]).map_err(journal_error)?;
+            Ok((receipt, false))
+        }
+        Err(error) => {
+            journal.execute("DELETE FROM dispatch WHERE target = ?1 AND message_id = ?2",
+                params![target, message_id]).map_err(journal_error)?;
+            Err(error)
+        }
+    }
 }
 
 pub(crate) fn retry(sender: &str, message_id: &str) -> Result<Map<String, Value>> {
@@ -84,14 +134,14 @@ pub(crate) fn retry(sender: &str, message_id: &str) -> Result<Map<String, Value>
         return Err(EverettError::new(4, "The T3 data folder changed since the original ping."));
     }
     let session = Session::new(harness, &target, "", "", "", 0.0);
-    let receipt = wake_checked(thread, data_home, &session, message_id, SEND_TIMEOUT, || {
+    let (receipt, already_dispatched) = dispatch_once(&target, message_id, || wake_checked(thread, data_home, &session, message_id, SEND_TIMEOUT, || {
         crate::send::require_local_prompt(Some(sender))?;
         let (current_target, current_request) = crate::inbox::queued_local_request(sender, message_id)?;
         if current_target != target || current_request != request {
             return Err(EverettError::new(2, "The original request changed before dispatch."));
         }
         Ok(())
-    }).map_err(|error| EverettError::new(error.code, format!(
+    })).map_err(|error| EverettError::new(error.code, format!(
         "T3 retry not confirmed: {}", error.message,
     )))?;
     Ok(Map::from_iter([
@@ -100,6 +150,7 @@ pub(crate) fn retry(sender: &str, message_id: &str) -> Result<Map<String, Value>
         ("thread_id".into(), json!(thread)),
         ("state".into(), json!("prompt_sent")),
         ("receipt".into(), json!(receipt)),
+        ("already_dispatched".into(), json!(already_dispatched)),
     ]))
 }
 
