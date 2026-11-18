@@ -364,3 +364,19 @@ fn t3_timeout_or_crash_after_dispatch_reports_unconfirmed_not_failed() {
         assert!(calls <= requests.len(), "{name}: {calls} invocations");
     }
 }
+
+#[test]
+fn cli_control_threads_lists_the_selected_project_only_for_local_callers() {
+    let fx = fixture();
+    let t3 = fake_t3(&fx, 0);
+    let list = || fx.run_stdin(&["control", "threads", "--project", "/work/p"], "",
+        &[("EVERETT_T3_BIN", &t3), ("EVERETT_SESSION_ID", "caller")]);
+    let out = list();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    assert_eq!(serde_json::from_slice::<Value>(&out.stdout).unwrap(), json!([{"threadId": THREAD}]));
+    assert_eq!(argv(&fx), ["thread", "list", "--json", "--project", "/work/p"]);
+    fs::remove_file(fx.home().join("t3-argv")).unwrap();
+    fx.write(".everett/inbox/relay-context/caller.json", r#"{"hops":1}"#);
+    assert!(!list().status.success());
+    assert!(!fx.home().join("t3-argv").exists());
+}
