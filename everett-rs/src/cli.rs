@@ -1001,16 +1001,20 @@ pub fn cmd_inbox(args: &Args) -> i32 {
         .iter()
         .filter_map(|m| m.get("id").and_then(Value::as_str))
         .collect();
-    if let Err(error) = crate::inbox::persist_relay_context(&sid, &viewed_ids) {
-        eprintln!("everett: {error}");
-        return error.code;
-    }
-    if !args.peek {
-        let ids: Vec<&str> = items
-            .iter()
-            .filter_map(|m| m.get("id").and_then(|v| v.as_str()))
-            .collect();
-        crate::inbox::mark_done(&sid, &ids);
+    let read = if args.peek {
+        crate::inbox::persist_relay_context(&sid, &viewed_ids).map(|()| None)
+    } else {
+        crate::inbox::claim_pending(&sid, &viewed_ids).map(Some)
+    };
+    let claimed = match read {
+        Ok(claimed) => claimed,
+        Err(error) => {
+            eprintln!("everett: {error}");
+            return error.code;
+        }
+    };
+    if let Some(claimed) = claimed {
+        items.retain(|item| item["id"].as_str().is_some_and(|id| claimed.contains(id)));
         if let Some(hops) = items.iter().filter(|m| m.contains_key("peer_client") || m.contains_key("peer_reply_id") || m.contains_key("relay_device"))
             .filter_map(|m| m.get("hops").and_then(Value::as_i64)).max() {
             crate::inbox::record_hops(&sid, hops);
