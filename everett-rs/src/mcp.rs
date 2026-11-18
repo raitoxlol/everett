@@ -51,6 +51,7 @@ pub fn tools() -> &'static Vec<Value> {
                 "description": "List recent coding-agent sessions on this machine (all harnesses), newest first, each with its card: what it is working on, state, next step. For overview only -- to see what the parallel sessions are doing. Do not use it to hand-pick a target session to send to; call everett_send with just the task text and let it route, or use everett_route to preview the routing decision.",
                 "inputSchema": {"type": "object", "properties": {
                     "hours": hours_prop(),
+                    "all": {"type": "boolean", "description": "Include automation sessions, as with everett ls --all. Defaults to false."},
                     "harness": {"type": "string", "enum": ["claude", "codex", "omp", "pi", "hermes", "grok", "devin", "openai-dot", "grok-bot"], "description": "Only this harness."},
                 }, "additionalProperties": false},
             }),
@@ -421,7 +422,8 @@ fn tool_ls(
 ) -> std::result::Result<Map<String, Value>, ToolFailure> {
     let hours = hours_arg(args)?;
     let harness = str_arg(args, "harness", false)?;
-    let sessions = crate::registry::scan(hours, false, Some(crate::registry::CAP), &harness);
+    let include_auto = args.get("all").and_then(Value::as_bool).unwrap_or(false);
+    let sessions = crate::registry::scan(hours, include_auto, Some(crate::registry::CAP), &harness);
     let me = identity
         .get("session_id")
         .and_then(|v| v.as_str())
