@@ -248,6 +248,43 @@ fn t3_mcp_default_ping_starts_thread_turn() {
 }
 
 #[test]
+fn exact_t3_thread_id_sends_to_the_active_provider_inbox() {
+    let fx = fixture();
+    plant_thread(&fx.home());
+    let fake = fake_t3(&fx.home(), 0);
+    let env = [
+        ("EVERETT_T3_BIN", fake.to_str().unwrap()),
+        ("EVERETT_SESSION_ID", "caller"),
+    ];
+    let preview = fx.run_stdin(&["send", "--to", THREAD, "--dry-run", "--json", BODY], "", &env);
+    assert!(preview.status.success(), "{preview:?}");
+    let result: Value = serde_json::from_slice(&preview.stdout).unwrap();
+    assert_eq!(result["session"]["id"], SESSION);
+    assert_eq!(result["thread_id"], THREAD);
+    assert!(!fx.home().join(".everett/inbox").exists());
+
+    let sent = fx.run_stdin(&["send", "--to", THREAD, "--json", BODY], "", &env);
+    assert!(sent.status.success(), "{sent:?}");
+    let receipt: Value = serde_json::from_slice(&sent.stdout).unwrap();
+    assert_eq!(receipt["pinged"], true);
+    assert_argv(&fx.home(), receipt["message_id"].as_str().unwrap());
+
+    let response = mcp_calls(&fx, &[], &env, &[("everett_send", json!({"to": THREAD, "text": BODY}))]);
+    assert_eq!(response[0]["isError"], false, "{response:?}");
+    let receipt = tool_json(&response[0]);
+    assert_eq!(receipt["pinged"], true);
+    assert_argv(&fx.home(), receipt["message_id"].as_str().unwrap());
+
+    let inbox = fx.run(&["inbox", "--session", SESSION, "--peek", "--json"]);
+    assert!(inbox.status.success(), "{inbox:?}");
+    let data: Value = serde_json::from_slice(&inbox.stdout).unwrap();
+    let messages = data["messages"].as_array().unwrap();
+    assert_eq!(messages.len(), 2);
+    assert!(messages.iter().all(|m| m["to"] == SESSION && m["text"] == BODY));
+    assert!(!fx.home().join(format!(".everett/inbox/{THREAD}.jsonl")).exists());
+}
+
+#[test]
 fn t3_cli_text_reports_pinged() {
     let fx = fixture();
     plant_thread(&fx.home());
