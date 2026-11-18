@@ -248,6 +248,7 @@ pub(crate) fn claim_pending(session_id: &str, selected: &[&str]) -> Result<HashS
     if selected.is_empty() {
         return Ok(HashSet::new());
     }
+    let selected: HashSet<&str> = selected.iter().copied().collect();
     let target = path(session_id)?;
     let _guard = lock_file(&target)?;
     let done = done_path(session_id);
