@@ -380,7 +380,7 @@ impl Binding {
         let own = json!({"type":"string", "description":"Must match the identity selected by identity_handle; omit to use that binding."});
         let short = json!({"type":"string", "minLength":1, "maxLength":2000});
         let specs = [
-            ("everett_identity", "Register a separate chat inbox under this connection. create requires a fresh private registration_key, name and kind; reuse the key only for a retry. list returns public cards without handles; revoke requires the private identity_handle. Names and kinds are self-declared.", json!({"action":{"type":"string","enum":["create","list","revoke"]},"registration_key":{"type":"string","minLength":32,"maxLength":128},"name":{"type":"string","minLength":1,"maxLength":100},"kind":{"type":"string","enum":["chat","dot","codex"]}}), vec!["action"]),
+            ("everett_identity", "Register a separate chat inbox under this connection. create requires a fresh private registration_key, name and kind; reuse the key only for a retry. list optionally filters public cards by kind and omits handles; revoke requires the private identity_handle. Names and kinds are self-declared.", json!({"action":{"type":"string","enum":["create","list","revoke"]},"registration_key":{"type":"string","minLength":32,"maxLength":128},"name":{"type":"string","minLength":1,"maxLength":100},"kind":{"type":"string","enum":["chat","dot","codex"]}}), vec!["action"]),
             ("everett_whoami", "Read this connection's logical owner-scoped identity, not vendor-attested Bot identity.", json!({}), vec![]),
             ("everett_core", "Read owner-wide GLOBAL shared core plus this connection's fixed project core.", json!({"project":{"type":"string","enum":[self.project]}}), vec![]),
             ("everett_inbox", "Read only this agent's inbox. By default mark messages delivered; use peek=true to retain them.", json!({"session_id":own,"peek":{"type":"boolean"}}), vec![]),
@@ -494,7 +494,7 @@ impl Gateway {
             let action = arguments.get("action").and_then(Value::as_str).ok_or("action is required")?;
             let allowed: &[&str] = match action {
                 "create" => &["action", "registration_key", "name", "kind"],
-                "list" => &["action"],
+                "list" => &["action", "kind"],
                 "revoke" => &["action", "identity_handle"],
                 _ => return Err("unknown identity action".into()),
             };
@@ -502,7 +502,10 @@ impl Gateway {
             let text = |key: &str| arguments.get(key).and_then(Value::as_str).ok_or_else(|| format!("{key} is required"));
             return match action {
                 "create" => identities::create(binding, text("registration_key")?, text("name")?, text("kind")?),
-                "list" => identities::list(binding),
+                "list" => {
+                    let kind = arguments.get("kind").map(|v| v.as_str().ok_or("kind must be a string")).transpose()?;
+                    identities::list(binding, kind)
+                }
                 "revoke" => identities::revoke(binding, text("identity_handle")?),
                 _ => unreachable!(),
             };

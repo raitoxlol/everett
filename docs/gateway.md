@@ -83,7 +83,8 @@ logical inboxes without another account sign-in.
    The local owner must still authorize exact destination IDs before chats send
    to one another. Registration does not grant new destinations or relay exposure.
 5. `everett_identity(action="list")` lists this authorization's identities without
-   handles. `state="registered"` means the local discovery record matches the
+   handles. Add `kind="chat"`, `"dot"`, or `"codex"` to list only that kind.
+   `state="registered"` means the local discovery record matches the
    identity. `state="registration_unavailable"` means that record is missing,
    invalid, or conflicts with the identity. `availability="unknown"` makes clear
    that neither state proves a chat is online or polling. Reuse the original
