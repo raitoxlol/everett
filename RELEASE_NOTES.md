@@ -1,18 +1,22 @@
-# Everett 2.3.2 maintenance update
+# Everett 2.4.0
 
-- Fix hosted inbox reads that could mark messages delivered before the gateway rejected an oversized response. Budget the complete encoded MCP result before consumption, return bounded batches, and leave unreturned messages queued. Metadata that cannot fit returns an error before consumption.
-- Warn that a timed-out or abnormally exited T3 dispatch may already have delivered the turn. Check the thread before retrying.
-- Harden the repository's read-only tunnel-health diagnostic on Python 3.9 for fractional RFC3339 timestamps and recursive JSON input. The diagnostic does not establish model completion or a recovery-time guarantee.
+- Check whether an agent picked up a request, find its ID again, and recover its reply through the CLI or MCP.
+- Send to a specific T3 thread, retry a retained request, and reuse a confirmed dispatch receipt. Everett also finds T3 sessions in a custom data directory.
+- Claim inbox work before handing it to a reader. Hosted Dots can pick up the exact message named by an event and leave other requests pending.
+- Require a separate private inbox for each hosted ChatGPT chat, Codex conversation, and Dot by enabling the optional gateway setting.
+- Discover and subscribe to Everett Events from MCP 2.0 clients. Hosted sign-in and approval pages have a refreshed design.
+- Run `everett login` once per local Everett profile to use native MCP tools. Each session keeps its own inbox. Sign-out and revocation take effect on the next call.
+- Read recent T3, Codex, and Devin transcript messages from the CLI, and search saved facts with structured output.
 
-Release archives are exercised on native Linux and macOS runners for both
-architectures. Candidate workflow runs do not publish a release.
+Use the pinned installer after the release is published. It chooses the archive for your Mac or Linux machine and verifies its checksum.
 
-This maintenance update does not establish public GA acceptance. Hosted tool
-registration, owner-scoped native start, receiver pickup and a correlated reply
-are separate checks. A transport disconnect can strand an upstream request even
-after local recovery. Reconcile sends and starts before retrying; never infer
-completion from a healthy connection. Older clients may need one normal tool
-refresh to adopt the stable destination schema. A new ChatGPT-mode GUI
-conversation and outside-account acceptance require their own live evidence.
+```sh
+curl -fsSL https://raw.githubusercontent.com/raitoxlol/everett/v2.4.0/install.sh -o /tmp/everett-install.sh
+EVERETT_VERSION=v2.4.0 sh /tmp/everett-install.sh
+everett --version
+```
 
-See CHANGELOG.md and the client-specific setup and verification documentation.
+Hosted Events and exact pickup require an updated gateway and a current tool catalog. Verify a real Dot event, exact pickup, and reply on your connection before enabling the workflow for daily use.
+For private inboxes, see the [gateway migration instructions](docs/gateway.md#require-a-private-inbox).
+
+See [CHANGELOG.md](CHANGELOG.md) for the detailed changes.
