@@ -112,7 +112,7 @@ async fn logical(
     };
     let selected = binding.for_oauth(&agent);
     let id = identities::resolve(&selected, handle).map_err(|_| "logical session unresolved")?;
-    let listed = identities::list(&selected).map_err(|_| "logical registration unavailable")?;
+    let listed = identities::list(&selected, None).map_err(|_| "logical registration unavailable")?;
     let row = listed["identities"]
         .as_array()
         .and_then(|rows| rows.iter().find(|r| r["session_id"] == id))
