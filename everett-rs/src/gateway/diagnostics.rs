@@ -91,7 +91,7 @@ async fn gateway(path: &Path, credentials: Credentials) -> (Value, i32) {
         Ok(id) => id,
         Err(_) => return (failure("verified", "unresolved", "identity_unresolved", "The handle is unknown, revoked, foreign, or its store is unavailable. Use this conversation's existing private handle."), 1),
     };
-    let listing = identities::list(&selected).ok();
+    let listing = identities::list(&selected, None).ok();
     let registered = listing
         .as_ref()
         .and_then(|v| v["identities"].as_array())
