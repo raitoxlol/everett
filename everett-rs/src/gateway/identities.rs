@@ -49,6 +49,13 @@ fn valid_secret(value: &str) -> bool {
     value.len() == 64 && value.bytes().all(|b| b.is_ascii_hexdigit())
 }
 
+fn validate_kind(kind: &str) -> Result<(), String> {
+    match kind {
+        "chat" | "dot" | "codex" => Ok(()),
+        _ => Err("kind must be chat, dot or codex".into()),
+    }
+}
+
 pub(super) fn create(
     binding: &Binding,
     key: &str,
@@ -65,9 +72,7 @@ pub(super) fn create(
     if name.trim().is_empty() || name.chars().count() > 100 || name.chars().any(char::is_control) {
         return Err("name must have 1 to 100 characters without control characters".into());
     }
-    if !["chat", "dot", "codex"].contains(&kind) {
-        return Err("kind must be chat, dot or codex".into());
-    }
+    validate_kind(kind)?;
     let folder = binding.home.join(".everett");
     fs::DirBuilder::new()
         .recursive(true)
@@ -196,13 +201,16 @@ pub(super) fn resolve(binding: &Binding, handle: &str) -> Result<String, String>
         .ok_or_else(|| INVALID.into())
 }
 
-pub(super) fn list(binding: &Binding) -> Result<Value, String> {
+pub(super) fn list(binding: &Binding, kind: Option<&str>) -> Result<Value, String> {
+    if let Some(kind) = kind {
+        validate_kind(kind)?;
+    }
     if !path(binding).is_file() {
         return Ok(json!({"identities":[]}));
     }
     let con = open(binding, false)?;
-    let mut stmt = con.prepare("SELECT session_id,name,kind,created,revoked FROM identities WHERE scope=?1 ORDER BY created,session_id").map_err(|_| STORE_ERROR)?;
-    let rows = stmt.query_map([scope(binding)], |r| Ok(json!({"session_id":r.get::<_,String>(0)?,"name":r.get::<_,String>(1)?,
+    let mut stmt = con.prepare("SELECT session_id,name,kind,created,revoked FROM identities WHERE scope=?1 AND (?2 IS NULL OR kind=?2) ORDER BY created,session_id").map_err(|_| STORE_ERROR)?;
+    let rows = stmt.query_map(params![scope(binding), kind], |r| Ok(json!({"session_id":r.get::<_,String>(0)?,"name":r.get::<_,String>(1)?,
         "kind":r.get::<_,String>(2)?,"created_at":r.get::<_,f64>(3)?,"state":if r.get::<_,bool>(4)? { "revoked" } else { "registered" }}))).map_err(|_| STORE_ERROR)?;
     let mut identities = rows
         .collect::<rusqlite::Result<Vec<_>>>()
