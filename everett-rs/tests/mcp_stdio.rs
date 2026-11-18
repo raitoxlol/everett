@@ -196,6 +196,7 @@ fn round_trip_over_pipes() {
             "everett_retry",
             "everett_route",
             "everett_send",
+            "everett_sent",
             "everett_status",
             "everett_subscribe",
             "everett_whoami"

@@ -283,12 +283,13 @@ fn mcp_stdio_roundtrip() {
         .iter()
         .map(|t| t["name"].as_str().unwrap())
         .collect();
-    assert_eq!(names.len(), 16, "{names:?}");
+    assert_eq!(names.len(), 17, "{names:?}");
     for want in [
         "everett_ls",
         "everett_send",
         "everett_route",
         "everett_inbox",
+        "everett_sent",
         "everett_status",
         "everett_retry",
         "everett_learn",
