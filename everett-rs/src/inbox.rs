@@ -836,18 +836,11 @@ pub fn render(messages: &[Map<String, Value>], at: Option<f64>) -> (String, Vec<
 /// ids still on disk, and reap stale live records.
 fn compact(session_id: &str) {
     let now = now();
-    let mut retired_t3_ids = Vec::new();
     let kept: Vec<Map<String, Value>> = read(session_id)
         .into_iter()
         .filter(|m| {
             let ts = m.get("ts").and_then(|v| v.as_f64()).unwrap_or(0.0);
-            let keep = now - ts < TTL;
-            if !keep && m.contains_key("t3_ping") {
-                if let Some(id) = m.get("id").and_then(Value::as_str) {
-                    retired_t3_ids.push(id.to_owned());
-                }
-            }
-            keep
+            now - ts < TTL
         })
         .collect();
     let keep_ids: HashSet<&str> = kept
@@ -865,12 +858,7 @@ fn compact(session_id: &str) {
         if fs::write(&tmp, &body).and_then(|_| fs::rename(&tmp, &target)).is_err() {
             return;
         }
-        if !retired_t3_ids.is_empty()
-            && fs::File::open(&target).and_then(|file| file.sync_all()).is_ok()
-            && fs::File::open(inbox_dir()).and_then(|dir| dir.sync_all()).is_ok()
-        {
-            let _ = crate::t3_wake::forget_retired_dispatches(session_id, &retired_t3_ids);
-        }
+        let _ = crate::t3_wake::forget_retired_dispatches(session_id, &keep_ids, &target);
     }
     let live_done: Vec<String> = done.iter().filter(|id| keep_ids.contains(id.as_str())).cloned().collect();
     if live_done.len() != done.len() {
