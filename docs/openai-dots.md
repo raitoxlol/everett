@@ -59,9 +59,9 @@ own id.
 }
 ```
 
-`backend_command` must be an absolute Everett binary plus `mcp`. Omit it only
-when the `everett gateway` binary itself should launch `mcp`. Never put
-`everett gateway` in `backend_command`.
+Omit `backend_command` to use the gateway's built-in worker. For a separate
+Everett executable, supply its absolute path followed by `mcp`. See
+[backend configuration](gateway.md) for upgrade order.
 
 OpenAI documents that existing plugin connections and permissions are shared
 across dots, ChatGPT, ChatGPT Work, and Codex. That supports using a custom MCP

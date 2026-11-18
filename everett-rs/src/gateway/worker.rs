@@ -7,7 +7,7 @@ use std::{
 
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Map, Value};
-use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
+use tokio::{io::{AsyncReadExt, AsyncWriteExt}, process::Child};
 
 use super::{Binding, BACKEND_ERROR, MAX_INBOX, MAX_RESULT};
 
@@ -166,11 +166,9 @@ impl Call {
     }
 }
 
-pub(super) async fn dispatch(
-    call: Call,
-    mut stdin: impl AsyncWrite + Unpin,
-    stdout: impl AsyncRead + Unpin,
-) -> Result<Value, String> {
+pub(super) async fn dispatch(call: Call, child: &mut Child) -> Result<Value, String> {
+    let stdout = child.stdout.take().ok_or(BACKEND_ERROR)?;
+    let mut stdin = child.stdin.take().ok_or(BACKEND_ERROR)?;
     let request = serde_json::to_vec(&call).map_err(|_| BACKEND_ERROR)?;
     if request.len() > MAX_REQUEST {
         return Err(BACKEND_ERROR.into());

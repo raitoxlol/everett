@@ -16,9 +16,12 @@ everett-rs/target/debug/everett gateway --help
 
 Use an installed Rust Everett binary that supports `gateway`. If `backend_command`
 is omitted, the gateway starts its built-in worker in the same binary. Existing
-`backend_command` entries that specify this binary followed by `mcp` also select
-the built-in worker. An override for a custom MCP backend must use an absolute
-executable path. The owner controls its executable and arguments.
+`backend_command` entries may also specify an Everett executable followed by
+`mcp`. If a separate Everett executable supports the scoped worker, the gateway
+detects that support during initialization and uses the worker for tool calls.
+Older Everett and custom backends continue to use MCP. Upgrade the gateway
+before a separately installed Everett backend so it can recognize scoped worker
+support. The owner controls the absolute executable path and arguments.
 
 ## One process, fixed access grants
 

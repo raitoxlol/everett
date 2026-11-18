@@ -51,6 +51,8 @@ const MAX_CONFIG: usize = 16 * 1024;
 const MAX_BODY: usize = 64 * 1024;
 const MAX_RESULT: usize = 256 * 1024;
 const MAX_INBOX: usize = 8 * 1024 * 1024;
+pub(crate) const WORKER_CAPABILITY: &str = "everettGatewayWorker";
+pub(crate) const WORKER_PROTOCOL: u64 = 1;
 const SECURITY_HEADERS: &[&str] = &[
     "host",
     "origin",
@@ -552,44 +554,14 @@ impl Gateway {
             .try_acquire()
             .map_err(|_| "gateway workers busy; retry later")?;
         let built_in = worker::is_builtin(&binding.backend_command);
-        let mut command = Command::new(&binding.backend_command[0]);
-        if built_in {
-            command.arg("gateway-worker");
-        } else {
-            command.args(&binding.backend_command[1..]);
-        }
-        command
-            .env_clear()
-            .current_dir(&binding.cwd)
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::null())
-            .kill_on_drop(true);
-        for key in [
-            "PATH", "USER", "LOGNAME", "SHELL", "TMPDIR", "TMP", "TEMP", "LANG",
-        ] {
-            if let Some(value) = std::env::var_os(key) {
-                command.env(key, value);
-            }
-        }
-        command
-            .env("HOME", &binding.home)
-            .env("EVERETT_HOME", &binding.home)
-            .env("EVERETT_SESSION_ID", &binding.agent_id)
-            .env("EVERETT_HARNESS_NAME", &binding.harness)
-            .env("EVERETT_NOTIFY", "none")
-            .env("EVERETT_ROUTER", "local")
-            .env("EVERETT_SEND", "inbox")
-            .env("EVERETT_HOPS", "0")
-            .env("EVERETT_GATEWAY_EXACT_IDS", "1");
-        let mut child = command.spawn().map_err(|_| BACKEND_ERROR)?;
+        let mut child = backend_command(binding, built_in).spawn().map_err(|_| BACKEND_ERROR)?;
         let operation = async {
-            let stdout = child.stdout.take().ok_or(BACKEND_ERROR)?;
-            let stdin = child.stdin.take().ok_or(BACKEND_ERROR)?;
             if built_in {
                 let request = worker::Call::authorized(binding, name, &args)?;
-                return worker::dispatch(request, stdin, stdout).await;
+                return worker::dispatch(request, &mut child).await;
             }
+            let stdout = child.stdout.take().ok_or(BACKEND_ERROR)?;
+            let stdin = child.stdin.take().ok_or(BACKEND_ERROR)?;
             let peer = ()
                 .serve((
                     BoundedRead {
@@ -601,6 +573,21 @@ impl Gateway {
                 ))
                 .await
                 .map_err(|_| BACKEND_ERROR)?;
+            let supports_worker = peer.peer_info().is_some_and(|info| {
+                info.capabilities.experimental.as_ref()
+                    .and_then(|caps| caps.get(WORKER_CAPABILITY))
+                    .and_then(|cap| cap.get("version"))
+                    .and_then(Value::as_u64) == Some(WORKER_PROTOCOL)
+            });
+            if supports_worker {
+                // Switch before sending a tool call. Older and custom backends keep their MCP path.
+                peer.cancellation_token().cancel();
+                let _ = child.kill().await;
+                let _ = child.wait().await;
+                let request = worker::Call::authorized(binding, name, &args)?;
+                child = backend_command(binding, true).spawn().map_err(|_| BACKEND_ERROR)?;
+                return worker::dispatch(request, &mut child).await;
+            }
             let result = async {
                 if name == "everett_send" && args.contains_key("to") {
                     let info = peer.peer_info().ok_or(BACKEND_ERROR)?;
@@ -671,6 +658,38 @@ impl Gateway {
         }
         Ok(data)
     }
+}
+
+fn backend_command(binding: &Binding, use_worker: bool) -> Command {
+    let mut command = Command::new(&binding.backend_command[0]);
+    if use_worker {
+        command.arg("gateway-worker");
+    } else {
+        command.args(&binding.backend_command[1..]);
+    }
+    command
+        .env_clear()
+        .current_dir(&binding.cwd)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .kill_on_drop(true);
+    for key in ["PATH", "USER", "LOGNAME", "SHELL", "TMPDIR", "TMP", "TEMP", "LANG"] {
+        if let Some(value) = std::env::var_os(key) {
+            command.env(key, value);
+        }
+    }
+    command
+        .env("HOME", &binding.home)
+        .env("EVERETT_HOME", &binding.home)
+        .env("EVERETT_SESSION_ID", &binding.agent_id)
+        .env("EVERETT_HARNESS_NAME", &binding.harness)
+        .env("EVERETT_NOTIFY", "none")
+        .env("EVERETT_ROUTER", "local")
+        .env("EVERETT_SEND", "inbox")
+        .env("EVERETT_HOPS", "0")
+        .env("EVERETT_GATEWAY_EXACT_IDS", "1");
+    command
 }
 
 impl ServerHandler for Gateway {
