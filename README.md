@@ -244,7 +244,7 @@ Done. MAX_RETRIES is now 5 and the backoff test covers the cap.
 | `everett mcp` | Runs the stdio MCP server (harnesses start it; see below). |
 | `everett install-mcp [--claude] [--codex] [--omp] [--grok] [--devin] [--apply]` | Prints or registers the MCP server for each harness. |
 | `everett doctor` | Installed CLIs, stores, hooks, live stdio/MCP registration checks, cards, router, and account diagnostics; SSH revocation remains explicit. |
-| `everett learn "<fact>" [--project P] [--scope global\|project]` | Pushes a fact to the shared core inbox. Secrets are rejected. |
+| `everett learn "<fact>" [--project P] [--scope global\|project]` | Queues a fact for shared core. Add `--ttl-seconds N` (1 to 31536000) to keep it only in local memory search until expiry. Secrets are rejected. |
 | `everett trunk merge [--llm claude\|codex\|none] [--dry-run]` | Distills the inbox into the shared core. |
 | `everett core [show\|edit-path\|history] [--project P]` | Shows the core a new session in this folder receives, the file to edit, or past merges. |
 | `everett trunk [view] [--dry-run]` | Writes the session list as a Markdown note into your notes vault (optional). |
