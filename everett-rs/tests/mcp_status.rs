@@ -55,14 +55,31 @@ fn local_mcp_sender_can_follow_pickup_and_recover_a_consumed_reply() {
     let sent = call(&sender, "everett_send", json!({"to": "worker", "text": "Send the build output", "mode": "inbox"}));
     let receipt = tool_json(&sent);
     let id = receipt["message_id"].as_str().unwrap();
+    fx.write(".everett/inbox/relay-context/worker.json", &json!({
+        "relay_message_id": "upstream", "external": true, "hops": 1
+    }).to_string());
     let reply = "abc\\\n".repeat(24_000);
     let result = call(&worker, "everett_send", json!({"reply_to": id, "text": reply}));
     assert_ne!(result["isError"], true, "{result}");
-    let status = call(&sender, "everett_status", json!({"message_id": id}));
-    assert_eq!(status["isError"], true, "{status}");
-    assert!(status.to_string().contains("exceeds the MCP response limit"), "{status}");
-    let cli = fx.run_stdin(&["inbox", "--peek", "--json"], "", &sender);
-    let inbox: serde_json::Value = serde_json::from_slice(&cli.stdout).unwrap();
-    assert_eq!(inbox["messages"][0]["reply_to"], id);
-    assert_eq!(inbox["messages"][0]["text"], reply.trim());
+    let status = tool_json(&call(&sender, "everett_status", json!({"message_id": id})));
+    assert_eq!(status["state"], "replied");
+    assert_eq!(status["picked_up"], true);
+    assert_eq!(status["reply_omitted"], true);
+    assert!(status["reply"].is_null());
+    let context = fx.home().join(".everett/inbox/relay-context/sender.json");
+    assert!(!context.exists());
+
+    let bin = std::path::Path::new(env!("CARGO_BIN_EXE_everett")).parent().unwrap();
+    let cli = std::process::Command::new("sh")
+        .args(["-c", status["recovery_command"].as_str().unwrap()])
+        .env_clear()
+        .env("PATH", format!("{}:{}", bin.display(), common::HERMETIC_PATH))
+        .env("HOME", fx.home())
+        .env("EVERETT_HOME", fx.home())
+        .output().unwrap();
+    assert!(cli.status.success(), "{}", String::from_utf8_lossy(&cli.stderr));
+    let text = fx.stdout(&cli);
+    assert!(text.contains("UNTRUSTED AGENT DATA"));
+    assert!(text.contains(&json!(reply.trim()).to_string()));
+    assert!(context.exists());
 }
