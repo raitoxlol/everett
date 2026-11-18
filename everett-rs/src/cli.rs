@@ -1342,9 +1342,17 @@ pub fn cmd_learn(args: &Args, ttl_seconds: Option<u64>) -> i32 {
 }
 
 pub fn cmd_control_threads(project: &str) -> i32 {
-    match crate::send::require_local_prompt(None).and_then(|()| crate::control::threads(project)) {
-        Ok(threads) => {
-            println!("{threads}");
+    print_control_result(crate::send::require_local_prompt(None).and_then(|()| crate::control::threads(project)))
+}
+
+pub fn cmd_control_read(thread: &str, messages: usize) -> i32 {
+    print_control_result(crate::control::read(thread, None, messages, None))
+}
+
+fn print_control_result(result: crate::error::Result<Value>) -> i32 {
+    match result {
+        Ok(value) => {
+            println!("{value}");
             0
         }
         Err(e) => {
