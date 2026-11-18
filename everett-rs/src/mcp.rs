@@ -1203,17 +1203,18 @@ fn tool_inbox(
         .iter()
         .filter_map(|m| m.get("id").and_then(Value::as_str))
         .collect();
-    // Peek still exposes remote data: preserve its provenance/lineage before returning,
-    // without recording a claimed observation or marking the inbox consumed.
-    crate::inbox::persist_relay_context(&sid, &ids)?;
-    if !peek {
-        crate::inbox::mark_done(&sid, &ids);
+    if peek {
+        crate::inbox::persist_relay_context(&sid, &ids)?;
+    } else {
+        let claimed = crate::inbox::claim_pending(&sid, &ids)?;
+        messages.retain(|message| message["id"].as_str().is_some_and(|id| claimed.contains(id)));
+        out.insert("messages".into(), json!(messages));
         if let Some(hops) = items
             .iter()
             .filter(|m| {
                 m.get("id")
                     .and_then(Value::as_str)
-                    .is_some_and(|id| ids.contains(&id))
+                    .is_some_and(|id| claimed.contains(id))
             })
             .filter_map(|m| m.get("hops").and_then(Value::as_i64))
             .max()
