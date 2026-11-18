@@ -194,6 +194,14 @@ describe('Hosted device login through real Worker routes', () => {
     expect((await fetchWorker('/v2/auth/cancel', json({ device_code: pending.device_code }))).status).toBe(200);
     const response = await fetchWorker('/v2/auth/poll', json({ device_code: pending.device_code }));
     expect((await response.json() as { state: string }).state).toBe('cancelled');
+    const browser = new Browser();
+    const enrollment = '/enroll?code=' + pending.user_code;
+    expect((await browser.login(enrollment)).status).toBe(303);
+    const cancelled = await browser.request(enrollment);
+    expect(cancelled.status).toBe(200);
+    const page = await cancelled.text();
+    expectAuthShell(page);
+    expectAuthState(page, 'cancelled');
     expect(await memberCount()).toBe(0);
     expect((await nativeWhoami('bogus')).status).toBe(401);
   });
