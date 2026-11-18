@@ -531,7 +531,7 @@ Everett is mostly used by agents. `everett mcp` is a stdio MCP server (JSON-RPC 
 
 | Tool | Arguments | Returns |
 |---|---|---|
-| `everett_ls` | `hours?`, `harness?`, `all?` | Set `all: true` to include automation sessions. Sessions with their cards (and `source`, such as `t3code`); your own session is marked `you`. Overview only -- not for picking a send target. |
+| `everett_ls` | `hours?`, `harness?`, `all?` | Set `all: true` to include automation sessions. Your own session is marked `you`. Like local `everett ls --json`, this includes `t3_thread_id` alongside the native session `id` when a T3 thread mapping is available. Overview only -- not for picking a send target. |
 | `everett_route` | `text`, `router?`, `hours?` | `SESSION` / `NEW` / `ASK`, confidence, router used, candidates. Never sends; excludes the caller when known. |
 | `everett_send` | `text`, `to?`, `hours?`, `spawn?`, `dir?`, `harness?`, `timeout?`, `mode?`, `wait?`, `reply_to?` | Routes then pings by default. Dispatch is separate from inbox pickup. Unsupported immediate paths fail explicitly; `mode: "inbox"` opts into legacy hooks/polling/remote queues. `reply_to` queues a correlated answer. |
 | `everett_learn` | `fact`, `project?`, `scope?`, `ttl_seconds?` | Stores a secret-filtered fact. Durable facts queue for shared core; temporary facts stay in local search until expiry. |

@@ -111,6 +111,23 @@ fn add(con: &Connection, thread: &str, native: Option<&str>, driver: &str) {
 }
 
 #[test]
+fn listings_distinguish_t3_thread_and_native_session_ids() {
+    let fx = fixture();
+    let con = v2(&fx);
+    add(&con, "chat-a", Some("native-a"), "codex");
+    add(&con, "chat-b", Some("native-b"), "codex");
+    let cli = list(&fx, "codex");
+    let mcp = tool(&fx, "everett_ls", json!({"harness":"codex"}), "native-a");
+    for rows in [&cli, mcp["structuredContent"]["sessions"].as_array().unwrap()] {
+        assert_eq!(rows.len(), 2);
+        for (native, thread) in [("native-a", "chat-a"), ("native-b", "chat-b")] {
+            let row = rows.iter().find(|row| row["id"] == native).unwrap();
+            assert_eq!(row["t3_thread_id"], thread);
+        }
+    }
+}
+
+#[test]
 fn current_t3_without_provider_transcript_uses_native_driver_and_readonly_projection() {
     let fx = fixture();
     let con = v2(&fx);
