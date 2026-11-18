@@ -1,7 +1,7 @@
 //! CLI commands: thin shell over the store/parsing layer. Everything user-visible
 //! (text, json, exit code) happens here; the modules it calls stay pure of stdout.
 
-use std::io::IsTerminal;
+use std::io::{IsTerminal, Write};
 use std::path::{Path, PathBuf};
 
 use serde_json::{json, Map, Value};
@@ -628,7 +628,18 @@ pub fn cmd_send(args: &Args) -> i32 {
                 ]);
                 0
             }
-            Err(failure) => { eprintln!("everett: {}", failure.error.message); failure.error.code },
+            Err(failure) => {
+                eprintln!("everett: {}", failure.error.message);
+                if args.json {
+                    if let Some(receipt) = failure.recovery_receipt() {
+                        let mut stdout = std::io::stdout().lock();
+                        if serde_json::to_writer_pretty(&mut stdout, &receipt).is_ok() {
+                            let _ = stdout.write_all(b"\n");
+                        }
+                    }
+                }
+                failure.error.code
+            }
         };
     }
     if args.dry_run {
