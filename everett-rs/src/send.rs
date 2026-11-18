@@ -536,6 +536,28 @@ pub fn delivery_mode_for(
     ps_out: Option<&str>,
     caller: Option<&str>,
 ) -> Result<String> {
+    Ok(delivery_for(session, mode, ps_out, caller)?.mode().to_owned())
+}
+
+pub(crate) enum Delivery {
+    Inbox,
+    Ping(Option<crate::t3_wake::Binding>),
+    Resume,
+}
+
+impl Delivery {
+    pub(crate) fn mode(&self) -> &'static str {
+        match self {
+            Self::Inbox => "inbox",
+            Self::Ping(_) => "ping",
+            Self::Resume => "resume",
+        }
+    }
+}
+
+pub(crate) fn delivery_for(
+    session: &Session, mode: &str, ps_out: Option<&str>, caller: Option<&str>,
+) -> Result<Delivery> {
     if !MODES.contains(&mode) {
         return Err(EverettError::new(2, format!("--mode must be one of {}.", MODES.join(", "))));
     }
@@ -547,8 +569,7 @@ pub fn delivery_mode_for(
         && !remote_derived
     {
         require_local_prompt(caller)?;
-        crate::t3_wake::validate_target(session)?;
-        return Ok("ping".into());
+        return Ok(Delivery::Ping(Some(crate::t3_wake::validate_binding(session)?)));
     }
     if mode == "ping" {
         require_local_prompt(caller)?;
@@ -556,7 +577,7 @@ pub fn delivery_mode_for(
             || (session.harness != "claude" && transport == PingTransport::Attached) {
             return Err(EverettError::new(4, "No immediate ping transport for this session. Nothing was queued. Use --mode inbox only for legacy hooks/polling."));
         }
-        return Ok("ping".into());
+        return Ok(Delivery::Ping(None));
     }
     if external::is_external(&session.harness) && mode == "resume" {
         return Err(EverettError::new(
@@ -566,10 +587,10 @@ pub fn delivery_mode_for(
         ));
     }
     if mode != "auto" {
-        return Ok(if remote_derived { "inbox" } else { mode }.to_string());
+        return Ok(if remote_derived || mode == "inbox" { Delivery::Inbox } else { Delivery::Resume });
     }
     if transport == PingTransport::OmpExtension && !remote_derived {
-        return Ok("ping".into());
+        return Ok(Delivery::Ping(None));
     }
     if remote_derived || transport != PingTransport::Headless {
         return Err(EverettError::new(
@@ -582,7 +603,7 @@ pub fn delivery_mode_for(
             ),
         ));
     }
-    Ok("resume".to_string())
+    Ok(Delivery::Resume)
 }
 
 pub fn ping_as(
@@ -592,24 +613,39 @@ pub fn ping_as(
     caller: Option<&str>,
     caller_harness: Option<&str>,
 ) -> Result<Map<String, Value>> {
+    ping_with_binding(session, text, timeout, caller, caller_harness, None)
+}
+
+pub(crate) fn ping_with_binding(
+    session: &Session, text: &str, timeout: f64, caller: Option<&str>, caller_harness: Option<&str>,
+    binding: Option<&crate::t3_wake::Binding>,
+) -> Result<Map<String, Value>> {
     require_local_prompt(caller)?;
     refuse_self(session, caller)?;
     if text.trim().is_empty() || text.len() > crate::peer::BODY_CAP || !timeout.is_finite() || timeout <= 0.0 {
         return Err(EverettError::new(2, "Ping requires non-empty text within 64 KiB and a positive finite timeout"));
     }
-    delivery_mode_for(session, "ping", None, caller)?;
     let transport = ping_transport(session, None);
     if transport == PingTransport::T3 {
-        let thread = crate::t3_wake::validate_target(session)?;
-        let mut out = send_inbox_as(session, text, 0.0, caller, caller_harness, 1.0, None)?;
+        let resolved;
+        let binding = match binding {
+            Some(binding) => binding,
+            None => {
+                resolved = crate::t3_wake::validate_binding(session)?;
+                &resolved
+            }
+        };
+        let mut out = send_inbox_with_options(session, text, caller, caller_harness, InboxOptions {
+            wait: 0.0, poll: 1.0, key: None, t3_binding: Some(binding),
+        })?;
         let mid = out.get("message_id").and_then(Value::as_str).unwrap_or("");
-        let receipt = crate::t3_wake::wake(&thread, session, mid).map_err(|error| {
+        let receipt = crate::t3_wake::wake_bound(binding, session, mid).map_err(|error| {
             EverettError::new(4, format!(
-                "Immediate T3 ping not confirmed: {}. Inbox message {mid} remains recorded and may have been read. Check `everett status {mid}` before retrying. Do not blindly retry.",
+                "Immediate T3 ping not confirmed: {}. Inbox message {mid} remains recorded and may have been read. Check `everett status {mid}`. If it's still queued, run `everett retry {mid}` to nudge the same request. Do not blindly retry with a new send.",
                 error.message,
             ))
         })?;
-        out.insert("wake".into(), json!({"state":"prompt_sent","transport":"t3","thread_id":thread,"receipt":receipt}));
+        out.insert("wake".into(), json!({"state":"prompt_sent","transport":"t3","thread_id":binding.thread,"receipt":receipt}));
         out.insert("mode".into(), json!("ping"));
         out.insert("pinged".into(), json!(true));
         out.insert("queued".into(), json!(true));
@@ -619,6 +655,7 @@ pub fn ping_as(
         out.insert("note".into(), json!("T3 accepted the inbox nudge for a new or queued turn. The durable inbox is retained; consumption and reply are not confirmed."));
         return Ok(out);
     }
+    delivery_mode_for(session, "ping", None, caller)?;
     if transport == PingTransport::OmpExtension {
         if caller_harness.is_some_and(external::is_external) {
             return Err(EverettError::new(2, "External callers are inbox-only."));
@@ -713,6 +750,26 @@ pub fn send_inbox_as(
     poll: f64,
     key: Option<&str>,
 ) -> Result<Map<String, Value>> {
+    send_inbox_with_options(session, text, caller, caller_harness, InboxOptions {
+        wait, poll, key, t3_binding: None,
+    })
+}
+
+struct InboxOptions<'a> {
+    wait: f64,
+    poll: f64,
+    key: Option<&'a str>,
+    t3_binding: Option<&'a crate::t3_wake::Binding>,
+}
+
+fn send_inbox_with_options(
+    session: &Session,
+    text: &str,
+    caller: Option<&str>,
+    caller_harness: Option<&str>,
+    options: InboxOptions<'_>,
+) -> Result<Map<String, Value>> {
+    let InboxOptions { wait, poll, key, t3_binding } = options;
     if !wait.is_finite() || wait < 0.0 {
         return Err(EverettError::new(2, "--wait must be a finite number of seconds, 0 or more."));
     }
@@ -753,6 +810,12 @@ pub fn send_inbox_as(
             format!("Hop limit reached ({}/{}): answer here instead of forwarding again.", hops, limit),
         ));
     }
+    let mut metadata = inbox::relay_context(sender).as_ref().and_then(inbox::forward_provenance);
+    if let Some(binding) = t3_binding {
+        metadata.get_or_insert_with(Map::new).insert(
+            "t3_ping".into(), json!({"thread_id": binding.thread, "harness": session.harness, "data_home": binding.data_home}),
+        );
+    }
     let message = inbox::post(
         &session.id,
         text,
@@ -762,9 +825,7 @@ pub fn send_inbox_as(
         hops + 1,
         who.get("from_harness").and_then(|v| v.as_str()).unwrap_or(""),
         who.get("from_card").and_then(|v| v.as_str()).unwrap_or(""),
-        inbox::relay_context(sender)
-            .as_ref()
-            .and_then(inbox::forward_provenance),
+        metadata,
     )?;
     let webhook = if external::is_external(&session.harness) {
         match crate::receiver_webhook::after_local_queue(&session.id, &session.harness, &message) {
