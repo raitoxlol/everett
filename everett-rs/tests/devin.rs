@@ -190,3 +190,23 @@ fn devin_home_override_default_and_merged_dirs() {
     assert_eq!(registry::find("t-b", &found).unwrap().id, "t-b");
     std::env::remove_var("DEVIN_HOME");
 }
+
+#[test]
+fn cli_lists_devin_sessions_with_one_activity_column() {
+    let fx = common::fixture();
+    let dir = fx.home().join("devin");
+    std::fs::create_dir_all(&dir).unwrap();
+    for column in ["created_at", "updated_at", "last_activity_at"] {
+        let db = rusqlite::Connection::open(dir.join("sessions.db")).unwrap();
+        db.execute_batch(&format!("DROP TABLE IF EXISTS sessions; CREATE TABLE sessions (id TEXT, title TEXT, {column} REAL)")).unwrap();
+        db.execute("INSERT INTO sessions VALUES ('recent', 'Recent work', ?1), ('old', 'Old work', ?2)",
+            rusqlite::params![now(), now() - 864000.0]).unwrap();
+        drop(db);
+        let out = fx.run_stdin(&["ls","--json","--harness","devin","--hours","24"], "",
+            &[("DEVIN_HOME",dir.to_str().unwrap())]);
+        assert!(out.status.success());
+        let rows: Vec<serde_json::Value> = serde_json::from_slice(&out.stdout).unwrap();
+        let ids: Vec<_> = rows.iter().map(|r| r["id"].as_str().unwrap()).collect();
+        assert_eq!(ids, ["recent"], "{column}: {}", String::from_utf8_lossy(&out.stderr));
+    }
+}
