@@ -134,24 +134,18 @@ fn draw_frame(f: &mut Frame, p: &Palette, step: usize, title: &str) -> Option<u1
         if area.height == 0 || area.width == 0 {
             return None;
         }
-        let msg = format!(
-            "terminal too small ({}x{}) -- resize to at least {}x{}",
-            area.width, area.height, MIN_COLS, MIN_ROWS
-        );
-        put(
-            f,
-            1.min(area.height - 1),
-            (area.width.saturating_sub(msg.len() as u16)) / 2,
-            &msg,
-            p.amber,
-        );
-        put(
-            f,
-            area.height - 1,
-            (area.width.saturating_sub(6)) / 2,
-            "q quit",
-            Style::default(),
-        );
+        let minimum = format!("{MIN_COLS}x{MIN_ROWS}");
+        let full = format!("terminal too small — resize to {minimum}");
+        let compact = format!("{minimum} minimum");
+        let msg = [full.as_str(), compact.as_str(), minimum.as_str()]
+            .into_iter()
+            .find(|s| s.chars().count() <= usize::from(area.width))
+            .unwrap_or(&minimum);
+        let row = u16::from(area.height >= 3);
+        put(f, row, area.width.saturating_sub(msg.chars().count() as u16) / 2, msg, p.amber);
+        if area.height > 1 {
+            put(f, area.height - 1, area.width.saturating_sub(6) / 2, "q quit", Style::default());
+        }
         return None;
     }
     put(f, 0, 2, "everett / setup", p.accent);
