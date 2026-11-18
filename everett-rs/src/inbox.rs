@@ -366,9 +366,7 @@ pub(crate) fn recent_sent_requests(sender: &str) -> Vec<SentRequest> {
     for file in paths::glob(&inbox_dir(), "*.jsonl") {
         let Some(target) = file.file_stem().and_then(|stem| stem.to_str()).filter(|id| valid_id(id)) else { continue };
         for request in read(target) {
-            if sent_target(&request, sender) != Some(target) || external(&request)
-                || request.contains_key("relay_lineage") || request.contains_key("relay_message_id")
-            {
+            if sent_target(&request, sender) != Some(target) {
                 continue;
             }
             let Some(id) = request.get("id").and_then(Value::as_str).filter(|id| valid_id(id)) else { continue };
