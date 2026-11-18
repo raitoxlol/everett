@@ -227,10 +227,10 @@ pub fn read_db(path: &Path, since_hours: f64) -> Result<(Vec<Session>, bool), St
         .copied()
         .filter(|c| cols.contains(*c))
         .collect();
-    let order = if activity.is_empty() {
-        String::new()
-    } else {
-        format!(" ORDER BY COALESCE({}) DESC", activity.join(", "))
+    let order = match activity.as_slice() {
+        [] => String::new(),
+        [column] => format!(" ORDER BY {column} DESC"),
+        _ => format!(" ORDER BY COALESCE({}) DESC", activity.join(", ")),
     };
     let sql = format!(
         "SELECT {} FROM sessions WHERE {}{} LIMIT 400",
