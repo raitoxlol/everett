@@ -85,6 +85,12 @@ async function begin(name = 'mac-mini-test') {
 }
 function expectAuthShell(page: string) {
   expect(page).toContain('<html lang="en">');
+  expect(page.toLowerCase()).toContain('<meta name="theme-color" content="#0e0c0b">');
+  const style = page.match(/<style>([\s\S]*?)<\/style>/)?.[1] ?? '';
+  expect(style).toMatch(/--bone:\s*#ede6dc\b/i);
+  expect(style).toMatch(/--sun:\s*#ff5a1f\b/i);
+  expect(style).toMatch(/"Geist"\s*,/);
+  expect(style).toMatch(/"Geist Mono"\s*,/);
   expect(page).toContain('<header class="auth-header">');
   expect(page).toContain('<main id="main" class="auth-main">');
   expect(page).toContain('<span class="auth-brand" aria-label="Everett">everett</span>');
@@ -188,6 +194,14 @@ describe('Hosted device login through real Worker routes', () => {
     expect((await fetchWorker('/v2/auth/cancel', json({ device_code: pending.device_code }))).status).toBe(200);
     const response = await fetchWorker('/v2/auth/poll', json({ device_code: pending.device_code }));
     expect((await response.json() as { state: string }).state).toBe('cancelled');
+    const browser = new Browser();
+    const enrollment = '/enroll?code=' + pending.user_code;
+    expect((await browser.login(enrollment)).status).toBe(303);
+    const cancelled = await browser.request(enrollment);
+    expect(cancelled.status).toBe(200);
+    const page = await cancelled.text();
+    expectAuthShell(page);
+    expectAuthState(page, 'cancelled');
     expect(await memberCount()).toBe(0);
     expect((await nativeWhoami('bogus')).status).toBe(401);
   });
