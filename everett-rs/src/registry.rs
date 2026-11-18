@@ -102,7 +102,7 @@ fn name(s: &Session) -> String {
     head.trim().to_lowercase()
 }
 
-/// Resolve `send --to`: exact id, unique id prefix, exact title, card name or project folder.
+/// Resolve `send --to`: exact session or T3 thread ID, id prefix, title, card or project.
 pub fn find(target: &str, sessions: &[Session]) -> Result<Session> {
     let target = target.trim();
     if target.is_empty() {
@@ -113,6 +113,7 @@ pub fn find(target: &str, sessions: &[Session]) -> Result<Session> {
     }
     let target_fold = target.to_lowercase();
     let passes: Vec<Vec<&Session>> = vec![
+        sessions.iter().filter(|s| s.t3_thread_id.as_deref() == Some(target)).collect(),
         sessions.iter().filter(|s| s.id.starts_with(target)).collect(),
         sessions.iter().filter(|s| s.title.trim().to_lowercase() == target_fold).collect(),
         sessions.iter().filter(|s| name(s) == target_fold).collect(),

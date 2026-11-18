@@ -15,7 +15,7 @@ pub fn thread_id(session: &Session) -> Option<String> {
     t3code::threads(&t3code::db_path())
         .get(&(session.harness.clone(), session.id.clone()))
         .map(|(thread, _)| thread.clone())
-        .filter(|t| !t.is_empty())
+        .filter(|t| !t.is_empty() && session.t3_thread_id.as_ref().is_none_or(|expected| expected == t))
 }
 
 pub fn validate_target(session: &Session) -> Result<String> {

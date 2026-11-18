@@ -77,7 +77,7 @@ The receiver must have access to Everett's MCP tools and the same local Everett
 home. Each sending or replying provider session needs its own host-bound MCP caller identity, using `EVERETT_SESSION_ID` in the launch environment when native detection is unavailable. A `session_id` argument must match that binding. Installing Everett in a standalone provider does not prove it is available
 inside a T3-created provider session.
 
-1. List the thread with `everett_ls`. Use the returned provider session `id`.
+1. List the thread with `everett_ls` for its provider session `id`. If you already have the exact T3 thread ID from `everett_control(action="threads")`, you can use it as the send destination too.
 2. Bind each participant's exact provider ID as `EVERETT_SESSION_ID` in that
    T3 thread's MCP launch environment.
 3. From another agent, call `everett_send(to=<provider id>, text=..., mode="inbox")`.
