@@ -8,12 +8,21 @@ use crate::adapters::{t3_cli, t3code};
 use crate::error::{EverettError, Result};
 use crate::session::{clean, Session};
 use serde_json::{json, Value};
+use std::path::Path;
 
 pub const SEND_TIMEOUT: f64 = 20.0;
 
+pub(crate) fn resolved_data_home() -> Option<String> {
+    std::fs::canonicalize(t3code::data_home()).ok()?.into_os_string().into_string().ok()
+}
+
 /// The T3 thread that drives this provider session, if any.
 pub fn thread_id(session: &Session) -> Option<String> {
-    t3code::threads(&t3code::db_path())
+    thread_id_in(session, &t3code::db_path())
+}
+
+fn thread_id_in(session: &Session, db_path: &Path) -> Option<String> {
+    t3code::threads(db_path)
         .get(&(session.harness.clone(), session.id.clone()))
         .map(|(thread, _)| thread.clone())
         .filter(|t| !t.is_empty() && session.t3_thread_id.as_ref().is_none_or(|expected| expected == t))
@@ -50,21 +59,42 @@ pub(crate) fn retry(sender: &str, message_id: &str) -> Result<Value> {
     crate::send::require_local_prompt(Some(sender))?;
     let (target, request) = crate::inbox::queued_local_request(sender, message_id)?;
     let binding = &request["t3_ping"];
-    let (Some(thread), Some(harness)) = (binding["thread_id"].as_str(), binding["harness"].as_str()) else {
+    let (Some(thread), Some(harness), Some(data_home)) = (
+        binding["thread_id"].as_str(), binding["harness"].as_str(), binding["data_home"].as_str(),
+    ) else {
         return Err(EverettError::new(2, "This request has no original T3 ping binding. Use inbox pickup."));
     };
     let session = Session::new(harness, &target, "", "", "", 0.0);
-    let receipt = wake(thread, &session, message_id).map_err(|error| EverettError::new(4, format!(
+    let receipt = wake_checked(thread, &session, message_id, SEND_TIMEOUT, |current_home| {
+        if current_home != Some(data_home) {
+            return Err(EverettError::new(4, "The T3 data folder changed since the original ping."));
+        }
+        crate::send::require_local_prompt(Some(sender))?;
+        let (current_target, current_request) = crate::inbox::queued_local_request(sender, message_id)?;
+        if current_target != target || current_request != request {
+            return Err(EverettError::new(2, "The original request changed before dispatch."));
+        }
+        Ok(())
+    }).map_err(|error| EverettError::new(error.code, format!(
         "T3 retry not confirmed: {}. Check `everett status {message_id}` for the original request.", error.message,
     )))?;
     Ok(json!({"message_id": message_id, "to": target, "thread_id": thread, "state": "prompt_sent", "receipt": receipt}))
 }
 
 pub(crate) fn wake_with_timeout(thread: &str, session: &Session, message_id: &str, timeout: f64) -> Result<String> {
+    wake_checked(thread, session, message_id, timeout, |_| Ok(()))
+}
+
+fn wake_checked(
+    thread: &str, session: &Session, message_id: &str, timeout: f64,
+    preflight: impl FnOnce(Option<&str>) -> Result<()>,
+) -> Result<String> {
     if !timeout.is_finite() || timeout <= 0.0 {
         return Err(EverettError::new(4, "Timeout expired before T3 dispatch."));
     }
-    if thread_id(session).as_deref() != Some(thread) {
+    let data_home = resolved_data_home();
+    let db_path = data_home.as_deref().map(Path::new).map(t3code::db_path_in).unwrap_or_else(t3code::db_path);
+    if thread_id_in(session, &db_path).as_deref() != Some(thread) {
         return Err(EverettError::new(4, "The T3 thread binding changed before dispatch. No nudge was sent."));
     }
     let bin = t3_cli::binary().ok_or_else(|| {
@@ -73,7 +103,8 @@ pub(crate) fn wake_with_timeout(thread: &str, session: &Session, message_id: &st
     let nudge = nudge(session, message_id)?;
     let args = ["thread", "send", "--json", thread, &nudge];
     let timeout = timeout.min(SEND_TIMEOUT);
-    let captured = t3_cli::capture(&bin, &args, timeout)
+    preflight(data_home.as_deref())?;
+    let captured = t3_cli::capture_with_data_home(&bin, &args, timeout, data_home.as_deref())
         .map_err(|e| EverettError::new(4, format!("t3 thread send failed to start: {e}")))?;
     let out = captured.output;
     if out.timed_out {

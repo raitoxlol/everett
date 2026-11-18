@@ -15,9 +15,16 @@ pub(crate) struct Captured {
 }
 
 pub(crate) fn capture(binary: &str, args: &[&str], timeout: f64) -> Result<Captured, String> {
+    capture_with_data_home(binary, args, timeout, None)
+}
+
+pub(crate) fn capture_with_data_home(binary: &str, args: &[&str], timeout: f64, data_home: Option<&str>) -> Result<Captured, String> {
     let mut argv = vec![binary.to_string()];
     argv.extend(args.iter().map(|arg| arg.to_string()));
-    let env: HashMap<String, String> = std::env::vars().collect();
+    let mut env: HashMap<String, String> = std::env::vars().collect();
+    if let Some(data_home) = data_home {
+        env.insert("T3CODE_HOME".into(), data_home.into());
+    }
     let output = run_capture(&argv, None, &env, timeout)?;
     let receipt = parse_json_output(output.stdout.trim());
     Ok(Captured { output, receipt })

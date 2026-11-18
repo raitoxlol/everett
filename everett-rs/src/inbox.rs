@@ -197,9 +197,16 @@ pub(crate) fn post_with_deadline(
 }
 
 pub fn read(session_id: &str) -> Vec<Map<String, Value>> {
+    read_inbox(session_id).unwrap_or_default()
+}
+
+fn read_inbox(session_id: &str) -> Result<Vec<Map<String, Value>>> {
     let mut out = Vec::new();
-    let Ok(p) = path(session_id) else { return out };
-    let Ok(raw) = fs::read_to_string(&p) else { return out };
+    let raw = match fs::read_to_string(path(session_id)?) {
+        Ok(raw) => raw,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(out),
+        Err(error) => return Err(EverettError::new(2, format!("cannot read inbox for {session_id}: {error}"))),
+    };
     for line in raw.lines() {
         if let Ok(Value::Object(item)) = serde_json::from_str::<Value>(line) {
             if item.get("id").and_then(|v| v.as_str()).map(|s| !s.is_empty()).unwrap_or(false)
@@ -209,7 +216,7 @@ pub fn read(session_id: &str) -> Vec<Map<String, Value>> {
             }
         }
     }
-    out
+    Ok(out)
 }
 
 pub fn done_ids(session_id: &str) -> HashSet<String> {
@@ -341,8 +348,8 @@ fn sent_request(sender: &str, message_id: &str) -> Result<(String, Map<String, V
     Ok((target, request))
 }
 
-fn sent_reply(sender: &str, target: &str, message_id: &str) -> Option<Map<String, Value>> {
-    read(sender)
+fn sent_reply(messages: Vec<Map<String, Value>>, sender: &str, target: &str, message_id: &str) -> Option<Map<String, Value>> {
+    messages
         .into_iter()
         .filter(|item| {
             let author = item.get("from").and_then(Value::as_str);
@@ -367,10 +374,10 @@ pub(crate) fn queued_local_request(sender: &str, message_id: &str) -> Result<(St
         return Err(EverettError::new(2, "No retryable local request with that ID from this sender."));
     }
     if request_expired(&request)
-        || sent_reply(sender, &target, message_id).is_some()
+        || sent_reply(read_inbox(sender)?, sender, &target, message_id).is_some()
         || read_acknowledgments(&done_path(&target))?.split_whitespace().any(|id| id == message_id)
     {
-        return Err(EverettError::new(2, "This request is no longer queued. Check its status with `everett status`."));
+        return Err(EverettError::new(2, format!("This request is no longer queued. Check `everett status {message_id}`.")));
     }
     Ok((target, request))
 }
@@ -378,7 +385,7 @@ pub(crate) fn queued_local_request(sender: &str, message_id: &str) -> Result<(St
 pub fn sent_status(sender: &str, message_id: &str) -> Result<Value> {
     let (target, request) = sent_request(sender, message_id)?;
     let picked_up = done_ids(&target).contains(message_id);
-    let reply = sent_reply(sender, &target, message_id);
+    let reply = sent_reply(read(sender), sender, &target, message_id);
     let state = if reply.is_some() {
         "replied"
     } else if picked_up {

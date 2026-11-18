@@ -778,7 +778,7 @@ fn send_inbox_with_options(
     let mut metadata = inbox::relay_context(sender).as_ref().and_then(inbox::forward_provenance);
     if let Some(thread) = t3_thread {
         metadata.get_or_insert_with(Map::new).insert(
-            "t3_ping".into(), json!({"thread_id": thread, "harness": session.harness}),
+            "t3_ping".into(), json!({"thread_id": thread, "harness": session.harness, "data_home": crate::t3_wake::resolved_data_home()}),
         );
     }
     let message = inbox::post(
