@@ -24,8 +24,12 @@ pub(crate) fn data_home() -> PathBuf {
         .or_else(|| configured.strip_prefix("~\\"))
         .or((configured == "~").then_some(""));
     let path = if let Some(rest) = home_suffix {
-        std::env::home_dir()
-            .map_or_else(|| PathBuf::from(configured), |os_home| os_home.join(rest.trim_start_matches('/')))
+        match std::env::var_os("HOME").map(PathBuf::from).or_else(std::env::home_dir) {
+            Some(os_home) if !os_home.as_os_str().is_empty() => os_home.join(rest.trim_start_matches('/')),
+            Some(_) if rest.is_empty() => PathBuf::from("."),
+            Some(_) => PathBuf::from(rest),
+            None => PathBuf::from(configured),
+        }
     } else {
         PathBuf::from(configured)
     };
