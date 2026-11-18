@@ -7,6 +7,7 @@
 use crate::adapters::{t3_cli, t3code};
 use crate::error::{EverettError, Result};
 use crate::session::{clean, Session};
+use serde_json::{json, Value};
 
 pub const SEND_TIMEOUT: f64 = 20.0;
 
@@ -43,6 +44,20 @@ pub fn nudge(session: &Session, message_id: &str) -> Result<String> {
 /// Send the nudge into the thread. Ok carries the T3 CLI's receipt.
 pub fn wake(thread: &str, session: &Session, message_id: &str) -> Result<String> {
     wake_with_timeout(thread, session, message_id, SEND_TIMEOUT)
+}
+
+pub(crate) fn retry(sender: &str, message_id: &str) -> Result<Value> {
+    crate::send::require_local_prompt(Some(sender))?;
+    let (target, request) = crate::inbox::queued_local_request(sender, message_id)?;
+    let binding = &request["t3_ping"];
+    let (Some(thread), Some(harness)) = (binding["thread_id"].as_str(), binding["harness"].as_str()) else {
+        return Err(EverettError::new(2, "This request has no original T3 ping binding. Use inbox pickup."));
+    };
+    let session = Session::new(harness, &target, "", "", "", 0.0);
+    let receipt = wake(thread, &session, message_id).map_err(|error| EverettError::new(4, format!(
+        "T3 retry not confirmed: {}. Check `everett status {message_id}` for the original request.", error.message,
+    )))?;
+    Ok(json!({"message_id": message_id, "to": target, "thread_id": thread, "state": "prompt_sent", "receipt": receipt}))
 }
 
 pub(crate) fn wake_with_timeout(thread: &str, session: &Session, message_id: &str, timeout: f64) -> Result<String> {

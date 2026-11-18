@@ -960,6 +960,22 @@ pub fn cmd_reply(args: &Args) -> i32 {
     }
 }
 
+pub fn cmd_retry(message_id: &str, json: bool) -> i32 {
+    let caller = crate::host::caller_session_id();
+    let sender = if caller.is_empty() { crate::inbox::HUMAN } else { &caller };
+    match crate::t3_wake::retry(sender, message_id) {
+        Ok(receipt) => {
+            if json {
+                println!("{}", serde_json::to_string_pretty(&receipt).unwrap());
+            } else {
+                println!("PINGED  original request {message_id}\n  Check pickup and reply: everett status {message_id}");
+            }
+            0
+        }
+        Err(error) => { eprintln!("everett: {}", error.message); error.code }
+    }
+}
+
 pub fn cmd_status(message_id: &str, json: bool) -> i32 {
     let caller = crate::host::caller_session_id();
     let sender = if caller.is_empty() { crate::inbox::HUMAN } else { &caller };
