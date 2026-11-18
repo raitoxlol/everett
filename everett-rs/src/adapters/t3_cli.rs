@@ -23,7 +23,8 @@ pub(crate) fn capture_with_data_home(binary: &str, args: &[&str], timeout: f64, 
     argv.extend(args.iter().map(|arg| arg.to_string()));
     let mut env: HashMap<String, String> = std::env::vars().collect();
     if let Some(data_home) = data_home {
-        env.insert("T3CODE_HOME".into(), data_home.into());
+        // T3 trims the override before resolving it, so keep any final space inside the path.
+        env.insert("T3CODE_HOME".into(), format!("{data_home}/."));
     }
     let output = run_capture(&argv, None, &env, timeout)?;
     let receipt = parse_json_output(output.stdout.trim());
