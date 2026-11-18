@@ -605,7 +605,7 @@ pub fn ping_as(
         let mid = out.get("message_id").and_then(Value::as_str).unwrap_or("");
         let receipt = crate::t3_wake::wake(&thread, session, mid).map_err(|error| {
             EverettError::new(4, format!(
-                "Immediate T3 ping not confirmed: {}. Inbox message {mid} remains recorded and may have been read. Do not blindly retry.",
+                "Immediate T3 ping not confirmed: {}. Inbox message {mid} remains recorded and may have been read. Check `everett status {mid}` before retrying. Do not blindly retry.",
                 error.message,
             ))
         })?;
@@ -637,7 +637,7 @@ pub fn ping_as(
         let mut out = send_inbox_as(session, text, 0.0, caller, caller_harness, 1.0, None)?;
         let mid = out.get("message_id").and_then(Value::as_str).unwrap_or("");
         let prepared = crate::claude_wake::prepare(session).map_err(|error| EverettError::new(4,
-            format!("Immediate ping unavailable for {}: {}. Inbox message {mid} remains recorded; no native nudge was sent. Do not blindly retry.", session.id, error.message)))?;
+            format!("Immediate ping unavailable for {}: {}. Inbox message {mid} remains recorded; no native nudge was sent. Check `everett status {mid}` before retrying. Do not blindly retry.", session.id, error.message)))?;
         match crate::claude_wake::wake(&prepared, mid) {
             crate::claude_wake::WakeOutcome::PromptSent { client_pid, target_pid } => {
                 out.insert("wake".into(), json!({"state":"prompt_sent","client_pid":client_pid,"target_pid":target_pid}));
@@ -648,7 +648,7 @@ pub fn ping_as(
             }
             outcome => Err(EverettError::new(
                 if matches!(outcome, crate::claude_wake::WakeOutcome::Cancelled { .. }) { 130 } else { 4 },
-                format!("Immediate ping not confirmed ({outcome:?}); inbox message {mid} remains recorded and may have been read. Do not blindly retry."),
+                format!("Immediate ping not confirmed ({outcome:?}); inbox message {mid} remains recorded and may have been read. Check `everett status {mid}` before retrying. Do not blindly retry."),
             )),
         }
     } else {
