@@ -147,6 +147,27 @@ fn concurrent_card_updates_are_atomic_and_do_not_share_temporary_files() {
 }
 
 #[test]
+fn listing_can_include_automation_sessions() {
+    let fx = home_with_claude_session();
+    fx.write(".claude/projects/-work-app/worker.jsonl", &json!({
+        "type": "user", "sessionId": "worker", "cwd": "/work/app",
+        "message": {"role": "user", "content": "Automation: summarize changes"}
+    }).to_string());
+    let mut server = Server::start(&fx, &[]);
+    for (args, include_worker) in [
+        (json!({}), false),
+        (json!({"all": false}), false),
+        (json!({"all": true, "harness": "claude"}), true),
+    ] {
+        let listing = server.call("everett_ls", args);
+        let sessions = listing["structuredContent"]["sessions"].as_array().expect("session list");
+        assert!(sessions.iter().any(|s| s["id"] == "c-1"));
+        assert_eq!(sessions.iter().any(|s| s["id"] == "worker"), include_worker);
+    }
+    server.close();
+}
+
+#[test]
 fn round_trip_over_pipes() {
     let fx = home_with_claude_session();
     let mut s = Server::start(&fx, &[]);
