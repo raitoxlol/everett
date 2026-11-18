@@ -628,7 +628,7 @@ pub fn cmd_send(args: &Args) -> i32 {
                 ]);
                 0
             }
-            Err(error) => { eprintln!("everett: {}", error.message); error.code },
+            Err(failure) => { eprintln!("everett: {}", failure.error.message); failure.error.code },
         };
     }
     if args.dry_run {
