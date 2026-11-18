@@ -92,9 +92,12 @@ mean the queued request was lost.
 
 ## Identity and shared memory
 
-Use **native provider IDs**, not T3 application thread IDs or internal provider-thread
-IDs. T3 aliases and automatic T3 caller detection are not implemented. If
-`everett_whoami` has no caller identity, the owner must configure that provider session's MCP launch environment with its exact `EVERETT_SESSION_ID` before delivery or replies. A model-supplied `session_id` does not authenticate the caller. Rebind or restart the MCP process after switching provider sessions.
+Bind the MCP caller using its **native provider session ID**. The exact T3
+application thread ID is an alias for send destinations. Caller identity still
+uses the provider session. If `everett_whoami` has no identity, configure that
+session's MCP launch environment with its exact `EVERETT_SESSION_ID` before
+delivery or replies. Rebind or restart the MCP process after switching provider
+sessions.
 
 Once Everett's MCP tools are available, `everett_core(project=<workspace>)` reads the
 shared core and `everett_learn(fact=..., project=<workspace>)` queues a learning.
