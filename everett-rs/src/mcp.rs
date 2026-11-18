@@ -91,6 +91,11 @@ pub fn tools() -> &'static Vec<Value> {
                 }, "additionalProperties": false},
             }),
             json!({
+                "name": "everett_sent",
+                "description": "List up to 50 recent local requests sent by your host-bound session, newest first. Returns message IDs, recipients and timestamps. Use an ID with everett_status.",
+                "inputSchema": {"type": "object", "properties": {}, "additionalProperties": false},
+            }),
+            json!({
                 "name": "everett_status",
                 "description": "Check pickup and recover a retained reply for a local Everett request you sent, even after reading your inbox. Use the message_id returned by everett_send. This leaves the reply unread if it is still pending.",
                 "inputSchema": {"type": "object", "properties": {
@@ -1252,6 +1257,20 @@ fn tool_retry(
         format!("{} Check `everett_status(message_id={id:?})` for the original request.", error.message)))
 }
 
+fn tool_sent(
+    args: &Map<String, Value>,
+    identity: &Map<String, Value>,
+) -> std::result::Result<Map<String, Value>, ToolFailure> {
+    let (sender, _) = caller_session(args, identity)?;
+    if sender.is_empty() {
+        return Err(err2(2, unbound_message(identity)));
+    }
+    if !crate::inbox::valid_id(&sender) {
+        return Err(err2(2, "Invalid host-bound session ID."));
+    }
+    Ok(Map::from_iter([("requests".into(), json!(crate::inbox::recent_sent_requests(&sender)))]))
+}
+
 fn tool_status(
     args: &Map<String, Value>,
     identity: &Map<String, Value>,
@@ -1501,6 +1520,7 @@ fn call_handler(
         "everett_card" => tool_card(args, identity),
         "everett_whoami" => tool_whoami(identity),
         "everett_inbox" => tool_inbox(args, identity),
+        "everett_sent" => tool_sent(args, identity),
         "everett_status" => tool_status(args, identity),
         "everett_retry" => tool_retry(args, identity),
         "everett_event" => tool_event(args, identity),
