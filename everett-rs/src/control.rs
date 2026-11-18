@@ -6,6 +6,9 @@
 //! or starting promotes text to an owner prompt and reading discloses transcripts.
 //! `stop` is reported per harness; no harness exposes a safe stop to Everett yet.
 
+use std::collections::VecDeque;
+use std::io::{self, BufRead, BufReader};
+
 use serde_json::{json, Map, Value};
 
 use crate::error::{EverettError, Result};
@@ -194,7 +197,8 @@ pub fn read(thread: &str, session: Option<&Session>, messages: usize, caller: Op
         // Grok stores a session directory; its messages live in chat_history.jsonl.
         let path = std::path::Path::new(&session.path);
         let file = if path.is_dir() { path.join("chat_history.jsonl") } else { path.to_path_buf() };
-        transcript_tail(&std::fs::read_to_string(file).map_err(|e| unreadable(e.to_string()))?, messages)
+        let file = std::fs::File::open(file).map_err(|e| unreadable(e.to_string()))?;
+        read_transcript_tail(BufReader::new(file), messages).map_err(|e| unreadable(e.to_string()))?
     };
     Ok(json!({
         "via": "transcript",
@@ -227,18 +231,32 @@ pub fn stop(thread: &str, session: Option<&Session>) -> Result<Value> {
 /// supported harness. Finds `{role, content}` objects at any depth, so Claude
 /// (`message`), Codex (`payload`) and plain chat rows all parse.
 pub fn transcript_tail(text: &str, limit: usize) -> Vec<Value> {
-    let mut out = Vec::new();
-    for line in text.lines() {
-        let Ok(row) = serde_json::from_str::<Value>(line) else { continue };
+    read_transcript_tail(text.as_bytes(), limit).expect("a UTF-8 string is readable")
+}
+
+fn read_transcript_tail(mut reader: impl BufRead, limit: usize) -> io::Result<Vec<Value>> {
+    let mut out = VecDeque::new();
+    if limit == 0 {
+        return Ok(Vec::new());
+    }
+    let mut line = String::new();
+    loop {
+        line.clear();
+        if reader.read_line(&mut line)? == 0 {
+            break;
+        }
+        let Ok(row) = serde_json::from_str::<Value>(&line) else { continue };
         if let Some((role, body)) = find_message(&row, 0) {
             if !body.trim().is_empty() {
                 let body: String = body.chars().take(4000).collect();
-                out.push(json!({"role": role, "text": body}));
+                if out.len() == limit {
+                    out.pop_front();
+                }
+                out.push_back(json!({"role": role, "text": body}));
             }
         }
     }
-    let skip = out.len().saturating_sub(limit);
-    out.split_off(skip)
+    Ok(out.into())
 }
 
 fn find_message(v: &Value, depth: usize) -> Option<(String, String)> {
