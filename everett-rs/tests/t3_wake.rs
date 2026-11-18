@@ -268,6 +268,10 @@ fn t3_cli_text_reports_pinged() {
     assert!(text.contains("PINGED"), "{text}");
     assert!(!text.contains("Queued only"), "{text}");
     assert!(!text.contains("QUEUED"), "{text}");
+    let pending = fx.run(&["inbox", "--session", SESSION, "--peek", "--json"]);
+    let inbox: Value = serde_json::from_slice(&pending.stdout).unwrap();
+    let id = inbox["messages"][0]["id"].as_str().unwrap();
+    assert!(text.contains(&format!("everett status {id}")), "{text}");
 }
 
 #[test]
