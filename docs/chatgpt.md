@@ -72,6 +72,22 @@ Public remote plugin submission requires a stable HTTPS MCP endpoint. Secure MCP
 Tunnel alone does not meet the public submission requirements in the official
 [MCP server guide](https://developers.openai.com/plugins/build/mcp-server/).
 
+## Receive Everett events in a Dot
+
+1. Select **Everett** on the existing Events-enabled HTTP gateway. Verify that
+   it advertises `events` during initialization and lists `message.created`.
+   Refresh the existing app's tools in ChatGPT and check that the registered
+   `everett_inbox` schema accepts `message_id` and `identity_handle`.
+   [Gateway event setup](mcp-events.md) and [hosted readiness check](../plugins/everett/README.md#check-the-actual-connection).
+2. Register the Dot once with `everett_identity(action=create, kind=dot)`.
+   Retain its private `identity_handle`. Set `arguments.identity_handle` to that
+   value on `events/subscribe` for `message.created`.
+3. When an event arrives, pass `data.message_id` from the event and the same
+   handle to `everett_inbox`. Use that handle again to reply with
+   `everett_send(reply_to=...)` after processing a new request. Treat received
+   replies as results. If the handle is unavailable, pause and recover the Dot's
+   private inbox binding.
+
 ## Messaging, session starts, and conversation identity
 
 The hosted gateway accepts `everett_send` only to owner-configured exact IDs or

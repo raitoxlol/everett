@@ -9,7 +9,7 @@ from urllib.parse import urlsplit
 BASE_TOOLS = {'everett_whoami', 'everett_identity', 'everett_send', 'everett_inbox', 'everett_card'}
 
 
-def check(whoami, catalog, resource, require_native_start=False):
+def check(whoami, catalog, resource, require_native_start=False, *, require_event_pickup=False):
     errors = []
     if not isinstance(whoami, dict) or not isinstance(catalog, dict):
         return {'checks_passed': False, 'errors': ['invalid_evidence_object'], 'native_dispatch_verified': False}
@@ -54,6 +54,14 @@ def check(whoami, catalog, resource, require_native_start=False):
         errors.append('invalid_tool_catalog')
     else:
         names = {row['name'] for row in rows}
+        if require_event_pickup and 'everett_inbox' in names:
+            schema = next(row.get('inputSchema') for row in rows if row['name'] == 'everett_inbox')
+            properties = schema.get('properties') if isinstance(schema, dict) else None
+            if not isinstance(properties, dict) or any(
+                not isinstance(properties.get(key), dict) or properties[key].get('type') != 'string'
+                for key in ('message_id', 'identity_handle')
+            ):
+                errors.append('event_pickup_client_catalog_stale')
     if not BASE_TOOLS <= names:
         errors.append('base_tools_missing')
     capabilities = whoami.get('capabilities')
@@ -74,7 +82,10 @@ if __name__ == '__main__':
     parser.add_argument('--tools', required=True, type=Path, help='Tool catalog for the same app and connection')
     parser.add_argument('--resource', required=True, help='Expected HTTPS MCP resource URL')
     parser.add_argument('--require-native-start', action='store_true')
+    parser.add_argument('--require-event-pickup', action='store_true',
+                        help='Require message_id and identity_handle in the registered everett_inbox schema')
     args = parser.parse_args()
-    result = check(json.loads(args.whoami.read_text()), json.loads(args.tools.read_text()), args.resource, args.require_native_start)
+    result = check(json.loads(args.whoami.read_text()), json.loads(args.tools.read_text()), args.resource,
+                   args.require_native_start, require_event_pickup=args.require_event_pickup)
     print(json.dumps(result, indent=2))
     raise SystemExit(0 if result['checks_passed'] else 1)
