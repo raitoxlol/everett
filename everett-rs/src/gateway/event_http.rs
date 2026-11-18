@@ -54,32 +54,43 @@ fn modern_request(
 ) -> Result<bool, ErrorData> {
     let meta: RequestMetaObject = serde_json::from_value(args["_meta"].clone()).unwrap_or_default();
     let requested = meta.protocol_version();
-    let header = headers.get(HEADER_MCP_PROTOCOL_VERSION).and_then(|h| h.to_str().ok());
-    let modern = ProtocolVersion::V_2026_07_28;
-    if ![header, requested.as_ref().map(ProtocolVersion::as_str)]
+    let header = headers
+        .get(HEADER_MCP_PROTOCOL_VERSION)
+        .map(|header| header.to_str())
+        .transpose()
+        .map_err(|_| ErrorData::invalid_request("Invalid MCP-Protocol-Version header encoding", None))?;
+    let supported = ProtocolVersion::KNOWN_VERSIONS;
+    if let Some(version) = [header, requested.as_ref().map(ProtocolVersion::as_str)]
         .into_iter()
         .flatten()
-        .any(|v| v >= modern.as_str())
+        .find(|version| !supported.iter().any(|known| known.as_str() == *version))
     {
+        return Err(ErrorData::new(
+            ErrorCode::UNSUPPORTED_PROTOCOL_VERSION,
+            "Unsupported protocol version",
+            Some(json!({"requested":version,"supported":supported})),
+        ));
+    }
+    if requested.as_ref().is_some_and(|version| header != Some(version.as_str()))
+        || headers.get_all(HEADER_MCP_PROTOCOL_VERSION).iter().count() > 1
+    {
+        return Err(ErrorData::header_mismatch("MCP-Protocol-Version must match request _meta", None));
+    }
+    let modern = ProtocolVersion::V_2026_07_28;
+    if header != Some(modern.as_str()) {
         return Ok(false);
     }
     let missing = meta.missing_required_keys(&modern);
-    let Some(requested) = requested.filter(|_| missing.is_empty()) else {
+    if !missing.is_empty() {
         return Err(ErrorData::invalid_params(
             format!("request _meta is missing or has malformed required fields: {}", missing.join(", ")),
             None,
         ));
-    };
-    if header != Some(requested.as_str()) || headers.get_all(HEADER_MCP_PROTOCOL_VERSION).iter().count() != 1 {
-        return Err(ErrorData::header_mismatch("MCP-Protocol-Version must match request _meta", None));
     }
     if headers.get(HEADER_MCP_METHOD).and_then(|h| h.to_str().ok()) != Some(method)
         || headers.get_all(HEADER_MCP_METHOD).iter().count() != 1
     {
         return Err(ErrorData::header_mismatch("Mcp-Method must match the request method", None));
-    }
-    if !ProtocolVersion::KNOWN_VERSIONS.contains(&requested) {
-        return Err(ErrorData::unsupported_protocol_version(requested, ProtocolVersion::KNOWN_VERSIONS));
     }
     Ok(true)
 }
@@ -198,18 +209,26 @@ pub(super) async fn dispatch(
             }))
         }
     };
-    let body = match result {
+    let (status, body) = match result {
         Ok(mut value) => {
             if modern {
                 value["resultType"] = json!("complete");
             }
-            json!({"jsonrpc":"2.0","id":rpc["id"],"result":value})
+            (StatusCode::OK, json!({"jsonrpc":"2.0","id":rpc["id"],"result":value}))
         }
         Err(e) => {
-            json!({"jsonrpc":"2.0","id":rpc["id"],"error":{"code":e.code,"message":e.reason,"data":{"reason":e.reason}}})
+            let status = match (modern, ErrorCode(e.code)) {
+                (true, ErrorCode::UNSUPPORTED_PROTOCOL_VERSION
+                    | ErrorCode::MISSING_REQUIRED_CLIENT_CAPABILITY
+                    | ErrorCode::INVALID_PARAMS
+                    | ErrorCode::HEADER_MISMATCH) => StatusCode::BAD_REQUEST,
+                (true, ErrorCode::METHOD_NOT_FOUND) => StatusCode::NOT_FOUND,
+                _ => StatusCode::OK,
+            };
+            (status, json!({"jsonrpc":"2.0","id":rpc["id"],"error":{"code":e.code,"message":e.reason,"data":{"reason":e.reason}}}))
         }
     };
-    Some(response(StatusCode::OK, body))
+    Some(response(status, body))
 }
 
 pub(super) async fn pump(state: HttpBoundary) {
