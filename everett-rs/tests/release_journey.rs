@@ -1,6 +1,7 @@
 //! The release journey: CLI, stdio MCP tools, routing, messaging, subscriptions and shared
 //! memory over an isolated home. Set `EVERETT_VERIFY_BINARY` to check an installed or packaged binary.
 
+mod common;
 use serde_json::{json, Value};
 use std::collections::BTreeSet;
 use std::io::{BufRead, BufReader, Write};
@@ -89,6 +90,7 @@ struct Wire {
 
 impl Wire {
     fn start(home: &Home, caller: &str) -> Self {
+        common::native_mcp_account(home.root.path());
         let mut cmd = home.command(&["mcp"], caller);
         cmd.env("EVERETT_HARNESS_NAME", "claude").stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::null());
         let mut child = cmd.spawn().unwrap();
@@ -244,9 +246,10 @@ fn release_journey_over_cli_and_all_mcp_tools() {
     let reply: Value = serde_json::from_str(spawned["reply"].as_str().unwrap()).unwrap();
     assert_eq!(reply["stdin"], "");
     assert_eq!(wire.request("ping", None), json!({}));
-    // No deployment/provider is configured in this isolated home: fail closed over real stdio.
+    let account = wire.call("everett_agent_relay", json!({"action":"identity"}));
+    assert_eq!(account["deviceId"], "fixture-agent");
+    // The loopback issuer verifies the account and has no peer operations.
     for (name, args) in [
-        ("everett_agent_relay", json!({"action":"identity"})),
         ("everett_agent_send", json!({"agent":"a".repeat(64),"session":"recipient","harness":"pi","text":"hello","idempotency_key":"key"})),
         ("everett_agent_status", json!({"message_id":"message"})),
         ("everett_control", json!({"action":"stop"})),

@@ -60,6 +60,8 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Cmd {
+    #[command(hide = true)]
+    GatewayWorker,
     /// check an explicitly selected local wake path end to end
     Proof {
         #[command(subcommand)]
@@ -1024,6 +1026,7 @@ fn main() {
             a.apply = apply;
             cli::cmd_install_hooks(&a)
         }
+        Cmd::GatewayWorker => everett::gateway::run_internal_worker(),
         Cmd::Mcp { harness } => {
             if let Some(h) = harness {
                 everett::host::set_launch_harness(&h);

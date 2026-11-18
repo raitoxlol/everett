@@ -14,6 +14,7 @@ struct Server {
 
 impl Server {
     fn new(fx: &Fixture, env: &[(&str, &str)]) -> Self {
+        common::native_mcp_account(&fx.home());
         let mut cmd = Command::new(env!("CARGO_BIN_EXE_everett"));
         cmd.arg("mcp")
             .env_clear()
@@ -916,9 +917,12 @@ fn cloudflare_admin_tools_require_sign_in_and_retired_grants_are_not_exposed() {
     let mut s = Server::start(&fx, &[]);
     let result = s.request("tools/call", Some(json!({"name":"everett_agent_grants","arguments":{"action":"list"}})));
     assert_eq!(result["error"]["code"], -32602, "{result}");
+    let logout = fx.run(&["logout", "--json"]);
+    assert!(logout.status.success(), "{}", String::from_utf8_lossy(&logout.stderr));
     for action in ["credentials", "memberships", "revoke-agent", "revoke-membership"] {
         let result = s.call("everett_agent_relay", json!({"action":action,"id":"device"}));
         assert_eq!(result["isError"], true, "{result}");
+        assert!(text(&result).contains("everett login"), "{result}");
     }
     s.close();
 }

@@ -1086,3 +1086,82 @@ fn login_issuer_flag_still_uses_configured_base_url() {
     );
 }
 
+
+#[test]
+fn one_login_authorizes_multiple_native_inboxes_and_revocation_stops_live_servers() {
+    use std::io::{BufRead, BufReader};
+
+    let f = fixture();
+    let issuer = Fake::new();
+    issuer.configure(&f);
+    let start = |sid: &str| {
+        let mut child = Command::new(env!("CARGO_BIN_EXE_everett"))
+            .arg("mcp")
+            .env_clear()
+            .env("HOME", f.home())
+            .env("PATH", common::HERMETIC_PATH)
+            .env("CODEX_THREAD_ID", sid)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .spawn()
+            .unwrap();
+        let mut input = child.stdin.take().unwrap();
+        let mut output = BufReader::new(child.stdout.take().unwrap());
+        let request = move |method: &str, params: Value| -> Value {
+            writeln!(input, "{}", json!({"jsonrpc":"2.0","id":1,"method":method,"params":params})).unwrap();
+            let mut line = String::new();
+            output.read_line(&mut line).unwrap();
+            serde_json::from_str::<Value>(&line).unwrap()["result"].clone()
+        };
+        (child, request)
+    };
+    let inbox = |args: Value| json!({"name":"everett_inbox","arguments":args});
+    let (mut alpha, mut a) = start("native-alpha");
+    let (mut beta, mut b) = start("native-beta");
+    for server in [&mut a, &mut b] {
+        assert_eq!(server("initialize", json!({}))["serverInfo"]["name"], "everett");
+        assert!(server("tools/list", json!({}))["tools"].is_array());
+    }
+    for (sid, marker) in [("native-alpha", "alpha only"), ("native-beta", "beta only")] {
+        f.write(&format!(".everett/inbox/{sid}.jsonl"), &format!("{}\n",
+            json!({"id":sid,"to":sid,"from":"human","text":marker,"ts":everett::session::now()})));
+    }
+    let unsigned = a("tools/call", inbox(json!({"session_id":"native-alpha"})));
+    assert_eq!(unsigned["isError"], true, "{unsigned}");
+    assert!(unsigned.to_string().contains("everett login"), "{unsigned}");
+    assert!(issuer.requests().is_empty());
+
+    issuer.approved();
+    assert!(f.run(&["login", "--json"]).status.success());
+    for (server, sid, marker, other) in [
+        (&mut a, "native-alpha", "alpha only", "native-beta"),
+        (&mut b, "native-beta", "beta only", "native-alpha"),
+    ] {
+        let mismatched = server("tools/call", inbox(json!({"session_id":other})));
+        assert_eq!(mismatched["isError"], true, "{mismatched}");
+        assert!(mismatched.to_string().contains("conflicts"), "{mismatched}");
+        let result = server("tools/call", inbox(json!({})));
+        assert_eq!(result["structuredContent"]["session"], sid, "{result}");
+        assert_eq!(result["structuredContent"]["messages"].as_array().unwrap().len(), 1);
+        assert_eq!(result["structuredContent"]["messages"][0]["text"], marker);
+        let identity = server("tools/call", json!({"name":"everett_whoami"}));
+        let data = &identity["structuredContent"]["identity"];
+        assert_eq!(data["session"]["id"], sid);
+        assert_eq!(data["account"]["status"], "verified");
+        assert_eq!(data["client"]["id"], "immutable-agent");
+        assert!(!identity.to_string().contains(TOKEN));
+    }
+
+    *issuer.identity_status.lock().unwrap() = 401;
+    for server in [&mut a, &mut b] {
+        let revoked = server("tools/call", inbox(json!({})));
+        assert_eq!(revoked["isError"], true, "{revoked}");
+        assert!(revoked.to_string().contains("revoked"), "{revoked}");
+    }
+    drop((a, b));
+    assert!(alpha.wait().unwrap().success());
+    assert!(beta.wait().unwrap().success());
+    assert_eq!(issuer.requests().iter().filter(|(path, _, _)| path == "/v2/auth/device").count(), 1);
+    assert!(issuer.requests().iter().filter(|(path, _, _)| path == "/v2/relay/whoami")
+        .all(|(_, headers, _)| headers.to_ascii_lowercase().contains(&format!("authorization: bearer {TOKEN}"))));
+}
