@@ -117,9 +117,11 @@ observation. See [wake proof exit codes](message-delivery.md#wake-proofs).
 For a deliberately queued path, send once with
 `everett send "reply with delivery-check" --to SESSION --mode inbox --json`.
 Have the recipient read that message and run
-`everett reply MESSAGE_ID "delivery-check"` from its bound session. Read the
-sender's inbox and confirm both the expected text and `reply_to` equal to the
-original message ID. For a remote target, poll its original peer status first.
+`everett reply MESSAGE_ID "delivery-check"` from its bound session. From the
+sending session, run `everett status MESSAGE_ID --json` with the original ID.
+Check `picked_up` for inbox pickup and `reply.text` for the answer. Status
+can show the reply after an inbox read, for as long as Everett retains both
+records. For a remote target, use `everett peer status`.
 An enqueue receipt, HTTP success, process heartbeat, or provider acceptance alone
 does not pass this check.
 

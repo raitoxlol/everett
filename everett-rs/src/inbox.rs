@@ -278,6 +278,50 @@ pub fn find_in(session_id: &str, message_id: &str) -> Option<Map<String, Value>>
     })
 }
 
+pub fn sent_status(sender: &str, message_id: &str) -> Result<Value> {
+    let unknown = || EverettError::new(2, "No retained local request with that ID from this sender.");
+    let request = find(message_id)
+        .filter(|item| {
+            item.get("kind").and_then(Value::as_str) == Some("message")
+                && item.get("from").and_then(Value::as_str) == Some(sender)
+                && !item.contains_key("relay_device")
+                && !item.contains_key("peer_client")
+        })
+        .ok_or_else(unknown)?;
+    let target = request.get("to").and_then(Value::as_str)
+        .filter(|id| valid_id(id)).ok_or_else(unknown)?;
+    let picked_up = done_ids(target).contains(message_id);
+    let reply = read(sender).into_iter().find(|item| {
+        item.get("kind").and_then(Value::as_str) == Some("reply")
+            && item.get("reply_to").and_then(Value::as_str) == Some(message_id)
+            && item.get("from").and_then(Value::as_str) == Some(target)
+            && item.get("to").and_then(Value::as_str) == Some(sender)
+    });
+    let state = if reply.is_some() {
+        "replied"
+    } else if picked_up {
+        "picked_up"
+    } else if now() - request.get("ts").and_then(Value::as_f64).unwrap_or_default() >= TTL {
+        "expired"
+    } else {
+        "queued"
+    };
+    if let Some(reply) = reply.as_ref().filter(|item| {
+        item.contains_key("relay_message_id") || item.contains_key("relay_lineage")
+    }) {
+        if let Some(id) = reply.get("id").and_then(Value::as_str) {
+            persist_relay_context(sender, &[id])?;
+        }
+    }
+    Ok(json!({
+        "message_id": message_id,
+        "to": target,
+        "state": state,
+        "picked_up": picked_up,
+        "reply": reply.map(consumption_message),
+    }))
+}
+
 /// The local hop limit, or None when it is off (the default). Set `hop_limit = "on"`
 /// (or a number) in ~/.everett/config.toml, or EVERETT_HOP_LIMIT. See docs/hop-limit.md.
 pub fn hop_limit() -> Option<i64> {
