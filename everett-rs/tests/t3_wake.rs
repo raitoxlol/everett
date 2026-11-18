@@ -451,6 +451,67 @@ fn check_failed_t3_cli_ping_follow_up() {
 }
 
 #[test]
+fn t3_retry_reuses_the_original_request_after_dispatch_failure() {
+    let fx = fixture();
+    plant_thread(&fx.home());
+    let bin = fake_t3(&fx.home(), 1);
+    let run = |args: &[&str], sender| fx.run_stdin(args, "", &[
+        ("EVERETT_SESSION_ID", sender), ("EVERETT_T3_BIN", bin.to_str().unwrap()),
+    ]);
+    let peek = || {
+        let out = run(&["inbox", "--peek", "--json"], SESSION);
+        assert!(out.status.success(), "{out:?}");
+        serde_json::from_slice::<Value>(&out.stdout).unwrap()["messages"].clone()
+    };
+    let first = run(&["send", "--to", THREAD, "--json", BODY], "caller");
+    assert_eq!(first.status.code(), Some(4), "{first:?}");
+    let queued = peek();
+    let id = queued[0]["id"].as_str().unwrap();
+    assert_argv(&fx.home(), id);
+    let retry = ["retry", id, "--json"];
+    fs::remove_file(fx.home().join("t3-argv")).unwrap();
+    fake_t3(&fx.home(), 0);
+
+    let wrong_sender = run(&retry, "another-sender");
+    assert_eq!(wrong_sender.status.code(), Some(2), "{wrong_sender:?}");
+    assert!(!fx.home().join("t3-argv").exists());
+
+    let db = Connection::open(fx.home().join(".t3/userdata/statev2.sqlite")).unwrap();
+    let bind = |native_id| db.execute("UPDATE orchestration_v2_projection_provider_threads SET payload_json=?1", [
+        json!({"driver":"codex","nativeThreadRef":{"driver":"codex","nativeId":native_id,"strength":"strong"}}).to_string()
+    ]).unwrap();
+    bind("another-provider");
+    let rebound = run(&retry, "caller");
+    assert_eq!(rebound.status.code(), Some(4), "{rebound:?}");
+    assert!(!fx.home().join("t3-argv").exists());
+    bind(SESSION);
+
+    let recovered = run(&retry, "caller");
+    assert!(recovered.status.success(), "{recovered:?}");
+    assert!(String::from_utf8_lossy(&first.stderr).contains(&format!("everett retry {id}")));
+    let receipt: Value = serde_json::from_slice(&recovered.stdout).unwrap();
+    assert_eq!(receipt["message_id"], id);
+    assert_eq!(receipt["thread_id"], THREAD);
+    assert_eq!(receipt["state"], "prompt_sent");
+    assert_argv(&fx.home(), id);
+    assert_eq!(peek(), queued);
+
+    let pickup = run(&["inbox", "--message", id, "--json"], SESSION);
+    assert!(pickup.status.success(), "{pickup:?}");
+    let pickup: Value = serde_json::from_slice(&pickup.stdout).unwrap();
+    assert_eq!(pickup["messages"][0]["id"], id);
+    fs::remove_file(fx.home().join("t3-argv")).unwrap();
+    let consumed = run(&retry, "caller");
+    assert_eq!(consumed.status.code(), Some(2), "{consumed:?}");
+    assert!(!fx.home().join("t3-argv").exists());
+    let reply = run(&["reply", id, "Build checked"], SESSION);
+    assert!(reply.status.success(), "{reply:?}");
+    let status = run(&["status", id, "--json"], "caller");
+    let status: Value = serde_json::from_slice(&status.stdout).unwrap();
+    assert_eq!(status["reply"]["text"], "Build checked");
+}
+
+#[test]
 fn t3_explicit_inbox_stays_queue_only() {
     let home = lib_home();
     plant_thread(&home.path());
