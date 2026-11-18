@@ -327,3 +327,17 @@ fn core_cli_show_edit_path_history_and_trunk_alias() {
     assert_eq!(fx.run_stdin(&["trunk", "view"], "", &[("EVERETT_VAULT", &vault)]).status.code(), Some(0));
     assert!(fx.home().join("v/Everett/Trunk.md").exists());
 }
+
+#[test]
+fn cli_temporary_learning_stays_out_of_shared_core() {
+    let fx = fixture();
+    let out = fx.run(&["learn", "Temporary meeting room", "--ttl-seconds", "60"]);
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    assert!(fx.stdout(&out).contains("expires"));
+    assert!(fx.run(&["learn", "Durable meeting rule"]).status.success());
+    assert!(fx.run(&["trunk", "merge", "--llm", "none"]).status.success());
+    let core = fx.stdout(&fx.run(&["core"]));
+    assert!(core.contains("Durable meeting rule"));
+    assert!(!core.contains("Temporary meeting room"));
+    assert!(!fx.run(&["learn", "Invalid lifetime", "--ttl-seconds", "0"]).status.success());
+}

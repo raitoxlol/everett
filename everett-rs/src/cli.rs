@@ -1287,12 +1287,13 @@ fn cmd_trunk_schedule(args: &Args) -> i32 {
     }
 }
 
-pub fn cmd_learn(args: &Args) -> i32 {
-    match crate::core::learn(
+pub fn cmd_learn(args: &Args, ttl_seconds: Option<u64>) -> i32 {
+    match crate::core::learn_with_ttl(
         args.fact.as_deref().unwrap_or(""),
         args.project.as_deref(),
         args.scope.as_deref(),
         None,
+        ttl_seconds,
     ) {
         Ok(entry) => {
             let where_ = if entry.get("scope").and_then(|v| v.as_str()) == Some("project") {
@@ -1300,7 +1301,11 @@ pub fn cmd_learn(args: &Args) -> i32 {
             } else {
                 "global".to_string()
             };
-            println!("learned ({}); it joins the shared core at the next `everett trunk merge`", where_);
+            if let Some(expires_at) = entry.get("expires_at") {
+                println!("learned ({where_}) for local search; expires at Unix time {expires_at}");
+            } else {
+                println!("learned ({}); it joins the shared core at the next `everett trunk merge`", where_);
+            }
             0
         }
         Err(e) => {
