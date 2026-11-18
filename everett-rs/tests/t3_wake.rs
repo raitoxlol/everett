@@ -562,6 +562,48 @@ fn t3_retry_does_not_nudge_again_after_dispatch_was_confirmed() {
     let status = fx.run_stdin(&["status", id, "--json"], "", &env);
     let status: Value = serde_json::from_slice(&status.stdout).unwrap();
     assert_eq!(status["state"], "queued");
+
+    let path = fx.home().join(format!(".everett/inbox/{SESSION}.jsonl"));
+    let mut old: Value = serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
+    old["ts"] = json!(everett::session::now() - everett::inbox::TTL - 1.0);
+    fs::write(&path, format!("{old}\n")).unwrap();
+    let hook = fx.run(&["hook", "omp_inbox", SESSION]);
+    assert!(hook.status.success(), "{hook:?}");
+    assert!(fs::read_to_string(&path).unwrap().is_empty());
+    let journal = Connection::open(fx.home().join(".everett/inbox/t3-dispatch.sqlite")).unwrap();
+    let count: i64 = journal.query_row("SELECT count(*) FROM dispatch WHERE message_id = ?1", [id], |row| row.get(0)).unwrap();
+    assert_eq!(count, 0);
+}
+
+#[test]
+fn t3_retry_does_not_nudge_again_after_dispatch_was_confirmed_or_uncertain() {
+    let fx = fixture();
+    plant_thread(&fx.home());
+    let bin = fake_t3(&fx.home(), 0);
+    let env = [("EVERETT_SESSION_ID", "caller"), ("EVERETT_T3_BIN", bin.to_str().unwrap())];
+    let run = |args: &[&str]| fx.run_stdin(args, "", &env);
+    let send = || run(&["send", "--to", THREAD, "--json", BODY]);
+    let script = fs::read_to_string(&bin).unwrap().replace("exit 0", "kill -TERM $$");
+    fs::write(&bin, script).unwrap();
+    let interrupted = send();
+    assert_eq!(interrupted.status.code(), Some(4), "{interrupted:?}");
+
+    fake_t3(&fx.home(), 0);
+    let db = Connection::open(fx.home().join(".everett/inbox/t3-dispatch.sqlite")).unwrap();
+    db.execute_batch("CREATE TRIGGER reject_confirmation BEFORE UPDATE ON dispatch BEGIN
+        SELECT RAISE(FAIL, 'injected confirmation write failure'); END").unwrap();
+    let unsaved = send();
+    assert_eq!(unsaved.status.code(), Some(4), "{unsaved:?}");
+    fs::remove_file(fx.home().join("t3-argv")).unwrap();
+    for failed in [interrupted, unsaved] {
+        let error = String::from_utf8_lossy(&failed.stderr);
+        assert!(error.contains("Check the original T3 thread"), "{failed:?}");
+        assert!(!error.contains("use `everett retry"), "{failed:?}");
+        let receipt: Value = serde_json::from_slice(&failed.stdout).unwrap();
+        let retry = run(&["retry", receipt["message_id"].as_str().unwrap(), "--json"]);
+        assert_eq!(retry.status.code(), Some(4), "{retry:?}");
+        assert!(!fx.home().join("t3-argv").exists());
+    }
 }
 
 #[test]
