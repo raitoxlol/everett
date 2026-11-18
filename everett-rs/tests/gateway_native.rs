@@ -1026,12 +1026,21 @@ fn native_stdio_journey_for_both_external_harnesses() {
 }
 
 fn signed_out_gateway_can_use_an_explicit_everett_backend() {
+    use std::os::unix::fs::PermissionsExt;
+
     let c = ctx();
     let binary = std::env::var_os("EVERETT_VERIFY_BINARY").unwrap_or_else(|| BIN.into());
     let separate = c.home.join("separate-everett");
     std::fs::copy(&binary, &separate).unwrap();
     let original = PathBuf::from(&binary);
-    for command in [json!([separate, "mcp"]), json!([original, "mcp", "--hours", "72"])] {
+    let launcher = c.home.join("launch-mcp.sh");
+    std::fs::write(&launcher, "#!/bin/sh\nexec \"$1\" mcp\n").unwrap();
+    std::fs::set_permissions(&launcher, std::fs::Permissions::from_mode(0o700)).unwrap();
+    for command in [
+        json!([separate, "mcp"]),
+        json!([original, "mcp", "--hours", "72"]),
+        json!([launcher, original]),
+    ] {
         c.inbox("agent-two", "dot-one", "explicit-pickup");
         let mut peer = c.peer(&json!({"backend_command": command}));
         let identity = success(&peer.call("everett_whoami", json!({})));

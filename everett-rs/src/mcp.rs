@@ -1811,8 +1811,11 @@ pub fn handle(message: &Value) -> Option<Value> {
                 capabilities["experimental"] = json!({
                     "everettExactDestinationIds": {"enforced": true},
                     "everettExactInboxPickup": {"enforced": true},
-                    (crate::gateway::WORKER_CAPABILITY): {"version": crate::gateway::WORKER_PROTOCOL},
                 });
+            }
+            if crate::gateway::scoped_worker_enabled() {
+                capabilities["experimental"][crate::gateway::WORKER_CAPABILITY] =
+                    json!({"version": crate::gateway::WORKER_PROTOCOL});
             }
             Some(result(
                 &msg_id,
@@ -1826,6 +1829,12 @@ pub fn handle(message: &Value) -> Option<Value> {
         }
         "ping" => Some(result(&msg_id, json!({}))),
         "tools/list" => Some(result(&msg_id, json!({"tools": tools()}))),
+        crate::gateway::WORKER_METHOD if crate::gateway::scoped_worker_enabled() => {
+            match crate::gateway::call_scoped_worker(params) {
+                Ok(data) => Some(result(&msg_id, json!({"everettGatewayResult": data}))),
+                Err(message) => Some(error(&msg_id, INTERNAL_ERROR, &message)),
+            }
+        }
         "tools/call" => {
             // A panic in one tool must not kill the stdio server.
             let tool = params

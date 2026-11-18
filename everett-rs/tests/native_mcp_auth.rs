@@ -121,4 +121,23 @@ fn gateway_worker_rejects_public_mcp_and_unscoped_operations() {
     let response: Value = serde_json::from_slice(&output.stdout).unwrap();
     assert_eq!(response["result"]["isError"], true);
     assert!(response.to_string().contains("everett login"));
+
+    let scoped_call = json!({
+        "jsonrpc":"2.0", "id":2, "method":"everett/gateway/call",
+        "params":{"request":"Whoami"}
+    });
+    let output = fixture.run_stdin(&["mcp"], &format!("{scoped_call}\n"), &binding);
+    let response: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(response["error"]["code"], -32601);
+
+    let worker_binding = [
+        binding[0],
+        binding[1],
+        binding[2],
+        ("EVERETT_GATEWAY_WORKER", "1"),
+    ];
+    let output = fixture.run_stdin(&["mcp"], &format!("{call}\n"), &worker_binding);
+    let response: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(response["result"]["isError"], true);
+    assert!(response.to_string().contains("everett login"));
 }

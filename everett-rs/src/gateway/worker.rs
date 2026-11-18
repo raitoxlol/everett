@@ -7,7 +7,10 @@ use std::{
 
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Map, Value};
-use tokio::{io::{AsyncReadExt, AsyncWriteExt}, process::Child};
+use tokio::{
+    io::{AsyncReadExt, AsyncWriteExt},
+    process::Child,
+};
 
 use super::{Binding, BACKEND_ERROR, MAX_INBOX, MAX_RESULT};
 
@@ -188,15 +191,41 @@ pub(super) async fn dispatch(call: Call, child: &mut Child) -> Result<Value, Str
     data.ok_or_else(|| "backend rejected the tool call".into())
 }
 
+fn binding() -> Option<(String, String)> {
+    let session = std::env::var("EVERETT_SESSION_ID").ok()?;
+    let harness = std::env::var("EVERETT_HARNESS_NAME").ok()?;
+    (crate::adapters::external::valid_id(&session) && crate::adapters::external::is_external(&harness))
+        .then_some((session, harness))
+}
+
+fn mcp_binding() -> Option<(String, String)> {
+    if std::env::var("EVERETT_GATEWAY_WORKER").as_deref() == Ok("1") {
+        binding()
+    } else {
+        None
+    }
+}
+
+pub(crate) fn mcp_enabled() -> bool {
+    mcp_binding().is_some()
+}
+
+pub(crate) fn mcp_call(params: &Map<String, Value>) -> Result<Value, String> {
+    let (session, harness) = mcp_binding().ok_or(BACKEND_ERROR)?;
+    let request = params.get("request").ok_or(BACKEND_ERROR)?;
+    let bytes = serde_json::to_vec(request).map_err(|_| BACKEND_ERROR)?;
+    if bytes.len() > MAX_REQUEST {
+        return Err(BACKEND_ERROR.into());
+    }
+    let call: Call = serde_json::from_slice(&bytes).map_err(|_| BACKEND_ERROR)?;
+    call.execute(&session, &harness)
+}
+
 #[doc(hidden)]
 pub fn run() -> i32 {
-    let session = std::env::var("EVERETT_SESSION_ID").unwrap_or_default();
-    let harness = std::env::var("EVERETT_HARNESS_NAME").unwrap_or_default();
-    if !crate::adapters::external::valid_id(&session)
-        || !crate::adapters::external::is_external(&harness)
-    {
+    let Some((session, harness)) = binding() else {
         return 2;
-    }
+    };
     let mut input = Vec::new();
     if io::stdin()
         .take((MAX_REQUEST + 1) as u64)

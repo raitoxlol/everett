@@ -17,9 +17,10 @@ everett-rs/target/debug/everett gateway --help
 Use an installed Rust Everett binary that supports `gateway`. If `backend_command`
 is omitted, the gateway starts its built-in worker in the same binary. Existing
 `backend_command` entries may also specify an Everett executable followed by
-`mcp`. If a separate Everett executable supports the scoped worker, the gateway
-detects that support during initialization and uses the worker for tool calls.
-Older Everett and custom backends continue to use MCP. Upgrade the gateway
+`mcp`, including through a launcher. If the Everett child supports scoped calls,
+the gateway detects that during initialization and uses the same stdio connection
+for those calls. Older Everett and custom backends continue to use their MCP
+tools. Upgrade the gateway
 before a separately installed Everett backend so it can recognize scoped worker
 support. The owner controls the absolute executable path and arguments.
 
@@ -67,11 +68,10 @@ stdio. Backend processes receive basic OS environment variables such as `PATH`
 and `USER`. API keys and gateway tokens stay in the calling environment. Use
 only trusted backends because they have access to the owner's local stores.
 
-The hidden worker subcommand trusts its local launcher. A local process that can
-execute Everett with the gateway service account's filesystem permissions can
-supply its own home, session, and harness and call the one-shot worker without
-gateway or native credentials. It can then read or modify accessible Everett
-stores under a chosen external session ID. Run the gateway under a dedicated OS
+The hidden worker and the gateway-scoped stdio method trust their local launcher.
+A local process with the gateway service account's filesystem permissions can
+call them under a chosen external session ID and access that account's Everett
+stores. Run the gateway under a dedicated OS
 account with a private Everett home if untrusted local processes share the host.
 Give remote clients access only through the authenticated gateway transport.
 

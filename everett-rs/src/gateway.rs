@@ -4,6 +4,7 @@ mod event_http;
 mod native_start;
 mod worker;
 pub use worker::run as run_internal_worker;
+pub(crate) use worker::{mcp_call as call_scoped_worker, mcp_enabled as scoped_worker_enabled};
 #[cfg(test)]
 mod ownership_shadow;
 
@@ -53,6 +54,7 @@ const MAX_RESULT: usize = 256 * 1024;
 const MAX_INBOX: usize = 8 * 1024 * 1024;
 pub(crate) const WORKER_CAPABILITY: &str = "everettGatewayWorker";
 pub(crate) const WORKER_PROTOCOL: u64 = 1;
+pub(crate) const WORKER_METHOD: &str = "everett/gateway/call";
 const SECURITY_HEADERS: &[&str] = &[
     "host",
     "origin",
@@ -580,13 +582,19 @@ impl Gateway {
                     .and_then(Value::as_u64) == Some(WORKER_PROTOCOL)
             });
             if supports_worker {
-                // Switch before sending a tool call. Older and custom backends keep their MCP path.
+                let result = async {
+                    let call = worker::Call::authorized(binding, name, &args)?;
+                    let request = CustomRequest::new(WORKER_METHOD, Some(json!({"request": call})));
+                    let response = peer.send_request(ClientRequest::CustomRequest(request)).await
+                        .map_err(|_| BACKEND_ERROR)?;
+                    let ServerResult::CustomResult(CustomResult(mut value)) = response else {
+                        return Err(BACKEND_ERROR.into());
+                    };
+                    value.get_mut("everettGatewayResult").filter(|data| data.is_object())
+                        .map(Value::take).ok_or_else(|| BACKEND_ERROR.into())
+                }.await;
                 peer.cancellation_token().cancel();
-                let _ = child.kill().await;
-                let _ = child.wait().await;
-                let request = worker::Call::authorized(binding, name, &args)?;
-                child = backend_command(binding, true).spawn().map_err(|_| BACKEND_ERROR)?;
-                return worker::dispatch(request, &mut child).await;
+                return result;
             }
             let result = async {
                 if name == "everett_send" && args.contains_key("to") {
@@ -688,6 +696,7 @@ fn backend_command(binding: &Binding, use_worker: bool) -> Command {
         .env("EVERETT_ROUTER", "local")
         .env("EVERETT_SEND", "inbox")
         .env("EVERETT_HOPS", "0")
+        .env("EVERETT_GATEWAY_WORKER", "1")
         .env("EVERETT_GATEWAY_EXACT_IDS", "1");
     command
 }
