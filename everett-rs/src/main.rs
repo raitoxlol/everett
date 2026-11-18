@@ -159,7 +159,7 @@ enum Cmd {
         timeout: f64,
         #[arg(long, value_parser = clap::builder::PossibleValuesParser::new(ROUTERS.to_vec()))]
         router: Option<String>,
-        /// skip routing: session id prefix, card name, or project folder
+        /// skip routing: session ID prefix, exact T3 thread ID, card name, or project folder
         #[arg(long, value_name = "SESSION")]
         to: Option<String>,
         /// when routing says NEW, start a new headless session

@@ -15,7 +15,7 @@ pub fn thread_id(session: &Session) -> Option<String> {
     t3code::threads(&t3code::db_path())
         .get(&(session.harness.clone(), session.id.clone()))
         .map(|(thread, _)| thread.clone())
-        .filter(|t| !t.is_empty())
+        .filter(|t| !t.is_empty() && session.t3_thread_id.as_ref().is_none_or(|expected| expected == t))
 }
 
 pub fn validate_target(session: &Session) -> Result<String> {
@@ -48,6 +48,9 @@ pub fn wake(thread: &str, session: &Session, message_id: &str) -> Result<String>
 pub(crate) fn wake_with_timeout(thread: &str, session: &Session, message_id: &str, timeout: f64) -> Result<String> {
     if !timeout.is_finite() || timeout <= 0.0 {
         return Err(EverettError::new(4, "Timeout expired before T3 dispatch."));
+    }
+    if thread_id(session).as_deref() != Some(thread) {
+        return Err(EverettError::new(4, "The T3 thread binding changed before dispatch. No nudge was sent."));
     }
     let bin = t3_cli::binary().ok_or_else(|| {
         EverettError::new(4, "T3 Code CLI (t3) not found on PATH or in ~/.t3/bin.")

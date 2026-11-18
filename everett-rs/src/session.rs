@@ -47,6 +47,8 @@ pub struct Session {
     pub profile: String,
     #[serde(default)]
     pub source: String,
+    #[serde(skip)]
+    pub(crate) t3_thread_id: Option<String>,
     #[serde(default)]
     pub state: String,
     #[serde(default)]
@@ -71,6 +73,7 @@ impl Session {
             card_source: None,
             profile: String::new(),
             source: String::new(),
+            t3_thread_id: None,
             state: String::new(),
             state_kind: String::new(),
         }

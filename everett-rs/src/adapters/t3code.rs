@@ -248,6 +248,28 @@ pub fn threads(path: &Path) -> ThreadMap {
         .collect()
 }
 
+pub(crate) fn has_thread(id: &str) -> crate::error::Result<bool> {
+    let path = db_path();
+    let checked = |detail| crate::error::EverettError::new(2, format!(
+        "cannot check exact T3 thread ID \"{id}\": {detail}"
+    ));
+    if !path.try_exists().map_err(|error| checked(error.to_string()))? {
+        return Ok(false);
+    }
+    let lookup = || {
+        let con = Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_ONLY)?;
+        con.busy_timeout(Duration::from_secs(1))?;
+        let v2 = !columns(&con, "orchestration_v2_projection_threads")?.is_empty();
+        let sql = if v2 {
+            "SELECT EXISTS(SELECT 1 FROM orchestration_v2_projection_threads WHERE thread_id=?1)"
+        } else {
+            "SELECT EXISTS(SELECT 1 FROM projection_threads WHERE thread_id=?1)"
+        };
+        con.query_row(sql, [id], |row| row.get(0))
+    };
+    lookup().map_err(|error| checked(error.to_string()))
+}
+
 /// Mark sessions T3 Code drives; its thread title is the fallback headline.
 pub fn annotate(sessions: &mut [Session], found: Option<&ThreadMap>) {
     let owned;
@@ -280,15 +302,17 @@ pub fn overlay(sessions: &mut Vec<Session>, since_hours: f64, harness: &str) {
         !projection.hidden.contains(&key) || projection.active.contains_key(&key)
     });
     for (_, thread) in projection.active {
-        let t = thread.session;
+        let mut t = thread.session;
         if !harness.is_empty() && t.harness != harness {
             continue;
         }
+        t.t3_thread_id = Some(thread.id);
         if let Some(s) = sessions
             .iter_mut()
             .find(|s| s.harness == t.harness && s.id == t.id)
         {
             s.source = SOURCE.into();
+            s.t3_thread_id = t.t3_thread_id;
             if s.title.is_empty() {
                 s.title = t.title
             }

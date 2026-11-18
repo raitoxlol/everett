@@ -69,7 +69,7 @@ pub fn tools() -> &'static Vec<Value> {
                 "description": "Ping another session immediately. Pass text to route, or to for a user-named destination. An idle local target runs headless; a verified attached local Claude background session receives a fixed inbox nudge. T3 Code targets receive a fixed inbox nudge through t3 thread send, starting a turn or queuing the next turn when busy. pinged=true confirms dispatch, not inbox consumption or task completion. Unsupported immediate transports fail explicitly without queue fallback. Explicit mode=inbox retains legacy hooks/polling/remote queue delivery. reply_to queues a correlated answer. NEW starts a session only with spawn=true; ASK sends nothing. Host-bound caller identity, remote provenance and hop limits remain enforced.",
                 "inputSchema": {"type": "object", "properties": {
                     "text": s("The request for the other session. Make it self-contained."),
-                    "to": s("Local session id prefix/title/card/project, or a directory target id:AGENT/HARNESS/SESSION. Remote transports currently require explicit legacy mode=inbox."),
+                    "to": s("Local session ID prefix, exact T3 thread ID, title, card, project, or a directory target id:AGENT/HARNESS/SESSION. Remote transports currently require explicit legacy mode=inbox."),
                     "idempotency_key": s("Stable key for an explicit remote send; reuse it only for the same request when delivery is uncertain."),
                     "hours": hours_prop(),
                     "spawn": {"type": "boolean", "description": "Allow starting a NEW session when routing says NEW.", "default": false},

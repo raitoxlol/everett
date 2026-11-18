@@ -248,6 +248,89 @@ fn t3_mcp_default_ping_starts_thread_turn() {
 }
 
 #[test]
+fn exact_t3_thread_id_sends_to_the_active_provider_inbox() {
+    let fx = fixture();
+    plant_thread(&fx.home());
+    let fake = fake_t3(&fx.home(), 0);
+    let env = [
+        ("EVERETT_T3_BIN", fake.to_str().unwrap()),
+        ("EVERETT_SESSION_ID", "caller"),
+    ];
+    let preview = fx.run_stdin(&["send", "--to", THREAD, "--dry-run", "--json", BODY], "", &env);
+    assert!(preview.status.success(), "{preview:?}");
+    let result: Value = serde_json::from_slice(&preview.stdout).unwrap();
+    assert_eq!(result["session"]["id"], SESSION);
+    assert_eq!(result["thread_id"], THREAD);
+    assert!(!fx.home().join(".everett/inbox").exists());
+
+    let sent = fx.run_stdin(&["send", "--to", THREAD, "--json", BODY], "", &env);
+    assert!(sent.status.success(), "{sent:?}");
+    let receipt: Value = serde_json::from_slice(&sent.stdout).unwrap();
+    assert_eq!(receipt["pinged"], true);
+    assert_argv(&fx.home(), receipt["message_id"].as_str().unwrap());
+
+    let response = mcp_calls(&fx, &[], &env, &[("everett_send", json!({"to": THREAD, "text": BODY}))]);
+    assert_eq!(response[0]["isError"], false, "{response:?}");
+    let receipt = tool_json(&response[0]);
+    assert_eq!(receipt["pinged"], true);
+    assert_argv(&fx.home(), receipt["message_id"].as_str().unwrap());
+
+    let inbox = fx.run(&["inbox", "--session", SESSION, "--peek", "--json"]);
+    assert!(inbox.status.success(), "{inbox:?}");
+    let data: Value = serde_json::from_slice(&inbox.stdout).unwrap();
+    let messages = data["messages"].as_array().unwrap();
+    assert_eq!(messages.len(), 2);
+    assert!(messages.iter().all(|m| m["to"] == SESSION && m["text"] == BODY));
+    assert!(!fx.home().join(format!(".everett/inbox/{THREAD}.jsonl")).exists());
+
+    let db = Connection::open(fx.home().join(".t3/userdata/statev2.sqlite")).unwrap();
+    db.execute_batch(
+        "INSERT INTO orchestration_v2_projection_threads
+         (thread_id,project_id,title,default_provider,runtime_mode,interaction_mode,active_provider_thread_id,created_at,updated_at,payload_json)
+         SELECT 'duplicate','p','duplicate','codex','full-access','default','duplicate-provider',created_at,'2000-01-01T00:00:00Z','{}'
+         FROM orchestration_v2_projection_threads;
+         INSERT INTO orchestration_v2_projection_provider_threads
+         (provider_thread_id,thread_id,provider,driver,status,updated_at,payload_json)
+         SELECT 'duplicate-provider','duplicate',provider,driver,status,updated_at,payload_json
+         FROM orchestration_v2_projection_provider_threads;
+         UPDATE orchestration_v2_projection_threads SET title='duplicate' WHERE thread_id != 'duplicate';"
+    ).unwrap();
+    let rejected = fx.run_stdin(&["send", "--to", "duplicate", "--dry-run", BODY], "", &env);
+    assert_eq!(rejected.status.code(), Some(2), "{rejected:?}");
+    assert!(String::from_utf8_lossy(&rejected.stderr).contains("no eligible provider session"), "{rejected:?}");
+
+    fx.write(".claude/projects/p/unrelated.jsonl", &format!("{}\n", json!({
+        "type":"user", "sessionId":"unrelated", "cwd":"/work/duplicate",
+        "timestamp":chrono::Utc::now().to_rfc3339(),
+        "message":{"role":"user","content":"Unrelated task"}
+    })));
+    db.execute_batch("BEGIN EXCLUSIVE").unwrap();
+    let locked = fx.run_stdin(&["send", "--to", "duplicate", "--mode", "inbox", "--dry-run", BODY], "", &env);
+    db.execute_batch("ROLLBACK").unwrap();
+    assert_eq!(locked.status.code(), Some(2), "{locked:?}");
+    assert!(String::from_utf8_lossy(&locked.stderr).contains("cannot check exact T3 thread ID"), "{locked:?}");
+}
+
+#[test]
+fn t3_wake_refuses_to_nudge_a_rebound_thread_after_enqueue() {
+    let home = lib_home();
+    plant_thread(&home.path());
+    std::env::set_var("EVERETT_T3_BIN", fake_t3(&home.path(), 0));
+    let session = session();
+    let thread = everett::t3_wake::validate_target(&session).unwrap();
+    let sent = send::send_inbox_as(&session, BODY, 0.0, Some("caller"), None, 1.0, None).unwrap();
+    let db = Connection::open(home.path().join(".t3/userdata/statev2.sqlite")).unwrap();
+    db.execute("UPDATE orchestration_v2_projection_provider_threads SET payload_json=?1", [
+        json!({"driver":"codex","nativeThreadRef":{"driver":"codex","nativeId":"new-provider","strength":"strong"}}).to_string()
+    ]).unwrap();
+    let id = sent["message_id"].as_str().unwrap();
+    let failure = everett::t3_wake::wake(&thread, &session, id).unwrap_err();
+    assert!(failure.message.contains("binding changed"), "{failure}");
+    assert_eq!(inbox::pending(SESSION, None)[0]["id"], id);
+    assert!(!home.path().join("t3-argv").exists());
+}
+
+#[test]
 fn t3_cli_text_reports_pinged() {
     let fx = fixture();
     plant_thread(&fx.home());

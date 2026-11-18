@@ -77,7 +77,7 @@ The receiver must have access to Everett's MCP tools and the same local Everett
 home. Each sending or replying provider session needs its own host-bound MCP caller identity, using `EVERETT_SESSION_ID` in the launch environment when native detection is unavailable. A `session_id` argument must match that binding. Installing Everett in a standalone provider does not prove it is available
 inside a T3-created provider session.
 
-1. List the thread with `everett_ls`. Use the returned provider session `id`.
+1. List the thread with `everett_ls` for its provider session `id`. If you already have the exact T3 thread ID from `everett_control(action="threads")`, you can use it as the send destination too.
 2. Bind each participant's exact provider ID as `EVERETT_SESSION_ID` in that
    T3 thread's MCP launch environment.
 3. From another agent, call `everett_send(to=<provider id>, text=..., mode="inbox")`.
@@ -92,9 +92,12 @@ mean the queued request was lost.
 
 ## Identity and shared memory
 
-Use **native provider IDs**, not T3 application thread IDs or internal provider-thread
-IDs. T3 aliases and automatic T3 caller detection are not implemented. If
-`everett_whoami` has no caller identity, the owner must configure that provider session's MCP launch environment with its exact `EVERETT_SESSION_ID` before delivery or replies. A model-supplied `session_id` does not authenticate the caller. Rebind or restart the MCP process after switching provider sessions.
+Bind the MCP caller using its **native provider session ID**. The exact T3
+application thread ID is an alias for send destinations. Caller identity still
+uses the provider session. If `everett_whoami` has no identity, configure that
+session's MCP launch environment with its exact `EVERETT_SESSION_ID` before
+delivery or replies. Rebind or restart the MCP process after switching provider
+sessions.
 
 Once Everett's MCP tools are available, `everett_core(project=<workspace>)` reads the
 shared core and `everett_learn(fact=..., project=<workspace>)` queues a learning.
