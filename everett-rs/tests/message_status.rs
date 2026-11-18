@@ -67,4 +67,24 @@ fn sender_can_follow_a_local_request_and_recover_its_read_reply() {
     assert_eq!(status(), replied);
     let text = run(&fx, "sender", &["status", id]);
     assert!(text.contains("REPLIED") && text.contains(id) && text.contains(answer), "{text}");
+
+    let sent = run_json(&fx, "sender", &["send", "Confirm the backoff", "--to", worker, "--mode", "inbox", "--json"]);
+    let id = sent["message_id"].as_str().unwrap();
+    let terminal_reply = "The backoff is exponential.";
+    let replied = fx.run(&["reply", id, terminal_reply]);
+    assert!(replied.status.success(), "{replied:?}");
+    let inbox = run_json(&fx, "sender", &["inbox", "--json"]);
+    assert_eq!(inbox["messages"][0]["reply_to"], id);
+    assert_eq!(inbox["messages"][0]["from"], "human");
+    let status = || run_json(&fx, "sender", &["status", id, "--json"]);
+    let replied = status();
+    assert_eq!(replied["state"], "replied");
+    assert_eq!(replied["picked_up"], false);
+    assert_eq!(replied["reply"]["from"], "human");
+    assert_eq!(replied["reply"]["text"], terminal_reply);
+
+    run(&fx, worker, &["reply", id, "Confirmed in the code."]);
+    let replied = status();
+    assert_eq!(replied["reply"]["from"], worker);
+    assert_eq!(replied["picked_up"], true);
 }
