@@ -965,6 +965,31 @@ fn conversation_metadata_cannot_replace_the_gateway_binding() {
     assert!(c.records().iter().all(|r| r["agent_id"] == "dot-one"));
 }
 
+fn identity_listing_filters_same_name_registrations_by_kind() {
+    let c = ctx();
+    let mut peer = c.peer(&fixture(&[]));
+    let mut expected = Vec::new();
+    for (key, kind) in [("a", "chat"), ("b", "dot"), ("c", "chat")] {
+        let identity = success(&peer.call("everett_identity", json!({"action":"create",
+            "registration_key":key.repeat(32), "name":"Planning", "kind":kind})));
+        if kind == "chat" {
+            expected.push(identity["session_id"].as_str().unwrap().to_owned());
+        }
+    }
+    let listed = success(&peer.call("everett_identity", json!({"action":"list","kind":"chat"})));
+    let mut found: Vec<_> = listed["identities"].as_array().unwrap().iter().map(|row| {
+        assert!(row.get("identity_handle").is_none());
+        row["session_id"].as_str().unwrap().to_owned()
+    }).collect();
+    expected.sort();
+    found.sort();
+    assert_eq!(found, expected);
+    let empty = success(&peer.call("everett_identity", json!({"action":"list","kind":"codex"})));
+    assert_eq!(empty["identities"], json!([]));
+    denied(&peer.call("everett_identity", json!({"action":"list","kind":"unknown"})));
+    denied(&peer.call("everett_identity", json!({"action":"list","kind":null})));
+}
+
 fn per_chat_identities_are_private_durable_and_revocable() {
     let c = ctx();
     let mut peer = c.peer(&fixture(&[]));
@@ -1449,6 +1474,7 @@ const CASES: &[Case] = &[
     ("identity_retry_rejects_invalid_discovery_records_and_repairs_missing_ones", identity_retry_rejects_invalid_discovery_records_and_repairs_missing_ones),
     ("chat_identities_discover_and_exchange_correlated_inbox_messages", chat_identities_discover_and_exchange_correlated_inbox_messages),
     ("oauth_chat_identity_survives_reapproval_but_rejects_another_account", oauth_chat_identity_survives_reapproval_but_rejects_another_account),
+    ("identity_listing_filters_same_name_registrations_by_kind", identity_listing_filters_same_name_registrations_by_kind),
     ("per_chat_identities_are_private_durable_and_revocable", per_chat_identities_are_private_durable_and_revocable),
     ("native_stdio_journey_for_both_external_harnesses", native_stdio_journey_for_both_external_harnesses),
     ("policy_rejects_foreign_identity_project_and_unsafe_arguments", policy_rejects_foreign_identity_project_and_unsafe_arguments),
