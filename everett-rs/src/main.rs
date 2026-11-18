@@ -15,7 +15,7 @@ const HELP_GROUPS: &[(&str, &[&str])] = &[
     ("Start here", &["onboard", "dashboard", "ls", "doctor"]),
     (
         "Work across sessions",
-        &["send", "route", "inbox", "reply", "status", "proof", "event", "events", "subscribe"],
+        &["send", "route", "inbox", "reply", "status", "retry", "proof", "event", "events", "subscribe"],
     ),
     ("Shared memory", &["learn", "core", "trunk", "cards"]),
     (
@@ -221,6 +221,12 @@ enum Cmd {
     Reply { id: String, text: String },
     /// show pickup and any reply for a local request you sent
     Status {
+        message_id: String,
+        #[arg(long)]
+        json: bool,
+    },
+    /// nudge T3 again for a queued request you sent
+    Retry {
         message_id: String,
         #[arg(long)]
         json: bool,
@@ -892,6 +898,7 @@ fn main() {
             cli::cmd_reply(&a)
         }
         Cmd::Status { message_id, json } => cli::cmd_status(&message_id, json),
+        Cmd::Retry { message_id, json } => cli::cmd_retry(&message_id, json),
         Cmd::Inbox {
             session,
             peek,

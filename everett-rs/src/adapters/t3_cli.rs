@@ -15,9 +15,17 @@ pub(crate) struct Captured {
 }
 
 pub(crate) fn capture(binary: &str, args: &[&str], timeout: f64) -> Result<Captured, String> {
+    capture_with_data_home(binary, args, timeout, None)
+}
+
+pub(crate) fn capture_with_data_home(binary: &str, args: &[&str], timeout: f64, data_home: Option<&str>) -> Result<Captured, String> {
     let mut argv = vec![binary.to_string()];
     argv.extend(args.iter().map(|arg| arg.to_string()));
-    let env: HashMap<String, String> = std::env::vars().collect();
+    let mut env: HashMap<String, String> = std::env::vars().collect();
+    if let Some(data_home) = data_home {
+        // T3 trims the override before resolving it, so keep any final space inside the path.
+        env.insert("T3CODE_HOME".into(), format!("{data_home}/."));
+    }
     let output = run_capture(&argv, None, &env, timeout)?;
     let receipt = parse_json_output(output.stdout.trim());
     Ok(Captured { output, receipt })
@@ -107,6 +115,10 @@ fn managed_binary(t3_home: &Path) -> Option<String> {
 
 /// `EVERETT_T3_BIN`, the active managed runtime, `t3` on PATH, then the legacy install.
 pub(crate) fn binary() -> Option<String> {
+    binary_in(&super::t3code::data_home())
+}
+
+pub(crate) fn binary_in(t3_home: &Path) -> Option<String> {
     let path = std::env::var("PATH").unwrap_or_default();
     if let Ok(bin) = std::env::var("EVERETT_T3_BIN") {
         return if bin.is_empty() {
@@ -117,8 +129,7 @@ pub(crate) fn binary() -> Option<String> {
             which(&bin, &path)
         };
     }
-    let t3_home = super::t3code::data_home();
-    managed_binary(&t3_home).or_else(|| which("t3", &path)).or_else(|| {
+    managed_binary(t3_home).or_else(|| which("t3", &path)).or_else(|| {
         let installed = t3_home.join("bin").join("t3");
         let bin = installed.to_string_lossy().to_string();
         (installed.is_file() && is_executable(&bin)).then_some(bin)

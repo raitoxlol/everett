@@ -593,21 +593,22 @@ pub fn cmd_send(args: &Args) -> i32 {
         eprintln!("everett: {}", e.message);
         return e.code;
     }
-    let mode = if args.wake { "inbox".to_string() } else { match crate::send::delivery_mode(&session, &args.mode, None) {
+    let delivery = if args.wake { crate::send::Delivery::Inbox } else { match crate::send::delivery_for(&session, &args.mode, None, None) {
         Ok(m) => m,
         Err(e) => {
             eprintln!("everett: {}", e.message);
             return e.code;
         }
     }};
+    let mode = delivery.mode();
     if mode == "inbox" {
         if args.wake {
             return send_wake_cmd(args, &r, &session, &label, routed_line);
         }
         return send_inbox_cmd(args, &r, &session, &label, routed_line);
     }
-    if mode == "ping" && !args.dry_run {
-        return match crate::send::ping_as(&session, args.text.as_deref().unwrap_or(""), args.timeout, None, None) {
+    if let (false, crate::send::Delivery::Ping(binding)) = (args.dry_run, &delivery) {
+        return match crate::send::ping_with_binding(&session, args.text.as_deref().unwrap_or(""), args.timeout, None, None, binding.as_ref()) {
             Ok(result) => {
                 let heading = if result.get("pinged").and_then(Value::as_bool) == Some(true) {
                     "PINGED"
@@ -677,8 +678,8 @@ pub fn cmd_send(args: &Args) -> i32 {
         payload.insert("transport".into(), json!(transport));
         payload.insert("command".into(), json!(command));
         payload.insert("blocked_running".into(), json!(blocked_running));
-        if transport == "t3" {
-            payload.insert("thread_id".into(), json!(crate::t3_wake::thread_id(&session)));
+        if let crate::send::Delivery::Ping(Some(binding)) = &delivery {
+            payload.insert("thread_id".into(), json!(binding.thread));
         }
         let preview = command.as_ref().map(|argv| crate::send::format_command(argv))
             .unwrap_or_else(|| format!("{transport} inbox nudge; no provider resume command"));
@@ -957,6 +958,22 @@ pub fn cmd_reply(args: &Args) -> i32 {
             eprintln!("everett: {}", e.message);
             e.code
         }
+    }
+}
+
+pub fn cmd_retry(message_id: &str, json: bool) -> i32 {
+    let caller = crate::host::caller_session_id();
+    let sender = if caller.is_empty() { crate::inbox::HUMAN } else { &caller };
+    match crate::t3_wake::retry(sender, message_id) {
+        Ok(receipt) => {
+            if json {
+                println!("{}", serde_json::to_string_pretty(&receipt).unwrap());
+            } else {
+                println!("PINGED  original request {message_id}\n  Check pickup and reply: everett status {message_id}");
+            }
+            0
+        }
+        Err(error) => { eprintln!("everett: {}", error.message); error.code }
     }
 }
 
