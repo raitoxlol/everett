@@ -33,8 +33,9 @@ T3 owns its provider's resume point. Everett refuses direct provider CLI resume,
 and its route output tells you to continue in T3. Owner-local `ping` and `auto`
 delivery use `t3 thread send` to send a fixed inbox nudge into the owning thread.
 An idle thread starts a turn; a busy thread queues the next turn. The selected
-T3 CLI must support thread commands. Everett selects `EVERETT_T3_BIN`, then
-`t3` on PATH, then `~/.t3/bin/t3`. An executable shim on PATH may still fail if
+T3 CLI must support thread commands. Everett selects `EVERETT_T3_BIN` first.
+It then uses the active, completely installed runtime in the Everett profile's
+`.t3/runtime` directory, followed by `t3` on PATH and `.t3/bin/t3`. An executable shim on PATH may still fail if
 its runtime is unavailable. Check that exact executable's `thread send --help`
 and `thread start --help`; no installer or runtime configuration is changed by
 Everett. Plain help output or a malformed JSON response cannot confirm dispatch.

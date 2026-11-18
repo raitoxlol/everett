@@ -8,6 +8,8 @@ use serde_json::Value;
 use crate::proc::{is_executable, run_capture, which, RunOutput};
 use crate::session::home;
 
+const SERVICE_LAUNCHER_PROTOCOL: u64 = 3;
+
 pub(crate) struct Captured {
     pub output: RunOutput,
     pub receipt: Option<Value>,
@@ -87,7 +89,24 @@ pub(crate) fn parse_json_output(stdout: &str) -> Option<Value> {
     None
 }
 
-/// `EVERETT_T3_BIN`, else `t3` on PATH, else T3's own install location.
+fn managed_binary(t3_home: &Path) -> Option<String> {
+    let runtime = t3_home.join("runtime");
+    let state: Value = serde_json::from_slice(&std::fs::read(runtime.join("service-state.json")).ok()?).ok()?;
+    if state.get("protocol")?.as_u64()? != SERVICE_LAUNCHER_PROTOCOL {
+        return None;
+    }
+    let version = state.get("activeVersion")?.as_str()?;
+    semver::Version::parse(version).ok()?;
+    let installed = runtime.join("versions").join(version);
+    if std::fs::read_to_string(installed.join(".install-complete")).ok()?.trim() != version {
+        return None;
+    }
+    let binary = installed.join("t3");
+    let path = binary.to_str()?;
+    (binary.is_file() && is_executable(path)).then(|| path.to_owned())
+}
+
+/// `EVERETT_T3_BIN`, the active managed runtime, `t3` on PATH, then the legacy install.
 pub(crate) fn binary() -> Option<String> {
     let path = std::env::var("PATH").unwrap_or_default();
     if let Ok(bin) = std::env::var("EVERETT_T3_BIN") {
@@ -99,8 +118,9 @@ pub(crate) fn binary() -> Option<String> {
             which(&bin, &path)
         };
     }
-    which("t3", &path).or_else(|| {
-        let installed = home().join(".t3").join("bin").join("t3");
+    let t3_home = home().join(".t3");
+    managed_binary(&t3_home).or_else(|| which("t3", &path)).or_else(|| {
+        let installed = t3_home.join("bin").join("t3");
         let bin = installed.to_string_lossy().to_string();
         (installed.is_file() && is_executable(&bin)).then_some(bin)
     })

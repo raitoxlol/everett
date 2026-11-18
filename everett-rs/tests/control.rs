@@ -62,6 +62,50 @@ fn t3_threads_start_send_and_read_use_the_t3_cli() {
 }
 
 #[test]
+fn t3_threads_uses_the_active_managed_runtime_ahead_of_a_broken_shim() {
+    let fx = fixture();
+    let path = fx.home().join("bin");
+    let shim = fx.write("bin/t3", "#!/bin/sh\necho broken-shim >&2\nexit 1\n");
+    fs::set_permissions(shim, fs::Permissions::from_mode(0o700)).unwrap();
+
+    let active = fx.home().join(".t3/runtime/versions/0.1.10/t3");
+    fx.write(".t3/runtime/service-state.json", r#"{"protocol":3,"activeVersion":"0.1.10"}"#);
+    fx.write(".t3/runtime/versions/0.1.10/.install-complete", "0.1.10\n");
+    fs::rename(fake_t3(&fx, 0), &active).unwrap();
+
+    let path = path.to_str().unwrap();
+    let run = |extra: &[(&str, &str)]| {
+        let mut env = vec![("PATH", path), ("EVERETT_SESSION_ID", "caller")];
+        env.extend_from_slice(extra);
+        mcp_calls(&fx, &[], &env, &[("everett_control", json!({"action": "threads"}))]).remove(0)
+    };
+    let result = run(&[]);
+    assert_eq!(result["isError"], false, "{result}");
+    assert_eq!(tool_json(&result)["result"][0]["threadId"], THREAD);
+
+    let result = run(&[("EVERETT_T3_BIN", "t3")]);
+    assert_eq!(result["isError"], true, "{result}");
+    assert!(result.to_string().contains("broken-shim"), "{result}");
+
+    fx.write("bin/t3", "#!/bin/sh\necho '[]'\n");
+    for (version, dir, protocol, marker) in [
+        ("0.1", ".t3/runtime/versions/0.1", 3, "0.1"),
+        ("0.1.10", ".t3/runtime/versions/0.1.10", 999, "0.1.10"),
+        ("0.1.10", ".t3/runtime/versions/0.1.10", 3, "0.1.11"),
+        ("../../bin", ".t3/bin", 3, "../../bin"),
+    ] {
+        fx.write(".t3/runtime/service-state.json", &json!({
+            "protocol": protocol, "activeVersion": version
+        }).to_string());
+        fx.write(&format!("{dir}/.install-complete"), marker);
+        fs::rename(fake_t3(&fx, 0), fx.home().join(dir).join("t3")).unwrap();
+        let result = run(&[]);
+        assert_eq!(result["isError"], false, "{result}");
+        assert_eq!(tool_json(&result)["result"], json!([]), "{version}: {result}");
+    }
+}
+
+#[test]
 fn t3_waiting_for_answer_is_reported_not_failed() {
     let fx = fixture();
     let t3 = fake_t3(&fx, 2);
