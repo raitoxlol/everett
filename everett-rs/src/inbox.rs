@@ -312,13 +312,6 @@ pub fn sent_status(sender: &str, message_id: &str) -> Result<Value> {
     } else {
         "queued"
     };
-    if let Some(reply) = reply.as_ref().filter(|item| {
-        item.contains_key("relay_message_id") || item.contains_key("relay_lineage")
-    }) {
-        if let Some(id) = reply.get("id").and_then(Value::as_str) {
-            persist_relay_context(sender, &[id])?;
-        }
-    }
     Ok(json!({
         "message_id": message_id,
         "to": target,
@@ -326,6 +319,15 @@ pub fn sent_status(sender: &str, message_id: &str) -> Result<Value> {
         "picked_up": picked_up,
         "reply": reply.map(consumption_message),
     }))
+}
+
+pub(crate) fn persist_status_reply_context(sender: &str, reply: &Value) -> Result<()> {
+    if reply.get("relay_message_id").is_some() || reply.get("relay_lineage").is_some() {
+        if let Some(id) = reply["id"].as_str() {
+            persist_relay_context(sender, &[id])?;
+        }
+    }
+    Ok(())
 }
 
 /// The local hop limit, or None when it is off (the default). Set `hop_limit = "on"`

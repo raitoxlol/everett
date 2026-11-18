@@ -949,7 +949,10 @@ pub fn cmd_reply(args: &Args) -> i32 {
 pub fn cmd_status(message_id: &str, json: bool) -> i32 {
     let caller = crate::host::caller_session_id();
     let sender = if caller.is_empty() { crate::inbox::HUMAN } else { &caller };
-    match crate::inbox::sent_status(sender, message_id) {
+    match crate::inbox::sent_status(sender, message_id).and_then(|status| {
+        crate::inbox::persist_status_reply_context(sender, &status["reply"])?;
+        Ok(status)
+    }) {
         Ok(status) => {
             if json {
                 println!("{}", serde_json::to_string_pretty(&status).unwrap());
