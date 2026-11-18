@@ -242,6 +242,9 @@ fn t3_mcp_retry_reuses_the_host_bound_senders_request() {
     let args = json!({"message_id":id});
     assert!(failure.to_string().contains("everett_retry"), "{failure}");
     assert!(failure.to_string().contains(id), "{failure}");
+    let still_offline = call("caller", "everett_retry", args.clone());
+    assert_eq!(still_offline["isError"], true, "{still_offline}");
+    assert!(still_offline.to_string().contains("everett_status(message_id="), "{still_offline}");
     fake_t3(&fx.home(), 0);
     fs::remove_file(fx.home().join("t3-argv")).unwrap();
     for (sender, input) in [("", args.clone()), ("another-sender", args.clone()),
@@ -260,6 +263,7 @@ fn t3_mcp_retry_reuses_the_host_bound_senders_request() {
     fs::remove_file(fx.home().join("t3-argv")).unwrap();
     let denied = call("caller", "everett_retry", args);
     assert_eq!(denied["isError"], true, "{denied}");
+    assert!(denied.to_string().contains("everett_status(message_id="), "{denied}");
     assert!(!fx.home().join("t3-argv").exists());
 }
 
