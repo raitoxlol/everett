@@ -209,6 +209,7 @@ Done. MAX_RETRIES is now 5 and the backoff test covers the cap.
 
 | Command | What it does |
 |---|---|
+| `everett control read --session ID [--messages N]` | Reads recent messages from a local session by ID or unambiguous prefix. Uses its T3 thread when mapped, otherwise its supported harness transcript. |
 | `everett control read THREAD [--messages N]` | Reads recent T3 thread messages as JSON for an owner-local caller. Defaults to 10 messages and clamps the count to 1–50. |
 | `everett control threads [--project P]` | Lists T3 Code threads as JSON through the local T3 CLI. Accepts an optional project filter and requires an owner-local caller. |
 | `everett ls [--json] [--all] [--harness H]` | Recent sessions from every harness, one line each. `--all` includes scripted runs. |
