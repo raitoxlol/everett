@@ -245,11 +245,11 @@ pub fn mark_done(session_id: &str, ids: &[&str]) {
 }
 
 pub(crate) fn claim_pending(session_id: &str, selected: &[&str]) -> Result<HashSet<String>> {
+    let target = path(session_id)?;
     if selected.is_empty() {
         return Ok(HashSet::new());
     }
     let selected: HashSet<&str> = selected.iter().copied().collect();
-    let target = path(session_id)?;
     let _guard = lock_file(&target)?;
     let done = done_path(session_id);
     let mut body = match fs::read_to_string(&done) {
