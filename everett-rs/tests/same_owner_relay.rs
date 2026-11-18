@@ -235,6 +235,25 @@ fn listen(f: &Fixture) -> Running {
     )
 }
 #[test]
+fn remote_inbox_preview_selects_transport_without_queueing() {
+    let server = Server::new();
+    let f = fixture();
+    server.configure(&f, "agent-max");
+    let args = ["send", "--mode", "inbox", "preview only", "--dry-run", "--json", "--to"];
+    let preview = |target| success(&f, &[args.as_slice(), &[target]].concat());
+    let relay = preview("Hugo Box/grok-bot/ext-hugo");
+    assert_eq!(relay["pickup"], "Cloudflare relay");
+    assert_eq!(relay["transport"], "cloudflare");
+    f.write(".everett/peer/workstation.json", &json!({
+        "address":"127.0.0.1","port":1,"device_id":"workstation","host_fingerprint":"fixture"
+    }).to_string());
+    let ssh = preview("workstation/codex/session");
+    assert_eq!(ssh["transport"], "ssh");
+    assert!(server.state.lock().unwrap().messages.is_empty());
+    assert!(!f.home().join(".everett/peer/outgoing").exists());
+}
+
+#[test]
 fn unpaired_same_owner_names_deliver_encrypted_inbox_and_retry_once() {
     let server = Server::new();
     let a = fixture();
