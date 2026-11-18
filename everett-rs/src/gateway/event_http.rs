@@ -94,8 +94,7 @@ pub(super) async fn dispatch(
         reason: "invalid_identity_handle",
     };
     let selected = match handle.as_ref() {
-        None if state.gateway.binding.require_identity_handle
-            && matches!(method, "events/subscribe" | "events/unsubscribe") =>
+        None if state.gateway.binding.require_identity_handle && method == "events/subscribe" =>
         {
             Err(Failure {
                 code: -32602,
