@@ -280,15 +280,17 @@ pub fn overlay(sessions: &mut Vec<Session>, since_hours: f64, harness: &str) {
         !projection.hidden.contains(&key) || projection.active.contains_key(&key)
     });
     for (_, thread) in projection.active {
-        let t = thread.session;
+        let mut t = thread.session;
         if !harness.is_empty() && t.harness != harness {
             continue;
         }
+        t.t3_thread_id = Some(thread.id);
         if let Some(s) = sessions
             .iter_mut()
             .find(|s| s.harness == t.harness && s.id == t.id)
         {
             s.source = SOURCE.into();
+            s.t3_thread_id = t.t3_thread_id;
             if s.title.is_empty() {
                 s.title = t.title
             }
