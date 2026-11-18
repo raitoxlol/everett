@@ -554,10 +554,53 @@ fn t3_retry_does_not_nudge_again_after_dispatch_was_confirmed() {
     assert_argv(&fx.home(), id);
     fs::remove_file(&output).unwrap();
     let retry = fx.run_stdin(&["retry", id, "--json"], "", &env);
+    assert!(retry.status.success(), "{retry:?}");
     assert!(!output.exists(), "retry sent a second T3 nudge: {retry:?}");
+    let retry: Value = serde_json::from_slice(&retry.stdout).unwrap();
+    assert_eq!(retry["already_dispatched"], true);
+    assert_eq!(retry["receipt"], sent["wake"]["receipt"]);
     let status = fx.run_stdin(&["status", id, "--json"], "", &env);
     let status: Value = serde_json::from_slice(&status.stdout).unwrap();
     assert_eq!(status["state"], "queued");
+}
+
+#[test]
+fn t3_retry_does_not_nudge_again_after_dispatch_was_confirmed_or_in_flight() {
+    let fx = fixture();
+    plant_thread(&fx.home());
+    let bin = fake_t3(&fx.home(), 1);
+    let env = [("EVERETT_SESSION_ID", "caller"), ("EVERETT_T3_BIN", bin.to_str().unwrap())];
+    let failed = fx.run_stdin(&["send", "--to", THREAD, "--json", BODY], "", &env);
+    assert_eq!(failed.status.code(), Some(4), "{failed:?}");
+    let failed: Value = serde_json::from_slice(&failed.stdout).unwrap();
+    let id = failed["message_id"].as_str().unwrap();
+    let args = ["retry", id, "--json"];
+
+    fake_t3(&fx.home(), 0);
+    let script = fs::read_to_string(&bin).unwrap().replace("exit 0", concat!(
+        "printf 'dispatch\\n' >> \"$HOME/dispatch-count\"\n",
+        "while [ ! -f \"$HOME/release-dispatch\" ]; do /bin/sleep 0.02; done\nexit 0",
+    ));
+    fs::write(&bin, script).unwrap();
+    let first = Command::new(env!("CARGO_BIN_EXE_everett"))
+        .args(args).env_clear().env("HOME", fx.home()).env("EVERETT_HOME", fx.home()).envs(env)
+        .stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::piped()).spawn().unwrap();
+    let count = fx.home().join("dispatch-count");
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    while !count.exists() && std::time::Instant::now() < deadline {
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    assert!(count.exists(), "retry never invoked T3");
+    let concurrent = fx.run_stdin(&args, "", &env);
+    fx.write("release-dispatch", "");
+    let first = first.wait_with_output().unwrap();
+    assert_eq!(concurrent.status.code(), Some(4), "{concurrent:?}");
+    assert!(first.status.success(), "{first:?}");
+    let replay = fx.run_stdin(&args, "", &env);
+    assert!(replay.status.success(), "{replay:?}");
+    let replay: Value = serde_json::from_slice(&replay.stdout).unwrap();
+    assert_eq!(replay["already_dispatched"], true);
+    assert_eq!(fs::read_to_string(count).unwrap(), "dispatch\n");
 }
 
 #[test]
