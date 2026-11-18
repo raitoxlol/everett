@@ -877,7 +877,7 @@ fn send_inbox_cmd(args: &Args, r: &Map<String, Value>, session: &Session, label:
     let id = result.get("message_id").and_then(Value::as_str).unwrap_or_default();
     let follow = if result.get("transport").and_then(Value::as_str) == Some("relay") {
         let peer = result.get("peer").and_then(Value::as_str).unwrap_or("<peer>");
-        let command = ["everett", "peer", "status", peer, id].map(str::to_owned);
+        let command = ["everett", "peer", "status", "--", peer, id].map(str::to_owned);
         format!("check with `{}`", crate::proc::shlex_join(&command))
     } else {
         format!("check with `everett status {id}`")
