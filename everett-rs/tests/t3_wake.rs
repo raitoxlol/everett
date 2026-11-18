@@ -275,6 +275,24 @@ fn t3_cli_text_reports_pinged() {
 }
 
 #[test]
+fn failed_t3_cli_ping_prints_the_retained_follow_up_command() {
+    let fx = fixture();
+    plant_thread(&fx.home());
+    let fake = fake_t3(&fx.home(), 1);
+    let caller = [("EVERETT_SESSION_ID", "caller"), ("EVERETT_T3_BIN", fake.to_str().unwrap())];
+    let out = fx.run_stdin(&["send", "--to", SESSION, BODY], "", &caller);
+    assert_eq!(out.status.code(), Some(4), "{out:?}");
+    let pending = fx.run(&["inbox", "--session", SESSION, "--peek", "--json"]);
+    let inbox: Value = serde_json::from_slice(&pending.stdout).unwrap();
+    let id = inbox["messages"][0]["id"].as_str().unwrap();
+    let error = String::from_utf8_lossy(&out.stderr);
+    assert!(error.contains(&format!("everett status {id}")), "{error}");
+    let status = fx.run_stdin(&["status", id], "", &caller);
+    assert!(status.status.success(), "{status:?}");
+    assert!(fx.stdout(&status).contains("QUEUED"), "{status:?}");
+}
+
+#[test]
 fn t3_explicit_inbox_stays_queue_only() {
     let home = lib_home();
     plant_thread(&home.path());
