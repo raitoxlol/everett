@@ -375,6 +375,21 @@ fn t3_custom_home_drives_projection_and_runtime_without_moving_inbox() {
     let result: Value = serde_json::from_slice(&preview.stdout).unwrap();
     assert_eq!(result["thread_id"], THREAD);
 
+    let cwd = os_path.join("work");
+    fs::create_dir(&cwd).unwrap();
+    let preview = Command::new(env!("CARGO_BIN_EXE_everett"))
+        .env_clear()
+        .current_dir(cwd)
+        .env("PATH", common::HERMETIC_PATH)
+        .env("HOME", "")
+        .env("EVERETT_HOME", fx.home())
+        .env("T3CODE_HOME", "~/../t3 data")
+        .args(["send", "--to", THREAD, "--dry-run", "--json", BODY])
+        .output().unwrap();
+    assert!(preview.status.success(), "{preview:?}");
+    let result: Value = serde_json::from_slice(&preview.stdout).unwrap();
+    assert_eq!(result["thread_id"], THREAD);
+
     let nested = os_path.join("other/nested");
     fs::create_dir_all(&nested).unwrap();
     std::os::unix::fs::symlink(nested, os_path.join("link")).unwrap();
