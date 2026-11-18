@@ -134,24 +134,12 @@ fn draw_frame(f: &mut Frame, p: &Palette, step: usize, title: &str) -> Option<u1
         if area.height == 0 || area.width == 0 {
             return None;
         }
-        let msg = format!(
-            "terminal too small ({}x{}) -- resize to at least {}x{}",
-            area.width, area.height, MIN_COLS, MIN_ROWS
-        );
-        put(
-            f,
-            1.min(area.height - 1),
-            (area.width.saturating_sub(msg.len() as u16)) / 2,
-            &msg,
-            p.amber,
-        );
-        put(
-            f,
-            area.height - 1,
-            (area.width.saturating_sub(6)) / 2,
-            "q quit",
-            Style::default(),
-        );
+        let msg = format!("{MIN_COLS}x{MIN_ROWS} minimum - terminal too small");
+        let row = u16::from(area.height >= 3);
+        put(f, row, area.width.saturating_sub(msg.len() as u16) / 2, &msg, p.amber);
+        if area.height > 1 {
+            put(f, area.height - 1, area.width.saturating_sub(6) / 2, "q quit", Style::default());
+        }
         return None;
     }
     put(f, 0, 2, "everett / setup", p.accent);
@@ -2261,6 +2249,8 @@ pub fn run(
     }
     enable_raw_mode()?;
     let _guard = TermGuard;
+    // Register the resize listener before drawing the first frame. Poll leaves queued input intact.
+    event::poll(Duration::ZERO)?;
     let mut stdout = io::stdout();
     execute!(stdout, EnterAlternateScreen, cursor::Hide)?;
     let backend = CrosstermBackend::new(stdout);

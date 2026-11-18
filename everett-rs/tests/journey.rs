@@ -717,6 +717,22 @@ fn onboard_tui_custom_agent_selection_survives_resize_and_back() {
 
 #[cfg(unix)]
 #[test]
+fn undersized_terminal_shows_the_required_dimensions() {
+    let fx = fixture();
+    let mut p = spawn_tui(&fx);
+    p.see("Welcome to Everett");
+    for (cols, rows) in [(40, 10), (16, 1)] {
+        p.resize(cols, rows);
+        p.see("54x14");
+    }
+    p.resize(54, 14);
+    p.see("Welcome to Everett");
+    p.send("q");
+    p.exited();
+}
+
+#[cfg(unix)]
+#[test]
 fn onboard_tui_deselected_agent_preserves_existing_settings() {
     let fx = fixture();
     plant(&fx, "claude.jsonl", ".claude/projects/app/claude.jsonl");
