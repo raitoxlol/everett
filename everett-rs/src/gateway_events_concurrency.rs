@@ -321,3 +321,45 @@ fn webhook_waits_for_the_delivery_claim_to_commit() {
     events.deliver(&lease).unwrap();
     assert_eq!(gate.deliveries.load(Ordering::SeqCst), 1);
 }
+
+#[test]
+fn acknowledged_event_is_not_replayed_after_a_busy_receipt_write() {
+    let home = tempfile::tempdir().unwrap();
+    let path = home.path().join("events.sqlite");
+    let (started, ready) = mpsc::channel();
+    let (release, wait) = mpsc::channel();
+    let gate = Arc::new(Gate {
+        status: 204,
+        deliveries: AtomicUsize::new(0),
+        block: AtomicBool::new(false),
+        started,
+        release: Mutex::new(wait),
+    });
+    let events = Events::with_db(Connection::open(&path).unwrap(), home.path().into(), gate.clone()).unwrap();
+    events.db.lock().unwrap().busy_timeout(Duration::ZERO).unwrap();
+    events.subscribe(&p(), &args()).unwrap();
+    let inbox = home.path().join(".everett/inbox");
+    fs::create_dir_all(&inbox).unwrap();
+    writeln!(File::create(inbox.join("dot-a.jsonl")).unwrap(),
+        "{}", json!({"id":"fresh","to":"dot-a","ts":now() as f64 / 1000.0})).unwrap();
+    let lease = events.leases().unwrap().remove(0);
+    gate.block.store(true, Ordering::SeqCst);
+    let slow = events.clone();
+    let callback = std::thread::spawn(move || slow.deliver(&lease));
+    ready.recv_timeout(Duration::from_secs(2)).unwrap();
+    let mut refreshed = p();
+    refreshed.token = Some("refreshed".into());
+    events.subscribe(&refreshed, &args()).unwrap();
+
+    let mut writer = Connection::open(path).unwrap();
+    let tx = writer.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate).unwrap();
+    tx.execute("UPDATE deliveries SET next=0", []).unwrap();
+    release.send(()).unwrap();
+    assert_eq!(callback.join().unwrap().unwrap_err().reason, "event storage unavailable");
+    tx.commit().unwrap();
+
+    events.deliver(&events.leases().unwrap()[0]).unwrap();
+    assert_eq!(gate.deliveries.load(Ordering::SeqCst), 1);
+    let done: bool = events.db.lock().unwrap().query_row("SELECT done FROM deliveries", [], |row| row.get(0)).unwrap();
+    assert!(done);
+}
