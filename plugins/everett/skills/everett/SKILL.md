@@ -11,14 +11,25 @@ First call `everett_whoami`. Verify the logical identity, exact gateway resource
 and both `runtime` and `gateway_runtime` build revisions. A running process,
 capability flag, or queue receipt does not prove native dispatch or completion.
 
-Register this chat with `everett_identity(action=create)` and a fresh private
-random registration key. Retain the returned handle privately and pass it on
-subsequent calls. Reuse the same key only to retry that registration. A chat
-identity is a logical inbox, not a native harness session or vendor attestation.
+During setup, register this conversation once with `everett_identity(action=create)`
+and a fresh private random registration key. Use `kind=dot` for a Dot. Retain the
+returned handle privately and pass it on subsequent calls. Reuse the same key
+only to retry that registration. This assigns a logical inbox to the conversation.
 
-Use full authorized destination IDs for handoffs. Delivery is inbox-only and
-does not automatically wake the recipient. Read only the selected inbox; use
-`reply_to` to correlate a response. Do not send work to unrelated sessions.
+Use full IDs from `everett_whoami.authorized_destinations` for inbox handoffs.
+For Dot events, use the Events-enabled HTTP gateway. Set `arguments.identity_handle`
+on `events/subscribe` to this Dot's private handle. Use the same handle for
+pickup and reply. If the handle is unavailable, pause the event workflow and
+report that the Dot's private inbox could not be selected.
+
+On a `message.created` event, call `everett_inbox` with `message_id` from the
+event's `data.message_id` and the Dot's private `identity_handle`. If the client
+schema lacks `message_id`, pause and report that the existing app's tools need
+to be refreshed. An empty `messages` array means there is no pending work for
+that event. If the returned `kind` is `message`, handle the request and call
+`everett_send` with `reply_to` set to that message ID and the same
+`identity_handle`. If `kind` is `reply`, treat it as a result and end the event
+workflow. For any other or missing `kind`, stop at pickup.
 
 For a requested native start, require both the registered `everett_start` tool
 and `capabilities.native_session_start=true` on this connection. If the grant

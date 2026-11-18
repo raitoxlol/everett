@@ -305,7 +305,7 @@ impl Binding {
         let allowed: &[&str] = match name {
             "everett_whoami" => &[],
             "everett_core" if self.allow_shared_core => &["project"],
-            "everett_inbox" => &["session_id", "peek"],
+            "everett_inbox" => &["session_id", "peek", "message_id"],
             "everett_card" => &["session_id", "what", "state", "next"],
             "everett_send" => &["session_id", "text", "to", "reply_to"],
             _ => return Err("tool is not allowed".into()),
@@ -344,8 +344,13 @@ impl Binding {
                 args.insert("session_id".into(), json!(self.agent_id));
             }
         }
-        if name == "everett_inbox" && args.get("peek").is_some_and(|peek| !peek.is_boolean()) {
-            return Err("peek must be a boolean".into());
+        if name == "everett_inbox" {
+            if args.get("peek").is_some_and(|peek| !peek.is_boolean()) {
+                return Err("peek must be a boolean".into());
+            }
+            if args.get("message_id").is_some_and(|id| !id.as_str().is_some_and(crate::inbox::valid_id)) {
+                return Err("message_id must be a valid Everett message ID".into());
+            }
         }
         if name == "everett_card" {
             for key in ["what", "state", "next"] {
@@ -383,7 +388,7 @@ impl Binding {
             ("everett_identity", "Register a separate chat inbox under this connection. create requires a fresh private registration_key, name and kind; reuse the key only for a retry. list optionally filters public cards by kind and omits handles; revoke requires the private identity_handle. Names and kinds are self-declared.", json!({"action":{"type":"string","enum":["create","list","revoke"]},"registration_key":{"type":"string","minLength":32,"maxLength":128},"name":{"type":"string","minLength":1,"maxLength":100},"kind":{"type":"string","enum":["chat","dot","codex"]}}), vec!["action"]),
             ("everett_whoami", "Read this connection's logical owner-scoped identity, not vendor-attested Bot identity.", json!({}), vec![]),
             ("everett_core", "Read owner-wide GLOBAL shared core plus this connection's fixed project core.", json!({"project":{"type":"string","enum":[self.project]}}), vec![]),
-            ("everett_inbox", "Read only this agent's inbox. By default mark messages delivered; use peek=true to retain them.", json!({"session_id":own,"peek":{"type":"boolean"}}), vec![]),
+            ("everett_inbox", "Read only this agent's inbox. Use message_id from an MCP event to take only that message. Use peek=true to leave it pending.", json!({"session_id":own,"peek":{"type":"boolean"},"message_id":{"type":"string","minLength":1,"maxLength":128,"description":"Exact message ID in this inbox."}}), vec![]),
             ("everett_card", "Update only this agent's session card.", json!({"session_id":own,"what":short,"state":short,"next":short}), vec!["what","state","next"]),
             ("everett_send", "Queue an inbox-only message to an authorized full ID, or reply to an owned message. No automatic bot wake-up.", json!({"session_id":own,"text":{"type":"string","minLength":1,"maxLength":16000},"to":{"type":"string","minLength":1,"maxLength":128,"description":"Exact full ID from everett_whoami.authorized_destinations. The gateway checks the current owner allowlist on every send."},"reply_to":{"type":"string","minLength":1,"maxLength":128}}), vec!["text"]),
         ];
@@ -576,6 +581,15 @@ impl Gateway {
                         .and_then(|caps| caps.get("everettExactDestinationIds"))
                         .and_then(|cap| cap.get("enforced"));
                     if enforced != Some(&Value::Bool(true)) { return Err("backend lacks strict exact-ID delivery; owned-message replies remain available".into()); }
+                }
+                if name == "everett_inbox" && args.contains_key("message_id") {
+                    let info = peer.peer_info().ok_or(BACKEND_ERROR)?;
+                    let enforced = info.capabilities.experimental.as_ref()
+                        .and_then(|caps| caps.get("everettExactInboxPickup"))
+                        .and_then(|cap| cap.get("enforced"));
+                    if enforced != Some(&Value::Bool(true)) {
+                        return Err("backend lacks exact inbox pickup; update the Everett backend to use message_id".into());
+                    }
                 }
                 if let Some(reply) = args.get("reply_to").and_then(Value::as_str) { binding.reply_destination(reply)?; }
                 let response = peer.call_tool_once(CallToolRequestParams::new(name.to_owned()).with_arguments(args))
