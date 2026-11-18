@@ -541,6 +541,26 @@ fn t3_cli_json_failed_ping_returns_a_recovery_receipt() {
 }
 
 #[test]
+fn t3_retry_does_not_nudge_again_after_dispatch_was_confirmed() {
+    let fx = fixture();
+    plant_thread(&fx.home());
+    let bin = fake_t3(&fx.home(), 0);
+    let env = [("EVERETT_SESSION_ID", "caller"), ("EVERETT_T3_BIN", bin.to_str().unwrap())];
+    let send = fx.run_stdin(&["send", "--to", THREAD, "--json", BODY], "", &env);
+    assert!(send.status.success(), "{send:?}");
+    let sent: Value = serde_json::from_slice(&send.stdout).unwrap();
+    let id = sent["message_id"].as_str().unwrap();
+    let output = fx.home().join("t3-argv");
+    assert_argv(&fx.home(), id);
+    fs::remove_file(&output).unwrap();
+    let retry = fx.run_stdin(&["retry", id, "--json"], "", &env);
+    assert!(!output.exists(), "retry sent a second T3 nudge: {retry:?}");
+    let status = fx.run_stdin(&["status", id, "--json"], "", &env);
+    let status: Value = serde_json::from_slice(&status.stdout).unwrap();
+    assert_eq!(status["state"], "queued");
+}
+
+#[test]
 fn t3_retry_reuses_the_original_request_after_dispatch_failure() {
     let fx = fixture();
     plant_thread(&fx.home());
