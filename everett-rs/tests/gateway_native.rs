@@ -1530,6 +1530,54 @@ fn dot_picks_up_only_the_event_message_and_replies() {
     let received: Value = serde_json::from_str(&received).unwrap();
     assert_eq!(received["reply_to"], "event-message");
     assert_eq!(received["text"], "Dot response");
+
+    let old_backend = c.http_server(&fixture(&["--legacy"]));
+    let reply = body_json(&post(old_backend, &json!({"jsonrpc":"2.0","id":1,"method":"tools/call",
+        "params":{"name":"everett_inbox","arguments":{"message_id":"unrelated"}}}), &[]));
+    denied(&reply);
+    assert!(c.records().is_empty(), "the older backend must not receive a consuming call");
+    assert_eq!(success(&call("everett_inbox", json!({"peek":true})))["messages"][0]["id"], "unrelated");
+
+    private_dot_picks_up_and_replies_to_its_event();
+}
+
+fn private_dot_picks_up_and_replies_to_its_event() {
+    let c = ctx();
+    let issuer = fake_issuer();
+    issuer.grant(&access('a'), "agent-a", json!({"everett_account":"github:alice"}));
+    let port = c.spawn_http(c.oauth_command(&json!({"events":true,"oauth":{"issuer":issuer.url,"resource":RESOURCE}})));
+    let register = |key: char| success(&native_call(port, 'a', "everett_identity", json!({
+        "action":"create", "registration_key":key.to_string().repeat(32), "name":"Fixture Dot", "kind":"dot"
+    })));
+    let dot = register('a');
+    let other = register('b');
+    let dot_id = dot["session_id"].as_str().unwrap();
+    let handle = &dot["identity_handle"];
+    let from = other["session_id"].as_str().unwrap();
+    let path = c.inbox(from, dot_id, "requested-work");
+    let row = std::fs::read_to_string(&path).unwrap();
+    std::fs::rename(path, c.home.join(format!(".everett/inbox/{dot_id}.jsonl"))).unwrap();
+    std::fs::write(c.home.join(format!(".everett/inbox/{from}.jsonl")), row
+        .replace("requested-work", "other-work").replace(dot_id, from)).unwrap();
+    let sub = json!({"name":"message.created","arguments":{"identity_handle":handle,"session_id":dot_id},
+        "delivery":{"mode":"webhook","url":"https://callback.example/","secret":"invalid-synthetic"}});
+    assert_eq!(oauth_rpc(port, 'a', "events/subscribe", sub.clone())["error"]["message"], "invalid_signing_secret");
+    let mut wrong = sub;
+    wrong["arguments"]["identity_handle"] = other["identity_handle"].clone();
+    assert_eq!(oauth_rpc(port, 'a', "events/subscribe", wrong)["error"]["message"], "unsupported_event_or_filter");
+    let call = |name, args| native_call(port, 'a', name, args);
+    let take = |handle: &Value, id: &str| success(&call("everett_inbox", json!({"identity_handle":handle,"message_id":id})));
+    assert_eq!(take(&other["identity_handle"], "requested-work")["messages"], json!([]));
+    assert_eq!(take(handle, "requested-work")["messages"][0]["id"], "requested-work");
+    assert_eq!(take(handle, "requested-work")["messages"], json!([]));
+    denied(&call("everett_send", json!({"identity_handle":other["identity_handle"],"reply_to":"requested-work","text":"wrong inbox"})));
+    let reply = success(&call("everett_send", json!({"identity_handle":handle,"reply_to":"requested-work","text":"Dot reply"})));
+    assert_eq!(reply["to"], from);
+    let results = success(&call("everett_inbox", json!({"identity_handle":other["identity_handle"],"peek":true})));
+    assert_eq!(results["messages"].as_array().unwrap().len(), 2);
+    assert_eq!(results["messages"][0]["id"], "other-work");
+    assert_eq!(results["messages"][1]["reply_to"], "requested-work");
+    assert_eq!(results["messages"][1]["kind"], "reply");
 }
 
 fn main() {
