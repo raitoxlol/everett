@@ -298,6 +298,17 @@ fn exact_t3_thread_id_sends_to_the_active_provider_inbox() {
     let rejected = fx.run_stdin(&["send", "--to", "duplicate", "--dry-run", BODY], "", &env);
     assert_eq!(rejected.status.code(), Some(2), "{rejected:?}");
     assert!(String::from_utf8_lossy(&rejected.stderr).contains("no eligible provider session"), "{rejected:?}");
+
+    fx.write(".claude/projects/p/unrelated.jsonl", &format!("{}\n", json!({
+        "type":"user", "sessionId":"unrelated", "cwd":"/work/duplicate",
+        "timestamp":chrono::Utc::now().to_rfc3339(),
+        "message":{"role":"user","content":"Unrelated task"}
+    })));
+    db.execute_batch("BEGIN EXCLUSIVE").unwrap();
+    let locked = fx.run_stdin(&["send", "--to", "duplicate", "--mode", "inbox", "--dry-run", BODY], "", &env);
+    db.execute_batch("ROLLBACK").unwrap();
+    assert_eq!(locked.status.code(), Some(2), "{locked:?}");
+    assert!(String::from_utf8_lossy(&locked.stderr).contains("cannot check exact T3 thread ID"), "{locked:?}");
 }
 
 #[test]
