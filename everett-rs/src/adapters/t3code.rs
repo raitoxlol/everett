@@ -48,7 +48,11 @@ pub(crate) fn data_home() -> PathBuf {
 }
 
 pub fn db_path() -> PathBuf {
-    let state = data_home().join("userdata");
+    db_path_in(&data_home())
+}
+
+pub(crate) fn db_path_in(data_home: &Path) -> PathBuf {
+    let state = data_home.join("userdata");
     let current = state.join("statev2.sqlite");
     if current.is_file() {
         current

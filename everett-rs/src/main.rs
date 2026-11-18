@@ -15,7 +15,7 @@ const HELP_GROUPS: &[(&str, &[&str])] = &[
     ("Start here", &["onboard", "dashboard", "ls", "doctor"]),
     (
         "Work across sessions",
-        &["send", "route", "inbox", "reply", "status", "proof", "event", "events", "subscribe"],
+        &["send", "route", "inbox", "reply", "status", "retry", "proof", "event", "events", "subscribe"],
     ),
     ("Shared memory", &["learn", "core", "trunk", "cards"]),
     (
