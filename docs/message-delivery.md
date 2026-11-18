@@ -26,6 +26,9 @@ Idle headless delivery reports `transport: "resume"` with the provider command.
 The preview leaves `pinged`, `queued`, and `delivered` false. It does not prove
 that a provider will accept a nudge or return a reply.
 
+For remote inbox sends, add `--mode inbox --dry-run --json` to see the selected
+`transport` (`cloudflare` or `ssh`). The preview reads local configuration only.
+
 T3 Code pings use `t3 thread send` to dispatch a fixed inbox nudge to the owning
 thread. External agents, attached sessions without a supported wake transport,
 and remote transports have no immediate ping path. They fail without queueing.
