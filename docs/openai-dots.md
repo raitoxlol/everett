@@ -377,10 +377,10 @@ restarts `tunnel-client`. Stop it with
   compatible Grok connectors, not an advertised OpenAI OAuth app. ChatGPT OAuth
   discovery against this gateway fails.
 - [MCP Events](mcp-events.md) is an opt-in authenticated HTTP candidate, disabled
-  by default. It advertises through Streamable HTTP initialization and provides
-  signed webhook subscriptions. Merged code does not establish live ChatGPT event
-  discovery, subscription or automatic wake; those require separate activation
-  and end-to-end acceptance. Grok owner webhooks remain a separate integration.
+  by default. It advertises through Streamable HTTP initialization and MCP 2.0
+  discovery and provides signed webhook subscriptions. Live ChatGPT discovery,
+  subscription, and automatic wake require activation and end-to-end acceptance.
+  Grok owner webhooks remain a separate integration.
 - A skill can describe this workflow but cannot replace the connection, runtime
   authorization, external-session registration, or wake-up mechanism.
 - Another Slack bot is not a supported generic dot wake-up path. OpenAI says

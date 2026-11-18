@@ -9,6 +9,119 @@ fn await_condition(check: impl Fn() -> bool) {
     }
 }
 
+pub(super) fn modern_discovery_and_lifecycle() {
+    const VERSION: &str = "2026-07-28";
+    let request = |method: &str, mut params: Value| {
+        params["_meta"] = json!({
+            "io.modelcontextprotocol/protocolVersion": VERSION,
+            "io.modelcontextprotocol/clientCapabilities": {}
+        });
+        json!({"jsonrpc":"2.0","id":1,"method":method,"params":params})
+    };
+    let call = |port, method: &str, params| {
+        let response = post(
+            port,
+            &request(method, params),
+            &[("MCP-Protocol-Version", Some(VERSION)), ("Mcp-Method", Some(method))],
+        );
+        assert_eq!(response.status, 200);
+        body_json(&response)["result"].clone()
+    };
+    let c = ctx();
+    for enabled in [false, true] {
+        let port = c.http_server(&json!({"events":enabled}));
+        let legacy = body_json(&post(
+            port,
+            &json!({"jsonrpc":"2.0","id":1,"method":"initialize","params":initialize()}),
+            &[],
+        ));
+        assert_eq!(legacy["result"]["capabilities"].get("events").is_some(), enabled);
+        let discovery = call(port, "server/discover", json!({}));
+        assert_eq!(discovery["resultType"], "complete");
+        assert!(discovery["supportedVersions"].as_array().unwrap().contains(&json!(VERSION)));
+        assert_eq!(discovery["capabilities"]["tools"], json!({}));
+        assert_eq!(discovery["capabilities"].get("events").is_some(), enabled);
+    }
+
+    let port = c.http_server(&json!({"events":true}));
+    let discover = request("server/discover", json!({}));
+    assert_eq!(post(port, &discover, &[
+        ("Authorization", None),
+        ("MCP-Protocol-Version", Some(VERSION)),
+        ("Mcp-Method", Some("server/discover")),
+    ]).status, 401);
+    let event_list = request("events/list", json!({}));
+    let mismatched_method = post(port, &event_list, &[
+        ("MCP-Protocol-Version", Some(VERSION)), ("Mcp-Method", Some("tools/list")),
+    ]);
+    assert_eq!(mismatched_method.status, 400);
+    assert_eq!(body_json(&mismatched_method)["error"]["code"], -32020);
+    let mut missing_metadata = event_list.clone();
+    missing_metadata["params"] = json!({});
+    let invalid = post(port, &missing_metadata, &[
+        ("MCP-Protocol-Version", Some(VERSION)), ("Mcp-Method", Some("events/list")),
+    ]);
+    assert_eq!(invalid.status, 400);
+    assert_eq!(body_json(&invalid)["error"]["code"], -32602);
+
+    const UNSUPPORTED_VERSION: &str = "2026-01-01";
+    let mut unsupported = event_list.clone();
+    unsupported["params"]["_meta"]["io.modelcontextprotocol/protocolVersion"] = json!(UNSUPPORTED_VERSION);
+    for rpc in [&unsupported, &missing_metadata] {
+        let response = post(port, rpc, &[
+            ("MCP-Protocol-Version", Some(UNSUPPORTED_VERSION)), ("Mcp-Method", Some("events/list")),
+        ]);
+        assert_eq!(response.status, 400);
+        let body = body_json(&response);
+        assert_eq!(body["error"]["code"], -32022);
+        assert_eq!(body["error"]["data"]["requested"], UNSUPPORTED_VERSION);
+    }
+
+    let poll = post(port, &request("events/poll", json!({})), &[
+        ("MCP-Protocol-Version", Some(VERSION)), ("Mcp-Method", Some("events/poll")),
+    ]);
+    assert_eq!(poll.status, 404);
+    assert_eq!(body_json(&poll)["error"]["code"], -32601);
+    let invalid_params = json!({"name":"message.created","arguments":{"session_id":"foreign"},"delivery":{"mode":"webhook","url":"https://callback.example/"}});
+    let rejected = post(port, &request("events/subscribe", invalid_params.clone()), &[
+        ("MCP-Protocol-Version", Some(VERSION)), ("Mcp-Method", Some("events/subscribe")),
+    ]);
+    assert_eq!(rejected.status, 400);
+    assert_eq!(body_json(&rejected)["error"]["code"], -32602);
+    let legacy_rejected = post(port, &json!({"jsonrpc":"2.0","id":1,"method":"events/subscribe","params":invalid_params}), &[("MCP-Protocol-Version", None)]);
+    assert_eq!(legacy_rejected.status, 200);
+    assert_eq!(body_json(&legacy_rejected)["error"]["code"], -32602);
+
+    let catalog = call(port, "events/list", json!({}));
+    assert_eq!(catalog["resultType"], "complete");
+    assert_eq!(catalog["events"][0]["name"], "message.created");
+    let legacy = body_json(&post(port, &json!({"jsonrpc":"2.0","id":1,"method":"events/list"}), &[]));
+    assert!(legacy["result"].get("resultType").is_none());
+    assert_eq!(legacy["result"]["events"], catalog["events"]);
+
+    // Seed a verified subscription so refresh and unsubscribe exercise the HTTP wire without sending callbacks.
+    use sha2::{Digest, Sha256};
+    let dir = c.home.join(".everett/gateway-events");
+    let db = Connection::open(std::fs::read_dir(dir).unwrap().map(|e| e.unwrap().path())
+        .find(|path| path.extension().is_some_and(|ext| ext == "sqlite3")).unwrap()).unwrap();
+    let owner = json!([hex::encode(Sha256::digest(TOKEN)), "dot-one"]).to_string();
+    let url = "https://callback.example/";
+    let key = "whsec_BwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwc=";
+    let id = format!("sub_{}", hex::encode(Sha256::digest(json!([owner, "dot-one", "message.created", url]).to_string())));
+    let at = chrono::Utc::now().timestamp_millis();
+    db.execute(
+        "INSERT INTO subscriptions(id,owner,agent,token,url,secret,rotation_until,created,expires,verified) VALUES(?,?,'dot-one',?,?,?,0,?,?,?)",
+        params![id, owner, json!({"access":null,"handle":null}).to_string(), url, key, at, at + 60_000, at],
+    ).unwrap();
+    let mut params = json!({"name":"message.created","arguments":{},"delivery":{"mode":"webhook","url":url,"secret":key}});
+    let refreshed = call(port, "events/subscribe", params.clone());
+    assert_eq!(refreshed["resultType"], "complete");
+    assert_eq!(refreshed["id"], id);
+    params["delivery"].as_object_mut().unwrap().remove("secret");
+    assert_eq!(call(port, "events/unsubscribe", params), json!({"resultType":"complete"}));
+    assert_eq!(db.query_row("SELECT count(*) FROM subscriptions", [], |row| row.get::<_, i64>(0)).unwrap(), 0);
+}
+
 pub(super) fn identity_and_lifetime() {
     let c = ctx();
     let issuer = fake_issuer();
