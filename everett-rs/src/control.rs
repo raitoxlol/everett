@@ -183,11 +183,13 @@ pub fn read(thread: &str, session: Option<&Session>, messages: usize, caller: Op
         return Ok(json!({"via": "t3", "thread": thread, "result": result}));
     }
     let session = session.ok_or_else(|| EverettError::new(2, "read needs session or thread."))?;
-    if session.harness == "devin" {
-        return Err(EverettError::new(4, "read is not supported for devin transcripts yet (SQLite/ATIF storage)."));
+    if session.harness == "devin" && std::path::Path::new(&session.path).extension().and_then(|e| e.to_str()) != Some("json") {
+        return Err(EverettError::new(4, "read is not supported for devin SQLite sessions yet."));
     }
     let unreadable = |e: String| EverettError::new(4, format!("Cannot read the {} transcript: {e}", session.harness));
-    let tail = if session.harness == "hermes" {
+    let tail = if session.harness == "devin" {
+        crate::adapters::devin::transcript_messages(std::path::Path::new(&session.path), messages).map_err(unreadable)?
+    } else if session.harness == "hermes" {
         crate::adapters::hermes::messages(&std::path::PathBuf::from(&session.path), &session.id, messages)
             .map_err(unreadable)?
             .into_iter()
