@@ -1635,6 +1635,7 @@ const CASES: &[Case] = &[
     ("oauth_rejects_wrong_issuer_audience_expiry_scope_identity_and_revoked_tokens", oauth_rejects_wrong_issuer_audience_expiry_scope_identity_and_revoked_tokens),
     ("oauth_owner_account_restricts_every_request_before_backend_dispatch", oauth_owner_account_restricts_every_request_before_backend_dispatch),
     ("oauth_configuration_fails_closed_and_stdio_keeps_fixed_identity", oauth_configuration_fails_closed_and_stdio_keeps_fixed_identity),
+    ("events_modern_discovery_and_lifecycle", events_acceptance::modern_discovery_and_lifecycle),
 ];
 
 fn dot_picks_up_only_the_event_message_and_replies() {
