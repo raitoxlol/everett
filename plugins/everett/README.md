@@ -30,23 +30,29 @@ refresh an app's server-side tool catalog or establish client acceptance.
 ## Check the actual connection
 
 Save the nonsecret `everett_whoami` result and tool catalog for the same hosted
-app/connection, then run:
+connection. Run this from the repository checkout.
 
 ```sh
 python3 plugins/everett/check.py \
   --whoami /private/evidence/whoami.json \
   --tools /private/evidence/tools.json \
-  --resource https://YOUR_GATEWAY/MCP_PATH \
-  --require-native-start
+  --resource https://YOUR_GATEWAY/MCP_PATH
 ```
 
 The catalog uses MCP's `{"tools":[{"name":"everett_whoami"}, ...]}` shape.
-Use the tools actually registered in the client, not a list copied from source.
+Save the tools registered in your client.
 The check rejects resource drift, unverified or mismatched builds, missing base
-tools, and an enabled native-start grant whose client tool is missing. Without
-the native-start requirement, an explicitly inbox-only connection is supported.
-The result always leaves native dispatch unverified; creation, target identity,
-pickup, reply and duplicate-launch checks require a separate real test.
+tools, and an enabled native-start grant whose client tool is missing. Add
+`--require-native-start` to check that your connection has native start access.
+
+For a Dot, pass `--require-event-pickup` and save the full tool schemas in
+`tools.json`. The check requires the registered `everett_inbox` schema to accept
+`message_id` and `identity_handle`. If it reports `event_pickup_client_catalog_stale`,
+refresh the existing Everett app's tools in ChatGPT and save the updated catalog.
+Verify the Events-enabled HTTP route separately. See the [Dot setup guide](https://github.com/raitoxlol/everett/blob/main/docs/chatgpt.md#receive-everett-events-in-a-dot).
+
+Check native dispatch with a separate live test that verifies creation, target
+identity, pickup, reply and duplicate-launch protection.
 
 ```sh
 python3 -m unittest discover -s plugins/everett/tests -v
