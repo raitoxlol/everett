@@ -279,11 +279,11 @@ enum Cmd {
         #[arg(long, value_parser = clap::builder::PossibleValuesParser::new(SCOPES.to_vec()))]
         scope: Option<String>,
     },
-    /// show the shared core, its file path, or merge history
+    /// show or search local core memory, locate its file, or list merge history
     Core {
-        #[arg(value_parser = ["show", "edit-path", "history"], default_value = "show")]
-        action: String,
-        #[arg(long)]
+        #[command(subcommand)]
+        action: Option<CoreCmd>,
+        #[arg(long, global = true)]
         project: Option<String>,
     },
     /// print (or --apply) the harness hook registrations
@@ -425,6 +425,15 @@ enum Cmd {
 enum Devices {
     /// permanently revoke a device and remove its local peer bindings
     Revoke { device_id: String },
+}
+
+#[derive(Subcommand)]
+enum CoreCmd {
+    Show,
+    EditPath,
+    History,
+    /// Search learned facts from global memory and the selected project
+    Search { query: String },
 }
 
 #[derive(Subcommand)]
@@ -941,9 +950,17 @@ fn main() {
             cli::cmd_learn(&a, ttl_seconds)
         }
         Cmd::Core { action, project } => {
-            a.action = Some(action);
-            a.project = project;
-            cli::cmd_core(&a)
+            if let Some(CoreCmd::Search { query }) = action {
+                cli::cmd_core_search(&query, project.as_deref())
+            } else {
+                a.action = match action {
+                Some(CoreCmd::EditPath) => Some("edit-path".into()),
+                Some(CoreCmd::History) => Some("history".into()),
+                _ => None,
+                };
+                a.project = project;
+                cli::cmd_core(&a)
+            }
         }
         Cmd::InstallHooks {
             claude,
