@@ -11,7 +11,7 @@ use std::time::{Duration, SystemTime};
 
 const TOOLS: &[&str] = &[ "everett_agent_relay", "everett_agent_send", "everett_agent_status",
     "everett_card", "everett_control", "everett_core", "everett_event", "everett_inbox", "everett_learn",
-    "everett_ls", "everett_route", "everett_send", "everett_status", "everett_subscribe", "everett_whoami"];
+    "everett_ls", "everett_retry", "everett_route", "everett_send", "everett_status", "everett_subscribe", "everett_whoami"];
 
 fn binary() -> PathBuf {
     let path = std::env::var_os("EVERETT_VERIFY_BINARY").map(PathBuf::from).unwrap_or_else(|| env!("CARGO_BIN_EXE_everett").into());
@@ -127,10 +127,15 @@ impl Wire {
     }
 
     fn call(&mut self, name: &str, arguments: Value) -> Value {
-        let result = self.request("tools/call", Some(json!({"name": name, "arguments": arguments})));
+        let result = self.call_result(name, arguments);
         assert_ne!(result["isError"], true, "{name} failed: {result}");
-        self.seen.insert(name.to_string());
         result["structuredContent"].clone()
+    }
+
+    fn call_result(&mut self, name: &str, arguments: Value) -> Value {
+        let result = self.request("tools/call", Some(json!({"name": name, "arguments": arguments})));
+        self.seen.insert(name.to_string());
+        result
     }
 
     fn close(mut self) -> BTreeSet<String> {
@@ -191,6 +196,9 @@ fn release_journey_over_cli_and_all_mcp_tools() {
     assert_eq!(observed["state"], "replied");
     assert_eq!(observed["picked_up"], true);
     assert_eq!(observed["reply"]["text"], "Upload tests pass");
+    let retry = wire.call_result("everett_retry", json!({"message_id": sent["message_id"]}));
+    assert_eq!(retry["isError"], true, "{retry}");
+    assert!(retry.to_string().contains("no longer queued"), "{retry}");
     let cli_sent = home.json(&["send", "Check the retry cap", "--to", "verify-worker", "--mode", "inbox", "--json"], "verify-sender");
     worker_wire.call("everett_send", json!({"reply_to": cli_sent["message_id"], "text": "Cap is five"}));
     assert_eq!(home.json(&["inbox", "--session", "verify-sender", "--json"], "")["messages"][0]["text"], "Cap is five");
