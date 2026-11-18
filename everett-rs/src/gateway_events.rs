@@ -26,8 +26,15 @@ const MAX_SUBSCRIPTIONS: i64 = 64;
 pub(super) struct Events {
     db: Arc<Mutex<Connection>>,
     pending: Arc<Mutex<std::collections::HashMap<String, String>>>,
+    acknowledgments: Arc<Mutex<Vec<Acknowledgment>>>,
     home: PathBuf,
     transport: Arc<dyn Webhook>,
+}
+
+struct Acknowledgment {
+    subscription: String,
+    message: String,
+    claim: String,
 }
 
 struct Verification {
@@ -292,6 +299,7 @@ impl Events {
         Ok(Self {
             pending: Arc::new(Mutex::new(std::collections::HashMap::new())),
             db: Arc::new(Mutex::new(db)),
+            acknowledgments: Arc::new(Mutex::new(Vec::new())),
             home,
             transport,
         })
@@ -476,6 +484,7 @@ impl Events {
     }
     pub fn leases(&self) -> Result<Vec<Lease>, Failure> {
         let db = self.db.lock().map_err(|_| storage())?;
+        self.flush_acknowledgments(&db, None)?;
         db.execute("DELETE FROM subscriptions WHERE expires<=?", [now()])
             .map_err(|_| storage())?;
         let mut s = db
@@ -510,8 +519,27 @@ impl Events {
             }
         }
     }
+    fn flush_acknowledgments(
+        &self,
+        db: &Connection,
+        accepted: Option<Acknowledgment>,
+    ) -> Result<(), Failure> {
+        let mut receipts = self.acknowledgments.lock().map_err(|_| storage())?;
+        receipts.extend(accepted);
+        while let Some(receipt) = receipts.last() {
+            // Refresh keeps the row. A replacement or newer claim invalidates this receipt.
+            db.execute(
+                "UPDATE deliveries SET done=1, attempts=attempts+1
+                 WHERE subscription=?1 AND message=?2 AND claim=?3 AND done=0",
+                params![receipt.subscription, receipt.message, receipt.claim],
+            ).map_err(|_| storage())?;
+            receipts.pop();
+        }
+        Ok(())
+    }
     pub fn deliver(&self, lease: &Lease) -> Result<(), Failure> {
         let mut db = self.db.lock().map_err(|_| storage())?;
+        self.flush_acknowledgments(&db, None)?;
         let record:Option<(String,String,Option<String>,i64,i64,String)>=db.query_row("SELECT url,secret,previous,rotation_until,created,revision FROM subscriptions WHERE id=? AND owner=? AND expires>? AND token IS ? AND blocked=''",params![lease.id,lease.principal.owner,now(),lease.principal.token],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?,r.get(5)?))).optional().map_err(|_|storage())?;
         let Some((url, key, previous, rotation, created, revision)) = record else {
             return Ok(());
@@ -637,16 +665,15 @@ impl Events {
                 .map(|r| r.0)
                 .unwrap_or(0);
             db = self.db.lock().map_err(|_| storage())?;
-            let at = now();
             if (200..300).contains(&status) {
-                // Refresh keeps the delivery row. Unsubscribe or a newer attempt invalidates this claim.
-                db.execute(
-                    "UPDATE deliveries SET done=1, attempts=attempts+1
-                     WHERE subscription=?1 AND message=?2 AND claim=?3 AND done=0",
-                    params![lease.id, mid, claim],
-                ).map_err(|_| storage())?;
+                self.flush_acknowledgments(&db, Some(Acknowledgment {
+                    subscription: lease.id.clone(),
+                    message: mid,
+                    claim,
+                }))?;
                 continue;
             }
+            let at = now();
             if status == 410 {
                 db.execute(
                     "DELETE FROM subscriptions WHERE id=?1 AND revision=?2 AND token IS ?3 AND expires>?4 AND blocked=''
