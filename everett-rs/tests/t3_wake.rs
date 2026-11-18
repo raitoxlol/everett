@@ -499,6 +499,38 @@ fn check_failed_t3_cli_ping_follow_up() {
 }
 
 #[test]
+fn t3_cli_json_failed_ping_returns_a_recovery_receipt() {
+    let fx = fixture();
+    plant_thread(&fx.home());
+    let fake = fake_t3(&fx.home(), 1);
+    let caller = [("EVERETT_SESSION_ID", "caller"), ("EVERETT_T3_BIN", fake.to_str().unwrap())];
+    let run = |args: &[&str]| fx.run_stdin(args, "", &caller);
+    let missing = run(&["send", "--to", "missing-target", "--json", BODY]);
+    assert!(!missing.status.success(), "{missing:?}");
+    assert!(missing.stdout.is_empty(), "{missing:?}");
+
+    let failed = run(&["send", "--to", THREAD, "--json", BODY]);
+    assert_eq!(failed.status.code(), Some(4), "{failed:?}");
+    let receipt: Value = serde_json::from_slice(&failed.stdout).unwrap();
+    let id = receipt["message_id"].as_str().unwrap();
+    assert_eq!(receipt["state"], "dispatch_unconfirmed");
+    assert!(receipt["error"].as_str().unwrap().contains(id));
+    assert!(String::from_utf8_lossy(&failed.stderr).contains(&format!("everett retry {id}")));
+    let status = run(&["status", id, "--json"]);
+    let status: Value = serde_json::from_slice(&status.stdout).unwrap();
+    assert_eq!(status["state"], "queued");
+
+    fake_t3(&fx.home(), 0);
+    let retry = run(&["retry", id, "--json"]);
+    assert!(retry.status.success(), "{retry:?}");
+    assert_argv(&fx.home(), id);
+    let pending = fx.run(&["inbox", "--session", SESSION, "--peek", "--json"]);
+    let inbox: Value = serde_json::from_slice(&pending.stdout).unwrap();
+    assert_eq!(inbox["messages"].as_array().unwrap().len(), 1);
+    assert_eq!(inbox["messages"][0]["id"], id);
+}
+
+#[test]
 fn t3_retry_reuses_the_original_request_after_dispatch_failure() {
     let fx = fixture();
     plant_thread(&fx.home());
