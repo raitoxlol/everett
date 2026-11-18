@@ -2,7 +2,7 @@
 //! V2 fields follow Migrations/055_OrchestrationV2.ts and contracts/src/orchestrationV2.ts.
 
 use std::collections::{HashMap, HashSet};
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 use std::time::Duration;
 
 use rusqlite::{Connection, OpenFlags};
@@ -22,11 +22,22 @@ pub(crate) fn data_home() -> PathBuf {
     }
     let path = if let Some(rest) = configured.strip_prefix("~/").or((configured == "~").then_some("")) {
         std::env::var_os("HOME")
-            .map_or_else(|| PathBuf::from(configured), |os_home| PathBuf::from(os_home).join(rest))
+            .map_or_else(|| PathBuf::from(configured), |os_home| PathBuf::from(os_home).join(rest.trim_start_matches('/')))
     } else {
         PathBuf::from(configured)
     };
-    std::path::absolute(&path).unwrap_or(path)
+    let Ok(absolute) = std::path::absolute(&path) else {
+        return path;
+    };
+    let mut normalized = PathBuf::new();
+    for component in absolute.components() {
+        if component == Component::ParentDir {
+            normalized.pop();
+        } else {
+            normalized.push(component.as_os_str());
+        }
+    }
+    normalized
 }
 
 pub fn db_path() -> PathBuf {
