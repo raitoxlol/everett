@@ -874,20 +874,24 @@ fn send_inbox_cmd(args: &Args, r: &Map<String, Value>, session: &Session, label:
             serde_json::to_string(webhook).unwrap_or_else(|_| "{}".to_string())
         )));
     }
+    let id = result.get("message_id").and_then(Value::as_str).unwrap_or_default();
+    let follow = if result.get("transport").and_then(Value::as_str) == Some("relay") {
+        let peer = result.get("peer").and_then(Value::as_str).unwrap_or("<peer>");
+        let command = ["everett", "peer", "status", "--", peer, id].map(str::to_owned);
+        format!("check with `{}`", crate::proc::shlex_join(&command))
+    } else {
+        format!("check with `everett status {id}`")
+    };
     if args.wait > 0.0 {
         match result.get("reply") {
             Some(Value::String(reply)) => lines.push(Some(reply.clone())),
             _ => lines.push(Some(format!(
-                "  no reply within {}s; check inbox {} (`everett inbox`)",
-                crate::fmt::g(args.wait),
-                result.get("reply_inbox").and_then(|v| v.as_str()).unwrap_or("")
+                "  no reply within {}s. To follow the request, {follow}.",
+                crate::fmt::g(args.wait)
             ))),
         }
     } else {
-        lines.push(Some(format!(
-            "  replies go to inbox {} (`everett inbox`); add --wait S to wait",
-            result.get("reply_inbox").and_then(|v| v.as_str()).unwrap_or("")
-        )));
+        lines.push(Some(format!("  To follow the request, {follow}.")));
     }
     let mut payload = r.clone();
     for (k, v) in &result {
@@ -920,6 +924,33 @@ pub fn cmd_reply(args: &Args) -> i32 {
         Err(e) => {
             eprintln!("everett: {}", e.message);
             e.code
+        }
+    }
+}
+
+pub fn cmd_status(message_id: &str, json: bool) -> i32 {
+    let caller = crate::host::caller_session_id();
+    let sender = if caller.is_empty() { crate::inbox::HUMAN } else { &caller };
+    match crate::inbox::sent_status(sender, message_id) {
+        Ok(status) => {
+            if json {
+                println!("{}", serde_json::to_string_pretty(&status).unwrap());
+            } else {
+                let state = status["state"].as_str().unwrap_or_default().replace('_', " ").to_uppercase();
+                println!("{state}  {message_id}  to {}", status["to"].as_str().unwrap_or_default());
+                if let Some(text) = status["reply"]["text"].as_str() {
+                    let pickup = if status["picked_up"] == true { "observed" } else { "unconfirmed" };
+                    let author = status["reply"]["from"].as_str().unwrap_or_default();
+                    println!("  Inbox pickup {pickup}");
+                    println!("  Reply from {author}");
+                    println!("{text}");
+                }
+            }
+            0
+        }
+        Err(error) => {
+            eprintln!("everett: {error}");
+            error.code
         }
     }
 }
