@@ -13,7 +13,7 @@ fn assert_hook_retries_failed_acknowledgment(args: &[&str], stdin: &str) {
     let done = fx.home().join(".everett/inbox/worker.done");
     fs::create_dir(&done).unwrap();
     let hook = || {
-        let out = fx.run_stdin(args, stdin, &[]);
+        let out = fx.run_stdin(args, stdin, &[("CLAUDE_CODE_ENTRYPOINT", "")]);
         assert!(out.status.success(), "{out:?}");
         fx.stdout(&out)
     };
