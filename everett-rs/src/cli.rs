@@ -628,7 +628,15 @@ pub fn cmd_send(args: &Args) -> i32 {
                 ]);
                 0
             }
-            Err(failure) => { eprintln!("everett: {}", failure.error.message); failure.error.code },
+            Err(failure) => {
+                if args.json {
+                    if let Some(receipt) = failure.recovery_receipt() {
+                        println!("{}", serde_json::to_string_pretty(&receipt).unwrap());
+                    }
+                }
+                eprintln!("everett: {}", failure.error.message);
+                failure.error.code
+            }
         };
     }
     if args.dry_run {

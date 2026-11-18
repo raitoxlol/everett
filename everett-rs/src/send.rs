@@ -618,7 +618,18 @@ pub fn ping_as(
 
 pub(crate) struct PingFailure {
     pub error: EverettError,
-    pub retained_message_id: Option<String>,
+    retained_message_id: Option<String>,
+}
+
+impl PingFailure {
+    pub(crate) fn recovery_receipt(&self) -> Option<Map<String, Value>> {
+        let message_id = self.retained_message_id.as_deref()?;
+        Some(Map::from_iter([
+            ("message_id".into(), json!(message_id)),
+            ("state".into(), json!("dispatch_unconfirmed")),
+            ("error".into(), json!(self.error.message)),
+        ]))
+    }
 }
 
 impl From<EverettError> for PingFailure {
