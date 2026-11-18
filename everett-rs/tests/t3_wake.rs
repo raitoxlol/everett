@@ -567,10 +567,14 @@ fn t3_retry_does_not_nudge_again_after_dispatch_was_confirmed() {
     let mut old: Value = serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
     old["ts"] = json!(everett::session::now() - everett::inbox::TTL - 1.0);
     fs::write(&path, format!("{old}\n")).unwrap();
+    let journal = Connection::open(fx.home().join(".everett/inbox/t3-dispatch.sqlite")).unwrap();
+    journal.execute_batch("BEGIN IMMEDIATE").unwrap();
     let hook = fx.run(&["hook", "omp_inbox", SESSION]);
     assert!(hook.status.success(), "{hook:?}");
     assert!(fs::read_to_string(&path).unwrap().is_empty());
-    let journal = Connection::open(fx.home().join(".everett/inbox/t3-dispatch.sqlite")).unwrap();
+    journal.execute_batch("ROLLBACK").unwrap();
+    let hook = fx.run(&["hook", "omp_inbox", SESSION]);
+    assert!(hook.status.success(), "{hook:?}");
     let count: i64 = journal.query_row("SELECT count(*) FROM dispatch WHERE message_id = ?1", [id], |row| row.get(0)).unwrap();
     assert_eq!(count, 0);
 }
@@ -594,8 +598,14 @@ fn t3_retry_does_not_nudge_again_after_dispatch_was_confirmed_or_uncertain() {
         SELECT RAISE(FAIL, 'injected confirmation write failure'); END").unwrap();
     let unsaved = send();
     assert_eq!(unsaved.status.code(), Some(4), "{unsaved:?}");
+    let script = fs::read_to_string(&bin).unwrap();
+    let without_receipt = script.lines().filter(|line| !line.contains("threadId")).collect::<Vec<_>>().join("\n");
+    fs::write(&bin, without_receipt).unwrap();
+    let missing = send();
+    assert_eq!(missing.status.code(), Some(4), "{missing:?}");
+    fake_t3(&fx.home(), 0);
     fs::remove_file(fx.home().join("t3-argv")).unwrap();
-    for failed in [interrupted, unsaved] {
+    for failed in [interrupted, unsaved, missing] {
         let error = String::from_utf8_lossy(&failed.stderr);
         assert!(error.contains("Check the original T3 thread"), "{failed:?}");
         assert!(!error.contains("use `everett retry"), "{failed:?}");
@@ -604,6 +614,15 @@ fn t3_retry_does_not_nudge_again_after_dispatch_was_confirmed_or_uncertain() {
         assert_eq!(retry.status.code(), Some(4), "{retry:?}");
         assert!(!fx.home().join("t3-argv").exists());
     }
+
+    fake_t3(&fx.home(), 1);
+    let failed = send();
+    assert_eq!(failed.status.code(), Some(4), "{failed:?}");
+    let failed: Value = serde_json::from_slice(&failed.stdout).unwrap();
+    fake_t3(&fx.home(), 0);
+    let retry = run(&["retry", failed["message_id"].as_str().unwrap(), "--json"]);
+    assert_eq!(retry.status.code(), Some(4), "{retry:?}");
+    assert!(String::from_utf8_lossy(&retry.stderr).contains("Check the original T3 thread"), "{retry:?}");
 }
 
 #[test]
