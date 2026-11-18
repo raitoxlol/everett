@@ -380,3 +380,21 @@ fn cli_control_threads_lists_the_selected_project_only_for_local_callers() {
     assert!(!list().status.success());
     assert!(!fx.home().join("t3-argv").exists());
 }
+
+#[test]
+fn cli_control_read_requests_recent_thread_messages_only_for_local_callers() {
+    let fx = fixture();
+    let t3 = fake_t3(&fx, 0);
+    let read = || fx.run_stdin(&["control", "read", THREAD, "--messages", "3"], "",
+        &[("EVERETT_T3_BIN", &t3), ("EVERETT_SESSION_ID", "caller")]);
+    let out = read();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let value: Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(value["thread"], THREAD);
+    assert_eq!(value["via"], "t3");
+    assert_eq!(argv(&fx), ["thread", "show", "--json", "--messages", "3", THREAD]);
+    fs::remove_file(fx.home().join("t3-argv")).unwrap();
+    fx.write(".everett/inbox/relay-context/caller.json", r#"{"hops":1}"#);
+    assert!(!read().status.success());
+    assert!(!fx.home().join("t3-argv").exists());
+}
