@@ -8,6 +8,8 @@ use serde_json::Value;
 use crate::proc::{is_executable, run_capture, which, RunOutput};
 use crate::session::home;
 
+const SERVICE_LAUNCHER_PROTOCOL: u64 = 3;
+
 pub(crate) struct Captured {
     pub output: RunOutput,
     pub receipt: Option<Value>,
@@ -90,12 +92,11 @@ pub(crate) fn parse_json_output(stdout: &str) -> Option<Value> {
 fn managed_binary(t3_home: &Path) -> Option<String> {
     let runtime = t3_home.join("runtime");
     let state: Value = serde_json::from_slice(&std::fs::read(runtime.join("service-state.json")).ok()?).ok()?;
-    let version = state.get("activeVersion")?.as_str()?;
-    if !version.starts_with(|ch: char| ch.is_ascii_digit())
-        || !version.bytes().all(|ch| ch.is_ascii_alphanumeric() || b".+-".contains(&ch))
-    {
+    if state.get("protocol")?.as_u64()? != SERVICE_LAUNCHER_PROTOCOL {
         return None;
     }
+    let version = state.get("activeVersion")?.as_str()?;
+    semver::Version::parse(version).ok()?;
     let installed = runtime.join("versions").join(version);
     if std::fs::read_to_string(installed.join(".install-complete")).ok()?.trim() != version {
         return None;
