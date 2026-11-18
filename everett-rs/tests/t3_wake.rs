@@ -528,6 +528,16 @@ fn t3_cli_json_failed_ping_returns_a_recovery_receipt() {
     let inbox: Value = serde_json::from_slice(&pending.stdout).unwrap();
     assert_eq!(inbox["messages"].as_array().unwrap().len(), 1);
     assert_eq!(inbox["messages"][0]["id"], id);
+
+    fake_t3(&fx.home(), 1);
+    let (reader, writer) = std::io::pipe().unwrap();
+    drop(reader);
+    let closed_stdout = Command::new(env!("CARGO_BIN_EXE_everett"))
+        .args(["send", "--to", THREAD, "--json", BODY])
+        .env_clear().env("HOME", fx.home()).env("EVERETT_HOME", fx.home()).envs(caller)
+        .stdout(writer).stderr(std::process::Stdio::piped()).output().unwrap();
+    assert_eq!(closed_stdout.status.code(), Some(4), "{closed_stdout:?}");
+    assert!(String::from_utf8_lossy(&closed_stdout.stderr).contains("everett retry"), "{closed_stdout:?}");
 }
 
 #[test]
