@@ -1545,7 +1545,8 @@ fn private_dot_picks_up_and_replies_to_its_event() {
     let c = ctx();
     let issuer = fake_issuer();
     issuer.grant(&access('a'), "agent-a", json!({"everett_account":"github:alice"}));
-    let port = c.spawn_http(c.oauth_command(&json!({"events":true,"oauth":{"issuer":issuer.url,"resource":RESOURCE}})));
+    let config = json!({"events":true,"oauth":{"issuer":issuer.url,"resource":RESOURCE}});
+    let port = c.spawn_http(c.oauth_command(&config));
     let register = |key: char| success(&native_call(port, 'a', "everett_identity", json!({
         "action":"create", "registration_key":key.to_string().repeat(32), "name":"Fixture Dot", "kind":"dot"
     })));
@@ -1554,6 +1555,7 @@ fn private_dot_picks_up_and_replies_to_its_event() {
     let dot_id = dot["session_id"].as_str().unwrap();
     let handle = &dot["identity_handle"];
     let from = other["session_id"].as_str().unwrap();
+    let port = c.spawn_http(c.oauth_command(&with(config, json!({"destinations":[from]}))));
     let path = c.inbox(from, dot_id, "requested-work");
     let row = std::fs::read_to_string(&path).unwrap();
     std::fs::rename(path, c.home.join(format!(".everett/inbox/{dot_id}.jsonl"))).unwrap();
