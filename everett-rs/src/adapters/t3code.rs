@@ -2,7 +2,7 @@
 //! V2 fields follow Migrations/055_OrchestrationV2.ts and contracts/src/orchestrationV2.ts.
 
 use std::collections::{HashMap, HashSet};
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 use std::time::Duration;
 
 use rusqlite::{Connection, OpenFlags};
@@ -14,8 +14,41 @@ use crate::timefmt::epoch_from_iso;
 pub const SOURCE: &str = "t3code";
 pub type ThreadMap = HashMap<(String, String), (String, String)>;
 
+pub(crate) fn data_home() -> PathBuf {
+    let override_home = std::env::var("T3CODE_HOME").unwrap_or_default();
+    let configured = override_home.trim();
+    if configured.is_empty() {
+        return home().join(".t3");
+    }
+    let home_suffix = configured.strip_prefix("~/")
+        .or_else(|| configured.strip_prefix("~\\"))
+        .or((configured == "~").then_some(""));
+    let path = if let Some(rest) = home_suffix {
+        match std::env::var_os("HOME").map(PathBuf::from).or_else(std::env::home_dir) {
+            Some(os_home) if !os_home.as_os_str().is_empty() => os_home.join(rest.trim_start_matches('/')),
+            Some(_) if rest.is_empty() => PathBuf::from("."),
+            Some(_) => PathBuf::from(rest),
+            None => PathBuf::from(configured),
+        }
+    } else {
+        PathBuf::from(configured)
+    };
+    let Ok(absolute) = std::path::absolute(&path) else {
+        return path;
+    };
+    let mut normalized = PathBuf::new();
+    for component in absolute.components() {
+        if component == Component::ParentDir {
+            normalized.pop();
+        } else {
+            normalized.push(component.as_os_str());
+        }
+    }
+    normalized
+}
+
 pub fn db_path() -> PathBuf {
-    let state = home().join(".t3").join("userdata");
+    let state = data_home().join("userdata");
     let current = state.join("statev2.sqlite");
     if current.is_file() {
         current
