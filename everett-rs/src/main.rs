@@ -225,6 +225,12 @@ enum Cmd {
         #[arg(long)]
         json: bool,
     },
+    /// nudge T3 again for a queued request you sent
+    Retry {
+        message_id: String,
+        #[arg(long)]
+        json: bool,
+    },
     /// show (and mark delivered) the messages waiting for a session
     Inbox {
         /// default: the calling session, else the human inbox
@@ -892,6 +898,7 @@ fn main() {
             cli::cmd_reply(&a)
         }
         Cmd::Status { message_id, json } => cli::cmd_status(&message_id, json),
+        Cmd::Retry { message_id, json } => cli::cmd_retry(&message_id, json),
         Cmd::Inbox {
             session,
             peek,

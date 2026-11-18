@@ -265,11 +265,7 @@ fn acknowledge_locked(session_id: &str, ids: &[&str]) -> Result<()> {
         return Ok(());
     }
     let done = done_path(session_id);
-    let mut body = match fs::read_to_string(&done) {
-        Ok(body) => body,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => String::new(),
-        Err(error) => return Err(EverettError::new(2, format!("cannot read inbox acknowledgements: {error}"))),
-    };
+    let mut body = read_acknowledgments(&done)?;
     persist_relay_context(session_id, ids)?;
     if !body.is_empty() && !body.ends_with('\n') {
         body.push('\n');
@@ -280,6 +276,14 @@ fn acknowledge_locked(session_id: &str, ids: &[&str]) -> Result<()> {
     }
     crate::storage::save(&done, body.as_bytes())
         .map_err(|error| EverettError::new(2, format!("cannot save inbox acknowledgements: {error}")))
+}
+
+fn read_acknowledgments(path: &Path) -> Result<String> {
+    match fs::read_to_string(path) {
+        Ok(body) => Ok(body),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(String::new()),
+        Err(error) => Err(EverettError::new(2, format!("cannot read inbox acknowledgements: {error}"))),
+    }
 }
 
 /// Look a message up by id across every inbox (for replies).
@@ -322,7 +326,7 @@ pub(crate) fn is_reply_to(item: &Map<String, Value>, message_id: &str) -> bool {
         && item.get("reply_to").and_then(Value::as_str) == Some(message_id)
 }
 
-pub fn sent_status(sender: &str, message_id: &str) -> Result<Value> {
+fn sent_request(sender: &str, message_id: &str) -> Result<(String, Map<String, Value>)> {
     let unknown = || EverettError::new(2, "No retained local request with that ID from this sender.");
     let request = find(message_id)
         .filter(|item| {
@@ -333,9 +337,12 @@ pub fn sent_status(sender: &str, message_id: &str) -> Result<Value> {
         })
         .ok_or_else(unknown)?;
     let target = request.get("to").and_then(Value::as_str)
-        .filter(|id| valid_id(id)).ok_or_else(unknown)?;
-    let picked_up = done_ids(target).contains(message_id);
-    let reply = read(sender)
+        .filter(|id| valid_id(id)).ok_or_else(unknown)?.to_owned();
+    Ok((target, request))
+}
+
+fn sent_reply(sender: &str, target: &str, message_id: &str) -> Option<Map<String, Value>> {
+    read(sender)
         .into_iter()
         .filter(|item| {
             let author = item.get("from").and_then(Value::as_str);
@@ -345,12 +352,38 @@ pub fn sent_status(sender: &str, message_id: &str) -> Result<Value> {
                 && !item.contains_key("relay_device")
                 && !item.contains_key("peer_reply_id")
         })
-        .min_by_key(|item| item.get("from").and_then(Value::as_str) != Some(target));
+        .min_by_key(|item| item.get("from").and_then(Value::as_str) != Some(target))
+}
+
+fn request_expired(request: &Map<String, Value>) -> bool {
+    now() - request.get("ts").and_then(Value::as_f64).unwrap_or_default() >= TTL
+}
+
+pub(crate) fn queued_local_request(sender: &str, message_id: &str) -> Result<(String, Map<String, Value>)> {
+    let (target, request) = sent_request(sender, message_id)?;
+    if external(&request) || request.contains_key("relay_lineage") || request.contains_key("relay_message_id")
+        || find_in(&target, message_id).as_ref() != Some(&request)
+    {
+        return Err(EverettError::new(2, "No retryable local request with that ID from this sender."));
+    }
+    if request_expired(&request)
+        || sent_reply(sender, &target, message_id).is_some()
+        || read_acknowledgments(&done_path(&target))?.split_whitespace().any(|id| id == message_id)
+    {
+        return Err(EverettError::new(2, "This request is no longer queued. Check its status with `everett status`."));
+    }
+    Ok((target, request))
+}
+
+pub fn sent_status(sender: &str, message_id: &str) -> Result<Value> {
+    let (target, request) = sent_request(sender, message_id)?;
+    let picked_up = done_ids(&target).contains(message_id);
+    let reply = sent_reply(sender, &target, message_id);
     let state = if reply.is_some() {
         "replied"
     } else if picked_up {
         "picked_up"
-    } else if now() - request.get("ts").and_then(Value::as_f64).unwrap_or_default() >= TTL {
+    } else if request_expired(&request) {
         "expired"
     } else {
         "queued"
