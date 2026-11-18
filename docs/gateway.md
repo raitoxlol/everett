@@ -64,9 +64,43 @@ the owner's stores; this is not an OS sandbox against a malicious executable.
 
 A gateway configuration grants access to fixed destinations, a directory and
 shared core. The connection is authorized by its bearer token or OAuth approval.
-It is not a vendor-attested Bot or conversation identity. Existing clients may
-keep using the original connection identity. New chats can register separate
-logical inboxes without another account sign-in.
+One account sign-in can authorize multiple logical inboxes. Each ChatGPT
+conversation, hosted Codex conversation, and Dot registers its own Everett
+identity and uses its own private handle.
+
+### Require a private inbox
+
+Add the top-level JSON field `"require_identity_handle": true` to the owner's
+gateway binding file (the file passed to `everett gateway --config`) and restart
+the gateway. The default is `false`, which allows existing clients to use the
+legacy connection inbox without a handle. In strict mode:
+
+- `everett_inbox`, `everett_send`, and `everett_card` require a valid
+  `identity_handle` in the tool arguments. Event subscriptions require it in
+  `params.arguments`. Use the same handle to unsubscribe a private inbox.
+- Authenticated clients can still list tools and events, register an identity,
+  and call `everett_whoami` without a handle for connection details.
+  `everett_whoami` reports `capabilities.private_inbox_required: true`. Supply
+  a handle to see the corresponding registered identity.
+- The event pump skips legacy subscriptions that lack a handle. These leases
+  still count toward the gateway quota until they expire or you unsubscribe.
+  To free a slot, the original connection can unsubscribe its legacy lease
+  using the original callback URL and no handle. The strict gateway still
+  requires a handle to subscribe again.
+
+Before enabling strict mode, register each conversation using the steps below
+and confirm the client can supply its handle on later calls. Have the owner
+update senders to use the new full inbox IDs and recreate Event subscriptions
+with the corresponding handles. Existing private handles continue to work.
+Legacy messages stay in the original mailbox. Drain it before the switch or
+retrieve retained messages through the owner's local Everett profile. Set the
+field back to `false` and restart to restore handle-free gateway access.
+
+Everett issues logical mailbox IDs. Authorization comes from the connection
+credential and the private handle. A `session_id` or host-provided `_meta`
+cannot authenticate a mailbox. Handle retention across turns or restarts
+depends on the client. The gateway does not verify native conversation IDs or
+store a private handle on the client's behalf.
 
 ### Register this chat
 

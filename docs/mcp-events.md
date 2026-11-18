@@ -14,7 +14,14 @@ Subscriptions select the connection inbox or a registered inbox using its privat
 client, and handle boundaries use the current gateway identity implementation.
 OAuth credentials and private handles are revalidated before delivery. Temporary
 introspection failures defer delivery; revoked credentials or handles remove the
-subscription. Existing tool authorization and destination grants are unchanged.
+subscription.
+
+With the top-level binding field `"require_identity_handle": true`,
+`events/list` advertises `identity_handle` as required and both subscription
+methods require it in `params.arguments`. The pump skips handle-free leases
+until they expire. Register an identity and subscribe with its private handle
+to receive events for that inbox. See [Require a private inbox](gateway.md#require-a-private-inbox)
+for the migration steps.
 
 Callbacks require HTTPS, public destination addresses checked at connection time,
 no redirects, a fresh signed challenge, a successful HTTP response, and a constant
