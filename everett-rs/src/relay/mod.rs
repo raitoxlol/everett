@@ -1051,11 +1051,18 @@ pub fn retain_reply(
 
 fn find_outgoing(owner: &str, mid: &str) -> Result<(PathBuf, Outgoing)> {
     valid(mid)?;
+    let mut incomplete = false;
     for path in crate::paths::glob(&root().join("outgoing"), "*.json") {
-        let out: Outgoing = read(&path)?;
+        let Some(out) = queue::read_record::<Outgoing>(&path) else {
+            incomplete = true;
+            continue;
+        };
         if out.envelope.owner == owner && out.envelope.message_id == mid {
             return Ok((path, out));
         }
+    }
+    if incomplete {
+        return Err(bad("outgoing message not found among readable receipts; one or more local receipts could not be read"));
     }
     Err(bad("no outgoing message for this account"))
 }
