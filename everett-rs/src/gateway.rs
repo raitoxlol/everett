@@ -582,6 +582,15 @@ impl Gateway {
                         .and_then(|cap| cap.get("enforced"));
                     if enforced != Some(&Value::Bool(true)) { return Err("backend lacks strict exact-ID delivery; owned-message replies remain available".into()); }
                 }
+                if name == "everett_inbox" && args.contains_key("message_id") {
+                    let info = peer.peer_info().ok_or(BACKEND_ERROR)?;
+                    let enforced = info.capabilities.experimental.as_ref()
+                        .and_then(|caps| caps.get("everettExactInboxPickup"))
+                        .and_then(|cap| cap.get("enforced"));
+                    if enforced != Some(&Value::Bool(true)) {
+                        return Err("backend lacks exact inbox pickup; update the Everett backend to use message_id".into());
+                    }
+                }
                 if let Some(reply) = args.get("reply_to").and_then(Value::as_str) { binding.reply_destination(reply)?; }
                 let response = peer.call_tool_once(CallToolRequestParams::new(name.to_owned()).with_arguments(args))
                     .await.map_err(|_| BACKEND_ERROR)?;
