@@ -297,6 +297,32 @@ pub fn read_db(path: &Path, since_hours: f64) -> Result<(Vec<Session>, bool), St
     Ok((out, have_nodes))
 }
 
+pub fn transcript_messages(path: &Path, limit: usize) -> Result<Vec<Value>, String> {
+    let file = fs::File::open(path).map_err(|e| e.to_string())?;
+    let transcript: Value = serde_json::from_reader(std::io::BufReader::new(file)).map_err(|e| e.to_string())?;
+    let steps = transcript.get("steps").and_then(Value::as_array).ok_or("Missing ATIF steps")?;
+    let mut tail: Vec<_> = steps.iter().rev().filter_map(|step| {
+        let obj = step.as_object()?;
+        let role = if is_user(obj) {
+            "user"
+        } else if layers(obj).iter().any(|layer| {
+            layer.get("source").and_then(Value::as_str) == Some("agent")
+                || layer.get("role").and_then(Value::as_str) == Some("assistant")
+        }) {
+            "assistant"
+        } else {
+            return None;
+        };
+        let text = node_text(obj);
+        if text.trim().is_empty() {
+            return None;
+        }
+        Some(serde_json::json!({"role": role, "text": text.chars().take(4000).collect::<String>()}))
+    }).take(limit).collect();
+    tail.reverse();
+    Ok(tail)
+}
+
 /// One ATIF transcript file -> Session, for when sessions.db is missing or too old
 /// to carry message_nodes.
 pub fn read_transcript(path: &Path) -> Option<Session> {

@@ -448,3 +448,22 @@ fn cli_reads_a_transcript_larger_than_its_memory_budget() {
     let result: Value = serde_json::from_slice(&out.stdout).unwrap();
     assert_eq!(result["messages"], json!([{"role":"user","text":"latest"}]));
 }
+
+#[test]
+fn cli_reads_recent_devin_atif_messages() {
+    let fx = fixture();
+    let transcript = json!({"session_id":"devin-atif-example", "title":"Example", "steps":[
+        {"source":"user","message":"first"},
+        {"source":"agent","message":[{"type":"text","text":"answer"}]},
+        {"source":"system","message":"internal"},
+        {"source":"user","message":"latest","created_at":everett::session::now()}
+    ]});
+    fx.write("devin/transcripts/example.json", &transcript.to_string());
+    let dir = fx.home().join("devin");
+    let out = fx.run_stdin(&["control","read","--session","devin-atif-example","--messages","2"],
+        "", &[("DEVIN_HOME", dir.to_str().unwrap())]);
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let result: Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(result["messages"], json!([{"role":"assistant","text":"answer"},{"role":"user","text":"latest"}]));
+    assert_eq!(result["harness"], "devin");
+}
