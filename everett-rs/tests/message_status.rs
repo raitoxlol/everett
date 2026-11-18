@@ -1,0 +1,70 @@
+mod common;
+
+use common::{fixture, jsonl, Fixture};
+use serde_json::{json, Value};
+
+fn run(fx: &Fixture, caller: &str, args: &[&str]) -> String {
+    let out = fx.run_stdin(args, "", &[("EVERETT_SESSION_ID", caller)]);
+    assert!(out.status.success(), "{args:?}: {}", String::from_utf8_lossy(&out.stderr));
+    fx.stdout(&out)
+}
+
+fn run_json(fx: &Fixture, caller: &str, args: &[&str]) -> Value {
+    serde_json::from_str(&run(fx, caller, args)).unwrap()
+}
+
+#[test]
+fn sender_can_follow_a_local_request_and_recover_its_read_reply() {
+    let fx = fixture();
+    fx.write(
+        ".claude/projects/p/worker.jsonl",
+        &jsonl(&[json!({
+            "type": "user", "sessionId": "worker", "cwd": fx.home(),
+            "timestamp": chrono::Utc::now().to_rfc3339(),
+            "message": {"role": "user", "content": "Review upload retries"}
+        })]),
+    );
+    let sessions = fx.ls_json();
+    let worker = sessions[0]["id"].as_str().unwrap();
+    assert_eq!(worker, "worker");
+
+    let sent = run_json(&fx, "sender", &["send", "Check the retry cap", "--to", worker, "--mode", "inbox", "--json"]);
+    let id = sent["message_id"].as_str().unwrap();
+    let status = || run_json(&fx, "sender", &["status", id, "--json"]);
+    let queued = status();
+    assert_eq!(queued["message_id"], id);
+    assert_eq!(queued["to"], worker);
+    assert_eq!(queued["state"], "queued");
+    assert_eq!(queued["picked_up"], false);
+    assert!(queued["reply"].is_null());
+
+    let denied = fx.run_stdin(&["status", id, "--json"], "", &[("EVERETT_SESSION_ID", worker)]);
+    let unknown = fx.run_stdin(&["status", "m0000000000", "--json"], "", &[("EVERETT_SESSION_ID", worker)]);
+    assert_eq!(denied.status.code(), Some(2));
+    assert_eq!(denied.stderr, unknown.stderr);
+    assert!(denied.stdout.is_empty());
+
+    let read = run_json(&fx, worker, &["inbox", "--message", id, "--json"]);
+    assert_eq!(read["messages"][0]["id"], id);
+    let picked_up = status();
+    assert_eq!(picked_up["state"], "picked_up");
+    assert_eq!(picked_up["picked_up"], true);
+    assert!(picked_up["reply"].is_null());
+
+    let answer = "The retry cap is five.";
+    run(&fx, worker, &["reply", id, answer]);
+    let replied = status();
+    assert_eq!(replied["state"], "replied");
+    assert_eq!(replied["picked_up"], true);
+    assert_eq!(replied["reply"]["reply_to"], id);
+    assert_eq!(replied["reply"]["text"], answer);
+    let reply_id = replied["reply"]["id"].as_str().unwrap();
+
+    let read_reply = run_json(&fx, "sender", &["inbox", "--message", reply_id, "--json"]);
+    assert_eq!(read_reply["messages"][0]["id"], reply_id);
+    let empty = run_json(&fx, "sender", &["inbox", "--message", reply_id, "--json"]);
+    assert_eq!(empty["messages"], json!([]));
+    assert_eq!(status(), replied);
+    let text = run(&fx, "sender", &["status", id]);
+    assert!(text.contains("REPLIED") && text.contains(id) && text.contains(answer), "{text}");
+}
