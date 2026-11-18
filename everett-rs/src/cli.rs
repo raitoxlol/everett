@@ -62,6 +62,7 @@ pub struct Args {
     pub wait: f64,
     pub kind: Option<String>,
     pub message: Option<String>,
+    pub reply_to: Option<String>,
     pub project: Option<String>,
     pub session: Option<String>,
     pub since: String,
@@ -985,6 +986,9 @@ pub fn cmd_inbox(args: &Args) -> i32 {
     let mut items = crate::inbox::pending(&sid, None);
     if let Some(mid) = args.message.as_deref() {
         items.retain(|m| m.get("id").and_then(Value::as_str) == Some(mid));
+    }
+    if let Some(original_id) = args.reply_to.as_deref() {
+        items.retain(|item| crate::inbox::is_reply_to(item, original_id));
     }
     let viewed_ids: Vec<&str> = items
         .iter()
