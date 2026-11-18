@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+## 2.4.0
+
+- Follow local requests by ID in the CLI and MCP, find recent sent IDs by recipient, and recover correlated replies after an inbox read (#174, #177–179, #199, #200, #202).
+- Send to exact T3 thread IDs, find managed runtimes and custom T3 data directories, and retry retained requests by ID. Structured CLI and MCP errors carry recovery details, and a confirmed T3 dispatch can reuse its saved receipt (#180, #181, #183, #190, #193, #196, #198, #205).
+- Claim inbox requests before returning them through the CLI, MCP, or inbox hooks. Keep related replies available independently of pickup (#178, #185, #188).
+- List exact T3 threads and read recent transcript messages, including long local transcripts and Devin ATIF exports. List Devin sessions with a single activity timestamp and search learned facts with structured metadata (#189, #191, #192, #194, #195, #197, #201, #203, #204).
+- Restore opt-in authenticated MCP Events and let hosted clients pick up the exact event message without consuming unrelated inbox entries (#169, #207).
+- Let a hosted gateway require separate private inbox handles for each chat, Codex conversation, and Dot. Existing private handles carry forward, and owners can remove legacy subscriptions during the transition (#210).
+
 ## 2.3.2 — maintenance candidate
 
 - Budget the complete encoded MCP inbox result before marking messages delivered. Large queues return bounded batches, and messages outside the returned batch remain queued (#165).
