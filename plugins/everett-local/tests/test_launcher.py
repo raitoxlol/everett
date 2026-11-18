@@ -79,6 +79,19 @@ class LauncherTests(unittest.TestCase):
             installer.install(Path(installed['marketplace']), old)
         self.assertEqual(before, config.read_bytes())
 
+    def test_doctor_explains_invalid_runtime_config(self):
+        installed = self.install()
+        config = self.root / 'installation with spaces/runtime.json'
+        for settings in (None, {}, {'binary': None}):
+            with self.subTest(settings=settings):
+                config.write_text(json.dumps(settings))
+                result = subprocess.run([*self.command(installed), '--doctor'],
+                                        capture_output=True, text=True, timeout=10)
+                self.assertEqual(result.returncode, 1)
+                self.assertEqual(result.stdout, '')
+                self.assertIn('Rerun install.py --binary', result.stderr)
+                self.assertNotIn('Traceback', result.stderr)
+
     def test_doctor_does_not_start_mcp(self):
         installed = self.install()
         result = subprocess.run([*self.command(installed), '--doctor'], capture_output=True, text=True, timeout=10)

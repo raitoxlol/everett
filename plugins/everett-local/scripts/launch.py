@@ -16,7 +16,10 @@ def runtime(config):
     if override:
         binary = Path(override)
     else:
-        binary = Path(json.loads(config.read_text())['binary'])
+        settings = json.loads(config.read_text())
+        if not isinstance(settings, dict) or not isinstance(settings.get('binary'), str):
+            raise ValueError(f'{config} must contain a binary path. Rerun install.py --binary /path/to/everett.')
+        binary = Path(settings['binary'])
     return validate(binary)
 
 
