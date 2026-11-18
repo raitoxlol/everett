@@ -111,9 +111,15 @@ pub fn find(target: &str, sessions: &[Session]) -> Result<Session> {
     if let Some(s) = sessions.iter().find(|s| s.id == target) {
         return Ok(s.clone());
     }
+    let aliases: Vec<_> = sessions.iter().filter(|s| s.t3_thread_id.as_deref() == Some(target)).collect();
+    if aliases.is_empty() && t3code::has_thread(target) {
+        return Err(EverettError::new(2, format!(
+            "T3 thread \"{target}\" has no eligible provider session in the look-back window."
+        )));
+    }
     let target_fold = target.to_lowercase();
     let passes: Vec<Vec<&Session>> = vec![
-        sessions.iter().filter(|s| s.t3_thread_id.as_deref() == Some(target)).collect(),
+        aliases,
         sessions.iter().filter(|s| s.id.starts_with(target)).collect(),
         sessions.iter().filter(|s| s.title.trim().to_lowercase() == target_fold).collect(),
         sessions.iter().filter(|s| name(s) == target_fold).collect(),
