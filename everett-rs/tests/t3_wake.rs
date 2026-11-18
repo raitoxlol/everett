@@ -497,6 +497,13 @@ fn t3_retry_reuses_the_original_request_after_dispatch_failure() {
     assert_eq!(unreadable.status.code(), Some(2), "{unreadable:?}");
     assert!(!fx.home().join("t3-argv").exists());
     fs::remove_file(caller_inbox).unwrap();
+    fx.write(".everett/inbox/caller.jsonl", "{\"id\":");
+    let truncated = run(&["reply", id, "Reply follows a truncated row"], "");
+    assert!(truncated.status.success(), "{truncated:?}");
+    let malformed = run(&retry, "caller");
+    assert_eq!(malformed.status.code(), Some(2), "{malformed:?}");
+    assert!(!fx.home().join("t3-argv").exists());
+    fs::remove_file(fx.home().join(".everett/inbox/caller.jsonl")).unwrap();
 
     let db = Connection::open(fx.home().join(".t3/userdata/statev2.sqlite")).unwrap();
     let bind = |native_id| db.execute("UPDATE orchestration_v2_projection_provider_threads SET payload_json=?1", [
@@ -533,6 +540,66 @@ fn t3_retry_reuses_the_original_request_after_dispatch_failure() {
     assert_eq!(status["reply"]["text"], "Build checked");
 }
 
+#[test]
+fn t3_retry_refuses_requests_queued_without_a_ping() {
+    let fx = fixture();
+    plant_thread(&fx.home());
+    let caller = [("EVERETT_SESSION_ID", "caller")];
+    let sent = fx.run_stdin(&["send", "--to", THREAD, "--mode", "inbox", "--json", BODY], "", &caller);
+    assert!(sent.status.success(), "{sent:?}");
+    let sent: Value = serde_json::from_slice(&sent.stdout).unwrap();
+    let retry = fx.run_stdin(&["retry", sent["message_id"].as_str().unwrap()], "", &caller);
+    assert_eq!(retry.status.code(), Some(2), "{retry:?}");
+    assert!(String::from_utf8_lossy(&retry.stderr).contains("no original T3 ping binding"), "{retry:?}");
+}
+
+#[cfg(target_os = "linux")]
+fn wait_for_open_file(child: &std::process::Child, target: &Path) {
+    let fds = PathBuf::from(format!("/proc/{}/fd", child.id()));
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+    loop {
+        if fs::read_dir(&fds).into_iter().flatten().flatten()
+            .any(|fd| fs::read_link(fd.path()).is_ok_and(|path| path == target)) {
+            return;
+        }
+        assert!(std::time::Instant::now() < deadline, "child did not open {}", target.display());
+        std::thread::sleep(std::time::Duration::from_millis(2));
+    }
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn t3_retry_binding_matches_original_send_when_profile_link_changes() {
+    use std::os::unix::fs::symlink;
+
+    let fx = fixture();
+    let original = fixture();
+    let replacement = fixture();
+    plant_thread(&original.home());
+    plant_thread(&replacement.home());
+    let original_root = original.home().join(".t3");
+    let profile = fx.home().join("linked-t3");
+    symlink(&original_root, &profile).unwrap();
+    let bin = fake_t3(&fx.home(), 0);
+    let script = fs::read_to_string(&bin).unwrap();
+    fs::write(&bin, script.replace("exit 0", "printf '%s' \"$T3CODE_HOME\" > \"$HOME/t3-root\"\nexit 0")).unwrap();
+    let lock_path = fx.write(&format!(".everett/inbox/{SESSION}.lock"), "");
+    let lock = fs::File::open(&lock_path).unwrap();
+    fs2::FileExt::lock_exclusive(&lock).unwrap();
+    let send = Command::new(env!("CARGO_BIN_EXE_everett"))
+        .args(["send", "--to", THREAD, "--json", BODY])
+        .env_clear().env("HOME", fx.home()).env("EVERETT_HOME", fx.home())
+        .env("EVERETT_SESSION_ID", "caller").env("EVERETT_T3_BIN", &bin).env("T3CODE_HOME", &profile)
+        .stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::piped()).spawn().unwrap();
+    wait_for_open_file(&send, &lock_path);
+    fs::remove_file(&profile).unwrap();
+    symlink(replacement.home().join(".t3"), &profile).unwrap();
+    drop(lock);
+    let sent = send.wait_with_output().unwrap();
+    assert!(sent.status.success(), "{sent:?}");
+    assert_eq!(fs::read_to_string(fx.home().join("t3-root")).unwrap(), original_root.to_str().unwrap());
+}
+
 #[cfg(target_os = "linux")]
 #[test]
 fn t3_retry_rechecks_pickup_after_waiting_for_projection() {
@@ -557,16 +624,7 @@ fn t3_retry_rechecks_pickup_after_waiting_for_projection() {
         .env("EVERETT_SESSION_ID", "caller").env("EVERETT_T3_BIN", bin)
         .stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::piped())
         .spawn().unwrap();
-    let fds = PathBuf::from(format!("/proc/{}/fd", retry.id()));
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
-    loop {
-        if fs::read_dir(&fds).into_iter().flatten().flatten()
-            .any(|fd| fs::read_link(fd.path()).is_ok_and(|path| path == projection)) {
-            break;
-        }
-        assert!(std::time::Instant::now() < deadline, "retry did not open the projection");
-        std::thread::sleep(std::time::Duration::from_millis(2));
-    }
+    wait_for_open_file(&retry, &projection);
     let pickup = fx.run(&["inbox", "--session", SESSION, "--message", id, "--json"]);
     let pickup: Value = serde_json::from_slice(&pickup.stdout).unwrap();
     assert_eq!(pickup["messages"][0]["id"], id);
