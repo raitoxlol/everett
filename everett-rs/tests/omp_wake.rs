@@ -116,6 +116,20 @@ fn cli_and_mcp_ping_and_auto_use_live_extension_transport() {
 }
 
 #[test]
+fn cli_text_reports_pending_extension_and_follow_up_id() {
+    let f = cli_fixture();
+    f.write(&format!(".everett/inbox/omp-wake/{SID}.json"), &lease().to_string());
+    let out = f.run(&["send", "Check the test suite", "--to", SID]);
+    assert!(out.status.success(), "{out:?}");
+    let text = f.stdout(&out);
+    let pending = f.run(&["hook", "omp_wake_pending", SID]);
+    let ids: Vec<String> = serde_json::from_slice(&pending.stdout).unwrap();
+    assert_eq!(ids.len(), 1);
+    assert!(text.contains("PENDING") && !text.contains("PINGED"), "{text}");
+    assert!(text.contains(&format!("everett status {}", ids[0])), "{text}");
+}
+
+#[test]
 fn attached_omp_without_supported_live_lease_is_refused_without_queuing() {
     for mode in ["ping", "auto"] {
         for marker in [None, Some(json!({})), Some({ let mut l = lease(); l["ts"] = json!(now() - 60.0); l })] {

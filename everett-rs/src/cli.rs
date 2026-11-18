@@ -594,7 +594,25 @@ pub fn cmd_send(args: &Args) -> i32 {
     }
     if mode == "ping" && !args.dry_run {
         return match crate::send::ping_as(&session, args.text.as_deref().unwrap_or(""), args.timeout, None, None) {
-            Ok(result) => { let mut payload = r.clone(); payload.extend(result); emit(args.json, &payload, vec![routed_line, Some(format!("PINGED  {label}")), payload.get("reply").and_then(Value::as_str).map(str::to_string)]); 0 },
+            Ok(result) => {
+                let heading = if result.get("pinged").and_then(Value::as_bool) == Some(true) {
+                    "PINGED"
+                } else {
+                    "PENDING"
+                };
+                let follow = result.get("message_id").and_then(Value::as_str)
+                    .map(|id| format!("  To follow the request, run `everett status {id}`."));
+                let mut payload = r.clone();
+                payload.extend(result);
+                emit(args.json, &payload, vec![
+                    routed_line,
+                    Some(format!("{heading}  {label}")),
+                    payload.get("note").and_then(Value::as_str).map(|note| format!("  {note}")),
+                    follow,
+                    payload.get("reply").and_then(Value::as_str).map(str::to_string),
+                ]);
+                0
+            }
             Err(error) => { eprintln!("everett: {}", error.message); error.code },
         };
     }
