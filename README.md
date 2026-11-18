@@ -248,7 +248,7 @@ Done. MAX_RETRIES is now 5 and the backoff test covers the cap.
 | `everett learn "<fact>" [--project P] [--scope global\|project]` | Queues a fact for shared core. Add `--ttl-seconds N` (1 to 31536000) to keep it only in local memory search until expiry. Secrets are rejected. |
 | `everett trunk merge [--llm claude\|codex\|none] [--dry-run]` | Distills the inbox into the shared core. |
 | `everett core [show\|edit-path\|history] [--project P]` | Shows the core a new session in this folder receives, the file to edit, or past merges. |
-| `everett core search "<query>" [--project P]` | Prints up to five matching learned facts from global memory and the current or named project. Includes unexpired temporary facts. |
+| `everett core search "<query>" [--project P] [--json]` | Prints up to five matching learned facts from global memory and the current or named project. Includes unexpired temporary facts. Use `--json` for fact scope and expiry. |
 | `everett trunk [view] [--dry-run]` | Writes the session list as a Markdown note into your notes vault (optional). |
 | `everett trunk schedule [--at HH:MM] [--remove] [--llm claude\|codex\|none] [--apply]` | Prints (default) or, with `--apply`, installs/removes a macOS LaunchAgent or Linux systemd user timer that runs `everett trunk merge` nightly (default 04:00, `--llm claude`). See [Nightly auto-merge](#nightly-auto-merge). |
 | `everett login [--device NAME] [--open] [--force] [--json]` | Native Rust binary only: signs this device in to an Everett account with Cloudflare native device approval (see [Accounts](#accounts)). |
