@@ -839,20 +839,20 @@ fn tool_send(
         session = Session::from_dict(session_obj);
     }
     refuse_self(&session, caller).map_err(ToolFailure::Tool)?;
-    let delivery_mode = crate::send::delivery_mode_for(&session, &mode, None, caller)?;
+    let delivery = crate::send::delivery_for(&session, &mode, None, caller)?;
     if !caller_bound {
         return Err(err2(
             2,
             "Cannot authenticate the calling session for delivery; use a host-bound MCP session.",
         ));
     }
-    if delivery_mode == "ping" {
+    if let crate::send::Delivery::Ping(binding) = &delivery {
         let mut out = decision;
-        out.extend(crate::send::ping_as(&session, &text, timeout, caller, caller_harness)?);
+        out.extend(crate::send::ping_with_binding(&session, &text, timeout, caller, caller_harness, binding.as_ref())?);
         out.insert("session".into(), Value::Object(brief(&session)));
         return Ok(out);
     }
-    if delivery_mode == "inbox" {
+    if matches!(delivery, crate::send::Delivery::Inbox) {
         let result = send_inbox_as(
             &session,
             &text,

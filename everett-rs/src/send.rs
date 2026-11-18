@@ -536,6 +536,28 @@ pub fn delivery_mode_for(
     ps_out: Option<&str>,
     caller: Option<&str>,
 ) -> Result<String> {
+    Ok(delivery_for(session, mode, ps_out, caller)?.mode().to_owned())
+}
+
+pub(crate) enum Delivery {
+    Inbox,
+    Ping(Option<crate::t3_wake::Binding>),
+    Resume,
+}
+
+impl Delivery {
+    pub(crate) fn mode(&self) -> &'static str {
+        match self {
+            Self::Inbox => "inbox",
+            Self::Ping(_) => "ping",
+            Self::Resume => "resume",
+        }
+    }
+}
+
+pub(crate) fn delivery_for(
+    session: &Session, mode: &str, ps_out: Option<&str>, caller: Option<&str>,
+) -> Result<Delivery> {
     if !MODES.contains(&mode) {
         return Err(EverettError::new(2, format!("--mode must be one of {}.", MODES.join(", "))));
     }
@@ -547,8 +569,7 @@ pub fn delivery_mode_for(
         && !remote_derived
     {
         require_local_prompt(caller)?;
-        crate::t3_wake::validate_target(session)?;
-        return Ok("ping".into());
+        return Ok(Delivery::Ping(Some(crate::t3_wake::validate_binding(session)?)));
     }
     if mode == "ping" {
         require_local_prompt(caller)?;
@@ -556,7 +577,7 @@ pub fn delivery_mode_for(
             || (session.harness != "claude" && transport == PingTransport::Attached) {
             return Err(EverettError::new(4, "No immediate ping transport for this session. Nothing was queued. Use --mode inbox only for legacy hooks/polling."));
         }
-        return Ok("ping".into());
+        return Ok(Delivery::Ping(None));
     }
     if external::is_external(&session.harness) && mode == "resume" {
         return Err(EverettError::new(
@@ -566,10 +587,10 @@ pub fn delivery_mode_for(
         ));
     }
     if mode != "auto" {
-        return Ok(if remote_derived { "inbox" } else { mode }.to_string());
+        return Ok(if remote_derived || mode == "inbox" { Delivery::Inbox } else { Delivery::Resume });
     }
     if transport == PingTransport::OmpExtension && !remote_derived {
-        return Ok("ping".into());
+        return Ok(Delivery::Ping(None));
     }
     if remote_derived || transport != PingTransport::Headless {
         return Err(EverettError::new(
@@ -582,7 +603,7 @@ pub fn delivery_mode_for(
             ),
         ));
     }
-    Ok("resume".to_string())
+    Ok(Delivery::Resume)
 }
 
 pub fn ping_as(
@@ -592,6 +613,13 @@ pub fn ping_as(
     caller: Option<&str>,
     caller_harness: Option<&str>,
 ) -> Result<Map<String, Value>> {
+    ping_with_binding(session, text, timeout, caller, caller_harness, None)
+}
+
+pub(crate) fn ping_with_binding(
+    session: &Session, text: &str, timeout: f64, caller: Option<&str>, caller_harness: Option<&str>,
+    binding: Option<&crate::t3_wake::Binding>,
+) -> Result<Map<String, Value>> {
     require_local_prompt(caller)?;
     refuse_self(session, caller)?;
     if text.trim().is_empty() || text.len() > crate::peer::BODY_CAP || !timeout.is_finite() || timeout <= 0.0 {
@@ -599,12 +627,19 @@ pub fn ping_as(
     }
     let transport = ping_transport(session, None);
     if transport == PingTransport::T3 {
-        let binding = crate::t3_wake::validate_binding(session)?;
+        let resolved;
+        let binding = match binding {
+            Some(binding) => binding,
+            None => {
+                resolved = crate::t3_wake::validate_binding(session)?;
+                &resolved
+            }
+        };
         let mut out = send_inbox_with_options(session, text, caller, caller_harness, InboxOptions {
-            wait: 0.0, poll: 1.0, key: None, t3_binding: Some(&binding),
+            wait: 0.0, poll: 1.0, key: None, t3_binding: Some(binding),
         })?;
         let mid = out.get("message_id").and_then(Value::as_str).unwrap_or("");
-        let receipt = crate::t3_wake::wake_bound(&binding, session, mid).map_err(|error| {
+        let receipt = crate::t3_wake::wake_bound(binding, session, mid).map_err(|error| {
             EverettError::new(4, format!(
                 "Immediate T3 ping not confirmed: {}. Inbox message {mid} remains recorded and may have been read. Check `everett status {mid}`. If it's still queued, run `everett retry {mid}` to nudge the same request. Do not blindly retry with a new send.",
                 error.message,
