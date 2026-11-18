@@ -282,6 +282,41 @@ fn exact_t3_thread_id_sends_to_the_active_provider_inbox() {
     assert_eq!(messages.len(), 2);
     assert!(messages.iter().all(|m| m["to"] == SESSION && m["text"] == BODY));
     assert!(!fx.home().join(format!(".everett/inbox/{THREAD}.jsonl")).exists());
+
+    let db = Connection::open(fx.home().join(".t3/userdata/statev2.sqlite")).unwrap();
+    db.execute_batch(
+        "INSERT INTO orchestration_v2_projection_threads
+         (thread_id,project_id,title,default_provider,runtime_mode,interaction_mode,active_provider_thread_id,created_at,updated_at,payload_json)
+         SELECT 'duplicate','p','duplicate','codex','full-access','default','duplicate-provider',created_at,'2000-01-01T00:00:00Z','{}'
+         FROM orchestration_v2_projection_threads;
+         INSERT INTO orchestration_v2_projection_provider_threads
+         (provider_thread_id,thread_id,provider,driver,status,updated_at,payload_json)
+         SELECT 'duplicate-provider','duplicate',provider,driver,status,updated_at,payload_json
+         FROM orchestration_v2_projection_provider_threads;
+         UPDATE orchestration_v2_projection_threads SET title='duplicate' WHERE thread_id != 'duplicate';"
+    ).unwrap();
+    let rejected = fx.run_stdin(&["send", "--to", "duplicate", "--dry-run", BODY], "", &env);
+    assert_eq!(rejected.status.code(), Some(2), "{rejected:?}");
+    assert!(String::from_utf8_lossy(&rejected.stderr).contains("no eligible provider session"), "{rejected:?}");
+}
+
+#[test]
+fn t3_wake_refuses_to_nudge_a_rebound_thread_after_enqueue() {
+    let home = lib_home();
+    plant_thread(&home.path());
+    std::env::set_var("EVERETT_T3_BIN", fake_t3(&home.path(), 0));
+    let session = session();
+    let thread = everett::t3_wake::validate_target(&session).unwrap();
+    let sent = send::send_inbox_as(&session, BODY, 0.0, Some("caller"), None, 1.0, None).unwrap();
+    let db = Connection::open(home.path().join(".t3/userdata/statev2.sqlite")).unwrap();
+    db.execute("UPDATE orchestration_v2_projection_provider_threads SET payload_json=?1", [
+        json!({"driver":"codex","nativeThreadRef":{"driver":"codex","nativeId":"new-provider","strength":"strong"}}).to_string()
+    ]).unwrap();
+    let id = sent["message_id"].as_str().unwrap();
+    let failure = everett::t3_wake::wake(&thread, &session, id).unwrap_err();
+    assert!(failure.message.contains("binding changed"), "{failure}");
+    assert_eq!(inbox::pending(SESSION, None)[0]["id"], id);
+    assert!(!home.path().join("t3-argv").exists());
 }
 
 #[test]
