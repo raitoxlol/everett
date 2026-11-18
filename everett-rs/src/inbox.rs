@@ -251,30 +251,35 @@ pub(crate) fn claim_pending(session_id: &str, selected: &[&str]) -> Result<HashS
     }
     let selected: HashSet<&str> = selected.iter().copied().collect();
     let _guard = lock_file(&target)?;
+    let eligible = pending(session_id, None);
+    let mut claimed = HashSet::new();
+    let ids: Vec<&str> = eligible.iter().filter_map(|item| item["id"].as_str())
+        .filter(|id| selected.contains(id) && claimed.insert((*id).to_owned()))
+        .collect();
+    acknowledge_locked(session_id, &ids)?;
+    Ok(claimed)
+}
+
+fn acknowledge_locked(session_id: &str, ids: &[&str]) -> Result<()> {
+    if ids.is_empty() {
+        return Ok(());
+    }
     let done = done_path(session_id);
     let mut body = match fs::read_to_string(&done) {
         Ok(body) => body,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => String::new(),
         Err(error) => return Err(EverettError::new(2, format!("cannot read inbox acknowledgements: {error}"))),
     };
-    let eligible = pending(session_id, None);
-    let mut claimed = HashSet::new();
-    let ids: Vec<&str> = eligible.iter().filter_map(|item| item["id"].as_str())
-        .filter(|id| selected.contains(id) && claimed.insert((*id).to_owned()))
-        .collect();
-    if !ids.is_empty() {
-        persist_relay_context(session_id, &ids)?;
-        if !body.is_empty() && !body.ends_with('\n') {
-            body.push('\n');
-        }
-        for id in ids {
-            body.push_str(id);
-            body.push('\n');
-        }
-        crate::storage::save(&done, body.as_bytes())
-            .map_err(|error| EverettError::new(2, format!("cannot save inbox acknowledgements: {error}")))?;
+    persist_relay_context(session_id, ids)?;
+    if !body.is_empty() && !body.ends_with('\n') {
+        body.push('\n');
     }
-    Ok(claimed)
+    for id in ids {
+        body.push_str(id);
+        body.push('\n');
+    }
+    crate::storage::save(&done, body.as_bytes())
+        .map_err(|error| EverettError::new(2, format!("cannot save inbox acknowledgements: {error}")))
 }
 
 /// Look a message up by id across every inbox (for replies).
@@ -832,16 +837,10 @@ pub fn take_excluding(session_id: &str, excluded: &HashSet<String>) -> String {
         .collect();
     let (text, ids) = render(&pending_msgs, None);
     if !ids.is_empty() {
-        if persist_relay_context(
-            session_id,
-            &ids.iter().map(String::as_str).collect::<Vec<_>>(),
-        )
-        .is_err()
-        {
+        let acknowledged: Vec<&str> = ids.iter().map(String::as_str).collect();
+        if acknowledge_locked(session_id, &acknowledged).is_err() {
             return String::new();
         }
-        let body: String = ids.iter().map(|i| format!("{i}\n")).collect();
-        let _ = append_locked(&done_path(session_id), &body);
         let max_hops = ids
             .iter()
             .filter_map(|id| {
