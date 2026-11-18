@@ -85,6 +85,12 @@ async function begin(name = 'mac-mini-test') {
 }
 function expectAuthShell(page: string) {
   expect(page).toContain('<html lang="en">');
+  expect(page.toLowerCase()).toContain('<meta name="theme-color" content="#0e0c0b">');
+  const style = page.match(/<style>([\s\S]*?)<\/style>/)?.[1] ?? '';
+  expect(style).toMatch(/--bone:\s*#ede6dc\b/i);
+  expect(style).toMatch(/--sun:\s*#ff5a1f\b/i);
+  expect(style).toMatch(/"Geist"\s*,/);
+  expect(style).toMatch(/"Geist Mono"\s*,/);
   expect(page).toContain('<header class="auth-header">');
   expect(page).toContain('<main id="main" class="auth-main">');
   expect(page).toContain('<span class="auth-brand" aria-label="Everett">everett</span>');
