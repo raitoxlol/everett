@@ -57,7 +57,7 @@ const SECURITY_HEADERS: &[&str] = &[
     "transfer-encoding",
 ];
 const BACKEND_ERROR: &str = "backend unavailable, incompatible, or request timed out";
-const INSTRUCTIONS: &str = "This connection authorizes owner-scoped gateway access. Without a private identity handle, calls use its legacy inbox. Read the selected inbox for handoffs; reply using reply_to. Send only to authorized full IDs. Delivery is inbox-only; no automatic routing or bot wake-up. Only when everett_start is advertised has the owner separately granted a fixed-project T3 start; it requires a private identity_handle and durable request_id, confirms dispatch only, and grants no additional send/read/control access. Shared core, when enabled, includes the owner's global core. To register this chat separately, call everett_identity(action=create, registration_key=<fresh private random key>, name=<chat name>, kind=chat|dot|codex). Keep identity_handle private and pass it on subsequent calls; omit session_id. A name or host conversation metadata never authenticates an inbox.";
+const INSTRUCTIONS: &str = "This connection authorizes owner-scoped gateway access. Read the selected inbox for handoffs; reply using reply_to. Send only to authorized full IDs. Delivery is inbox-only; no automatic routing or bot wake-up. Only when everett_start is advertised has the owner separately granted a fixed-project T3 start; it requires a private identity_handle and durable request_id, confirms dispatch only, and grants no additional send/read/control access. Shared core, when enabled, includes the owner's global core. To register this chat separately, call everett_identity(action=create, registration_key=<fresh private random key>, name=<chat name>, kind=chat|dot|codex). Keep identity_handle private and pass it on subsequent calls; omit session_id. A name or host conversation metadata never authenticates an inbox.";
 
 #[derive(Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -85,6 +85,8 @@ fn default_scope() -> String {
 struct Binding {
     #[serde(default)]
     events: bool,
+    #[serde(default)]
+    require_identity_handle: bool,
     agent_id: String,
     harness: String,
     cwd: PathBuf,
@@ -381,6 +383,11 @@ impl Binding {
         Ok(args)
     }
 
+    fn requires_handle(&self, name: &str) -> bool {
+        self.require_identity_handle
+            && matches!(name, "everett_inbox" | "everett_send" | "everett_card")
+    }
+
     fn tools(&self) -> Vec<Tool> {
         let own = json!({"type":"string", "description":"Must match the identity selected by identity_handle; omit to use that binding."});
         let short = json!({"type":"string", "minLength":1, "maxLength":2000});
@@ -393,8 +400,11 @@ impl Binding {
             ("everett_send", "Queue an inbox-only message to an authorized full ID, or reply to an owned message. No automatic bot wake-up.", json!({"session_id":own,"text":{"type":"string","minLength":1,"maxLength":16000},"to":{"type":"string","minLength":1,"maxLength":128,"description":"Exact full ID from everett_whoami.authorized_destinations. The gateway checks the current owner allowlist on every send."},"reply_to":{"type":"string","minLength":1,"maxLength":128}}), vec!["text"]),
         ];
         specs.into_iter().filter(|(name, ..)| *name != "everett_core" || self.allow_shared_core)
-            .map(|(name, description, mut properties, required)| {
-                properties["identity_handle"] = json!({"type":"string","minLength":64,"maxLength":64,"description":"Private handle for this chat; omit only for the legacy connection identity."});
+            .map(|(name, description, mut properties, mut required)| {
+                if self.requires_handle(name) {
+                    required.push("identity_handle");
+                }
+                properties["identity_handle"] = json!({"type":"string","minLength":64,"maxLength":64,"description":"Private handle for this registered conversation. For everett_identity, supply it only when revoking."});
                 serde_json::from_value(json!({
                 "name":name,"description":description,
                 "inputSchema":{"type":"object","properties":properties,"required":required,"additionalProperties":false},
@@ -517,6 +527,9 @@ impl Gateway {
         }
         let mut selected = binding.clone();
         let private_identity = arguments.contains_key("identity_handle");
+        if binding.requires_handle(name) && !private_identity {
+            return Err("identity_handle is required; register a private inbox with everett_identity".into());
+        }
         if let Some(handle) = arguments.remove("identity_handle") {
             selected.agent_id = identities::resolve(binding, handle.as_str().ok_or("identity_handle must be a string")?)?;
         }
@@ -610,13 +623,16 @@ impl Gateway {
                             "status": if client_verified { "verified" } else { "unknown" },
                             "id": agent.map(|a| &a.client_id), "name": agent.map(|a| &a.name)},
                         "session": {"id": binding.agent_id, "harness": binding.harness,
-                            "label": format!("{} [{}]", if private_identity { "Registered conversation" } else { "Legacy client inbox" }, binding.agent_id),
+                            "label": format!("{} [{}]", if private_identity { "Registered conversation" } else if binding.require_identity_handle { "Gateway connection" } else { "Legacy client inbox" }, binding.agent_id),
                             "provenance": if private_identity { "owner_registered_logical" } else { "legacy_client_binding" },
                             "ownership": if private_identity && account_verified && client_verified { "verified_account_client" } else { "unmapped" }}
                     });
                     data["gateway_runtime"] = crate::build_info::value();
                     data["authorized_destinations"] = json!(binding.destinations);
                     data["capabilities"] = json!({"native_session_start": binding.native_start.as_ref().is_some_and(|p| p.permits(agent)), "automatic_wake": false, "delivery": "inbox"});
+                    if binding.require_identity_handle {
+                        data["capabilities"]["private_inbox_required"] = json!(true);
+                    }
                     if let Some(oauth) = &binding.oauth {
                         data["gateway_resource"] = json!(oauth.resource);
                     }
@@ -650,7 +666,11 @@ impl ServerHandler for Gateway {
                 "everett-owner-gateway",
                 env!("CARGO_PKG_VERSION"),
             ))
-            .with_instructions(INSTRUCTIONS)
+            .with_instructions(format!("{INSTRUCTIONS} {}", if self.binding.require_identity_handle {
+                "Mailbox tools and Event subscriptions require a private identity_handle."
+            } else {
+                "Without a private identity handle, mailbox tools use the legacy connection inbox."
+            }))
     }
     async fn list_tools(
         &self,
@@ -1215,6 +1235,7 @@ mod tests {
     fn binding(home: &Path) -> Binding {
         Binding {
             events: false,
+            require_identity_handle: false,
             agent_id: "dot-one".into(),
             identity_owner: None,
             harness: "openai-dot".into(),
