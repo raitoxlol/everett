@@ -236,6 +236,9 @@ enum Cmd {
         /// only show and mark delivered this message id
         #[arg(long)]
         message: Option<String>,
+        /// only show replies to this original message id
+        #[arg(long)]
+        reply_to: Option<String>,
         #[arg(long)]
         json: bool,
     },
@@ -890,11 +893,13 @@ fn main() {
             session,
             peek,
             message,
+            reply_to,
             json,
         } => {
             a.session = session;
             a.peek = peek;
             a.message = message;
+            a.reply_to = reply_to;
             a.json = json;
             cli::cmd_inbox(&a)
         }

@@ -232,7 +232,7 @@ Done. MAX_RETRIES is now 5 and the backoff test covers the cap.
 | `everett send --to <full-Claude-session-UUID> --wake [--wait S] "<request>"` | Queues the request, then explicitly wakes an existing local Claude Code background session through a PTY and waits for a reply linked to that inbox message. Requires an interactive local terminal and Claude Code 2.1.285 or newer. The sender cannot request this native wake through `auto`, MCP, gateway, remote, or T3 Code sends. A separately enabled receiver policy can wake Claude after a relay import. |
 | `everett reply <message-id> "<text>"` | Answers an Everett message; the reply goes to the sender's inbox. |
 | `everett proof wake --to <session> [--timeout S] [--json] [--dry-run]` | Checks one local ping path with a random nonce canary and a correlated inbox reply. Default timeout is 120 seconds. Dry-run resolves the target and transport without sending. See [wake proofs](docs/message-delivery.md#wake-proofs). |
-| `everett inbox [--session S] [--peek] [--message ID] [--json]` | Shows the messages waiting for this session (or the human inbox when run outside a session) and marks them delivered; `--message` shows and marks only that message. |
+| `everett inbox [--session S] [--peek] [--message ID] [--reply-to ID] [--json]` | Read and mark matching inbox messages. Use `--message` for an inbox item's own ID or `--reply-to` for replies to the original request ID. |
 | `everett event done\|blocked\|needs-input\|info "<msg>" [--project P]` | Records what this session is doing (see [Events](#events)). |
 | `everett events [--since 24h] [--session S] [--json] [--check]` | Recent events across sessions. `--check` also runs the blocked-too-long escalation. |
 | `everett subscribe <session\|project> [--as S] [--remove]` | Delivers another session's (or a project's) events to your inbox. |
@@ -538,7 +538,7 @@ Everett is mostly used by agents. `everett mcp` is a stdio MCP server (JSON-RPC 
 | `everett_core` | `action?`, `project?`, `query?`, `limit?`, `fact?`, `replacement?`, `scope?` | Reads the latest core by default. Local `search` ranks original learnings beyond the core cap. `forget` and `correct` update exact facts in active, pending, and searchable memory. |
 | `everett_card` | `what`, `state`, `next` | Writes the calling session's card. |
 | `everett_whoami` | none | The caller's session id, harness, hop count, and how they were detected. |
-| `everett_inbox` | `peek?` | The Everett messages (requests, replies, events) waiting for you; marks them delivered. |
+| `everett_inbox` | `peek?`, `message_id?`, `reply_to?` | Read and mark matching messages in your local inbox. Use `reply_to` to read only pending replies to an original request ID. |
 | `everett_status` | `message_id` | Local stdio MCP only. Check pickup and recover a retained reply from the session that sent the request. Use the original ID from `everett_send`. |
 | `everett_event` | `kind`, `message`, `project?` | Records done / blocked / needs-input / info for your session. |
 | `everett_subscribe` | `target`, `unsubscribe?` | Follows a session's or project's events in your inbox. |
