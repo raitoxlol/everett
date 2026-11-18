@@ -613,15 +613,23 @@ impl Events {
             )?;
             let claim = uuid::Uuid::new_v4().to_string();
             let at = now();
-            let attempts: Option<i64> = db.query_row(
-                "UPDATE deliveries SET next=?1, claim=?2
-                 WHERE subscription=?3 AND message=?4 AND done=0 AND next<=?5
-                 AND EXISTS (SELECT 1 FROM subscriptions WHERE id=?3 AND revision=?6 AND token IS ?7 AND expires>?5 AND blocked='')
-                 RETURNING attempts",
-                params![at + 30_000, claim, lease.id, mid, at, revision, lease.principal.token],
-                |row| row.get(0),
-            ).optional().map_err(|_| storage())?;
-            let Some(attempts) = attempts else { return Ok(()); };
+            let attempts: i64 = {
+                let mut statement = db.prepare(
+                    "UPDATE deliveries SET next=?1, claim=?2
+                     WHERE subscription=?3 AND message=?4 AND done=0 AND next<=?5
+                     AND EXISTS (SELECT 1 FROM subscriptions WHERE id=?3 AND revision=?6 AND token IS ?7 AND expires>?5 AND blocked='')
+                     RETURNING attempts",
+                ).map_err(|_| storage())?;
+                let mut rows = statement.query(params![at + 30_000, claim, lease.id, mid, at, revision, lease.principal.token])
+                    .map_err(|_| storage())?;
+                let Some(row) = rows.next().map_err(|_| storage())? else { return Ok(()); };
+                let attempts = row.get(0).map_err(|_| storage())?;
+                // SQLite can still fail to commit after returning the updated row.
+                if rows.next().map_err(|_| storage())?.is_some() {
+                    return Err(storage());
+                }
+                attempts
+            };
             drop(db);
             let status = self
                 .transport
