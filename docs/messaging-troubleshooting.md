@@ -5,9 +5,10 @@ no reply. Keep the message ID from the first attempt until its outcome is known.
 
 ## Diagnose the failed step
 
-Start with `everett relay diagnose` for a JSON snapshot that makes no network
-calls. MCP clients can call `everett_agent_relay` with `action="diagnose"`.
-No account sign-in or running receiver is required.
+Run `everett relay diagnose` for an offline JSON snapshot. The terminal command
+works while signed out and with the receiver stopped. Native MCP clients can get
+the same snapshot with `everett_agent_relay(action="diagnose")` after the standard
+online account check.
 
 The snapshot reports the receiver's held local leases, cached credential and
 key-file presence, external registration counts, webhook configuration and retry

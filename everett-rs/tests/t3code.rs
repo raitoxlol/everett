@@ -51,6 +51,7 @@ fn tool(fx: &Fixture, name: &str, args: Value, caller: &str) -> Value {
         json!({"jsonrpc":"2.0", "id":2, "method":"tools/call", "params":{
             "name":name, "arguments":args}}),
     ]);
+    common::native_mcp_account(&fx.home());
     let out = run(fx, &["mcp"], &input, caller);
     let stdout = String::from_utf8(out.stdout).unwrap();
     let response: Value = serde_json::from_str(stdout.lines().last().unwrap()).unwrap();

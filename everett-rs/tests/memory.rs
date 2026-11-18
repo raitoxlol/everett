@@ -172,6 +172,7 @@ fn resumed_harness_cannot_consume_the_mcp_protocol() {
         json!({"jsonrpc": "2.0", "id": 99, "method": "ping"}),
     ]);
     let path = format!("{}:/usr/bin:/bin", bin.display());
+    common::native_mcp_account(&fx.home());
     let out = fx.run_stdin(&["mcp"], &input, &[("PATH", &path), ("EVERETT_SESSION_ID", "caller-1")]);
     let replies: Vec<Value> = fx.stdout(&out).lines().map(|l| serde_json::from_str(l).unwrap()).collect();
     let sent = replies.iter().find(|r| r["id"] == 1).unwrap();
@@ -207,6 +208,7 @@ fn mcp_reaches_older_named_peers_with_explicit_hours() {
         "params": {"name": name, "arguments": arguments}});
     let input = common::jsonl(&[call(1, "everett_send", &args), call(2, "everett_send", &wide),
         call(3, "everett_route", &json!({"text": "Restore database backups using sqlite", "router": "local", "hours": 168}))]);
+    common::native_mcp_account(&fx.home());
     let out = fx.run_stdin(&["mcp"], &input, &[("EVERETT_SESSION_ID", "lookup-caller"), ("EVERETT_ROUTER", "local")]);
     let replies: Vec<Value> = fx.stdout(&out).lines().map(|l| serde_json::from_str(l).unwrap()).collect();
     assert_eq!(replies[0]["result"]["isError"], true);

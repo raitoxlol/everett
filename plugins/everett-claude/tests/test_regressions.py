@@ -1,6 +1,7 @@
 import importlib.util
 import json
 import os
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 import re
 import select
@@ -101,7 +102,42 @@ class InboxRegressions(unittest.TestCase):
         return next(json.loads(line)["result"] for line in result.stdout.splitlines()
                     if json.loads(line).get("id") == 2)
 
+    def configure_mcp_account(self):
+        token = "evt_" + "a" * 64
+        identity = {"owner": "fixture-owner", "deviceId": "fixture-device", "role": "member"}
+
+        class Issuer(BaseHTTPRequestHandler):
+            def do_POST(self):
+                if self.path != "/v2/relay/whoami" or self.headers.get("Authorization") != f"Bearer {token}":
+                    self.send_error(401)
+                    return
+                self.rfile.read(int(self.headers.get("Content-Length", "0")))
+                body = json.dumps({"result": identity}).encode()
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+
+            def log_message(self, *args):
+                pass
+
+        issuer = ThreadingHTTPServer(("127.0.0.1", 0), Issuer)
+        thread = threading.Thread(target=issuer.serve_forever, daemon=True)
+        thread.start()
+        self.addCleanup(issuer.server_close)
+        self.addCleanup(thread.join)
+        self.addCleanup(issuer.shutdown)
+        origin = f"http://127.0.0.1:{issuer.server_port}"
+        self.env.update(EVERETT_AUTH_PROVIDER="cloudflare", EVERETT_AUTH_BASE_URL=origin)
+        path = self.home / ".everett/cloudflare-auth.json"
+        with open(path, "x", opener=lambda name, flags: os.open(name, flags, 0o600)) as credential:
+            json.dump({"issuer": origin, "owner": identity["owner"], "agent_id": identity["deviceId"],
+                       "token": token, "device_name": "Fixture", "expires_at": int(time.time() * 1000) + 60000},
+                      credential)
+
     def test_reply_suggestion_uses_bound_api_and_collisions_stay_in_own_inbox(self):
+        self.configure_mcp_account()
         reason = json.loads(self.stop())["reason"]
         self.assertNotIn("everett reply", reason)
         self.assertIn("everett_whoami", reason)

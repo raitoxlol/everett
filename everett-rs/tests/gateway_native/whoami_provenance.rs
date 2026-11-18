@@ -2,6 +2,8 @@ use super::*;
 
 pub(super) fn gateway() {
     let c=ctx(); let issuer=fake_issuer();
+    let native_credential = c.home.join(".everett/cloudflare-auth.json");
+    assert!(!native_credential.exists());
     assert!(c.cli(&["external","add","--id","agent-two","--harness","openai-dot"]).status.success());
     issuer.grant(&access('a'),"legacy-client",json!({"everett_account":"private-owner","everett_agent_name":"OAuth client label"}));
     let port=c.oauth_server(&issuer.url);
@@ -37,6 +39,7 @@ pub(super) fn gateway() {
     let fixed=success(&fixed.call("everett_whoami",json!({})));
     assert_eq!(fixed["identity"]["account"]["status"],"unknown");
     assert_eq!(fixed["identity"]["session"]["provenance"],"legacy_client_binding");
+    assert!(!native_credential.exists());
 }
 
 pub(super) fn native() {
@@ -49,7 +52,7 @@ pub(super) fn native() {
         assert_eq!(result["identity"]["session"]["id"],sid);
         assert_eq!(result["identity"]["session"]["provenance"],"native_host_bound");
         assert_eq!(result["identity"]["session"]["ownership"],"unmapped");
-        assert_eq!(result["identity"]["account"]["status"],"unknown");
+        assert_eq!(result["identity"]["account"]["status"],"verified");
     }
     let mut peer=Wire::new(c.command(&["mcp"]));
     denied(&peer.call("everett_whoami",json!({"session_id":"forged-session","_meta":{"threadId":"also-forged"}})));

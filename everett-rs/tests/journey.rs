@@ -259,6 +259,7 @@ fn mcp_stdio_roundtrip() {
         "{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"tools/list\"}\n",
         "{\"jsonrpc\":\"2.0\",\"id\":3,\"method\":\"tools/call\",\"params\":{\"name\":\"everett_ls\",\"arguments\":{\"hours\":72}}}\n",
     );
+    common::native_mcp_account(&fx.home());
     let out = fx.run_stdin(&["mcp"], input, &[]);
     assert_eq!(
         out.status.code(),

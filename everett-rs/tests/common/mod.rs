@@ -120,13 +120,21 @@ pub fn plant(fixture: &Fixture, name: &str, rel: &str) -> PathBuf {
 /// Stand-in for the Jev endpoint: answers every POST with `status` and `body`.
 /// Returns the URL to pass as EVERETT_JEV_URL.
 pub fn jev_stub(status: u16, body: &'static str) -> String {
+    format!("{}/v1/systemone", http_stub(status, body, None))
+}
+
+fn http_stub(status: u16, body: &'static str, expected_path: Option<&'static str>) -> String {
     use std::io::{BufRead, BufReader, Read, Write};
     let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-    let url = format!("http://{}/v1/systemone", listener.local_addr().unwrap());
+    let url = format!("http://{}", listener.local_addr().unwrap());
     std::thread::spawn(move || {
         for stream in listener.incoming() {
             let Ok(mut stream) = stream else { continue };
             let mut reader = BufReader::new(stream.try_clone().unwrap());
+            let mut request = String::new();
+            if reader.read_line(&mut request).unwrap_or(0) == 0 {
+                continue;
+            }
             let mut length = 0usize;
             loop {
                 let mut line = String::new();
@@ -139,6 +147,14 @@ pub fn jev_stub(status: u16, body: &'static str) -> String {
             }
             let mut sink = vec![0u8; length];
             let _ = reader.read_exact(&mut sink);
+            let (status, body) = if expected_path.is_none_or(|path| {
+                let mut parts = request.split_whitespace();
+                parts.next() == Some("POST") && parts.next() == Some(path)
+            }) {
+                (status, body)
+            } else {
+                (404, "{}")
+            };
             let _ = write!(
                 stream,
                 "HTTP/1.1 {} X\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
@@ -151,6 +167,38 @@ pub fn jev_stub(status: u16, body: &'static str) -> String {
     url
 }
 
+/// Give a temporary profile a synthetic credential verified by a loopback issuer.
+pub fn native_mcp_account(home: &Path) {
+    use std::io::Write;
+    use std::os::unix::fs::OpenOptionsExt;
+
+    static ISSUER: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    static PROFILE_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    let _guard = PROFILE_LOCK.lock().unwrap();
+    let path = home.join(".everett/cloudflare-auth.json");
+    if path.exists() {
+        return;
+    }
+    let issuer = ISSUER.get_or_init(|| {
+        http_stub(
+            200,
+            r#"{"result":{"owner":"fixture-owner","deviceId":"fixture-agent","role":"member"}}"#,
+            Some("/v2/relay/whoami"),
+        )
+    });
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    let mut file = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(0o600)
+        .open(path)
+        .unwrap();
+    write!(file, "{}", serde_json::json!({
+        "issuer":issuer, "owner":"fixture-owner", "agent_id":"fixture-agent",
+        "device_name":"Fixture", "token":format!("evt_{}", "a".repeat(64)), "expires_at":u64::MAX
+    })).unwrap();
+}
+
 /// Run `everett mcp` with an isolated env, send initialize plus each tools/call, return the call results.
 /// The server is orphaned so harnesses running the test suite (devin, omp, ...) are not its ancestors.
 pub fn mcp_calls(
@@ -161,6 +209,7 @@ pub fn mcp_calls(
 ) -> Vec<serde_json::Value> {
     use std::io::{BufRead, BufReader, Write};
     let mut cmd = Command::new("/bin/sh");
+    native_mcp_account(&fixture.home());
     let pidfile = fixture.home().join(".mcp-server.pid");
     let _ = std::fs::remove_file(&pidfile);
     cmd.args(["-c", r#"exec 3<&0; ( "$0" "$@" <&3 3<&- & echo $! > "$EVERETT_HOME/.mcp-server.pid" )"#, env!("CARGO_BIN_EXE_everett"), "mcp"])

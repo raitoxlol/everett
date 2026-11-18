@@ -618,7 +618,13 @@ Environment overrides: `EVERETT_VAULT`, `EVERETT_VAULT_DIR`, `EVERETT_HARNESS`, 
 
 ## Accounts
 
-Sign-in is optional for local/SSH use. `everett login` uses Cloudflare's native
+Local MCP tool calls require one `everett login` per Everett profile. Each harness
+session keeps its own binding and inbox. Everett verifies the account on each tool
+call, so running MCP processes pick up sign-in, sign-out and revocation on their
+next call. Local terminal commands such as `everett ls` work offline. Hosted gateway
+clients use their configured gateway authentication.
+
+`everett login` uses Cloudflare's native
 device approval protocol (not RFC 8628). Approve the named device at the printed
 browser link. Credentials live in `~/.everett/cloudflare-auth.json` (0600), and
 `whoami` verifies them online. `logout` removes the local credential;

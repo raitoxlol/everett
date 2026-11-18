@@ -658,7 +658,7 @@ pub(crate) fn ping_with_binding(
             }
         };
         let mut out = send_inbox_with_options(session, text, caller, caller_harness, InboxOptions {
-            wait: 0.0, poll: 1.0, key: None, t3_binding: Some(binding),
+            wait: 0.0, poll: 1.0, key: None, t3_binding: Some(binding), local_only: false,
         })?;
         let mid = out.get("message_id").and_then(Value::as_str).unwrap_or("");
         let receipt = crate::t3_wake::wake_bound(binding, session, mid).map_err(|failure| {
@@ -784,11 +784,23 @@ pub fn send_inbox_as(
     key: Option<&str>,
 ) -> Result<Map<String, Value>> {
     send_inbox_with_options(session, text, caller, caller_harness, InboxOptions {
-        wait, poll, key, t3_binding: None,
+        wait, poll, key, t3_binding: None, local_only: false,
+    })
+}
+
+pub(crate) fn send_local_inbox(
+    session: &Session,
+    text: &str,
+    caller: Option<&str>,
+    caller_harness: Option<&str>,
+) -> Result<Map<String, Value>> {
+    send_inbox_with_options(session, text, caller, caller_harness, InboxOptions {
+        wait: 0.0, poll: 1.0, key: None, t3_binding: None, local_only: true,
     })
 }
 
 struct InboxOptions<'a> {
+    local_only: bool,
     wait: f64,
     poll: f64,
     key: Option<&'a str>,
@@ -802,12 +814,15 @@ fn send_inbox_with_options(
     caller_harness: Option<&str>,
     options: InboxOptions<'_>,
 ) -> Result<Map<String, Value>> {
-    let InboxOptions { wait, poll, key, t3_binding } = options;
+    let InboxOptions { wait, poll, key, t3_binding, local_only } = options;
     if !wait.is_finite() || wait < 0.0 {
         return Err(EverettError::new(2, "--wait must be a finite number of seconds, 0 or more."));
     }
     if external::is_external(&session.harness) {
         if let Some(target) = external::device_target(&session.id) {
+            if local_only {
+                return Err(EverettError::new(2, "Gateway destination must have a local inbox."));
+            }
             let out = crate::peer::send_as(&target, text, key, caller, caller_harness)?;
             let reply_inbox = sender_info_as(caller, caller_harness)
                 .get("sender")
@@ -954,14 +969,36 @@ pub fn reply_as(
         let hops = inbox::remote_reply_hops(&original, env_hops)?;
         return crate::peer::retain_reply(&original, text, &who, hops);
     }
+    post_local_reply(&original, text, caller_id, &who, env_hops)
+}
+
+// The gateway passes the exact local message its binding authorized. Re-reading
+// by ID here could deliver to a different sender if the inbox changed meanwhile.
+pub(crate) fn reply_to_authorized_local_message(
+    original: &Map<String, Value>,
+    text: &str,
+    caller_id: &str,
+    caller_harness: &str,
+) -> Result<Map<String, Value>> {
+    let who = sender_info_as(Some(caller_id), Some(caller_harness));
+    post_local_reply(original, text, caller_id, &who, caller_hops_for(Some(caller_id)))
+}
+
+fn post_local_reply(
+    original: &Map<String, Value>,
+    text: &str,
+    caller_id: &str,
+    who: &Map<String, Value>,
+    env_hops: i64,
+) -> Result<Map<String, Value>> {
     let context = inbox::relay_context(who["sender"].as_str().unwrap_or(inbox::HUMAN));
-    let (mut hops, depth) = inbox::local_reply_hops(&original, env_hops)?;
+    let (mut hops, depth) = inbox::local_reply_hops(original, env_hops)?;
     if context.as_ref().is_some_and(inbox::external) {
         // Remote-derived answers get no free hop: untrusted lineage keeps spending the budget.
-        hops = inbox::reply_hops(&original, env_hops)?;
+        hops = inbox::reply_hops(original, env_hops)?;
     }
     let to = original.get("from").and_then(|v| v.as_str()).filter(|s| !s.is_empty()).unwrap_or(inbox::HUMAN);
-    let mut provenance = inbox::forward_provenance(&original)
+    let mut provenance = inbox::forward_provenance(original)
         .or_else(|| context.as_ref().and_then(inbox::forward_provenance));
     if context.as_ref().is_some_and(inbox::external) {
         provenance.get_or_insert_with(Map::new).extend(serde_json::from_value::<Map<String,Value>>(json!({"external":true,"untrusted":true,"trust":"external-untrusted","instruction_source":"agent-data"})).unwrap());
@@ -979,7 +1016,9 @@ pub fn reply_as(
         provenance,
     )?;
     if !caller_id.is_empty() {
-        inbox::mark_done(caller_id, &[message_id]);
+        if let Some(id) = original.get("id").and_then(Value::as_str) {
+            inbox::mark_done(caller_id, &[id]);
+        }
     }
     let mut out = Map::new();
     out.insert("mode".into(), json!("reply"));
