@@ -341,3 +341,19 @@ fn cli_temporary_learning_stays_out_of_shared_core() {
     assert!(!core.contains("Temporary meeting room"));
     assert!(!fx.run(&["learn", "Invalid lifetime", "--ttl-seconds", "0"]).status.success());
 }
+
+#[test]
+fn cli_search_finds_temporary_facts_in_the_selected_project() {
+    let fx = fixture();
+    for project in ["atlas", "delta"] {
+        let fact = format!("meeting room for {project}");
+        assert!(fx.run(&["learn", &fact, "--ttl-seconds", "90", "--project", project]).status.success());
+    }
+    let out = fx.run(&["core", "search", "meeting", "--project", "atlas"]);
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let text = fx.stdout(&out);
+    assert!(text.contains("meeting room for atlas"));
+    assert!(!text.contains("meeting room for delta"));
+    assert!(!fx.run(&["core", "search"]).status.success());
+    assert!(!fx.run(&["core", "show", "meeting"]).status.success());
+}

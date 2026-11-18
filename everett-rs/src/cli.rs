@@ -1332,6 +1332,25 @@ pub fn cmd_learn(args: &Args, ttl_seconds: Option<u64>) -> i32 {
     }
 }
 
+pub fn cmd_core_search(query: &str, project: Option<&str>) -> i32 {
+    match crate::core::search(query, project, None, 5) {
+        Ok(result) => {
+            let facts = result["facts"].as_array().expect("core search returns a facts array");
+            if facts.is_empty() {
+                println!("No matching facts.");
+            }
+            for fact in facts {
+                println!("{}", fact["text"].as_str().expect("stored facts contain text"));
+            }
+            0
+        }
+        Err(e) => {
+            eprintln!("everett: {}", e.message);
+            e.code
+        }
+    }
+}
+
 pub fn cmd_core(args: &Args) -> i32 {
     let project = match &args.project {
         Some(p) => crate::core::slug(p),
