@@ -77,6 +77,19 @@ fn wait_reply_times_out() {
 }
 
 #[test]
+fn wait_receives_a_reply_that_the_inbox_already_consumed() {
+    let _h = lib_home();
+    let request = post("peer", "question", "me");
+    let request_id = request["id"].as_str().unwrap();
+    let reply = inbox::post("me", "answer", "peer", "reply", request_id, 0, "", "", None).unwrap();
+    let reply_id = reply["id"].as_str().unwrap();
+    inbox::mark_done("me", &[reply_id]);
+    assert!(inbox::pending("me", None).is_empty());
+    let result = inbox::wait_reply("me", request_id, 0.0, 1.0).unwrap();
+    assert_eq!(result["id"], reply_id);
+}
+
+#[test]
 fn live_record_follows_the_harness_process() {
     let _h = lib_home();
     assert!(inbox::live("s1").is_none());
