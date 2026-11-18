@@ -648,7 +648,7 @@ pub(crate) fn ping_with_binding(
             EverettError::new(4, format!(
                 "Immediate T3 ping not confirmed: {}. Inbox message {mid} remains recorded and may have been read. Check `{status}`. If it's still queued, use `{retry}` to nudge the same request. Do not blindly retry with a new send.",
                 error.message,
-            ))
+            )).with_retained_t3_request(mid)
         })?;
         out.insert("wake".into(), json!({"state":"prompt_sent","transport":"t3","thread_id":binding.thread,"receipt":receipt}));
         out.insert("mode".into(), json!("ping"));
