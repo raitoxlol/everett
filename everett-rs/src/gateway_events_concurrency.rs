@@ -285,3 +285,39 @@ fn acknowledged_event_is_not_replayed_after_subscription_refresh() {
     let done: bool = events.db.lock().unwrap().query_row("SELECT done FROM deliveries", [], |row| row.get(0)).unwrap();
     assert!(done);
 }
+
+#[test]
+fn webhook_waits_for_the_delivery_claim_to_commit() {
+    let home = tempfile::tempdir().unwrap();
+    let (started, _) = mpsc::channel();
+    let (_, wait) = mpsc::channel();
+    let gate = Arc::new(Gate {
+        status: 204,
+        deliveries: AtomicUsize::new(0),
+        block: AtomicBool::new(false),
+        started,
+        release: Mutex::new(wait),
+    });
+    let events = Events::with_db(Connection::open_in_memory().unwrap(), home.path().into(), gate.clone()).unwrap();
+    events.subscribe(&p(), &args()).unwrap();
+    let inbox = home.path().join(".everett/inbox");
+    fs::create_dir_all(&inbox).unwrap();
+    writeln!(File::create(inbox.join("dot-a.jsonl")).unwrap(),
+        "{}", json!({"id":"fresh","to":"dot-a","ts":now() as f64 / 1000.0})).unwrap();
+    events.db.lock().unwrap().execute_batch(
+        "CREATE TABLE claim_parents(id TEXT PRIMARY KEY);
+         CREATE TABLE claim_checks(id TEXT REFERENCES claim_parents(id) DEFERRABLE INITIALLY DEFERRED);
+         CREATE TRIGGER reject_claim AFTER UPDATE OF claim ON deliveries BEGIN
+           INSERT INTO claim_checks VALUES (NEW.claim);
+         END;",
+    ).unwrap();
+
+    let lease = events.leases().unwrap().remove(0);
+    let delivery = events.deliver(&lease);
+    assert_eq!(gate.deliveries.load(Ordering::SeqCst), 0);
+    assert_eq!(delivery.unwrap_err().reason, "event storage unavailable");
+
+    events.db.lock().unwrap().execute_batch("DROP TRIGGER reject_claim").unwrap();
+    events.deliver(&lease).unwrap();
+    assert_eq!(gate.deliveries.load(Ordering::SeqCst), 1);
+}
