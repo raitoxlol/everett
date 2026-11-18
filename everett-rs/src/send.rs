@@ -640,8 +640,13 @@ pub(crate) fn ping_with_binding(
         })?;
         let mid = out.get("message_id").and_then(Value::as_str).unwrap_or("");
         let receipt = crate::t3_wake::wake_bound(binding, session, mid).map_err(|error| {
+            let (status, retry) = if caller.is_some() {
+                (format!("everett_status(message_id={mid:?})"), format!("everett_retry(message_id={mid:?})"))
+            } else {
+                (format!("everett status {mid}"), format!("everett retry {mid}"))
+            };
             EverettError::new(4, format!(
-                "Immediate T3 ping not confirmed: {}. Inbox message {mid} remains recorded and may have been read. Check `everett status {mid}`. If it's still queued, run `everett retry {mid}` to nudge the same request. Do not blindly retry with a new send.",
+                "Immediate T3 ping not confirmed: {}. Inbox message {mid} remains recorded and may have been read. Check `{status}`. If it's still queued, use `{retry}` to nudge the same request. Do not blindly retry with a new send.",
                 error.message,
             ))
         })?;
