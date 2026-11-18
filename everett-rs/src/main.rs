@@ -225,7 +225,13 @@ enum Cmd {
     /// answer an Everett inbox message (goes to the sender's inbox)
     Reply { id: String, text: String },
     /// list up to 50 recent local requests you sent
-    Sent { #[arg(long)] json: bool },
+    Sent {
+        /// list requests sent to this exact recipient session ID
+        #[arg(long)]
+        to: Option<String>,
+        #[arg(long)]
+        json: bool,
+    },
     /// show pickup and any reply for a local request you sent
     Status {
         message_id: String,
@@ -943,7 +949,7 @@ fn main() {
             a.text = Some(text);
             cli::cmd_reply(&a)
         }
-        Cmd::Sent { json } => cli::cmd_sent(json),
+        Cmd::Sent { to, json } => cli::cmd_sent(to.as_deref(), json),
         Cmd::Status { message_id, json } => cli::cmd_status(&message_id, json),
         Cmd::Retry { message_id, json } => cli::cmd_retry(&message_id, json),
         Cmd::Inbox {

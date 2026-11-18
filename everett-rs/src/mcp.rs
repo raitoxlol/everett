@@ -93,7 +93,9 @@ pub fn tools() -> &'static Vec<Value> {
             json!({
                 "name": "everett_sent",
                 "description": "List up to 50 recent local requests sent by your host-bound session, newest first. Returns message IDs, recipients and timestamps. Use an ID with everett_status.",
-                "inputSchema": {"type": "object", "properties": {}, "additionalProperties": false},
+                "inputSchema": {"type": "object", "properties": {
+                    "to": s("List requests sent to this exact recipient session ID."),
+                }, "additionalProperties": false},
             }),
             json!({
                 "name": "everett_status",
@@ -1268,7 +1270,9 @@ fn tool_sent(
     if !crate::inbox::valid_id(&sender) {
         return Err(err2(2, "Invalid host-bound session ID."));
     }
-    Ok(Map::from_iter([("requests".into(), json!(crate::inbox::recent_sent_requests(&sender)))]))
+    let recipient = args.get("to").and_then(Value::as_str);
+    let requests = crate::inbox::recent_sent_requests(&sender, recipient)?;
+    Ok(Map::from_iter([("requests".into(), json!(requests))]))
 }
 
 fn tool_status(

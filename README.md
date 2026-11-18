@@ -544,7 +544,7 @@ Everett is mostly used by agents. `everett mcp` is a stdio MCP server (JSON-RPC 
 | `everett_card` | `what`, `state`, `next` | Writes the calling session's card. |
 | `everett_whoami` | none | The caller's session id, harness, hop count, and how they were detected. |
 | `everett_inbox` | `peek?`, `message_id?`, `reply_to?` | Read and mark matching messages in your local inbox. Use `reply_to` to read only pending replies to an original request ID. |
-| `everett_sent` | None | Local stdio MCP only. Recover recent request IDs for the current sender, newest first. |
+| `everett_sent` | `to` (optional) | Local stdio MCP only. Recover recent request IDs for the current sender, newest first. Filter by exact recipient ID with `to`. |
 | `everett_status` | `message_id` | Local stdio MCP only. Check pickup and recover a retained reply from the session that sent the request. Use the original ID from `everett_send`. |
 | `everett_retry` | `message_id` | Local stdio MCP only. Nudge the original T3 thread for a still-queued ping from your session using the existing inbox request. |
 | `everett_event` | `kind`, `message`, `project?` | Records done / blocked / needs-input / info for your session. |

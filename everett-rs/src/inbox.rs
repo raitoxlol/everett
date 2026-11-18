@@ -360,10 +360,14 @@ pub(crate) struct SentRequest {
     pub ts: f64,
 }
 
-pub(crate) fn recent_sent_requests(sender: &str) -> Vec<SentRequest> {
+pub(crate) fn recent_sent_requests(sender: &str, recipient: Option<&str>) -> Result<Vec<SentRequest>> {
+    let files = match recipient {
+        Some(id) => vec![path(id)?],
+        None => paths::glob(&inbox_dir(), "*.jsonl"),
+    };
     let at = now();
     let mut requests = Vec::new();
-    for file in paths::glob(&inbox_dir(), "*.jsonl") {
+    for file in files {
         let Some(target) = file.file_stem().and_then(|stem| stem.to_str()).filter(|id| valid_id(id)) else { continue };
         for request in read(target) {
             if sent_target(&request, sender) != Some(target) {
@@ -376,7 +380,7 @@ pub(crate) fn recent_sent_requests(sender: &str) -> Vec<SentRequest> {
     }
     requests.sort_by(|a, b| b.ts.total_cmp(&a.ts).then_with(|| a.message_id.cmp(&b.message_id)));
     requests.truncate(50);
-    requests
+    Ok(requests)
 }
 
 fn sent_reply(messages: Vec<Map<String, Value>>, sender: &str, target: &str, message_id: &str) -> Option<Map<String, Value>> {
