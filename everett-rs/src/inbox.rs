@@ -197,23 +197,25 @@ pub(crate) fn post_with_deadline(
 }
 
 pub fn read(session_id: &str) -> Vec<Map<String, Value>> {
-    read_inbox(session_id).unwrap_or_default()
+    read_inbox(session_id, false).unwrap_or_default()
 }
 
-fn read_inbox(session_id: &str) -> Result<Vec<Map<String, Value>>> {
+fn read_inbox(session_id: &str, strict: bool) -> Result<Vec<Map<String, Value>>> {
     let mut out = Vec::new();
     let raw = match fs::read_to_string(path(session_id)?) {
         Ok(raw) => raw,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(out),
         Err(error) => return Err(EverettError::new(2, format!("cannot read inbox for {session_id}: {error}"))),
     };
-    for line in raw.lines() {
-        if let Ok(Value::Object(item)) = serde_json::from_str::<Value>(line) {
-            if item.get("id").and_then(|v| v.as_str()).map(|s| !s.is_empty()).unwrap_or(false)
-                && item.get("text").and_then(|v| v.as_str()).map(|s| !s.is_empty()).unwrap_or(false)
-            {
+    for (index, line) in raw.lines().enumerate() {
+        match serde_json::from_str::<Value>(line) {
+            Ok(Value::Object(item)) if ["id", "text"].iter()
+                .all(|key| item.get(*key).and_then(Value::as_str).is_some_and(|value| !value.is_empty())) => {
                 out.push(item);
             }
+            _ if strict && !line.trim().is_empty() => return Err(EverettError::new(2,
+                format!("cannot read inbox for {session_id}: malformed record on line {}", index + 1))),
+            _ => {}
         }
     }
     Ok(out)
@@ -374,7 +376,7 @@ pub(crate) fn queued_local_request(sender: &str, message_id: &str) -> Result<(St
         return Err(EverettError::new(2, "No retryable local request with that ID from this sender."));
     }
     if request_expired(&request)
-        || sent_reply(read_inbox(sender)?, sender, &target, message_id).is_some()
+        || sent_reply(read_inbox(sender, true)?, sender, &target, message_id).is_some()
         || read_acknowledgments(&done_path(&target))?.split_whitespace().any(|id| id == message_id)
     {
         return Err(EverettError::new(2, format!("This request is no longer queued. Check `everett status {message_id}`.")));
