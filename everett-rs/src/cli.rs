@@ -972,6 +972,24 @@ pub fn cmd_reply(args: &Args) -> i32 {
     }
 }
 
+pub fn cmd_sent(json: bool) -> i32 {
+    let caller = crate::host::caller_session_id();
+    let sender = if caller.is_empty() { crate::inbox::HUMAN } else { &caller };
+    let requests = crate::inbox::recent_sent_requests(sender);
+    if json {
+        println!("{}", serde_json::to_string_pretty(&json!({"requests": requests})).unwrap());
+    } else if requests.is_empty() {
+        println!("No recent local requests sent.");
+    } else {
+        for request in requests {
+            let stamp = crate::timefmt::strftime_local("%m-%d %H:%M", request.ts);
+            println!("{}  {stamp}  to {}", request.message_id, request.to);
+        }
+        println!("Check pickup and reply with `everett status MESSAGE_ID`.");
+    }
+    0
+}
+
 pub fn cmd_retry(message_id: &str, json: bool) -> i32 {
     let caller = crate::host::caller_session_id();
     let sender = if caller.is_empty() { crate::inbox::HUMAN } else { &caller };
