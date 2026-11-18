@@ -877,7 +877,8 @@ fn send_inbox_cmd(args: &Args, r: &Map<String, Value>, session: &Session, label:
     let id = result.get("message_id").and_then(Value::as_str).unwrap_or_default();
     let follow = if result.get("transport").and_then(Value::as_str) == Some("relay") {
         let peer = result.get("peer").and_then(Value::as_str).unwrap_or("<peer>");
-        format!("check with `everett peer status {peer} {id}`")
+        let command = ["everett", "peer", "status", peer, id].map(str::to_owned);
+        format!("check with `{}`", crate::proc::shlex_join(&command))
     } else {
         format!("check with `everett status {id}`")
     };
@@ -938,6 +939,10 @@ pub fn cmd_status(message_id: &str, json: bool) -> i32 {
                 let state = status["state"].as_str().unwrap_or_default().replace('_', " ").to_uppercase();
                 println!("{state}  {message_id}  to {}", status["to"].as_str().unwrap_or_default());
                 if let Some(text) = status["reply"]["text"].as_str() {
+                    let pickup = if status["picked_up"] == true { "observed" } else { "unconfirmed" };
+                    let author = status["reply"]["from"].as_str().unwrap_or_default();
+                    println!("  Inbox pickup {pickup}");
+                    println!("  Reply from {author}");
                     println!("{text}");
                 }
             }
