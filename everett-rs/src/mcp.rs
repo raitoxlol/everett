@@ -1654,6 +1654,10 @@ fn call_tool(params: &Map<String, Value>) -> std::result::Result<Map<String, Val
         Err(ToolFailure::Tool(e)) => {
             let mut d = Map::new();
             d.insert("error".into(), json!(e.message));
+            if let Some(id) = e.retained_t3_message_id {
+                d.insert("message_id".into(), json!(id));
+                d.insert("state".into(), json!("dispatch_unconfirmed"));
+            }
             (d, true)
         }
         Err(ToolFailure::Params(m)) => return Err(json!({"code": INVALID_PARAMS, "message": m})),
@@ -1678,7 +1682,7 @@ fn tool_result(data: Map<String, Value>, is_error: bool) -> Map<String, Value> {
     let mut out = Map::new();
     out.insert("content".into(), json!([{"type": "text", "text": text}]));
     out.insert("isError".into(), json!(is_error));
-    if !is_error {
+    if !is_error || data.contains_key("message_id") {
         out.insert("structuredContent".into(), Value::Object(data));
     }
     out
