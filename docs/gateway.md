@@ -76,14 +76,17 @@ the gateway. The default is `false`, which allows existing clients to use the
 legacy connection inbox without a handle. In strict mode:
 
 - `everett_inbox`, `everett_send`, and `everett_card` require a valid
-  `identity_handle` in the tool arguments. Event subscribe and unsubscribe
-  require it in `params.arguments`.
+  `identity_handle` in the tool arguments. Event subscriptions require it in
+  `params.arguments`. Use the same handle to unsubscribe a private inbox.
 - Authenticated clients can still list tools and events, register an identity,
   and call `everett_whoami` without a handle for connection details.
   `everett_whoami` reports `capabilities.private_inbox_required: true`. Supply
   a handle to see the corresponding registered identity.
-- The event pump skips legacy subscriptions that lack a handle. Those leases
-  follow their normal expiration schedule.
+- The event pump skips legacy subscriptions that lack a handle. These leases
+  still count toward the gateway quota until they expire or you unsubscribe.
+  To free a slot, the original connection can unsubscribe its legacy lease
+  using the original callback URL and no handle. The strict gateway still
+  requires a handle to subscribe again.
 
 Before enabling strict mode, register each conversation using the steps below
 and confirm the client can supply its handle on later calls. Have the owner
