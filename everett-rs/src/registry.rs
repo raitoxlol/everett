@@ -112,7 +112,7 @@ pub fn find(target: &str, sessions: &[Session]) -> Result<Session> {
         return Ok(s.clone());
     }
     let aliases: Vec<_> = sessions.iter().filter(|s| s.t3_thread_id.as_deref() == Some(target)).collect();
-    if aliases.is_empty() && t3code::has_thread(target) {
+    if aliases.is_empty() && t3code::has_thread(target)? {
         return Err(EverettError::new(2, format!(
             "no session matches T3 thread \"{target}\" because it has no eligible provider session in the look-back window."
         )));

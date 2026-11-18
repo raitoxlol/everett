@@ -248,19 +248,26 @@ pub fn threads(path: &Path) -> ThreadMap {
         .collect()
 }
 
-pub(crate) fn has_thread(id: &str) -> bool {
+pub(crate) fn has_thread(id: &str) -> crate::error::Result<bool> {
     let path = db_path();
-    let Ok(con) = Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_ONLY) else {
-        return false;
+    let checked = |detail| crate::error::EverettError::new(2, format!(
+        "cannot check exact T3 thread ID \"{id}\": {detail}"
+    ));
+    if !path.try_exists().map_err(|error| checked(error.to_string()))? {
+        return Ok(false);
+    }
+    let lookup = || {
+        let con = Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_ONLY)?;
+        con.busy_timeout(Duration::from_secs(1))?;
+        let v2 = !columns(&con, "orchestration_v2_projection_threads")?.is_empty();
+        let sql = if v2 {
+            "SELECT EXISTS(SELECT 1 FROM orchestration_v2_projection_threads WHERE thread_id=?1)"
+        } else {
+            "SELECT EXISTS(SELECT 1 FROM projection_threads WHERE thread_id=?1)"
+        };
+        con.query_row(sql, [id], |row| row.get(0))
     };
-    let _ = con.busy_timeout(Duration::from_secs(1));
-    let v2 = columns(&con, "orchestration_v2_projection_threads").is_ok_and(|cols| !cols.is_empty());
-    let sql = if v2 {
-        "SELECT 1 FROM orchestration_v2_projection_threads WHERE thread_id=?1"
-    } else {
-        "SELECT 1 FROM projection_threads WHERE thread_id=?1"
-    };
-    con.query_row(sql, [id], |_| Ok(())).is_ok()
+    lookup().map_err(|error| checked(error.to_string()))
 }
 
 /// Mark sessions T3 Code drives; its thread title is the fallback headline.
