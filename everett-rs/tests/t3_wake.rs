@@ -357,6 +357,24 @@ fn t3_custom_home_drives_projection_and_runtime_without_moving_inbox() {
     assert_eq!(result["thread_id"], THREAD);
     assert!(!fx.home().join(".everett/inbox").exists());
 
+    env[1].1 = r"~\t3 data";
+    let preview = fx.run_stdin(&["send", "--to", THREAD, "--dry-run", "--json", BODY], "", &env);
+    assert!(preview.status.success(), "{preview:?}");
+    let result: Value = serde_json::from_slice(&preview.stdout).unwrap();
+    assert_eq!(result["thread_id"], THREAD);
+
+    let account_relative = format!("~/{}{}", "../".repeat(64), t3_home.strip_prefix("/").unwrap().display());
+    let preview = Command::new(env!("CARGO_BIN_EXE_everett"))
+        .env_clear()
+        .env("PATH", common::HERMETIC_PATH)
+        .env("EVERETT_HOME", fx.home())
+        .env("T3CODE_HOME", account_relative)
+        .args(["send", "--to", THREAD, "--dry-run", "--json", BODY])
+        .output().unwrap();
+    assert!(preview.status.success(), "{preview:?}");
+    let result: Value = serde_json::from_slice(&preview.stdout).unwrap();
+    assert_eq!(result["thread_id"], THREAD);
+
     let nested = os_path.join("other/nested");
     fs::create_dir_all(&nested).unwrap();
     std::os::unix::fs::symlink(nested, os_path.join("link")).unwrap();
