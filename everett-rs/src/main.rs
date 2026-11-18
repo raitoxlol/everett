@@ -101,6 +101,11 @@ enum Cmd {
         #[command(subcommand)]
         action: ExternalCmd,
     },
+    /// Inspect owner-local T3 Code threads
+    Control {
+        #[command(subcommand)]
+        action: ControlCmd,
+    },
     /// list recent sessions
     Ls {
         /// list only this paired device (local listing is unchanged by default)
@@ -425,6 +430,15 @@ enum Cmd {
 enum Devices {
     /// permanently revoke a device and remove its local peer bindings
     Revoke { device_id: String },
+}
+
+#[derive(Subcommand)]
+enum ControlCmd {
+    /// List T3 threads as JSON, optionally filtered by project
+    Threads {
+        #[arg(long)]
+        project: Option<String>,
+    },
 }
 
 #[derive(Subcommand)]
@@ -813,6 +827,9 @@ fn main() {
             ExternalCmd::List => cli::cmd_external_list(),
             ExternalCmd::Remove { id } => cli::cmd_external_remove(&id),
         },
+        Cmd::Control { action: ControlCmd::Threads { project } } => {
+            cli::cmd_control_threads(project.as_deref().unwrap_or_default())
+        }
         Cmd::Ls {
             json,
             all,

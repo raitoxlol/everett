@@ -1332,6 +1332,19 @@ pub fn cmd_learn(args: &Args, ttl_seconds: Option<u64>) -> i32 {
     }
 }
 
+pub fn cmd_control_threads(project: &str) -> i32 {
+    match crate::send::require_local_prompt(None).and_then(|()| crate::control::threads(project)) {
+        Ok(threads) => {
+            println!("{threads}");
+            0
+        }
+        Err(e) => {
+            eprintln!("everett: {}", e.message);
+            e.code
+        }
+    }
+}
+
 pub fn cmd_core_search(query: &str, project: Option<&str>, json: bool) -> i32 {
     match crate::core::search(query, project, None, 5) {
         Ok(result) if json => {
