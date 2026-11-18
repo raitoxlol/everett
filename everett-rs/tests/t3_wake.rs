@@ -226,6 +226,44 @@ fn t3_cli_default_ping_starts_thread_turn() {
 }
 
 #[test]
+fn t3_mcp_retry_reuses_the_host_bound_senders_request() {
+    let fx = fixture();
+    plant_thread(&fx.home());
+    let fake = fake_t3(&fx.home(), 1);
+    let call = |sender, name, args| {
+        mcp_calls(&fx, &[], &[("EVERETT_SESSION_ID", sender), ("EVERETT_T3_BIN", fake.to_str().unwrap())], &[(name, args)]).remove(0)
+    };
+    let failure = call("caller", "everett_send", json!({"to":THREAD,"text":BODY}));
+    assert_eq!(failure["isError"], true, "{failure}");
+    let inbox_path = fx.home().join(format!(".everett/inbox/{SESSION}.jsonl"));
+    let inbox = fs::read_to_string(&inbox_path).unwrap();
+    let request: Value = serde_json::from_str(&inbox).unwrap();
+    let id = request["id"].as_str().unwrap();
+    let args = json!({"message_id":id});
+    assert!(failure.to_string().contains("everett_retry"), "{failure}");
+    assert!(failure.to_string().contains(id), "{failure}");
+    fake_t3(&fx.home(), 0);
+    fs::remove_file(fx.home().join("t3-argv")).unwrap();
+    for (sender, input) in [("", args.clone()), ("another-sender", args.clone()),
+        ("another-sender", json!({"message_id":id,"session_id":"caller"}))] {
+        let denied = call(sender, "everett_retry", input);
+        assert_eq!(denied["isError"], true, "{denied}");
+        assert!(!fx.home().join("t3-argv").exists());
+    }
+    let retry = tool_json(&call("caller", "everett_retry", args.clone()));
+    assert_eq!(retry["message_id"], id);
+    assert_eq!(retry["state"], "prompt_sent");
+    assert_argv(&fx.home(), id);
+    assert_eq!(fs::read_to_string(inbox_path).unwrap(), inbox);
+    let pickup = tool_json(&call(SESSION, "everett_inbox", args.clone()));
+    assert_eq!(pickup["messages"][0]["id"], id);
+    fs::remove_file(fx.home().join("t3-argv")).unwrap();
+    let denied = call("caller", "everett_retry", args);
+    assert_eq!(denied["isError"], true, "{denied}");
+    assert!(!fx.home().join("t3-argv").exists());
+}
+
+#[test]
 fn t3_mcp_default_ping_starts_thread_turn() {
     let fx = fixture();
     plant_thread(&fx.home());
