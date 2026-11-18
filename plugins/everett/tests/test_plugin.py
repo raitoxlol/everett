@@ -3,6 +3,8 @@ import hashlib
 import importlib.util
 import json
 from pathlib import Path
+import subprocess
+import sys
 import tempfile
 import unittest
 import zipfile
@@ -44,6 +46,40 @@ class HostedReadiness(unittest.TestCase):
         self.assertIn('native_start_client_catalog_stale', self.run_check()['errors'])
         self.catalog['tools'].append({'name': 'everett_start'})
         self.assertTrue(self.run_check()['checks_passed'])
+
+    def test_event_pickup_requires_the_registered_inbox_selectors(self):
+        inbox = next(tool for tool in self.catalog['tools'] if tool['name'] == 'everett_inbox')
+        with tempfile.TemporaryDirectory() as tmp:
+            whoami, tools = Path(tmp) / 'whoami.json', Path(tmp) / 'tools.json'
+            whoami.write_text(json.dumps(self.whoami))
+            command = [sys.executable, str(ROOT / 'check.py'), '--whoami', str(whoami),
+                       '--tools', str(tools), '--resource', RESOURCE]
+            tools.write_text(json.dumps(self.catalog))
+            default = subprocess.run(command, capture_output=True, text=True)
+            self.assertEqual(default.returncode, 0, default.stderr)
+
+            command.append('--require-event-pickup')
+            old = subprocess.run(command, capture_output=True, text=True)
+            self.assertEqual(old.returncode, 1, old.stderr)
+            self.assertIn('event_pickup_client_catalog_stale', json.loads(old.stdout)['errors'])
+
+            inbox['inputSchema'] = {'type': 'object', 'properties': {
+                'message_id': {'type': 'string'}, 'identity_handle': {'type': 'string'},
+            }}
+            tools.write_text(json.dumps(self.catalog))
+            refreshed = subprocess.run(command, capture_output=True, text=True)
+            self.assertEqual(refreshed.returncode, 0, refreshed.stderr)
+            self.assertTrue(json.loads(refreshed.stdout)['checks_passed'])
+
+    def test_event_pickup_rejects_missing_or_malformed_selectors(self):
+        inbox = next(tool for tool in self.catalog['tools'] if tool['name'] == 'everett_inbox')
+        for properties in ({'identity_handle': {'type': 'string'}},
+                           {'message_id': {'type': 'string'}},
+                           {'message_id': {'type': 'array'}, 'identity_handle': 'string'}):
+            with self.subTest(properties=properties):
+                inbox['inputSchema'] = {'properties': properties}
+                result = self.run_check(require_event_pickup=True)
+                self.assertIn('event_pickup_client_catalog_stale', result['errors'])
 
     def test_inbox_only_requires_explicit_native_grant(self):
         self.whoami['capabilities']['native_session_start'] = False
