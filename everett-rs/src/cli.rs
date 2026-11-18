@@ -1332,8 +1332,12 @@ pub fn cmd_learn(args: &Args, ttl_seconds: Option<u64>) -> i32 {
     }
 }
 
-pub fn cmd_core_search(query: &str, project: Option<&str>) -> i32 {
+pub fn cmd_core_search(query: &str, project: Option<&str>, json: bool) -> i32 {
     match crate::core::search(query, project, None, 5) {
+        Ok(result) if json => {
+            println!("{}", Value::Object(result));
+            0
+        }
         Ok(result) => {
             let facts = result["facts"].as_array().expect("core search returns a facts array");
             if facts.is_empty() {
