@@ -476,6 +476,28 @@ fn t3_retry_reuses_the_original_request_after_dispatch_failure() {
     assert_eq!(wrong_sender.status.code(), Some(2), "{wrong_sender:?}");
     assert!(!fx.home().join("t3-argv").exists());
 
+    let cloned = fixture();
+    plant_thread(&cloned.home());
+    let clone_retry = fx.run_stdin(&retry, "", &[
+        ("EVERETT_SESSION_ID", "caller"),
+        ("EVERETT_T3_BIN", bin.to_str().unwrap()),
+        ("T3CODE_HOME", cloned.home().join(".t3").to_str().unwrap()),
+    ]);
+    assert_eq!(clone_retry.status.code(), Some(4), "{clone_retry:?}");
+    assert!(!fx.home().join("t3-argv").exists());
+
+    let caller_inbox = fx.home().join(".everett/inbox/caller.jsonl");
+    let hidden_reply = run(&["reply", id, "Already answered"], "");
+    assert!(hidden_reply.status.success(), "{hidden_reply:?}");
+    assert!(fs::read_to_string(&caller_inbox).unwrap().contains("Already answered"));
+    let mut file = fs::OpenOptions::new().append(true).open(&caller_inbox).unwrap();
+    std::io::Write::write_all(&mut file, &[0xff]).unwrap();
+    drop(file);
+    let unreadable = run(&retry, "caller");
+    assert_eq!(unreadable.status.code(), Some(2), "{unreadable:?}");
+    assert!(!fx.home().join("t3-argv").exists());
+    fs::remove_file(caller_inbox).unwrap();
+
     let db = Connection::open(fx.home().join(".t3/userdata/statev2.sqlite")).unwrap();
     let bind = |native_id| db.execute("UPDATE orchestration_v2_projection_provider_threads SET payload_json=?1", [
         json!({"driver":"codex","nativeThreadRef":{"driver":"codex","nativeId":native_id,"strength":"strong"}}).to_string()
@@ -509,6 +531,50 @@ fn t3_retry_reuses_the_original_request_after_dispatch_failure() {
     let status = run(&["status", id, "--json"], "caller");
     let status: Value = serde_json::from_slice(&status.stdout).unwrap();
     assert_eq!(status["reply"]["text"], "Build checked");
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn t3_retry_rechecks_pickup_after_waiting_for_projection() {
+    let fx = fixture();
+    plant_thread(&fx.home());
+    let bin = fake_t3(&fx.home(), 1);
+    let first = fx.run_stdin(&["send", "--to", THREAD, BODY], "", &[
+        ("EVERETT_SESSION_ID", "caller"), ("EVERETT_T3_BIN", bin.to_str().unwrap()),
+    ]);
+    assert_eq!(first.status.code(), Some(4), "{first:?}");
+    let req = fx.run(&["inbox", "--session", SESSION, "--peek", "--json"]);
+    let req: Value = serde_json::from_slice(&req.stdout).unwrap();
+    let id = req["messages"][0]["id"].as_str().unwrap();
+    fs::remove_file(fx.home().join("t3-argv")).unwrap();
+    fake_t3(&fx.home(), 0);
+
+    let projection = fx.home().join(".t3/userdata/statev2.sqlite");
+    let db = Connection::open(&projection).unwrap();
+    db.execute_batch("BEGIN EXCLUSIVE").unwrap();
+    let retry = Command::new(env!("CARGO_BIN_EXE_everett"))
+        .args(["retry", id]).env_clear().env("HOME", fx.home()).env("EVERETT_HOME", fx.home())
+        .env("EVERETT_SESSION_ID", "caller").env("EVERETT_T3_BIN", bin)
+        .stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::piped())
+        .spawn().unwrap();
+    let fds = PathBuf::from(format!("/proc/{}/fd", retry.id()));
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+    loop {
+        if fs::read_dir(&fds).into_iter().flatten().flatten()
+            .any(|fd| fs::read_link(fd.path()).is_ok_and(|path| path == projection)) {
+            break;
+        }
+        assert!(std::time::Instant::now() < deadline, "retry did not open the projection");
+        std::thread::sleep(std::time::Duration::from_millis(2));
+    }
+    let pickup = fx.run(&["inbox", "--session", SESSION, "--message", id, "--json"]);
+    let pickup: Value = serde_json::from_slice(&pickup.stdout).unwrap();
+    assert_eq!(pickup["messages"][0]["id"], id);
+    db.execute_batch("ROLLBACK").unwrap();
+    let out = retry.wait_with_output().unwrap();
+    assert_eq!(out.status.code(), Some(2), "{out:?}");
+    assert!(fx.stdout(&out).is_empty());
+    assert!(!fx.home().join("t3-argv").exists());
 }
 
 #[test]
