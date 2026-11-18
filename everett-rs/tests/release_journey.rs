@@ -11,7 +11,7 @@ use std::time::{Duration, SystemTime};
 
 const TOOLS: &[&str] = &[ "everett_agent_relay", "everett_agent_send", "everett_agent_status",
     "everett_card", "everett_control", "everett_core", "everett_event", "everett_inbox", "everett_learn",
-    "everett_ls", "everett_retry", "everett_route", "everett_send", "everett_status", "everett_subscribe", "everett_whoami"];
+    "everett_ls", "everett_retry", "everett_route", "everett_send", "everett_sent", "everett_status", "everett_subscribe", "everett_whoami"];
 
 fn binary() -> PathBuf {
     let path = std::env::var_os("EVERETT_VERIFY_BINARY").map(PathBuf::from).unwrap_or_else(|| env!("CARGO_BIN_EXE_everett").into());
@@ -192,7 +192,9 @@ fn release_journey_over_cli_and_all_mcp_tools() {
     home.run(&["reply", sent["message_id"].as_str().unwrap(), "Upload tests pass"], "verify-worker");
     let replies = wire.call("everett_inbox", json!({}))["messages"].clone();
     assert_eq!((replies[0]["text"].clone(), replies[0]["reply_to"].clone()), (json!("Upload tests pass"), sent["message_id"].clone()));
-    let observed = wire.call("everett_status", json!({"message_id": sent["message_id"]}));
+    let recent = wire.call("everett_sent", json!({}));
+    assert_eq!(recent["requests"][0]["message_id"], sent["message_id"]);
+    let observed = wire.call("everett_status", json!({"message_id": recent["requests"][0]["message_id"]}));
     assert_eq!(observed["state"], "replied");
     assert_eq!(observed["picked_up"], true);
     assert_eq!(observed["reply"]["text"], "Upload tests pass");
