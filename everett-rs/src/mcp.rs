@@ -1811,6 +1811,7 @@ pub fn handle(message: &Value) -> Option<Value> {
                 capabilities["experimental"] = json!({
                     "everettExactDestinationIds": {"enforced": true},
                     "everettExactInboxPickup": {"enforced": true},
+                    (crate::gateway::WORKER_CAPABILITY): {"version": crate::gateway::WORKER_PROTOCOL},
                 });
             }
             Some(result(

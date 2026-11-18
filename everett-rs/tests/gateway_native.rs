@@ -1025,6 +1025,25 @@ fn native_stdio_journey_for_both_external_harnesses() {
     }
 }
 
+fn signed_out_gateway_can_use_an_explicit_everett_backend() {
+    let c = ctx();
+    let binary = std::env::var_os("EVERETT_VERIFY_BINARY").unwrap_or_else(|| BIN.into());
+    let separate = c.home.join("separate-everett");
+    std::fs::copy(&binary, &separate).unwrap();
+    let original = PathBuf::from(&binary);
+    for command in [json!([separate, "mcp"]), json!([original, "mcp", "--hours", "72"])] {
+        c.inbox("agent-two", "dot-one", "explicit-pickup");
+        let mut peer = c.peer(&json!({"backend_command": command}));
+        let identity = success(&peer.call("everett_whoami", json!({})));
+        assert_eq!(identity["session_id"], "dot-one");
+        denied(&peer.call("everett_ls", json!({})));
+        let pickup = success(&peer.call("everett_inbox", json!({"message_id": "explicit-pickup", "peek": true})));
+        assert_eq!(pickup["messages"].as_array().unwrap().len(), 1);
+        assert_eq!(pickup["messages"][0]["id"], "explicit-pickup");
+        assert!(!c.home.join(".everett/cloudflare-auth.json").exists());
+    }
+}
+
 fn policy_rejects_foreign_identity_project_and_unsafe_arguments() {
     let c = ctx();
     let mut peer = c.peer(&fixture(&[]));
@@ -1583,6 +1602,7 @@ const CASES: &[Case] = &[
     ("identity_listing_filters_same_name_registrations_by_kind", identity_listing_filters_same_name_registrations_by_kind),
     ("per_chat_identities_are_private_durable_and_revocable", per_chat_identities_are_private_durable_and_revocable),
     ("native_stdio_journey_for_both_external_harnesses", native_stdio_journey_for_both_external_harnesses),
+    ("signed_out_gateway_can_use_an_explicit_everett_backend", signed_out_gateway_can_use_an_explicit_everett_backend),
     ("policy_rejects_foreign_identity_project_and_unsafe_arguments", policy_rejects_foreign_identity_project_and_unsafe_arguments),
     ("conversation_metadata_cannot_replace_the_gateway_binding", conversation_metadata_cannot_replace_the_gateway_binding),
     ("core_is_an_explicit_grant", core_is_an_explicit_grant),
