@@ -9,6 +9,7 @@ use crate::error::{EverettError, Result};
 use crate::session::{clean, Session};
 use rusqlite::{params, Connection, OptionalExtension, TransactionBehavior};
 use serde_json::{json, Map, Value};
+use std::collections::HashSet;
 use std::path::Path;
 use std::time::Duration;
 
@@ -75,6 +76,12 @@ pub(crate) struct DispatchFailure {
     pub retryable: bool,
 }
 
+impl DispatchFailure {
+    fn uncertain(message: impl Into<String>) -> Self {
+        Self { error: EverettError::new(4, message), retryable: false }
+    }
+}
+
 impl From<EverettError> for DispatchFailure {
     fn from(error: EverettError) -> Self {
         Self { error, retryable: true }
@@ -99,14 +106,33 @@ fn journal_path() -> std::path::PathBuf {
     crate::inbox::inbox_dir().join("t3-dispatch.sqlite")
 }
 
-pub(crate) fn forget_retired_dispatches(target: &str, message_ids: &[String]) -> rusqlite::Result<()> {
-    if message_ids.is_empty() || !journal_path().is_file() {
+pub(crate) fn forget_retired_dispatches(target: &str, live_ids: &HashSet<&str>, mailbox: &Path) -> rusqlite::Result<()> {
+    if !journal_path().is_file() {
         return Ok(());
     }
     let mut journal = Connection::open_with_flags(journal_path(), rusqlite::OpenFlags::SQLITE_OPEN_READ_WRITE)?;
     journal.busy_timeout(Duration::from_millis(50))?;
-    let transaction = journal.transaction()?;
-    for id in message_ids {
+    let transaction = journal.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    let retired = {
+        let mut query = transaction.prepare("SELECT message_id FROM dispatch WHERE target = ?1")?;
+        let mut rows = query.query([target])?;
+        let mut retired = Vec::new();
+        while let Some(row) = rows.next()? {
+            let id: String = row.get(0)?;
+            if !live_ids.contains(id.as_str()) {
+                retired.push(id);
+            }
+        }
+        retired
+    };
+    // The mailbox lock is held by compaction. Confirm durable retirement before forgetting receipts.
+    if retired.is_empty()
+        || std::fs::File::open(mailbox).and_then(|file| file.sync_all()).is_err()
+        || std::fs::File::open(crate::inbox::inbox_dir()).and_then(|dir| dir.sync_all()).is_err()
+    {
+        return Ok(());
+    }
+    for id in retired {
         transaction.execute("DELETE FROM dispatch WHERE target = ?1 AND message_id = ?2", params![target, id])?;
     }
     transaction.commit()
@@ -173,9 +199,10 @@ pub(crate) fn retry(sender: &str, message_id: &str) -> Result<Map<String, Value>
             return Err(EverettError::new(2, "The original request changed before dispatch."));
         }
         Ok(())
-    })).map_err(|failure| EverettError::new(failure.error.code, format!(
-        "T3 retry not confirmed: {}", failure.error.message,
-    )))?;
+    })).map_err(|failure| {
+        let follow_up = if failure.retryable { "" } else { " Check the original T3 thread before any further dispatch." };
+        EverettError::new(failure.error.code, format!("T3 retry not confirmed: {}.{follow_up}", failure.error.message.trim_end_matches('.')))
+    })?;
     Ok(Map::from_iter([
         ("message_id".into(), json!(message_id)),
         ("to".into(), json!(target)),
@@ -213,10 +240,7 @@ fn wake_checked(
         .map_err(|e| EverettError::new(4, format!("t3 thread send failed to start: {e}")))?;
     let out = captured.output;
     if out.timed_out {
-        return Err(EverettError::new(
-            4,
-            format!("t3 thread send timed out after {timeout}s"),
-        ).into());
+        return Err(DispatchFailure::uncertain(format!("t3 thread send timed out after {timeout}s")));
     }
     if out.code != 0 {
         let detail = if out.stderr.trim().is_empty() {
@@ -231,9 +255,9 @@ fn wake_checked(
         });
         return Err(DispatchFailure { error, retryable: out.code > 0 });
     }
-    let receipt = captured.receipt.as_ref().ok_or_else(|| EverettError::new(4,
+    let receipt = captured.receipt.as_ref().ok_or_else(|| DispatchFailure::uncertain(
         "t3 returned no valid JSON receipt. Check that the selected CLI supports thread commands. Dispatch is unconfirmed; do not blindly retry."))?;
     t3_cli::validate_dispatch(receipt, t3_cli::Dispatch::Send(thread), false, out.code)
-        .map_err(|message| EverettError::new(4, message))?;
+        .map_err(DispatchFailure::uncertain)?;
     Ok(out.stdout.trim().to_string())
 }
