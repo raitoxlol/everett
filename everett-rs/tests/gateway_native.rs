@@ -781,9 +781,12 @@ fn oauth_chat_identity_survives_reapproval_but_rejects_another_account() {
 }
 
 fn strict_gateway_keeps_conversation_inboxes_separate() {
+    use sha2::{Digest, Sha256};
+
     let c = ctx();
     let issuer = fake_issuer();
     issuer.grant(&access('a'), "agent-shared", json!({"everett_account":"github:alice"}));
+    issuer.grant(&access('b'), "agent-foreign", json!({"everett_account":"github:bob"}));
     let port = c.spawn_http(c.oauth_command(&json!({
         "oauth":{"issuer":issuer.url,"resource":RESOURCE},
         "require_identity_handle":true, "events":true,
@@ -837,14 +840,44 @@ fn strict_gateway_keeps_conversation_inboxes_separate() {
     }
     let req = json!({"name":"message.created","arguments":{"session_id":"agent-shared"},
         "delivery":{"mode":"webhook","url":"https://callback.example/","secret":"intentionally-invalid"}});
-    for method in ["events/subscribe", "events/unsubscribe"] {
-        let denied = oauth_rpc(port, 'a', method, req.clone());
-        assert_eq!(denied["error"]["message"], "identity_handle_required");
-    }
+    let denied = oauth_rpc(port, 'a', "events/subscribe", req.clone());
+    assert_eq!(denied["error"]["message"], "identity_handle_required");
+    // A strict gateway can remove an older subscription for its own legacy binding.
+    assert_eq!(oauth_rpc(port, 'a', "events/unsubscribe", req.clone())["result"], json!({}));
     let mut req = req;
     req["arguments"] = json!({"identity_handle":conversations[3]["identity_handle"]});
-    let result = oauth_rpc(port, 'a', "events/subscribe", req);
+    let result = oauth_rpc(port, 'a', "events/subscribe", req.clone());
     assert_eq!(result["error"]["message"], "invalid_signing_secret");
+
+    let store = std::fs::read_dir(c.home.join(".everett/gateway-events")).unwrap()
+        .map(|entry| entry.unwrap().path()).find(|path| path.extension().is_some_and(|ext| ext == "sqlite3")).unwrap();
+    let db = rusqlite::Connection::open(store).unwrap();
+    db.busy_timeout(Duration::from_secs(2)).unwrap();
+    let scope = json!([issuer.url, RESOURCE]).to_string();
+    let account = json!(["github:alice", "https://chatgpt.com/oauth/client.json"]).to_string();
+    let owner = json!([scope, account]).to_string();
+    let token = json!({"access":access('a'),"handle":null}).to_string();
+    let now = chrono::Utc::now().timestamp_millis();
+    let secret = "whsec_BwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwc=";
+    for index in 0..64 {
+        let url = format!("https://localhost/{index}");
+        let key = json!([owner, "agent-shared", "message.created", url]).to_string();
+        let id = format!("sub_{}", hex::encode(Sha256::digest(key.as_bytes())));
+        db.execute("INSERT INTO subscriptions(id,owner,agent,token,url,secret,rotation_until,created,expires,verified)
+            VALUES(?,?,'agent-shared',?,?,?,0,?,?,?)", rusqlite::params![id,owner,token,url,secret,now,now+60_000,now]).unwrap();
+    }
+    let count = || db.query_row("SELECT count(*) FROM subscriptions", [], |row| row.get::<_, i64>(0)).unwrap();
+    req["delivery"]["url"] = json!("https://localhost/dot");
+    req["delivery"]["secret"] = json!(secret);
+    assert_eq!(oauth_rpc(port, 'a', "events/subscribe", req.clone())["error"]["message"], "subscription_limit");
+    let legacy = json!({"name":"message.created", "arguments":{"session_id":"agent-shared"},
+        "delivery":{"mode":"webhook","url":"https://localhost/0"}});
+    assert_eq!(oauth_rpc(port, 'b', "events/unsubscribe", legacy.clone())["error"]["message"], "unsupported_event_or_filter");
+    assert_eq!(count(), 64);
+    assert_eq!(oauth_rpc(port, 'a', "events/unsubscribe", legacy)["result"], json!({}));
+    assert_eq!(count(), 63);
+    // The local callback is deliberately blocked. Reaching verification proves a slot is available.
+    assert_eq!(oauth_rpc(port, 'a', "events/subscribe", req)["error"]["code"], -32015);
 }
 
 fn oauth_rejects_wrong_issuer_audience_expiry_scope_identity_and_revoked_tokens() {
