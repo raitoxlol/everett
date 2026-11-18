@@ -102,7 +102,9 @@ impl Drop for NativeFixture {
 fn put(home: &Path, relative: &str, value: &impl serde::Serialize) {
     let path = home.join(relative);
     fs::create_dir_all(path.parent().unwrap()).unwrap();
-    fs::write(path, serde_json::to_vec(value).unwrap()).unwrap();
+    use std::os::unix::fs::OpenOptionsExt;
+    let mut file = fs::OpenOptions::new().write(true).create(true).truncate(true).mode(0o600).open(path).unwrap();
+    serde_json::to_writer(&mut file, value).unwrap();
 }
 fn select(home: &Path) {
     std::env::set_var("EVERETT_HOME", home);
@@ -134,6 +136,20 @@ fn status_fixture(posted: bool, state: &str, expired: bool) -> (common::Fixture,
         "posted":posted,"state":state
     }));
     (f, server, mid)
+}
+
+#[test]
+fn unrelated_incomplete_receipt_does_not_hide_message_status() {
+    let (f, _server, mid) = status_fixture(false, "queued", false);
+    use std::os::unix::fs::PermissionsExt;
+    let broken = f.write(".everett/relay-cloudflare/outgoing/000-incomplete.json", "{");
+    fs::set_permissions(&broken, fs::Permissions::from_mode(0o600)).unwrap();
+    let out = f.run(&["peer", "status", "id:agent-b", &mid]);
+    assert!(out.status.success(), "{out:?}");
+    let result: Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(result["state"], "unconfirmed");
+    assert_eq!(result["posted"], false);
+    assert_eq!(fs::read_to_string(broken).unwrap(), "{");
 }
 
 #[test]
