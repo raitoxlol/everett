@@ -96,12 +96,24 @@ fn gateway_worker_rejects_public_mcp_and_unscoped_operations() {
         json!({"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}),
         json!({"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}),
         json!({"Spawn":{"text":"fixture"}}),
+        json!({"Inbox":{"peek":false,"session_id":"another-dot"}}),
+        json!({"InboxMessage":{"peek":false,"message_id":null}}),
         json!({"Core":{"project":"test","action":"search"}}),
     ] {
         let output = fixture.run_stdin(&["gateway-worker"], &request.to_string(), &binding);
         assert!(!output.status.success(), "accepted {request}");
         assert!(output.stdout.is_empty(), "answered {request}");
     }
+
+    let output = fixture.run_stdin(
+        &["gateway-worker"],
+        &json!({"InboxMessage":{"peek":false,"message_id":"../foreign"}}).to_string(),
+        &binding,
+    );
+    assert_eq!(
+        serde_json::from_slice::<Value>(&output.stdout).unwrap(),
+        Value::Null
+    );
 
     let call =
         json!({"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"everett_whoami"}});

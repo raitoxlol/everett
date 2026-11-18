@@ -64,6 +64,14 @@ stdio. Backend processes receive basic OS environment variables such as `PATH`
 and `USER`. API keys and gateway tokens stay in the calling environment. Use
 only trusted backends because they have access to the owner's local stores.
 
+The hidden worker subcommand trusts its local launcher. A local process that can
+execute Everett with the gateway service account's filesystem permissions can
+supply its own home, session, and harness and call the one-shot worker without
+gateway or native credentials. It can then read or modify accessible Everett
+stores under a chosen external session ID. Run the gateway under a dedicated OS
+account with a private Everett home if untrusted local processes share the host.
+Give remote clients access only through the authenticated gateway transport.
+
 A gateway configuration grants access to fixed destinations, a directory and
 shared core. The connection is authorized by its bearer token or OAuth approval.
 One account sign-in can authorize multiple logical inboxes. Each ChatGPT
