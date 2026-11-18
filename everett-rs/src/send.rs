@@ -613,17 +613,28 @@ pub fn ping_as(
     caller: Option<&str>,
     caller_harness: Option<&str>,
 ) -> Result<Map<String, Value>> {
-    ping_with_binding(session, text, timeout, caller, caller_harness, None)
+    ping_with_binding(session, text, timeout, caller, caller_harness, None).map_err(|failure| failure.error)
+}
+
+pub(crate) struct PingFailure {
+    pub error: EverettError,
+    pub retained_message_id: Option<String>,
+}
+
+impl From<EverettError> for PingFailure {
+    fn from(error: EverettError) -> Self {
+        Self { error, retained_message_id: None }
+    }
 }
 
 pub(crate) fn ping_with_binding(
     session: &Session, text: &str, timeout: f64, caller: Option<&str>, caller_harness: Option<&str>,
     binding: Option<&crate::t3_wake::Binding>,
-) -> Result<Map<String, Value>> {
+) -> std::result::Result<Map<String, Value>, PingFailure> {
     require_local_prompt(caller)?;
     refuse_self(session, caller)?;
     if text.trim().is_empty() || text.len() > crate::peer::BODY_CAP || !timeout.is_finite() || timeout <= 0.0 {
-        return Err(EverettError::new(2, "Ping requires non-empty text within 64 KiB and a positive finite timeout"));
+        return Err(EverettError::new(2, "Ping requires non-empty text within 64 KiB and a positive finite timeout").into());
     }
     let transport = ping_transport(session, None);
     if transport == PingTransport::T3 {
@@ -645,10 +656,11 @@ pub(crate) fn ping_with_binding(
             } else {
                 (format!("everett status {mid}"), format!("everett retry {mid}"))
             };
-            EverettError::new(4, format!(
+            let error = EverettError::new(4, format!(
                 "Immediate T3 ping not confirmed: {}. Inbox message {mid} remains recorded and may have been read. Check `{status}`. If it's still queued, use `{retry}` to nudge the same request. Do not blindly retry with a new send.",
                 error.message,
-            )).with_retained_t3_request(mid)
+            ));
+            PingFailure { error, retained_message_id: Some(mid.to_owned()) }
         })?;
         out.insert("wake".into(), json!({"state":"prompt_sent","transport":"t3","thread_id":binding.thread,"receipt":receipt}));
         out.insert("mode".into(), json!("ping"));
@@ -663,7 +675,7 @@ pub(crate) fn ping_with_binding(
     delivery_mode_for(session, "ping", None, caller)?;
     if transport == PingTransport::OmpExtension {
         if caller_harness.is_some_and(external::is_external) {
-            return Err(EverettError::new(2, "External callers are inbox-only."));
+            return Err(EverettError::new(2, "External callers are inbox-only.").into());
         }
         let mut out = send_inbox_as(session, text, 0.0, caller, caller_harness, 1.0, None)?;
         out.insert("mode".into(), json!("ping"));
@@ -691,7 +703,7 @@ pub(crate) fn ping_with_binding(
             outcome => Err(EverettError::new(
                 if matches!(outcome, crate::claude_wake::WakeOutcome::Cancelled { .. }) { 130 } else { 4 },
                 format!("Immediate ping not confirmed ({outcome:?}); inbox message {mid} remains recorded and may have been read. Check `everett status {mid}` before retrying. Do not blindly retry."),
-            )),
+            ).into()),
         }
     } else {
         let env = hop_env_for(caller)?;

@@ -7,17 +7,11 @@ use std::fmt;
 pub struct EverettError {
     pub code: i32,
     pub message: String,
-    pub(crate) retained_t3_message_id: Option<String>,
 }
 
 impl EverettError {
     pub fn new(code: i32, message: impl Into<String>) -> Self {
-        EverettError { code, message: message.into(), retained_t3_message_id: None }
-    }
-
-    pub(crate) fn with_retained_t3_request(mut self, message_id: &str) -> Self {
-        self.retained_t3_message_id = Some(message_id.to_owned());
-        self
+        EverettError { code, message: message.into() }
     }
 }
 

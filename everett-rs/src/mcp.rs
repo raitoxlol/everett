@@ -217,6 +217,7 @@ fn tool_names() -> Vec<&'static str> {
 
 enum ToolFailure {
     Tool(EverettError),
+    Ping(crate::send::PingFailure),
     Params(String),
 }
 
@@ -855,7 +856,7 @@ fn tool_send(
     }
     if let crate::send::Delivery::Ping(binding) = &delivery {
         let mut out = decision;
-        out.extend(crate::send::ping_with_binding(&session, &text, timeout, caller, caller_harness, binding.as_ref())?);
+        out.extend(crate::send::ping_with_binding(&session, &text, timeout, caller, caller_harness, binding.as_ref()).map_err(ToolFailure::Ping)?);
         out.insert("session".into(), Value::Object(brief(&session)));
         return Ok(out);
     }
@@ -1651,10 +1652,10 @@ fn call_tool(params: &Map<String, Value>) -> std::result::Result<Map<String, Val
     log("call", log_fields);
     let (data, is_error) = match call_handler(name, &args, &identity) {
         Ok(d) => (d, false),
-        Err(ToolFailure::Tool(e)) => {
-            let mut d = Map::new();
-            d.insert("error".into(), json!(e.message));
-            if let Some(id) = e.retained_t3_message_id {
+        Err(ToolFailure::Tool(e)) => (Map::from_iter([("error".into(), json!(e.message))]), true),
+        Err(ToolFailure::Ping(failure)) => {
+            let mut d = Map::from_iter([("error".into(), json!(failure.error.message))]);
+            if let Some(id) = failure.retained_message_id {
                 d.insert("message_id".into(), json!(id));
                 d.insert("state".into(), json!("dispatch_unconfirmed"));
             }
