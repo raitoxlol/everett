@@ -34,6 +34,10 @@ pub(super) enum Call {
     Inbox {
         peek: bool,
     },
+    InboxMessage {
+        peek: bool,
+        message_id: String,
+    },
     Card {
         what: String,
         state: String,
@@ -68,9 +72,17 @@ impl Call {
             "everett_core" => Self::Core {
                 project: binding.project.clone(),
             },
-            "everett_inbox" => Self::Inbox {
-                peek: args.get("peek").and_then(Value::as_bool).unwrap_or(false),
-            },
+            "everett_inbox" => {
+                let peek = args.get("peek").and_then(Value::as_bool).unwrap_or(false);
+                if args.contains_key("message_id") {
+                    Self::InboxMessage {
+                        peek,
+                        message_id: string("message_id")?,
+                    }
+                } else {
+                    Self::Inbox { peek }
+                }
+            }
             "everett_card" => Self::Card {
                 what: string("what")?,
                 state: string("state")?,
@@ -104,6 +116,12 @@ impl Call {
             Self::Whoami => mcp::tool_whoami(&identity),
             Self::Core { project } => mcp::tool_core(&args(json!({"project": project}))),
             Self::Inbox { peek } => mcp::tool_inbox(&args(json!({"peek": peek})), &identity),
+            Self::InboxMessage { peek, message_id } if crate::inbox::valid_id(&message_id) => {
+                mcp::tool_inbox(
+                    &args(json!({"peek": peek, "message_id": message_id})),
+                    &identity,
+                )
+            }
             Self::Card { what, state, next } => mcp::tool_card(
                 &args(json!({"what": what, "state": state, "next": next})),
                 &identity,
