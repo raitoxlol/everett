@@ -17,7 +17,7 @@ See [native MCP sign-in](auth.md#native-mcp-sign-in).
 | Devin CLI | `everett mcp --harness devin` + `SessionStart`/`UserPromptSubmit` hooks record the session (Unreleased) | `everett install-hooks --devin --apply` and `everett install-mcp --devin --repair --apply` |
 | Hermes | `everett mcp --harness hermes`; binds only to the single interactive Hermes session created in the server's directory since the hermes process started (Unreleased) | add the entry printed by `everett install-mcp --hermes` to `~/.hermes/config.yaml`. Gateway mode cannot be bound |
 | T3 Code | none | set `EVERETT_SESSION_ID` in the thread's MCP launch environment |
-| dots / Grok Bot | `everett gateway` supplies an immutable binding | see [gateway.md](gateway.md) |
+| Remote connections | `everett gateway` supplies a fixed binding or verifies a private conversation handle | see [gateway.md](gateway.md#http-conversation-identity) |
 
 ## How `--harness` binds
 
@@ -54,6 +54,10 @@ handle the gateway reports `legacy_client_binding`, not an individual host chat.
 The old `gateway_auth.agent_name` is retained for compatibility and denotes the OAuth
 client label. Consumers should use `identity.session.label` for the selected inbox.
 Two logical registrations under one client keep distinct, stable session IDs/labels.
+The HTTP conversation mode also reports
+`capabilities.private_inbox_transport: "http_header"`. Its client supplies the
+handle on every conversation tool call without exposing it in tool arguments.
+See [HTTP conversation identity](gateway.md#http-conversation-identity).
 
 Native MCP reports `native_host_bound` for existing harness environment/process
 bindings, `launcher_binding` for generic EVERETT_SESSION_ID, `request_metadata` for
