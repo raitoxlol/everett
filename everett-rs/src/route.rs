@@ -8,7 +8,7 @@ use serde_json::{json, Map, Value};
 use crate::config;
 use crate::error::{EverettError, Result};
 use crate::proc::shlex_quote;
-use crate::session::{now, Session};
+use crate::session::{now, project_label, Session};
 
 pub const JEV_URL: &str = "https://api.typesafe.ai/v1/systemone";
 pub const JEV_MODEL: &str = "jev-1.13.0";
@@ -51,9 +51,21 @@ fn jev_reason(message: &str) -> &str {
     message.strip_prefix(JEV_ERROR_PREFIX).unwrap_or(message)
 }
 
-/// cwd (or git repo) basename, casefolded — how a request names a project.
+/// The session's project, casefolded — how a request names it. Worktrees count as their
+/// repository; the home directory and Codex chat folders are not projects.
 pub fn project_name(session: &Session) -> String {
-    session.cwd.trim_end_matches('/').rsplit('/').next().unwrap_or("").to_lowercase()
+    let label = project_label(&session.cwd);
+    let folder = session.cwd.trim_end_matches('/').rsplit('/').next().unwrap_or("");
+    if label == "-" || label == "~" || (label == "chat" && !folder.eq_ignore_ascii_case("chat")) {
+        return String::new();
+    }
+    label.to_lowercase()
+}
+
+/// True when the request contains every word of the session's project name.
+fn names_project(query: &HashSet<String>, session: &Session) -> bool {
+    let project = tokens(&project_name(session));
+    !project.is_empty() && project.iter().all(|token| query.contains(token))
 }
 
 const COORDINATOR_TERMS: &[&str] = &[
@@ -112,15 +124,11 @@ pub fn relevant_sessions(text: &str, sessions: &[Session], caller_id: Option<&st
         .collect();
     let mut filtered: Vec<Session> = without_caller
         .iter()
-        .filter(|s| {
-            let proj = project_name(s);
-            let named = !proj.is_empty() && query_tokens.contains(&proj);
-            !is_coordinator(s) || named
-        })
+        .filter(|s| !is_coordinator(s) || names_project(&query_tokens, s))
         .cloned()
         .collect();
     let mut pool = if filtered.is_empty() { without_caller } else { std::mem::take(&mut filtered) };
-    pool.sort_by_key(|s| (!query_tokens.contains(&project_name(s)), is_coordinator(s)));
+    pool.sort_by_key(|s| (!names_project(&query_tokens, s), is_coordinator(s)));
     pool
 }
 
@@ -260,7 +268,7 @@ pub fn tokens(text: &str) -> Vec<String> {
 }
 
 fn document(session: &Session) -> String {
-    let project = session.cwd.trim_end_matches('/').rsplit('/').next().unwrap_or("");
+    let project = project_name(session);
     let headline = if !session.title.is_empty() { &session.title } else { &session.first_user };
     format!("{} {} {} {}", session.card, headline, session.last_user, project)
 }
@@ -324,8 +332,7 @@ pub fn rank(text: &str, sessions: &[Session], at: Option<f64>) -> Vec<(f64, Stri
         let recency = 1.0 / (1.0 + age_hours / 72.0);
         let mut coverage = query_set.iter().filter(|t| doc.contains(*t)).count() as f64
             / query_set.len() as f64;
-        let project = project_name(session);
-        if !project.is_empty() && query_set.contains(&project) {
+        if names_project(&query_set, session) {
             raw_score = raw_score * PROJECT_BOOST + PROJECT_BOOST;
             coverage = coverage.max(1.0 / query_set.len() as f64);
         }
