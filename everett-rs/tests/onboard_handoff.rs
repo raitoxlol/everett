@@ -9,6 +9,7 @@ const CODEX_VECTOR: &str =
     "eyJ2ZXJzaW9uIjoxLCJhZ2VudCI6ImNvZGV4IiwiaG9va3MiOnRydWUsIm1jcCI6dHJ1ZX0";
 const CODEX_MCP_ONLY_VECTOR: &str =
     "eyJ2ZXJzaW9uIjoxLCJhZ2VudCI6ImNvZGV4IiwiaG9va3MiOmZhbHNlLCJtY3AiOnRydWV9";
+const PI_VECTOR: &str = "eyJ2ZXJzaW9uIjoxLCJhZ2VudCI6InBpIiwiaG9va3MiOnRydWUsIm1jcCI6ZmFsc2V9";
 
 fn sentinel(fx: &common::Fixture) -> std::path::PathBuf {
     fx.write(".everett/config.toml", "theme = \"untouched-test-value\"\n")
@@ -76,6 +77,13 @@ fn invalid_input_and_conflicting_options_do_not_echo_or_write() {
     assert!(!stderr.contains(bad), "{stderr}");
     assert_no_setup_writes(&fx);
 
+    let out = fx.run(&["onboard", "--handoff", PI_VECTOR, "--handoff-preview"]);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert_eq!(out.status.code(), Some(2));
+    assert!(stderr.contains("handoff data is invalid"), "{stderr}");
+    assert!(!stderr.contains(PI_VECTOR), "{stderr}");
+    assert_no_setup_writes(&fx);
+
     for extra in [
         &["--yes"][..],
         &["--no-mcp"][..],
@@ -119,7 +127,7 @@ fn run_in_pty(fx: &common::Fixture, input: &str, token: &str) -> (ExitStatus, St
 
     let mut master: RawFd = -1;
     let mut slave: RawFd = -1;
-    let window = libc::winsize {
+    let mut window = libc::winsize {
         ws_row: 24,
         ws_col: 120,
         ws_xpixel: 0,
@@ -130,8 +138,8 @@ fn run_in_pty(fx: &common::Fixture, input: &str, token: &str) -> (ExitStatus, St
             &mut master,
             &mut slave,
             std::ptr::null_mut(),
-            std::ptr::null(),
-            &window,
+            std::ptr::null_mut(),
+            &mut window,
         )
     };
     assert_eq!(opened, 0, "could not open test pty");
