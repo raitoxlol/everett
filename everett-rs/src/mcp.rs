@@ -546,7 +546,7 @@ fn tool_control(
     let session = if target.is_empty() {
         None
     } else {
-        Some(control::resolve_session(&target).map_err(ToolFailure::Tool)?)
+        Some(control::resolve_session(&target, 168.0).map_err(ToolFailure::Tool)?)
     };
     let is_t3 = !thread.is_empty() || session.as_ref().and_then(crate::t3_wake::thread_id).is_some();
     let value = match action.as_str() {
