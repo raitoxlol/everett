@@ -19,13 +19,13 @@ fn hash(value: &str) -> String {
 }
 fn scope(binding: &Binding) -> String {
     let oauth = binding.oauth.as_ref().map(|o| (&o.issuer, &o.resource));
-    hash(
-        &serde_json::to_string(&(
-            binding.identity_owner.as_ref().unwrap_or(&binding.agent_id),
-            oauth,
-        ))
-        .expect("identity scope is serializable"),
-    )
+    let owner = binding.identity_owner.as_ref().unwrap_or(&binding.agent_id);
+    let key = if binding.conversation_identity {
+        serde_json::to_string(&("conversation-http/v1", owner, oauth, &binding.harness))
+    } else {
+        serde_json::to_string(&(owner, oauth))
+    };
+    hash(&key.expect("identity scope is serializable"))
 }
 fn path(binding: &Binding) -> PathBuf {
     binding.home.join(".everett/gateway-identities.sqlite")

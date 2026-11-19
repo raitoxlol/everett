@@ -49,8 +49,8 @@ Keep the configuration and executable writable only by the trusted local owner.
 A suggested path is `~/.config/everett/dot.json`. `agent_id` must be the same
 string as `everett external add --id` for that binding.
 `agent_id` must match `[A-Za-z0-9_-]{1,100}` and cannot be `human` or `live`
-(case-insensitive); `harness` is `openai-dot` or
-`grok-bot`. The fixed project slug is lowercase, begins with a letter or digit,
+(case-insensitive). Use `openai-dot`, `grok-bot`, or `devin-bot` for `harness`.
+The fixed project slug is lowercase, begins with a letter or digit,
 and contains only letters, digits, `_`, or `-`, up to 64 characters.
 Destinations are exact, complete IDs, not titles, folder names, or prefixes.
 
@@ -79,7 +79,8 @@ A gateway configuration grants access to fixed destinations, a directory and
 shared core. The connection is authorized by its bearer token or OAuth approval.
 One account sign-in can authorize multiple logical inboxes. Each ChatGPT
 conversation, hosted Codex conversation, and Dot registers its own Everett
-identity and uses its own private handle.
+identity and uses its own private handle. Clients that can keep credentials
+outside MCP tool calls can use [HTTP conversation identity](#http-conversation-identity).
 
 ### Require a private inbox
 
@@ -162,7 +163,7 @@ The external-session registration contract is:
 
 ```text
 ~/.everett/external/<agent_id>.json
-{id, harness: "openai-dot" | "grok-bot", title, cwd, updated: epoch_seconds}
+{id, harness: "openai-dot" | "grok-bot" | "devin-bot", title, cwd, updated: epoch_seconds}
 ```
 
 Use the native `everett external add`, `list`, and `remove` commands to manage
@@ -495,14 +496,114 @@ administration. Use it for clients trusted with that access. If a bearer key
 leaks, deny all tools and rotate the key. Reuse neither a demo key nor another
 connector's key. Owner mode uses the gateway host's configured T3 runtime,
 including `EVERETT_T3_BIN` and `T3CODE_HOME` when set, and is separate from
-OAuth bindings, private identity handles, gateway-native start and gateway event
-subscriptions. Deploy remote connections behind HTTPS.
+OAuth bindings, legacy private identity handles, gateway-native start and gateway
+event subscriptions. You can reuse the grant file format on a dedicated bearer
+binding with HTTP conversation identity. Deploy remote connections behind HTTPS.
 
 Prefer dispatch without waiting for long T3 turns. If an owner tool exceeds
 the HTTP response deadline, it can continue under the native operation's
 deadline and retains its worker slot until it exits. Check the session or
 request's state before retrying an unconfirmed call.
 
+
+## HTTP conversation identity
+
+Set `"conversation_identity": true` in a dedicated gateway binding and run
+it over HTTP. The default is `false`. Use the built-in worker and set
+`"allow_shared_core": false`. Leave Events, native start, and
+`require_identity_handle` off. Use `"harness": "devin-bot"` for a Devin Bot
+binding and `"harness": "openai-dot"` for a ChatGPT plugin binding. These
+values label Everett's external directory. For OAuth, set
+`oauth.owner_account` and use a dedicated resource. The trusted issuer must
+supply the account and client ID in the token's introspection response.
+
+The owner supplies a separate, high-entropy
+`EVERETT_GATEWAY_IDENTITY_ADMIN_TOKEN` in the gateway environment. The existing
+[permission CLI](#owner-agent-access-over-https) manages the optional private
+`agent_tool_permissions` file for a bearer binding. Use a separate file per
+binding. Its permissions narrow the four conversation tools in discovery and
+execution. Even `"all"` allows only `everett_whoami`, `everett_inbox`,
+`everett_card`, and `everett_send`. An OAuth conversation binding exposes
+these four tools. Owners can grant session inspection, global memory, control,
+and relay administration through a separate fixed owner binding and credential.
+Those privileges can reach other sessions. Keep them outside the conversation client.
+
+### Provision, use and revoke an inbox
+
+The owner or a trusted process acting for the owner calls `POST /mcp/identity`
+with `Content-Type: application/json`, the connection's
+`Authorization: Bearer …` header, and the separate
+`Everett-Identity-Admin` credential header. Keep the endpoint, credential and
+response out of model-accessible tools, logs and traces.
+
+- Create with `{"action":"create","registration_key":"<fresh private random key>","name":"Conversation label","kind":"chat"}`.
+  Persist the 32–128 character URL-safe random key before the request. Retrying
+  with the same key and fields returns the same `session_id` and
+  `identity_handle`. Keep the key as private as the handle.
+- The client sends the normal connection authorization and one
+  `Everett-Identity-Handle` header on each `tools/call` to `/mcp`. The handle
+  is a 64-character hexadecimal secret. The client can initialize and list
+  tools before it has a handle. Omit `session_id` and `identity_handle` in tool
+  arguments. `everett_whoami` returns the selected public Everett ID and reports
+  `capabilities.private_inbox_transport: "http_header"`.
+- `everett_send` queues a local inbox message to an exact owner-granted
+  destination, or replies to a message addressed to this conversation from an
+  allowed sender. It omits the destination card and transcript summaries from
+  direct send receipts. A conversation send cannot invoke a receiver webhook,
+  start a session or send through the relay.
+- Revoke with `{"action":"revoke","identity_handle":"<private handle>"}` on the
+  owner endpoint. Retrying revocation is safe. It removes the external
+  registration and blocks future tool authorizations with that handle. Other
+  conversations keep their access. An operation already authorized may finish.
+  The owner retains the inbox and card files.
+
+Lifecycle success returns uncached JSON and HTTP 200. Invalid input or an
+unusable handle returns 400. Invalid connection authorization returns 401,
+missing or incorrect owner authorization returns 403, and the endpoint
+returns 404 when the mode is off. Use POST with JSON. Other methods and
+content types return 405 and 415 respectively. MCP returns tool errors for
+denied calls. A legacy gateway rejects the new handle header, so a
+misconfigured client fails instead of falling back to a shared inbox.
+
+The private SQLite store retains up to 256 registrations per scope, including
+revoked keys. The owner can inspect registrations with `everett external list`
+and back up the store privately. Bearer scope includes the bearer credential,
+configured `agent_id`, and harness. Rotating the connection bearer invalidates
+that binding's existing handles. Revoke active registrations before rotation
+when possible, then provision fresh inboxes through the new credential. The
+owner can remove obsolete local directory entries with `everett external remove`.
+OAuth scope includes the verified issuer, resource, account, client ID, and
+configured harness. A fresh token for those same values keeps existing handles.
+Each request still requires an active token. Handles are scoped to their
+gateway mode.
+
+### Devin Bot and ChatGPT clients
+
+A trusted client or broker must identify its conversation from state it
+controls, keep the registration key and handle in private per-conversation
+storage, and inject the handle after removing any caller-supplied copy. Fail
+when the conversation binding is missing or ambiguous. A vendor conversation
+ID, MCP transport ID, tool argument or request metadata cannot select an inbox.
+Keep the broker's store and credentials outside files, environment variables,
+prompts and shared memory that the model can access.
+
+- **Devin Bot.** Bots inherit their configured connections. Devin documents an
+  MCP header script on the session machine that can return custom headers. A
+  deployment could use it to call a trusted broker if the script can
+  authenticate its specific session to that broker without exposing secrets
+  to the model. Verify that binding, header delivery and private retention
+  across reconnects before using it. [Devin Bot connections](https://docs.devin.ai/work-with-devin/bots/connections) · [Devin header scripts](https://docs.devin.ai/work-with-devin/mcp#header-script)
+- **ChatGPT plugin.** Plugin OAuth authorizes the connection. The documented
+  `_meta["openai/session"]` value correlates calls. A trusted host integration
+  would have to retain and attach the handle privately. The HTTPS plugin and
+  the existing stdio Secure MCP Tunnel setup have no verified path for that
+  here. Tool results, including hidden `_meta`, are unsuitable for credentials.
+  [Plugin OAuth](https://developers.openai.com/plugins/build/auth) · [Client metadata](https://developers.openai.com/plugins/reference) · [Tool results](https://developers.openai.com/plugins/build/mcp-server)
+
+The native acceptance test uses synthetic HTTP clients and a loopback OAuth
+issuer. Vendor header delivery, vendor-side secret persistence, and production
+deployment remain unverified. Legacy OAuth and stdio clients can keep their
+existing binding until the new client path is verified.
 
 ## Bounds and verification
 
