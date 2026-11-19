@@ -658,7 +658,7 @@ pub(crate) fn ping_with_binding(
             }
         };
         let mut out = send_inbox_with_options(session, text, caller, caller_harness, InboxOptions {
-            wait: 0.0, poll: 1.0, key: None, t3_binding: Some(binding), local_only: false,
+            wait: 0.0, poll: 1.0, key: None, t3_binding: Some(binding), local_only: false, notify_receiver: true,
         })?;
         let mid = out.get("message_id").and_then(Value::as_str).unwrap_or("");
         let receipt = crate::t3_wake::wake_bound(binding, session, mid).map_err(|failure| {
@@ -784,7 +784,7 @@ pub fn send_inbox_as(
     key: Option<&str>,
 ) -> Result<Map<String, Value>> {
     send_inbox_with_options(session, text, caller, caller_harness, InboxOptions {
-        wait, poll, key, t3_binding: None, local_only: false,
+        wait, poll, key, t3_binding: None, local_only: false, notify_receiver: true,
     })
 }
 
@@ -793,14 +793,16 @@ pub(crate) fn send_local_inbox(
     text: &str,
     caller: Option<&str>,
     caller_harness: Option<&str>,
+    notify_receiver: bool,
 ) -> Result<Map<String, Value>> {
     send_inbox_with_options(session, text, caller, caller_harness, InboxOptions {
-        wait: 0.0, poll: 1.0, key: None, t3_binding: None, local_only: true,
+        wait: 0.0, poll: 1.0, key: None, t3_binding: None, local_only: true, notify_receiver,
     })
 }
 
 struct InboxOptions<'a> {
     local_only: bool,
+    notify_receiver: bool,
     wait: f64,
     poll: f64,
     key: Option<&'a str>,
@@ -814,7 +816,7 @@ fn send_inbox_with_options(
     caller_harness: Option<&str>,
     options: InboxOptions<'_>,
 ) -> Result<Map<String, Value>> {
-    let InboxOptions { wait, poll, key, t3_binding, local_only } = options;
+    let InboxOptions { wait, poll, key, t3_binding, local_only, notify_receiver } = options;
     if !wait.is_finite() || wait < 0.0 {
         return Err(EverettError::new(2, "--wait must be a finite number of seconds, 0 or more."));
     }
@@ -875,7 +877,7 @@ fn send_inbox_with_options(
         who.get("from_card").and_then(|v| v.as_str()).unwrap_or(""),
         metadata,
     )?;
-    let webhook = if external::is_external(&session.harness) {
+    let webhook = if notify_receiver && external::is_external(&session.harness) {
         match crate::receiver_webhook::after_local_queue(&session.id, &session.harness, &message) {
             Ok(value) => value,
             Err(error) => Some(json!({"state": "error", "reason": error.message})),

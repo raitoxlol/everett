@@ -53,6 +53,8 @@ pub(super) enum Call {
     Send {
         to: String,
         text: String,
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        queue_only: bool,
     },
     Reply {
         message: Map<String, Value>,
@@ -98,6 +100,7 @@ impl Call {
             "everett_send" if args.contains_key("to") => Self::Send {
                 to: string("to")?,
                 text: string("text")?,
+                queue_only: binding.conversation_identity,
             },
             "everett_send" => Self::Reply {
                 message: binding
@@ -133,10 +136,10 @@ impl Call {
                 &args(json!({"what": what, "state": state, "next": next})),
                 &identity,
             ),
-            Self::Send { to, text } if super::valid_destination(&to) => mcp::tool_send(
+            Self::Send { to, text, queue_only } if super::valid_destination(&to) => mcp::tool_send(
                 &args(json!({"mode":"inbox", "to":to, "text":text})),
                 &identity,
-                true,
+                if queue_only { mcp::SendPolicy::Conversation } else { mcp::SendPolicy::Exact },
             ),
             Self::Reply { message, text }
                 if message.get("to").and_then(Value::as_str) == Some(session)
