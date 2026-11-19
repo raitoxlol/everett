@@ -13,20 +13,19 @@
   <div class="shell">
     <aside class="sidebar">
       <a class="brand" href="#overview" aria-label="Everett overview"><span class="brand-mark" aria-hidden="true"></span>everett</a>
-      <div class="workspace"><span class="workspace-icon" aria-hidden="true">E</span><span>Private workspace<small>Everett mesh</small></span></div>
       <nav aria-label="Console" class="nav">
-        <a href="#overview"><span aria-hidden="true">◈</span>Overview</a>
-        <a href="#devices"><span aria-hidden="true">▣</span>Devices</a>
-        <a href="#cloud"><span aria-hidden="true">◇</span>Cloud agents</a>
-        <a href="#activity"><span aria-hidden="true">≋</span>Activity</a>
-        <a href="#settings"><span aria-hidden="true">⊙</span>Settings</a>
+        <a href="#overview">Overview</a>
+        <a href="#devices">Devices</a>
+        <a href="#cloud">Cloud agents</a>
+        <a href="#activity">Activity</a>
+        <a href="#settings">Settings</a>
       </nav>
       <div class="sidebar-footer"><a href="https://raitox.tech/everett" target="_blank" rel="noreferrer">About Everett <span aria-hidden="true">↗</span></a></div>
     </aside>
     <div class="workspace-main">
-      <header class="topbar"><p class="breadcrumb">Mesh <span aria-hidden="true">/</span> <strong id="breadcrumb">Overview</strong></p><div class="top-actions"><span id="source" class="source">Checking access</span><button id="refresh" class="quiet" hidden>Refresh</button><button id="signout" class="quiet" hidden>Sign out</button></div></header>
+      <header class="topbar"><span id="source" class="source">Checking access</span><div class="top-actions"><button id="refresh" class="quiet" hidden>Refresh</button><button id="signout" class="quiet" hidden>Sign out</button></div></header>
       <main id="main" tabindex="-1">
-        <div class="page-heading"><h1 id="title">Mesh overview</h1><p id="description">See what your devices and agents are doing.</p></div>
+        <div class="page-heading"><h1 id="title">Mesh overview</h1></div>
         <p id="notice" class="notice" role="status" aria-live="polite">Checking console access…</p>
         <section id="login" class="panel login" hidden>
           <h2>Sign in to Everett</h2><p id="login-description">Use the access secret for this console.</p><a id="github-login" class="primary sign-in-link" href="/api/login" hidden>Continue with GitHub</a>
@@ -59,7 +58,7 @@
             </div></section>
           </section>
         </div>
-        <footer><span id="snapshot-time"></span><span>Everett mesh console</span></footer>
+        <footer id="snapshot-time"></footer>
       </main>
     </div>
   </div>

@@ -7,11 +7,11 @@ const make = (tag, text, className) => {
 };
 
 const views = {
-  overview: ['Overview', 'Mesh overview', 'Devices, cloud connections, and delivery activity.'],
-  devices: ['Devices', 'Devices', 'Find registered devices and sessions exposed by them.'],
-  cloud: ['Cloud agents', 'Cloud agents', 'Hosted identities are tracked separately from device sessions.'],
-  activity: ['Activity', 'Activity', 'Follow signed delivery observations across the mesh.'],
-  settings: ['Settings', 'Settings', 'Review this console’s access and customize your workspace.'],
+  overview: 'Mesh overview',
+  devices: 'Devices',
+  cloud: 'Cloud agents',
+  activity: 'Activity',
+  settings: 'Settings',
 };
 const defaultPrefs = { theme: 'dark', density: 'comfortable', 'time-format': 'relative' };
 const choices = { theme: ['dark', 'light', 'system'], density: ['comfortable', 'compact'], 'time-format': ['relative', 'absolute'] };
@@ -58,10 +58,7 @@ function setView() {
     for (const id of viewResults[currentView]) $(id).replaceChildren();
     currentView = selected;
   }
-  const [label, title, description] = views[selected];
-  $('title').textContent = title;
-  $('breadcrumb').textContent = label;
-  $('description').textContent = description;
+  $('title').textContent = views[selected];
   for (const panel of document.querySelectorAll('[data-view]')) {
     panel.hidden = panel.dataset.view !== selected;
   }
@@ -76,12 +73,14 @@ function notice(text, kind = '') {
   const el = $('notice');
   if (el.textContent !== text) el.textContent = text;
   el.className = 'notice ' + kind;
+  el.hidden = !text;
 }
 
 function source(label, kind) {
   const el = $('source');
   el.textContent = label;
   el.dataset.source = kind;
+  el.removeAttribute('title');
 }
 
 function timestamp(at) {
@@ -261,7 +260,8 @@ function render(data) {
   showSignedIn(data.authentication);
   const fixture = data.source === 'fixture';
   source(fixture ? 'Fixture' : 'Cloudflare', data.source);
-  notice(fixture ? 'Preview with sample data. Your devices and cloud agents are not connected.' : 'Read access approved by the account owner.', fixture ? 'fixture' : '');
+  $('source').title = fixture ? 'Sample data' : 'Owner-approved read access';
+  notice(fixture ? 'Sample data for this preview.' : '', fixture ? 'fixture' : '');
   $('data').hidden = false;
   drawView();
   $('snapshot-time').replaceChildren(fixture ? 'Fixture refreshed ' : 'Cloudflare refreshed ', clock(data.serverNow));
