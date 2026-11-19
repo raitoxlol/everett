@@ -47,7 +47,9 @@ readline.createInterface({ input: process.stdin }).on("line", (line) => {
     return;
   }
   if (request.id === undefined) return;
-  fs.appendFileSync(requestLog, JSON.stringify({ method: request.method, sessionId: process.env.EVERETT_SESSION_ID || "bootstrap" }) + String.fromCharCode(10));
+  const loggedRequest = { method: request.method, sessionId: process.env.EVERETT_SESSION_ID || "bootstrap" };
+  if (request.method === "tools/call") loggedRequest.name = request.params.name;
+  fs.appendFileSync(requestLog, JSON.stringify(loggedRequest) + String.fromCharCode(10));
   let result;
   if (request.method === "initialize") {
     result = { protocolVersion: "2025-06-18", capabilities: { tools: {} }, serverInfo: { name: "fixture", version: "1" } };
@@ -59,6 +61,7 @@ readline.createInterface({ input: process.stdin }).on("line", (line) => {
   } else if (request.method === "tools/call") {
     if (options.exitOnCall) process.exit(1);
     if (options.holdCall) return;
+    if (options.blockCallName === request.params.name) while (true) {}
     result = options.failCall
       ? { isError: true, content: [{ type: "text", text: "fixture tool failed" }] }
       : { content: [{ type: "text", text: process.env.EVERETT_SESSION_ID + ":" + request.params.name }] };
@@ -178,6 +181,33 @@ test("Pi bridge aborts a pending MCP call", async () => {
     const call = pi.tools.get("everett_read").execute("call-abort", {}, controller.signal);
     controller.abort();
     await assert.rejects(call, /aborted/);
+  } finally {
+    await pi.events.get("session_shutdown")();
+  }
+});
+
+test("Pi bridge reconnects after aborting a blocked send without retrying it", async () => {
+  const fx = await fixture([
+    { name: "everett_send", inputSchema: { type: "object", properties: {} } },
+    { name: "everett_whoami", inputSchema: { type: "object", properties: {} } },
+  ], { blockCallName: "everett_send" });
+  const pi = piApi();
+  await loadExtension(fx, pi.api);
+  const sessionId = "pi-reconnect-session";
+  await pi.events.get("session_start")({}, { sessionManager: { getSessionId: () => sessionId } });
+  try {
+    const controller = new AbortController();
+    const sendCall = pi.tools.get("everett_send").execute("call-send", {}, controller.signal);
+    await waitForLog(fx.requestLog, '"name":"everett_send"');
+    controller.abort();
+    await assert.rejects(sendCall, /aborted/);
+
+    const read = await pi.tools.get("everett_whoami").execute("call-read", {});
+    assert.equal(read.content[0].text, `${sessionId}:everett_whoami`);
+    const calls = (await readFile(fx.requestLog, "utf8")).split("\n").filter((line) => line.includes('"method":"tools/call"')).map((line) => JSON.parse(line));
+    assert.equal(calls.filter((call) => call.name === "everett_send").length, 1);
+    assert.equal(calls.filter((call) => call.name === "everett_whoami").length, 1);
+    assert.ok(calls.every((call) => call.sessionId === sessionId));
   } finally {
     await pi.events.get("session_shutdown")();
   }

@@ -12,6 +12,7 @@ export class EverettMcpClient {
     this.pending = new Map();
     this.nextId = 1;
     this.closed = false;
+    this.closePromise = undefined;
     this.lines = createInterface({ input: this.child.stdout });
     this.lines.on("line", (line) => {
       let message;
@@ -55,12 +56,8 @@ export class EverettMcpClient {
         reject: (error) => finish(() => reject(error)),
       };
       const onAbort = () => {
-        try {
-          this.notify("notifications/cancelled", { requestId: id, reason: "Pi tool call aborted" });
-        } catch {
-          // The server may already have exited.
-        }
         request.reject(new Error("Everett MCP request was aborted"));
+        void this.close().catch(() => {});
       };
       this.pending.set(key, request);
       if (signal?.aborted) {
@@ -98,10 +95,11 @@ export class EverettMcpClient {
   }
 
   async close() {
+    if (this.closePromise) return this.closePromise;
     if (!this.closed) this.fail(new Error("Everett MCP server closed"));
     this.lines.close();
     if (this.child.exitCode !== null || this.child.signalCode !== null) return;
-    await new Promise((resolve) => {
+    this.closePromise = new Promise((resolve) => {
       const timer = setTimeout(() => {
         this.child.kill("SIGKILL");
         resolve();
@@ -112,6 +110,7 @@ export class EverettMcpClient {
       });
       this.child.kill("SIGTERM");
     });
+    await this.closePromise;
   }
 }
 
@@ -198,6 +197,54 @@ async function registerToolBridge(pi) {
   let activeClient;
   let connecting;
   let connectionController;
+  let boundSessionId;
+  const getSessionClient = async () => {
+    while (connecting) {
+      const pendingConnection = connecting;
+      const sessionClient = await pendingConnection;
+      if (sessionClient && !sessionClient.closed) return sessionClient;
+      if (connecting === pendingConnection) {
+        connecting = undefined;
+        connectionController = undefined;
+      }
+    }
+    if (activeClient && !activeClient.closed) return activeClient;
+    await activeClient?.close();
+    activeClient = undefined;
+    const sessionId = boundSessionId;
+    if (!sessionId) return undefined;
+
+    const currentGeneration = generation;
+    const controller = new AbortController();
+    connectionController = controller;
+    const pendingConnection = (async () => {
+      try {
+        const sessionClient = await connectMcpServer({
+          ...process.env,
+          EVERETT_SESSION_ID: sessionId,
+          EVERETT_HARNESS_NAME: "pi",
+        }, controller.signal);
+        if (currentGeneration !== generation || sessionId !== boundSessionId) {
+          await sessionClient.close();
+          return undefined;
+        }
+        activeClient = sessionClient;
+        return sessionClient;
+      } catch (error) {
+        if (currentGeneration === generation && !controller.signal.aborted) report("could not reconnect to Everett", error);
+        return undefined;
+      }
+    })();
+    connecting = pendingConnection;
+    try {
+      return await pendingConnection;
+    } finally {
+      if (connecting === pendingConnection) {
+        connecting = undefined;
+        connectionController = undefined;
+      }
+    }
+  };
   const start = async (_event, ctx) => {
     const sessionId = sessionIdFromContext(ctx);
     const currentGeneration = ++generation;
@@ -209,11 +256,13 @@ async function registerToolBridge(pi) {
     connectionController = undefined;
     previousController?.abort();
     if (!sessionId) {
+      boundSessionId = undefined;
       await previousClient?.close();
       await previousConnection;
       return;
     }
 
+    boundSessionId = sessionId;
     const controller = new AbortController();
     connectionController = controller;
     connecting = (async () => {
@@ -246,6 +295,7 @@ async function registerToolBridge(pi) {
   };
   const shutdown = async () => {
     generation += 1;
+    boundSessionId = undefined;
     const previousClient = activeClient;
     const previousConnection = connecting;
     const previousController = connectionController;
@@ -267,7 +317,7 @@ async function registerToolBridge(pi) {
         description: typeof tool.description === "string" ? tool.description : tool.name,
         parameters: Type.Unsafe(tool.inputSchema ?? { type: "object", properties: {} }),
         execute: async (_toolCallId, params, signal) => {
-          const sessionClient = activeClient ?? await connecting;
+          const sessionClient = await getSessionClient();
           if (!sessionClient) throw new Error("Everett MCP is not connected to this Pi session");
           return sessionClient.callTool(tool.name, params, signal);
         },
