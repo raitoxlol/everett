@@ -79,7 +79,9 @@ test('GitHub signs in the exact grant owner and Cloudflare still revokes the ope
   assert.ok(body.includes('my-device'));
   for (const value of [config.MESH_TOKEN, config.GITHUB_CLIENT_SECRET, 'fixture-github-token']) assert.ok(!body.includes(value));
   f.revoke();
-  assert.equal((await read()).status,403);
+  const denied = await read();
+  assert.equal(denied.status,403);
+  assert.deepEqual(await denied.json(), { error: 'mesh_access_revoked', authentication: 'github' });
 });
 
 test('rejects a different GitHub account before creating a dashboard session', async () => {

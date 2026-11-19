@@ -106,7 +106,26 @@ try {
     await page.getByRole('button', { name: 'Sign in' }).click();
     await page.locator('#data').waitFor({ state: 'visible' });
   });
-  assert.equal(count,6);
+  await scenario('a fresh authenticated view keeps refresh and sign-out available after grant denial', async () => {
+    let revoked = true;
+    await page.route('**/api/mesh', async route => {
+      if (revoked) await route.fulfill({
+        status: 403, json: { error: 'mesh_access_revoked', authentication: 'github' },
+      });
+      else await route.continue();
+    });
+    await page.clock.install();
+    await page.goto(origin + '/everett/dashboard#devices');
+    await page.getByText('Mesh read access ended.', { exact: false }).waitFor();
+    await page.getByRole('button', { name: 'Refresh' }).waitFor();
+    await page.getByRole('button', { name: 'Sign out' }).waitFor();
+    assert.equal(await page.locator('#data').isVisible(), false);
+    assert.equal(await page.getByText('fixture-mac-01', { exact: true }).count(), 0);
+    revoked = false;
+    await page.clock.fastForward(15000);
+    await page.getByText('fixture-mac-01', { exact: true }).waitFor();
+  });
+  assert.equal(count,7);
   console.log('unmet='+failures);
 } finally {
   await browser?.close();

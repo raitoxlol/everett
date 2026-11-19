@@ -107,7 +107,7 @@ export function createConsole(env,sourceFetch=fetch,githubFetch=fetch) {
     try {
       if(config.MESH_MODE==='fixture')return reply(adaptSnapshot(fixtureSnapshot(config.MESH_OWNER??'fixture-owner',config.CONSOLE_ORIGIN),{...config,MESH_OWNER:config.MESH_OWNER??'fixture-owner'}));
       const upstream=await sourceFetch(config.MESH_ENDPOINT+'/v1/mesh/snapshot',{headers:{Authorization:'Bearer '+config.MESH_TOKEN,'X-Everett-Console-Origin':config.CONSOLE_ORIGIN},redirect:'error',cache:'no-store',signal:AbortSignal.timeout(8000)});
-      if([401,403].includes(upstream.status))return reply({error:'mesh_access_revoked'},403);
+      if([401,403].includes(upstream.status))return reply({error:'mesh_access_revoked',authentication:config.auth},403);
       if(!upstream.ok)throw Error('source unavailable');
       const data=adaptSnapshot(await boundedResponse(upstream),config);
       if(data.source!=='cloudflare'||Math.abs(Date.now()-data.serverNow)>60000||data.grantExpiresAt<=Date.now())throw Error('stale source');

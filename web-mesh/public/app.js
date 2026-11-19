@@ -20,7 +20,7 @@ const prefKey = 'everett.mesh.display.v1';
 let prefs = { ...defaultPrefs };
 let snapshot = null;
 let pending = null;
-let approved = false;
+let signedIn = false;
 let signedOut = false;
 let githubLogin = false;
 let currentView = 'overview';
@@ -248,17 +248,21 @@ function settings() {
     : 'Read grants last 24 hours from request time. Renew by requesting and approving a new grant, then updating this console’s server configuration. Manage or revoke access in Everett account access.';
 }
 
+function showSignedIn(authentication) {
+  signedIn = true;
+  githubLogin = authentication === 'github';
+  $('login').hidden = true;
+  $('signout').hidden = false;
+  $('refresh').hidden = false;
+}
+
 function render(data) {
   snapshot = data;
-  githubLogin = data.authentication === 'github';
-  approved = true;
+  showSignedIn(data.authentication);
   const fixture = data.source === 'fixture';
   source(fixture ? 'Fixture' : 'Cloudflare', data.source);
   notice(fixture ? 'Preview with sample data. Your devices and cloud agents are not connected.' : 'Read access approved by the account owner.', fixture ? 'fixture' : '');
   $('data').hidden = false;
-  $('login').hidden = true;
-  $('signout').hidden = false;
-  $('refresh').hidden = false;
   drawView();
   $('snapshot-time').replaceChildren(fixture ? 'Fixture refreshed ' : 'Cloudflare refreshed ', clock(data.serverNow));
 }
@@ -299,7 +303,7 @@ async function refresh() {
     if (response.status === 401) {
       const { error } = await response.json();
       if (pending !== ctrl || document.hidden) return;
-      approved = false;
+      signedIn = false;
       githubLogin = error === 'github_sign_in_required';
       showLogin();
       $('signout').hidden = true;
@@ -307,7 +311,12 @@ async function refresh() {
       const failed = githubLogin && new URL(location.href).searchParams.get('auth') === 'failed';
       notice(failed ? 'GitHub sign-in failed. Use the account that owns this Everett mesh.' : 'Sign in to view this private workspace.', failed ? 'error' : '');
     } else if (response.status === 403) {
-      notice('Mesh read access ended. Ask the Everett owner to approve a new read grant and update this console’s server configuration.', 'error');
+      const { error, authentication } = await response.json();
+      if (pending !== ctrl || document.hidden) return;
+      if (error === 'mesh_access_revoked') {
+        showSignedIn(authentication);
+        notice('Mesh read access ended. Ask the Everett owner to approve a new read grant and update this console’s server configuration.', 'error');
+      } else notice('The mesh source is unavailable. Data has been cleared.', 'error');
     } else if (response.status === 404) {
       notice('The owner needs to enable this console and approve a read grant.');
     } else notice('The mesh source is unavailable. Data has been cleared.', 'error');
@@ -351,7 +360,7 @@ $('signout').addEventListener('click', async () => {
   signedOut = true;
   cancelRefresh();
   clear();
-  approved = false;
+  signedIn = false;
   $('signout').hidden = true;
   $('refresh').hidden = true;
   try {
@@ -380,7 +389,7 @@ document.addEventListener('visibilitychange', () => {
     clear();
   } else refresh();
 });
-setInterval(() => { if (approved) refresh(); }, 15000);
+setInterval(() => { if (signedIn) refresh(); }, 15000);
 setInterval(updateTimes, 5000);
 applyPrefs();
 setView();
