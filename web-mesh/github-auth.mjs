@@ -43,7 +43,7 @@ export function githubRoutes(config, { mac, equal, fetchJson, issueSession, repl
   }
 
   async function finish(request, url) {
-    const reject = () => reply(null, 303, { Location: '/dashboard?auth=failed', 'Set-Cookie': flowCookie('', 0) });
+    const reject = () => reply(null, 303, { Location: '/everett/dashboard?auth=failed', 'Set-Cookie': flowCookie('', 0) });
     const parts = readCookie(request, flowName).split('.');
     const [expiry = '', state = '', verifier = '', signed = ''] = parts;
     const code = url.searchParams.get('code') ?? '';
@@ -75,7 +75,7 @@ export function githubRoutes(config, { mac, equal, fetchJson, issueSession, repl
       });
       if (!Number.isSafeInteger(user.id) || 'github:' + user.id !== config.githubOwner) return reject();
 
-      const response = reply(null, 303, { Location: '/dashboard', 'Set-Cookie': issueSession() });
+      const response = reply(null, 303, { Location: '/everett/dashboard', 'Set-Cookie': issueSession() });
       response.headers.append('Set-Cookie', flowCookie('', 0));
       return response;
     } catch {

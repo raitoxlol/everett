@@ -3,14 +3,13 @@
 A read-only Vercel-targeted console. Cloudflare remains the authority for consent,
 account ownership, credential liveness, identities, queue counts and receipts.
 The console is disabled until `ENABLED=true`; a read grant starts pending and
-requires a separate owner decision in Everett account access. No deployment or
-production account changes are part of this implementation.
+requires a separate owner decision in Everett account access.
 
 ## Hosted dashboard
 
 Use a dedicated Vercel project with `web-mesh` as its root. The console opens at
-`/dashboard` on that project's exact origin, for example
-`https://dashboard.raitox.tech/dashboard`. Everett's Cloudflare issuer retains its
+`/everett/dashboard` on that project's exact origin, for example
+`https://raitox.tech/everett/dashboard`. Everett's Cloudflare issuer retains its
 own origin and remains responsible for read-grant approval and revocation.
 
 Register a dedicated GitHub OAuth app for the console origin. Set its callback
@@ -44,15 +43,19 @@ writes a new mode-0600 configuration without printing either bearer token. It
 will not overwrite an existing file. An agent can invoke the same command; it
 cannot approve its own request. The owner opens the printed approval URL, checks
 the console origin, expiry and `mesh:read:v1` scope, then approves or denies.
-Requests expire after 24 hours. Denied or revoked grants cannot be reapproved.
-A revoked initiating native credential or membership also stops reads.
+Pending and approved grants expire 24 hours after the request was created.
+Approval does not extend that deadline. The console shows the exact deadline in
+Settings. Denied, revoked, and expired grants cannot be reapproved. The account
+page shows up to 64 recent historical grants and the issuer removes records 30
+days after expiry. A revoked initiating native credential or membership also
+stops reads.
 
 The generated file leaves `ENABLED=false`. After approval, set it to `true` in
 this console's private server environment. Configure a private Vercel project
 with root directory `web-mesh` and its checked-in `vercel.json`. No public env
 prefixes are used. Deploying or changing Vercel/Cloudflare production settings
-requires separate authorization. Vercel hosting has not been exercised by the
-local checks; the adapter and Node handler have.
+requires separate authorization. The local checks exercise the Worker and console
+handler with a simulated GitHub provider.
 
 Each console instance serves exactly one configured owner. Configure:
 
@@ -78,6 +81,22 @@ together to invalidate all browser sessions. Sign out clears this browser's
 cookie; an already copied cookie remains valid until its 15-minute expiry or
 key rotation. Vercel deployment protection can provide an additional boundary,
 but the server does not trust client-supplied identity headers.
+
+## Renew a grant
+
+Before or after expiry, run the same setup command with the same origin and a
+new private output path. Open the new approval URL and approve the new grant
+in Everett account access. Copy only the replacement `MESH_TOKEN` into the
+protected console's server environment and redeploy that environment so its
+functions read the new value. Keep `MESH_ENDPOINT`, `MESH_OWNER`, OAuth settings
+and `SESSION_KEY` unchanged for a same-owner rotation. Verify the new deployment
+shows the known devices and the new grant deadline, then revoke the previous
+grant if it is still active. A Vercel rollback to a deployment with an expired or
+revoked token cannot recover access.
+
+An expired or revoked grant clears the mesh view on the next failed refresh.
+A fresh GitHub sign-in alone does not renew it. The setup CLI is the renewal entry
+point and owner approval is required for every replacement.
 
 ## Revoke access
 

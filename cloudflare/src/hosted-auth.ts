@@ -6,6 +6,7 @@ import { hostedConfig, requireOAuth, requirePublicHost, type HostedConfig, type 
 import { boundedText } from './http-body';
 
 const MINUTE = 60000, DAY = 86400000;
+const MESH_HISTORY_MS = 30 * DAY;
 const DEVICE_MS = 10 * MINUTE, CODE_MS = 5 * MINUTE, ACCESS_MS = 15 * MINUTE, REFRESH_MS = 30 * DAY, SESSION_MS = 12 * 60 * MINUTE;
 const secretPattern = /^[a-f0-9]{64}$/;
 const cleanName = z.string().trim().min(1).max(100).regex(/^[^\x00-\x1f\x7f]+$/);
@@ -253,6 +254,8 @@ export class HostedAuth extends DurableObject<HostedAuthEnv> {
     super(ctx, env);
     ctx.storage.sql.exec(`
       CREATE TABLE IF NOT EXISTS mesh_grants(id TEXT PRIMARY KEY, token_hash TEXT NOT NULL UNIQUE, account TEXT NOT NULL, agent_id TEXT NOT NULL, origin TEXT NOT NULL, state TEXT NOT NULL, created_at INTEGER NOT NULL, expires_at INTEGER NOT NULL);
+      CREATE INDEX IF NOT EXISTS mesh_grants_account_created ON mesh_grants(account, created_at DESC);
+      CREATE INDEX IF NOT EXISTS mesh_grants_expiry ON mesh_grants(expires_at);
       CREATE TABLE IF NOT EXISTS gh_states(state_hash TEXT PRIMARY KEY,binding_hash TEXT NOT NULL,return_to TEXT NOT NULL,expires_at INTEGER NOT NULL);
       CREATE TABLE IF NOT EXISTS owner_sessions(session_hash TEXT PRIMARY KEY,csrf_hash TEXT NOT NULL,github_id TEXT NOT NULL,login TEXT NOT NULL,expires_at INTEGER NOT NULL);
       CREATE TABLE IF NOT EXISTS device_requests(poll_hash TEXT PRIMARY KEY,user_code TEXT NOT NULL UNIQUE,name TEXT NOT NULL,state TEXT NOT NULL,agent_id TEXT,event_id TEXT NOT NULL UNIQUE,expires_at INTEGER NOT NULL,last_poll INTEGER NOT NULL,account TEXT,requester_hash TEXT);
@@ -332,6 +335,7 @@ export class HostedAuth extends DurableObject<HostedAuthEnv> {
     const now = Date.now();
     for (const table of ['gh_states', 'owner_sessions', 'device_requests', 'auth_requests', 'auth_codes']) this.ctx.storage.sql.exec(`DELETE FROM ${table} WHERE rowid IN(SELECT rowid FROM ${table} WHERE expires_at<=? LIMIT 128)`, now);
     this.ctx.storage.sql.exec('DELETE FROM oauth_tokens WHERE rowid IN(SELECT rowid FROM oauth_tokens WHERE expires_at<=? LIMIT 256)', now);
+    this.ctx.storage.sql.exec('DELETE FROM mesh_grants WHERE rowid IN (SELECT rowid FROM mesh_grants WHERE expires_at<=? LIMIT 128)', now - MESH_HISTORY_MS);
     this.ctx.storage.sql.exec('DELETE FROM auth_rates WHERE window<?', Math.floor(now / MINUTE) - 2);
   }
   #session(request: Request, c: HostedConfig): { row: Session; csrf: string; account: Account } | null {
@@ -719,7 +723,7 @@ export class HostedAuth extends DurableObject<HostedAuthEnv> {
       if ((!local && origin.protocol !== 'https:') || origin.origin !== input.origin || origin.username || origin.password) throw new RelayError('invalid_origin', 400);
       if (this.#row<{ n: number }>("SELECT count(*) n FROM mesh_grants WHERE account=? AND expires_at>? AND state IN ('pending','approved')", account, Date.now())!.n >= 16) throw new RelayError('mesh_grant_limit', 429);
       const id = crypto.randomUUID(), readToken = `emr_${crypto.randomUUID().replaceAll('-', '')}${crypto.randomUUID().replaceAll('-', '')}`;
-      const now = Date.now(), expiresAt = now + 24 * 60 * MINUTE;
+      const now = Date.now(), expiresAt = now + DAY;
       this.ctx.storage.sql.exec('INSERT INTO mesh_grants VALUES(?,?,?,?,?,?,?,?)', id, hash(readToken), account, principal.agentId, input.origin, 'pending', now, expiresAt);
       return json({ id, token: readToken, approvalUrl: `${host}/enroll?mesh=${id}`, expiresAt, owner:namespace(principal),scope: 'mesh:read:v1' }, 201);
     }

@@ -51,9 +51,21 @@ try {
  await native(a.token,'exposeSession',{session:'local-e2e-session',harness:'h'.repeat(160),card:'LOCAL-PRIVATE-CARD'});
  const credentialFile=join(privateDir,'credential.json'),output=join(privateDir,'console.env');
  await writeFile(credentialFile,JSON.stringify({...a,issuer,owner:a.device.owner,expires_at:Date.now()+3600000}),{mode:0o600});
- const setup=spawn(process.execPath,[join(root,'web-mesh/setup.mjs'),'request','--credential-file',credentialFile,'--origin',consoleOrigin,'--output',output,'--allow-local'],{cwd:root,stdio:['ignore','pipe','pipe']});let setupOut='';setup.stdout.on('data',d=>setupOut+=String(d));const [code]=await once(setup,'exit');assert.equal(code,0,'setup CLI');
- const approval=new URL(setupOut.match(/Owner approval: (\S+)/)[1]),grantId=approval.searchParams.get('mesh');
- const config=Object.fromEntries((await readFile(output,'utf8')).trim().split('\n').map(line=>{const at=line.indexOf('=');return [line.slice(0,at),JSON.parse(line.slice(at+1))]}));
+ async function requestGrant(path) {
+  const cli = spawn(process.execPath, [join(root, 'web-mesh/setup.mjs'), 'request', '--credential-file', credentialFile,
+   '--origin', consoleOrigin, '--output', path, '--allow-local'], { cwd: root, stdio: ['ignore', 'pipe', 'pipe'] });
+  let output = '';
+  cli.stdout.on('data', data => { output += String(data); });
+  const [code] = await once(cli, 'exit');
+  assert.equal(code, 0, 'setup CLI');
+  const approval = new URL(output.match(/Owner approval: (\S+)/)[1]);
+  const config = Object.fromEntries((await readFile(path, 'utf8')).trim().split('\n').map(line => {
+   const delimiter = line.indexOf('=');
+   return [line.slice(0, delimiter), JSON.parse(line.slice(delimiter + 1))];
+  }));
+  return { approval, grantId: approval.searchParams.get('mesh'), config };
+ }
+ const { approval, grantId, config } = await requestGrant(output);
  const readSource=()=>fetch(issuer+'/v1/mesh/snapshot',{headers:{Authorization:'Bearer '+config.MESH_TOKEN,'X-Everett-Console-Origin':consoleOrigin}});
  assert.equal(config.ENABLED,'false');assert.equal((await readSource()).status,403);
  assert.equal((await owner('/enroll/mesh',form({csrf:await csrf(approval.pathname+approval.search),id:grantId,decision:'approve'}))).status,303);
@@ -65,7 +77,7 @@ try {
  const pending=await native(b.token,'pending',{deviceId:b.agent_id});assert.equal(pending.envelopes[0].envelope.messageId,e.messageId);
  const o={deviceId:b.agent_id,senderOwner:e.owner,messageId:e.messageId,state:'delivered',at:Date.now(),signature:''};o.signature=wire.hexString(ed25519.sign(wire.observationBytes(e.owner,o),b.signing));await native(b.token,'observe',o);
  const snapshot=await (await readSource()).json();assert.equal(snapshot.queue.queued,0);assert.equal(snapshot.receipts[0].messageId,e.messageId);assert.equal(snapshot.receipts[0].confidence,'signed-device-observation');
- config.ENABLED='true';config.CONSOLE_SECRET='synthetic-local-console-secret-only-20261119';config.PORT='18870';await launch('web-mesh/dev.mjs',[],config);
+ config.ENABLED='true';config.CONSOLE_SECRET='synthetic-local-console-secret-only-20261119';config.PORT='18870';const consoleProcess=await launch('web-mesh/dev.mjs',[],config);
  const login=await fetch(consoleOrigin+'/api/login',{...form({secret:config.CONSOLE_SECRET}),headers:{'Content-Type':'application/x-www-form-urlencoded',Origin:consoleOrigin}});assert.equal(login.status,204);const sessionCookie=login.headers.get('Set-Cookie').split(';')[0];
  const dashboardRead=()=>fetch(consoleOrigin+'/api/mesh',{headers:{Cookie:sessionCookie}});
  const first=await dashboardRead();assert.equal(first.status,200);const view=await first.json();assert.equal(view.receipts[0].messageId,e.messageId);assert.equal(view.sessions[0].harness,'h'.repeat(160));const text=JSON.stringify(view);for(const hidden of ['LOCAL-PRIVATE-CARD','LOCAL-E2E-CONTENT-PRIVATE',e.ciphertext,a.token,config.MESH_TOKEN])assert.ok(!text.includes(hidden));
@@ -86,6 +98,23 @@ try {
   console.log('LOCAL BROWSER READY '+consoleOrigin+'; login secret synthetic-local-console-secret-only-20261119; control POST http://127.0.0.1:18871/revoke. No production systems.');
   await new Promise(resolve=>{process.once('SIGTERM',resolve);process.once('SIGINT',resolve)});
  } else {await revoke();console.log('PASS opt-out denies the same existing dashboard session on its next request (403, no receipt data).');
+  const renewal = await requestGrant(join(privateDir, 'renewed.env'));
+  assert.notEqual(renewal.config.MESH_TOKEN, config.MESH_TOKEN);
+  assert.equal(renewal.config.MESH_OWNER, config.MESH_OWNER);
+  assert.equal(await (await fetch(issuer + '/v1/mesh/snapshot', {
+   headers: { Authorization: 'Bearer ' + renewal.config.MESH_TOKEN, 'X-Everett-Console-Origin': consoleOrigin },
+  })).status, 403);
+  assert.equal((await owner('/enroll/mesh', form({
+   csrf: await csrf(renewal.approval.pathname + renewal.approval.search), id: renewal.grantId, decision: 'approve',
+  }))).status, 303);
+  consoleProcess.kill('SIGTERM');
+  await once(consoleProcess, 'exit');
+  await launch('web-mesh/dev.mjs', [], { ...config, MESH_TOKEN: renewal.config.MESH_TOKEN });
+  const resumed = await dashboardRead();
+  assert.equal(resumed.status, 200);
+  assert.equal((await resumed.json()).receipts[0].messageId, e.messageId);
+  assert.equal((await readSource()).status, 403);
+  console.log('PASS the setup CLI requests a replacement; owner approval and server token rotation restore the same browser session.');
   const logout = await fetch(consoleOrigin+'/api/logout',{method:'POST',headers:{Origin:consoleOrigin,Cookie:sessionCookie}});
   assert.equal(logout.status,204);
   assert.match(logout.headers.get('Set-Cookie'),/Max-Age=0/);}

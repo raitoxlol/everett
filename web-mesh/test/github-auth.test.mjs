@@ -68,7 +68,7 @@ test('GitHub signs in the exact grant owner and Cloudflare still revokes the ope
   const { state, cookie, response } = await f.start();
   assert.match(response.headers.get('set-cookie'),/HttpOnly; Secure; SameSite=Lax/);
   const signIn = await f.app(callback(state,cookie));
-  assert.equal(signIn.headers.get('location'),'/dashboard');
+  assert.equal(signIn.headers.get('location'),'/everett/dashboard');
   const [session, cleared] = signIn.headers.getSetCookie();
   assert.match(session,/HttpOnly; SameSite=Strict; Max-Age=900; Secure/);
   assert.match(cleared,/__Host-everett-github-flow=;.*Max-Age=0/);
@@ -86,7 +86,7 @@ test('rejects a different GitHub account before creating a dashboard session', a
   const f = fixture(40000);
   const { state, cookie } = await f.start();
   const result = await f.app(callback(state,cookie));
-  assert.equal(result.headers.get('location'),'/dashboard?auth=failed');
+  assert.equal(result.headers.get('location'),'/everett/dashboard?auth=failed');
   assert.equal(result.headers.getSetCookie().length,1);
   assert.doesNotMatch(result.headers.get('set-cookie'),/__Host-everett-console=/);
 });
@@ -100,11 +100,11 @@ test('rejects missing, mismatched, tampered or expired OAuth state before contac
     callback(state,cookie.replace(/.$/,match=>match==='0'?'1':'0')),
     request('/api/github-callback?state='+state+'&code=a&code=b',{headers:{Cookie:cookie}}),
   ]) {
-    assert.equal((await f.app(attempt)).headers.get('location'),'/dashboard?auth=failed');
+    assert.equal((await f.app(attempt)).headers.get('location'),'/everett/dashboard?auth=failed');
   }
   const future = Date.now()+301000;
   t.mock.method(Date,'now',()=>future);
-  assert.equal((await f.app(callback(state,cookie))).headers.get('location'),'/dashboard?auth=failed');
+  assert.equal((await f.app(callback(state,cookie))).headers.get('location'),'/everett/dashboard?auth=failed');
   assert.equal(f.exchanges(),0);
 });
 

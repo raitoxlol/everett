@@ -21,6 +21,7 @@ let prefs = { ...defaultPrefs };
 let snapshot = null;
 let pending = null;
 let approved = false;
+let signedOut = false;
 let githubLogin = false;
 let currentView = 'overview';
 
@@ -244,7 +245,7 @@ function settings() {
   else link.removeAttribute('href');
   $('permissions-note').textContent = fixture
     ? 'This preview uses sample data. To connect a mesh, request a read grant with the Everett setup CLI and approve it in account access.'
-    : 'Dashboard access is read only. Manage or revoke the console grant in Everett account access. Tool permissions use the gateway’s owner policy.';
+    : 'Read grants last 24 hours from request time. Renew by requesting and approving a new grant, then updating this console’s server configuration. Manage or revoke access in Everett account access.';
 }
 
 function render(data) {
@@ -283,7 +284,7 @@ function cancelRefresh() {
 }
 
 async function refresh() {
-  if (pending || document.hidden) return;
+  if (signedOut || pending || document.hidden) return;
   const ctrl = new AbortController();
   pending = ctrl;
   $('refresh').disabled = true;
@@ -306,7 +307,7 @@ async function refresh() {
       const failed = githubLogin && new URL(location.href).searchParams.get('auth') === 'failed';
       notice(failed ? 'GitHub sign-in failed. Use the account that owns this Everett mesh.' : 'Sign in to view this private workspace.', failed ? 'error' : '');
     } else if (response.status === 403) {
-      notice('Read access ended. Mesh data has been cleared.', 'error');
+      notice('Mesh read access ended. Ask the Everett owner to approve a new read grant and update this console’s server configuration.', 'error');
     } else if (response.status === 404) {
       notice('The owner needs to enable this console and approve a read grant.');
     } else notice('The mesh source is unavailable. Data has been cleared.', 'error');
@@ -341,11 +342,13 @@ $('login-form').addEventListener('submit', async event => {
       method: 'POST', body: new URLSearchParams({ secret }), signal: AbortSignal.timeout(10000),
     });
     if (!response.ok) { notice('Sign-in failed. Check the console access secret.', 'error'); return; }
+    signedOut = false;
     cancelRefresh();
     await refresh();
   } catch { notice('Sign-in unavailable. Try again.', 'error'); }
 });
 $('signout').addEventListener('click', async () => {
+  signedOut = true;
   cancelRefresh();
   clear();
   approved = false;

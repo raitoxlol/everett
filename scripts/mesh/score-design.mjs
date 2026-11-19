@@ -9,6 +9,7 @@ const port = 18879;
 const origin = 'http://127.0.0.1:' + port;
 const secret = 'mesh-console-visual-fixture-only';
 const server = spawn(process.execPath, ['web-mesh/dev.mjs'], {
+  cwd: new URL('../../', import.meta.url),
   env: {...process.env, ENABLED:'true', MESH_MODE:'fixture', CONSOLE_ORIGIN:origin,
     PORT:String(port), CONSOLE_SECRET:secret, SESSION_KEY:'k'.repeat(64)},
 });
@@ -73,7 +74,39 @@ try {
     await page.getByText('fixture-mac-01',{exact:true}).waitFor();
     assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth),true);
   });
-  assert.equal(count,5);
+  await scenario('visibility refresh cannot repopulate the dashboard during sign-out', async () => {
+    const logoutStarted = Promise.withResolvers();
+    const finishLogout = Promise.withResolvers();
+    const loggedOut = Promise.withResolvers();
+    let reads = 0;
+    page.on('request', request => {
+      if (new URL(request.url()).pathname === '/api/mesh') reads++;
+    });
+    await page.route('**/api/logout', async route => {
+      logoutStarted.resolve();
+      await finishLogout.promise;
+      await route.continue();
+    });
+    page.on('response', response => {
+      if (new URL(response.url()).pathname === '/api/logout') loggedOut.resolve(response.status());
+    });
+    await page.getByRole('button', { name: 'Sign out' }).click();
+    await logoutStarted.promise;
+    try {
+      await page.evaluate(() => document.dispatchEvent(new Event('visibilitychange')));
+      await page.locator('#data').waitFor({ state: 'hidden' });
+      // A page round trip drains the event before the deferred logout response.
+      assert.equal(await page.evaluate(() => document.hidden), false);
+      assert.equal(reads, 0);
+    } finally {
+      finishLogout.resolve();
+    }
+    assert.equal(await loggedOut.promise, 204);
+    await page.locator('#secret').fill(secret);
+    await page.getByRole('button', { name: 'Sign in' }).click();
+    await page.locator('#data').waitFor({ state: 'visible' });
+  });
+  assert.equal(count,6);
   console.log('unmet='+failures);
 } finally {
   await browser?.close();
