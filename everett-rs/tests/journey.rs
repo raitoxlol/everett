@@ -608,9 +608,9 @@ fn onboard_tui_full_wizard_applies() {
         } else {
             p.see(screen);
             if screen == "Choose how to connect" {
+                p.see("enter or l continue locally");
                 let account = p.screen();
                 assert!(account.contains("local setup is available") && account.contains("MCP tools need sign-in."), "{account}");
-                assert!(account.contains("enter or l continue locally"), "{account}");
             }
         }
     }
