@@ -659,6 +659,9 @@ impl Gateway {
             .try_acquire()
             .map_err(|_| "gateway workers busy; retry later")?;
         let built_in = worker::is_builtin(&binding.backend_command);
+        if binding.conversation_identity && !built_in {
+            return Err("conversation identity requires the built-in worker".into());
+        }
         let mut child = backend_command(binding, built_in).spawn().map_err(|_| BACKEND_ERROR)?;
         let operation = async {
             if built_in {

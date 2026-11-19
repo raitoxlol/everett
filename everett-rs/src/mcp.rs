@@ -578,7 +578,7 @@ fn tool_control(
                 forward.insert("to".into(), json!(s.id));
                 // resolve_session looked back a week; keep tool_send's lookup window the same.
                 forward.insert("hours".into(), json!(168.0));
-                return tool_send(&forward, identity, SendPolicy::Native);
+                return tool_send(&forward, identity, false);
             }
         }
         "read" => control::read(&thread, session.as_ref(), messages, caller),
@@ -588,20 +588,12 @@ fn tool_control(
     value.map(control::as_map).map_err(ToolFailure::Tool)
 }
 
-pub(crate) enum SendPolicy {
-    Native,
-    Exact,
-    Conversation,
-}
-
 pub(crate) fn tool_send(
     args: &Map<String, Value>,
     identity: &Map<String, Value>,
-    policy: SendPolicy,
+    exact_ids: bool,
 ) -> std::result::Result<Map<String, Value>, ToolFailure> {
     use crate::send::{send_for, send_inbox_as, spawn_for};
-    let exact_ids = !matches!(policy, SendPolicy::Native);
-    let queue_only = matches!(policy, SendPolicy::Conversation);
     let text = str_arg(args, "text", true)?;
     let to = str_arg(args, "to", false)?;
     let hours = hours_arg(args)?;
@@ -878,7 +870,7 @@ pub(crate) fn tool_send(
     }
     if matches!(delivery, crate::send::Delivery::Inbox) {
         let result = if exact_ids {
-            crate::send::send_local_inbox(&session, &text, caller, caller_harness, !queue_only)
+            crate::send::send_local_inbox(&session, &text, caller, caller_harness)
         } else {
             send_inbox_as(
             &session,
@@ -915,9 +907,7 @@ pub(crate) fn tool_send(
             )
         };
         let mut out = decision.clone();
-        if !queue_only {
-            out.insert("session".into(), Value::Object(brief(&session)));
-        }
+        out.insert("session".into(), Value::Object(brief(&session)));
         for (k, v) in &result {
             out.insert(k.clone(), v.clone());
         }
@@ -1533,7 +1523,7 @@ fn call_handler(
     match name {
         "everett_ls" => tool_ls(args, identity),
         "everett_route" => tool_route(args, identity),
-        "everett_send" => tool_send(args, identity, if std::env::var("EVERETT_GATEWAY_EXACT_IDS").as_deref() == Ok("1") { SendPolicy::Exact } else { SendPolicy::Native }),
+        "everett_send" => tool_send(args, identity, std::env::var("EVERETT_GATEWAY_EXACT_IDS").as_deref() == Ok("1")),
         "everett_learn" => tool_learn(args),
         "everett_core" => tool_core(args),
         "everett_card" => tool_card(args, identity),

@@ -546,13 +546,15 @@ response out of model-accessible tools, logs and traces.
   tools before it has a handle. Omit `session_id` and `identity_handle` in tool
   arguments. `everett_whoami` returns the selected public Everett ID and reports
   `capabilities.private_inbox_transport: "http_header"`.
-- `everett_send` queues a local inbox message to an exact owner-granted
-  destination, or replies to a message addressed to this conversation from an
-  allowed sender. It omits the destination card and transcript summaries from
-  direct send receipts. A conversation send cannot invoke a receiver webhook,
-  start a session or send through the relay.
+- `everett_send` queues directly to an exact owner-granted local inbox address,
+  or replies to a message addressed to this conversation from an allowed
+  sender. A direct send does not look up the destination's session or confirm
+  that it exists or picks up the message. Conversation sends cannot invoke a
+  receiver webhook, start a session or send through the relay.
 - Revoke with `{"action":"revoke","identity_handle":"<private handle>"}` on the
-  owner endpoint. Retrying revocation is safe. It removes the external
+  owner endpoint. Use `{"action":"revoke","session_id":"<Everett address>"}`
+  if the private handle is unavailable. Both forms require owner authorization
+  for the same connection scope. Retrying revocation is safe. It removes the external
   registration and blocks future tool authorizations with that handle. Other
   conversations keep their access. An operation already authorized may finish.
   The owner retains the inbox and card files.
@@ -572,6 +574,7 @@ configured `agent_id`, and harness. Rotating the connection bearer invalidates
 that binding's existing handles. Revoke active registrations before rotation
 when possible, then provision fresh inboxes through the new credential. The
 owner can remove obsolete local directory entries with `everett external remove`.
+Removing a directory entry alone leaves its stored handle valid.
 OAuth scope includes the verified issuer, resource, account, client ID, and
 configured harness. A fresh token for those same values keeps existing handles.
 Each request still requires an active token. Handles are scoped to their

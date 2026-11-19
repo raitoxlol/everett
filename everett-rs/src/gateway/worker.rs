@@ -53,8 +53,10 @@ pub(super) enum Call {
     Send {
         to: String,
         text: String,
-        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
-        queue_only: bool,
+    },
+    Queue {
+        to: String,
+        text: String,
     },
     Reply {
         message: Map<String, Value>,
@@ -97,11 +99,11 @@ impl Call {
                 state: string("state")?,
                 next: string("next")?,
             },
-            "everett_send" if args.contains_key("to") => Self::Send {
-                to: string("to")?,
-                text: string("text")?,
-                queue_only: binding.conversation_identity,
-            },
+            "everett_send" if args.contains_key("to") => {
+                let to = string("to")?;
+                let text = string("text")?;
+                if binding.conversation_identity { Self::Queue { to, text } } else { Self::Send { to, text } }
+            }
             "everett_send" => Self::Reply {
                 message: binding
                     .reply_message(&string("reply_to")?)?
@@ -136,11 +138,14 @@ impl Call {
                 &args(json!({"what": what, "state": state, "next": next})),
                 &identity,
             ),
-            Self::Send { to, text, queue_only } if super::valid_destination(&to) => mcp::tool_send(
+            Self::Send { to, text } if super::valid_destination(&to) => mcp::tool_send(
                 &args(json!({"mode":"inbox", "to":to, "text":text})),
                 &identity,
-                if queue_only { mcp::SendPolicy::Conversation } else { mcp::SendPolicy::Exact },
+                true,
             ),
+            Self::Queue { to, text } if super::valid_destination(&to) => {
+                crate::send::queue_conversation_inbox(&to, &text, session, harness).map_err(mcp::ToolFailure::from)
+            }
             Self::Reply { message, text }
                 if message.get("to").and_then(Value::as_str) == Some(session)
                     && message
