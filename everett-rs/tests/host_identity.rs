@@ -219,6 +219,10 @@ fn install_writes_host_binding_launchers_and_hooks() {
     run(&["install-hooks", "--pi", "--apply"]);
     let ext = std::fs::read_to_string(fx.home().join(".pi/agent/extensions/everett.ts")).unwrap();
     assert!(ext.contains("registerMcpServer") && ext.contains("EVERETT_SESSION_ID") && ext.contains("pi_bind"));
+    assert!(ext.contains("pi.registerTool("), "Pi 0.73.1 exposes extensions through registerTool: {ext}");
+    assert!(ext.contains("tools/list") && ext.contains("tools/call"), "the extension must bridge Everett's MCP tools: {ext}");
+    let pi = run(&["install-mcp", "--pi"]);
+    assert!(pi.contains("registerTool") && pi.contains("session-bound MCP bridge"), "{pi}");
 
     run(&["install-hooks", "--devin", "--apply"]);
     let cfg: Value = serde_json::from_str(&std::fs::read_to_string(fx.home().join(".config/devin/config.json")).unwrap()).unwrap();

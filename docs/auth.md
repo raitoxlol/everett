@@ -19,7 +19,8 @@ It skips browser approval and older session cards. To inspect registration examp
 change files, but can show agents that onboarding has not detected.
 
 Onboarding does not cover every listed harness. `everett install-hooks --pi --apply`
-installs the Pi extension, which registers the MCP server per session.
+installs the Pi extension, which exposes Everett tools through Pi's `registerTool` API
+and binds the MCP bridge to each session.
 `everett install-hooks --devin --apply` adds Devin's session-binding hooks. For Hermes,
 add the `mcp_servers` block printed by `everett install-mcp --hermes` to
 `~/.hermes/config.yaml` yourself.

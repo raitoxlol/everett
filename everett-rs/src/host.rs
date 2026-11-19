@@ -276,7 +276,7 @@ pub fn identify(want: Option<&str>) -> std::result::Result<Option<Map<String, Va
 /// One actionable sentence on how to bind a harness's MCP server to its session.
 pub fn setup_hint(harness: &str) -> String {
     match harness {
-        "pi" => "Run `everett install-hooks --pi --apply`; the Everett Pi extension registers the MCP server with each session's id. Then restart pi.".into(),
+        "pi" => "Run `everett install-hooks --pi --apply`; the Everett Pi extension exposes tools through Pi's registerTool API and binds each MCP bridge to the session. Then restart pi.".into(),
         "omp" => "Run `everett install-hooks --omp --apply` and `everett install-mcp --omp --repair --apply`, then restart omp.".into(),
         "devin" => "Run `everett install-hooks --devin --apply` and `everett install-mcp --devin --repair --apply`, then restart devin.".into(),
         "hermes" => "Register `everett mcp --harness hermes` in ~/.hermes/config.yaml (see `everett install-mcp --hermes`), restart hermes, and run one Hermes CLI session per directory; gateway mode cannot be bound.".into(),
