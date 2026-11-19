@@ -1,6 +1,5 @@
 //! T3 CLI discovery, process capture and JSON receipts shared by control and wake.
 
-use std::collections::HashMap;
 use std::path::Path;
 
 use serde_json::Value;
@@ -21,7 +20,7 @@ pub(crate) fn capture(binary: &str, args: &[&str], timeout: f64) -> Result<Captu
 pub(crate) fn capture_with_data_home(binary: &str, args: &[&str], timeout: f64, data_home: Option<&str>) -> Result<Captured, String> {
     let mut argv = vec![binary.to_string()];
     argv.extend(args.iter().map(|arg| arg.to_string()));
-    let mut env: HashMap<String, String> = std::env::vars().collect();
+    let mut env = crate::execution::inherited_env();
     if let Some(data_home) = data_home {
         // T3 trims the override before resolving it, so keep any final space inside the path.
         env.insert("T3CODE_HOME".into(), format!("{data_home}/."));

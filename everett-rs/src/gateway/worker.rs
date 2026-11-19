@@ -30,6 +30,10 @@ pub(super) fn is_builtin(command: &[String]) -> bool {
 #[derive(Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub(super) enum Call {
+    OwnerAgent {
+        name: String,
+        arguments: Map<String, Value>,
+    },
     Whoami,
     Core {
         project: String,
@@ -238,7 +242,24 @@ pub fn run() -> i32 {
     let Ok(call) = serde_json::from_slice::<Call>(&input) else {
         return 2;
     };
-    let data = call.execute(&session, &harness).ok();
+    let data = match call {
+        Call::OwnerAgent { name, arguments }
+            if std::env::var("EVERETT_GATEWAY_OWNER_AGENT").as_deref() == Ok("1") =>
+        {
+            let response = crate::mcp::handle(&json!({
+                "jsonrpc": "2.0", "id": 1, "method": "tools/call",
+                "params": {"name": name, "arguments": arguments}
+            }));
+            response.map(|mut response| {
+                if let Some(message) = response["error"]["message"].as_str() {
+                    json!({"isError":true,"content":[{"type":"text","text":message}]})
+                } else {
+                    response["result"].take()
+                }
+            })
+        }
+        call => call.execute(&session, &harness).ok(),
+    };
     if serde_json::to_writer(io::stdout().lock(), &data).is_err() {
         2
     } else {
