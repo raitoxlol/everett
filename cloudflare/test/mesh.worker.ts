@@ -201,4 +201,17 @@ describe('mesh v1 opt-in boundary', () => {
   expect(snapshot.devices).toContainEqual(expect.objectContaining({ deviceId:a.agent_id,lastSeen:expect.any(Number) }));
   expect(response.headers.get('Cache-Control')).toBe('no-store');
  });
+ it('isolates two real local accounts at consent, names and snapshot boundaries', async () => {
+  const alice = await setup();
+  const bob = new Browser(); expect((await bob.login('/enroll', 70002, 'bob-test')).status).toBe(303);
+  const bobCredential = await enroll(bob, 'BOB-PRIVATE-DEVICE');
+  expect((await bob.request('/enroll?mesh=' + alice.grant.id)).status).toBe(403);
+  expect((await bob.request('/enroll/mesh', form({csrf:await bob.csrf(),id:alice.grant.id,decision:'approve'}))).status).toBe(403);
+  await approve(alice);
+  const aliceData = await (await meshCall(alice.grant.token)).text();
+  expect(aliceData).not.toContain(bobCredential.agent_id);expect(aliceData).not.toContain('BOB-PRIVATE-DEVICE');
+  expect((await meshCall(bobCredential.token)).status).toBe(401);
+  expect((await meshCall(alice.grant.token, '/v1/mesh/snapshot', {headers:{'X-Everett-Console-Origin':'https://evil.example'}})).status).toBe(403);
+ });
+
 });
