@@ -164,7 +164,7 @@ restriction. [Official connection flow](https://developers.openai.com/plugins/de
 
 ## OAuth HTTP gateway with the Cloudflare candidate
 
-The gateway also has an optional [OAuth resource-server mode](gateway.md#oauth-resource-server-mode-openai-chatgpt).
+The gateway also has an optional [OAuth resource-server mode](gateway.md#oauth-resource-server-mode-openai--chatgpt).
 This port is exercised with isolated local tests. Live ChatGPT discovery,
 approval, token exchange, refresh and revocation remain acceptance checks.
 
