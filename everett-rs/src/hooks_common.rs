@@ -349,8 +349,7 @@ fn project_name(cwd: &str) -> String {
         return "Project".to_string();
     }
     let name = crate::session::project_label(&path.unwrap().to_string_lossy());
-    let name = name.trim();
-    if name.is_empty() || name == "-" || name == "~" {
+    if name == "-" || name == "~" {
         return "Project".to_string();
     }
     let mut chars = name.chars();
