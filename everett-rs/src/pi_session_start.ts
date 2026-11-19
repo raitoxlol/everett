@@ -7,8 +7,8 @@ const MCP_PROTOCOL_VERSION = "2025-06-18";
 const MCP_REQUEST_TIMEOUT_MS = 10_000;
 
 export class EverettMcpClient {
-  constructor(env = process.env, spawnChild = spawn) {
-    this.child = spawnChild(EVERETT_BIN, ["mcp"], { env, stdio: ["pipe", "pipe", "ignore"] });
+  constructor(env = process.env, spawnChild = spawn, cwd = process.cwd()) {
+    this.child = spawnChild(EVERETT_BIN, ["mcp"], { env, cwd, stdio: ["pipe", "pipe", "ignore"] });
     this.pending = new Map();
     this.nextId = 1;
     this.closed = false;
@@ -114,8 +114,8 @@ export class EverettMcpClient {
   }
 }
 
-async function connectMcpServer(env = process.env, signal) {
-  const client = new EverettMcpClient(env);
+async function connectMcpServer(env = process.env, { signal, cwd = process.cwd() } = {}) {
+  const client = new EverettMcpClient(env, spawn, cwd);
   try {
     await client.request("initialize", {
       protocolVersion: MCP_PROTOCOL_VERSION,
@@ -135,8 +135,12 @@ function sessionIdFromContext(ctx) {
   return typeof sessionId === "string" && sessionId ? sessionId : undefined;
 }
 
-function bindSession(sessionId) {
-  spawnSync(EVERETT_BIN, ["hook", "pi_bind", sessionId], { timeout: 3000, stdio: "ignore" });
+function cwdFromContext(ctx) {
+  return typeof ctx?.cwd === "string" && ctx.cwd ? ctx.cwd : process.cwd();
+}
+
+function bindSession(sessionId, cwd = process.cwd()) {
+  spawnSync(EVERETT_BIN, ["hook", "pi_bind", sessionId], { cwd, timeout: 3000, stdio: "ignore" });
 }
 
 function report(message, error) {
@@ -148,7 +152,8 @@ function registerNativeMcpServer(pi) {
     try {
       const sessionId = sessionIdFromContext(ctx);
       if (!sessionId) return;
-      bindSession(sessionId);
+      const cwd = cwdFromContext(ctx);
+      bindSession(sessionId, cwd);
       try {
         pi.unregisterMcpServer?.("everett");
       } catch {
@@ -157,6 +162,7 @@ function registerNativeMcpServer(pi) {
       pi.registerMcpServer("everett", {
         command: EVERETT_BIN,
         args: ["mcp"],
+        cwd,
         env: { EVERETT_SESSION_ID: sessionId, EVERETT_HARNESS_NAME: "pi" },
       });
     } catch (error) {
@@ -197,7 +203,7 @@ async function registerToolBridge(pi) {
   let activeClient;
   let connecting;
   let connectionController;
-  let boundSessionId;
+  let boundSession;
   const getSessionClient = async () => {
     while (connecting) {
       const pendingConnection = connecting;
@@ -211,8 +217,9 @@ async function registerToolBridge(pi) {
     if (activeClient && !activeClient.closed) return activeClient;
     await activeClient?.close();
     activeClient = undefined;
-    const sessionId = boundSessionId;
-    if (!sessionId) return undefined;
+    const sessionBinding = boundSession;
+    if (!sessionBinding) return undefined;
+    const { sessionId, cwd } = sessionBinding;
 
     const currentGeneration = generation;
     const controller = new AbortController();
@@ -223,8 +230,8 @@ async function registerToolBridge(pi) {
           ...process.env,
           EVERETT_SESSION_ID: sessionId,
           EVERETT_HARNESS_NAME: "pi",
-        }, controller.signal);
-        if (currentGeneration !== generation || sessionId !== boundSessionId) {
+        }, { signal: controller.signal, cwd });
+        if (currentGeneration !== generation || sessionBinding !== boundSession) {
           await sessionClient.close();
           return undefined;
         }
@@ -247,6 +254,7 @@ async function registerToolBridge(pi) {
   };
   const start = async (_event, ctx) => {
     const sessionId = sessionIdFromContext(ctx);
+    const cwd = cwdFromContext(ctx);
     const currentGeneration = ++generation;
     const previousClient = activeClient;
     const previousConnection = connecting;
@@ -256,13 +264,13 @@ async function registerToolBridge(pi) {
     connectionController = undefined;
     previousController?.abort();
     if (!sessionId) {
-      boundSessionId = undefined;
+      boundSession = undefined;
       await previousClient?.close();
       await previousConnection;
       return;
     }
 
-    boundSessionId = sessionId;
+    boundSession = { sessionId, cwd };
     const controller = new AbortController();
     connectionController = controller;
     connecting = (async () => {
@@ -270,12 +278,12 @@ async function registerToolBridge(pi) {
         await previousClient?.close();
         await previousConnection;
         if (currentGeneration !== generation) return undefined;
-        bindSession(sessionId);
+        bindSession(sessionId, cwd);
         const sessionClient = await connectMcpServer({
           ...process.env,
           EVERETT_SESSION_ID: sessionId,
           EVERETT_HARNESS_NAME: "pi",
-        }, controller.signal);
+        }, { signal: controller.signal, cwd });
         if (currentGeneration !== generation) {
           await sessionClient.close();
           return undefined;
@@ -295,7 +303,7 @@ async function registerToolBridge(pi) {
   };
   const shutdown = async () => {
     generation += 1;
-    boundSessionId = undefined;
+    boundSession = undefined;
     const previousClient = activeClient;
     const previousConnection = connecting;
     const previousController = connectionController;
