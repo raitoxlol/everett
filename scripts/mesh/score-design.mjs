@@ -25,6 +25,8 @@ try {
   page.setDefaultTimeout(1500);
   await page.goto(origin);
   await page.locator('#secret').fill(secret);
+  assert.equal(await page.locator('#source').innerText(), 'Signed out');
+  assert.equal(await page.getByRole('navigation',{name:'Console'}).isVisible(), false);
   await page.getByRole('button',{name:'Sign in'}).click();
   await page.locator('#data').waitFor({state:'visible'});
 
@@ -61,6 +63,9 @@ try {
     await page.getByLabel('Theme',{exact:true}).selectOption('dark');
     await page.getByLabel('Table density').selectOption('compact');
     await page.getByLabel('Time format').selectOption('absolute');
+    await page.route('**/app.js', route => route.fulfill({ contentType:'application/javascript', body:'' }), { times:1 });
+    await page.reload();
+    assert.equal(await page.locator('html').getAttribute('data-theme'),'dark');
     await page.reload();
     assert.equal(await page.getByLabel('Theme',{exact:true}).inputValue(),'dark');
     assert.equal(await page.getByLabel('Table density').inputValue(),'compact');
@@ -118,6 +123,7 @@ try {
     await page.clock.install();
     await page.goto(origin + '/everett/dashboard#devices');
     await page.getByText('Mesh read access ended.', { exact: false }).waitFor();
+    assert.match(await page.locator('#notice').innerText(), /MESH_TOKEN/);
     await page.getByRole('button', { name: 'Refresh' }).waitFor();
     await page.getByRole('button', { name: 'Sign out' }).waitFor();
     assert.equal(await page.locator('#data').isVisible(), false);
