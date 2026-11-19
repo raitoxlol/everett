@@ -516,6 +516,8 @@ binding and `"harness": "openai-dot"` for a ChatGPT plugin binding. These
 values label Everett's external directory. For OAuth, set
 `oauth.owner_account` and use a dedicated resource. The trusted issuer must
 supply the account and client ID in the token's introspection response.
+Use an owner-controlled executable path. Restart the gateway after updating
+its binary so it can bind the conversation worker to the new executable.
 
 The owner supplies a separate, high-entropy
 `EVERETT_GATEWAY_IDENTITY_ADMIN_TOKEN` in the gateway environment. The existing
