@@ -26,7 +26,7 @@ let githubLogin = false;
 let currentView = 'overview';
 
 const viewResults = {
-  overview: ['metrics', 'device-summary', 'recent-receipts'],
+  overview: ['metrics', 'session-summary', 'device-summary', 'recent-receipts'],
   devices: ['device-list', 'session-list'],
   cloud: ['cloud-list'],
   activity: ['receipt-list'],
@@ -167,10 +167,11 @@ function deviceName(id) {
   return snapshot.devices.find(device => device.deviceId === id)?.name || id;
 }
 
-function metric(name, value, detail, view) {
+function metric(name, value, view, detail) {
   const el = make('a', undefined, 'metric');
   el.href = '#' + view;
-  el.append(make('span', name), make('strong', String(value)), make('small', detail));
+  el.append(make('span', name), make('strong', String(value)));
+  if (detail) el.append(make('small', detail));
   return el;
 }
 
@@ -178,11 +179,16 @@ function overview() {
   const { devices, sessions, queue, receipts, cloudAgents, truncated } = snapshot;
   const count = (value, clipped) => clipped ? value + '+' : value;
   $('metrics').replaceChildren(
-    metric('Registered devices', count(devices.length, truncated.devices), snapshot.source === 'fixture' ? 'Sample inventory' : 'Observed in Cloudflare', 'devices'),
-    metric('Exposed sessions', count(sessions.length, truncated.sessions), 'Published by devices', 'devices'),
-    metric('Cloud agents', cloudAgents?.length ?? '—', cloudAgents ? 'Hosted directory' : 'Directory unavailable', 'cloud'),
-    metric('Queued messages', queue.queued, 'Waiting for delivery', 'activity'),
+    metric('Registered devices', count(devices.length, truncated.devices), 'devices'),
+    metric('Exposed sessions', count(sessions.length, truncated.sessions), 'devices'),
+    metric('Queued messages', queue.queued, 'activity'),
+    metric('Cloud agents', cloudAgents?.length ?? '—', 'cloud', cloudAgents ? undefined : 'Directory unavailable'),
   );
+  entries('session-summary', sessions.slice(0, 5).map(s => {
+    const meta = make('div', undefined, 'entry-meta');
+    meta.append(make('span', deviceName(s.deviceId), 'secondary'), clock(s.lastSeen));
+    return [s.harness, s.sessionId, meta];
+  }), 'No sessions have been exposed.');
   entries('device-summary', devices.slice(0, 5).map(d => [d.name || 'Unnamed device', d.deviceId, clock(d.lastSeen)]), 'No devices have registered.');
   entries('recent-receipts', receipts.slice(0, 5).map(r => [r.state[0].toUpperCase() + r.state.slice(1), deviceName(r.deviceId), clock(r.at)]), 'No signed receipts in this window.');
 }

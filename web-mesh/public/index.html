@@ -35,8 +35,11 @@
           <section data-view="overview">
             <div id="metrics" class="metrics"></div>
             <div class="overview-grid">
-              <section class="panel"><div class="panel-heading"><div><h2>Device inventory</h2><p>Registered devices and observed activity</p></div><a href="#devices">View devices <span aria-hidden="true">→</span></a></div><div id="device-summary"></div></section>
-              <section class="panel"><div class="panel-heading"><div><h2>Recent receipts</h2><p>Signed delivery observations</p></div><a href="#activity">View activity <span aria-hidden="true">→</span></a></div><div id="recent-receipts"></div></section>
+              <div class="overview-inventory">
+                <section class="panel"><div class="panel-heading"><h2>Exposed sessions</h2><a href="#devices">View inventory <span aria-hidden="true">→</span></a></div><div id="session-summary"></div></section>
+                <section class="panel"><div class="panel-heading"><h2>Registered devices</h2><a href="#devices">View devices <span aria-hidden="true">→</span></a></div><div id="device-summary"></div></section>
+              </div>
+              <section class="panel"><div class="panel-heading"><h2>Recent receipts</h2><a href="#activity">View activity <span aria-hidden="true">→</span></a></div><div id="recent-receipts"></div></section>
             </div>
           </section>
           <section data-view="devices" hidden>
