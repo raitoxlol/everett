@@ -1660,6 +1660,7 @@ exec /bin/sleep 10
 
 const CASES: &[Case] = &[
     ("owner_agent_permission_journey", owner_agent_permission_journey),
+    ("hosted_start_checks_model_effort_and_effective_receipt", hosted_start_checks_model_effort_and_effective_receipt),
     ("dot_picks_up_only_the_event_message_and_replies", dot_picks_up_only_the_event_message_and_replies),
     ("events_verified_token_lease", events_acceptance::verified_token_lease),
     ("events_identity_and_lifetime", events_acceptance::identity_and_lifetime),
@@ -1822,4 +1823,154 @@ fn native_records_waits_for_complete_fixture_lines() {
     assert_eq!(native_records(&c), vec![json!({"pid":1})]);
     std::fs::write(&path, "{\"pid\":1}\n{\"pid\":2}\n").unwrap();
     assert_eq!(native_records(&c), vec![json!({"pid":1}), json!({"pid":2})]);
+}
+
+fn hosted_start_checks_model_effort_and_effective_receipt() {
+    use std::io::{BufRead, BufReader};
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    let c = ctx();
+    let issuer = fake_issuer();
+    issuer.grant(&access('a'), "model-test", json!({"everett_account":"github:alice"}));
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let endpoint = format!("http://{}/mcp", listener.local_addr().unwrap());
+    let launches = Arc::new(Mutex::new(Vec::<Value>::new()));
+    let seen = launches.clone();
+    let preflight = Arc::new(AtomicUsize::new(2));
+    let remaining_failures = preflight.clone();
+    std::thread::spawn(move || {
+        for mut stream in listener.incoming().map_while(Result::ok) {
+            let mut reader = BufReader::new(&mut stream);
+            let mut head = String::new();
+            loop {
+                let mut line = String::new();
+                reader.read_line(&mut line).unwrap();
+                if line == "\r\n" || line.is_empty() { break }
+                head.push_str(&line.to_ascii_lowercase());
+            }
+            assert!(head.contains("authorization: bearer synthetic-model-fixture"));
+            let size = head.lines().find_map(|line| line.strip_prefix("content-length:"))
+                .map_or(0, |value| value.trim().parse().unwrap());
+            let mut body = vec![0; size];
+            reader.read_exact(&mut body).unwrap();
+            if size == 0 {
+                stream.write_all(b"HTTP/1.1 204 No Content\r\nConnection: close\r\n\r\n").unwrap();
+                continue;
+            }
+            let msg: Value = serde_json::from_slice(&body).unwrap();
+            let result = match msg["method"].as_str().unwrap() {
+                "initialize" if remaining_failures.load(Ordering::Relaxed) == 2 => {
+                    remaining_failures.store(1, Ordering::Relaxed);
+                    stream.write_all(b"HTTP/1.1 503 Service Unavailable\r\nContent-Length: 0\r\nConnection: close\r\n\r\n").unwrap();
+                    continue;
+                }
+                "initialize" => json!({"protocolVersion":"2025-03-26","capabilities":{"tools":{}},"serverInfo":{"name":"T3 fixture","version":"1"}}),
+                "notifications/initialized" => {
+                    stream.write_all(b"HTTP/1.1 202 Accepted\r\nContent-Length: 0\r\nConnection: close\r\n\r\n").unwrap();
+                    continue;
+                }
+                "tools/call" => match msg["params"]["name"].as_str().unwrap() {
+                    "orchestrator_capabilities" if remaining_failures.load(Ordering::Relaxed) == 1 => {
+                        remaining_failures.store(0, Ordering::Relaxed);
+                        json!({"structuredContent":{"providers":[]}})
+                    }
+                    "orchestrator_capabilities" => json!({"structuredContent":{"providers":[
+                        {"providerInstanceId":"fixed-provider","driverKind":"codex","models":[
+                            {"id":"gpt-6.2-sol","options":[{"id":"reasoningEffort","values":["high","xhigh"]}]},
+                            {"id":"gpt-6.1-sol","options":[{"id":"reasoningEffort","values":["high"]}]}
+                        ]}
+                    ]}}),
+                    "t3_thread_launch" => {
+                        let args = msg["params"]["arguments"].clone();
+                        let mut selection = args["modelSelection"].clone();
+                        if args["message"] == "wrong effective selection" {
+                            selection["options"][0]["value"] = json!("high");
+                        }
+                        seen.lock().unwrap().push(args);
+                        json!({"structuredContent":{"projectId":"fixed-project","threadId":"test-thread","runId":"test-run",
+                            "status":"queued","modelSelection":selection}})
+                    }
+                    other => panic!("unexpected tool {other}"),
+                },
+                other => panic!("unexpected method {other}"),
+            };
+            let response = json!({"jsonrpc":"2.0","id":msg["id"],"result":result});
+            let body = format!("event: message\ndata: {response}\n\n");
+            write!(stream, "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len()).unwrap();
+        }
+    });
+    let mut cfg = native_config(&issuer.url);
+    cfg["native_start"]["model"] = json!("gpt-6.2-sol");
+    cfg["native_start"]["effort"] = json!("xhigh");
+    cfg["native_start"]["mcp_endpoint"] = json!(endpoint);
+    cfg["native_start"]["allowed_selections"] = json!([{"model":"gpt-6.1-sol","effort":"high"}]);
+    let port = c.spawn_http({
+        let mut command = c.oauth_command(&cfg);
+        command.env("EVERETT_T3_MCP_TOKEN", "synthetic-model-fixture");
+        command
+    });
+    let catalog = oauth_rpc(port, 'a', "tools/list", json!({}));
+    let tool = catalog["result"]["tools"].as_array().unwrap().iter()
+        .find(|tool| tool["name"] == "everett_start").unwrap();
+    assert_eq!(tool["inputSchema"]["properties"]["model"]["type"], "string");
+    assert_eq!(tool["inputSchema"]["properties"]["effort"]["type"], "string");
+    assert_eq!(tool["inputSchema"]["properties"]["model"]["enum"], json!(["gpt-6.2-sol","gpt-6.1-sol"]));
+    assert_eq!(tool["inputSchema"]["properties"]["effort"]["enum"], json!(["xhigh","high"]));
+    assert_eq!(tool["inputSchema"]["anyOf"], json!([
+        {"properties":{"model":{"const":"gpt-6.2-sol"},"effort":{"const":"xhigh"}}},
+        {"required":["model","effort"],"properties":{"model":{"const":"gpt-6.1-sol"},"effort":{"const":"high"}}}
+    ]));
+    let identity = native_identity(port, "native-model-registration-key-123456");
+    let mut args = json!({"identity_handle":identity["identity_handle"],"request_id":"native-model-request-id-123456789","text":"explicit dispatch"});
+    let call = |args: Value| native_call(port, 'a', "everett_start", args);
+    for (field, value) in [("model",json!("other-model")),("effort",json!("high")),("effort",Value::Null),("effort",json!(8))] {
+        let mut invalid = args.clone();
+        invalid[field] = value;
+        denied(&call(invalid));
+    }
+    assert!(launches.lock().unwrap().is_empty());
+    args["model"] = json!("gpt-6.2-sol");
+    args["effort"] = json!("xhigh");
+    for diagnostic in ["t3_mcp_unavailable", "t3_model_or_effort_unavailable"] {
+        let rejected = native_outcome(&call(args.clone()));
+        assert_eq!(rejected["state"], "dispatch_not_started");
+        assert_eq!(rejected["diagnostic"], diagnostic);
+        assert!(rejected["effective"].is_null());
+        assert!(launches.lock().unwrap().is_empty());
+    }
+    assert_eq!(preflight.load(Ordering::Relaxed), 0);
+    let response = success(&call(args.clone()));
+    let selected = json!({"model":"gpt-6.2-sol","effort":"xhigh"});
+    assert_eq!(response["requested"], selected);
+    assert_eq!(response["effective"], selected);
+    assert_eq!(response["dispatch_confirmed"], true);
+    assert_eq!(response["pickup_confirmed"], false);
+    assert_eq!(success(&call(args.clone())), response);
+    let recorded = launches.lock().unwrap().clone();
+    assert_eq!(recorded.len(), 1);
+    assert_eq!(recorded[0]["modelSelection"], json!({"instanceId":"fixed-provider","model":"gpt-6.2-sol",
+        "options":[{"id":"reasoningEffort","value":"xhigh"}]}));
+
+    args.as_object_mut().unwrap().remove("model");
+    args.as_object_mut().unwrap().remove("effort");
+    args["request_id"] = json!("native-model-request-id-default12345");
+    let defaults = success(&call(args.clone()));
+    assert_eq!(defaults["requested"], selected);
+    assert_eq!(defaults["effective"], selected);
+    let mut alternate = args.clone();
+    alternate["model"] = json!("gpt-6.1-sol");
+    alternate["effort"] = json!("high");
+    denied(&call(alternate.clone()));
+    alternate["request_id"] = json!("native-model-request-id-alternate123");
+    let alternate_response = success(&call(alternate.clone()));
+    let alternate_selection = json!({"model":"gpt-6.1-sol","effort":"high"});
+    assert_eq!(alternate_response["requested"], alternate_selection);
+    assert_eq!(alternate_response["effective"], alternate_selection);
+    assert_eq!(success(&call(alternate)), alternate_response);
+    args["request_id"] = json!("native-model-request-id-mismatch123");
+    args["text"] = json!("wrong effective selection");
+    let mismatch = native_outcome(&call(args.clone()));
+    assert_eq!(mismatch["dispatch_confirmed"], false);
+    assert!(mismatch["effective"].is_null());
+    assert_eq!(native_outcome(&call(args)), mismatch);
+    assert_eq!(launches.lock().unwrap().len(), 4);
 }

@@ -10,7 +10,11 @@ import {
 type Credential = { agent_id: string; subject: string; status: string };
 type Member = { subject: string; role: 'admin' | 'member'; status: string };
 type Attempt = { message_id: string; from_device: string; to_device: string; idempotency_key: string; digest: string; state: MessageState; expires_at: number; metadata: string };
-type Metadata = Omit<Envelope, 'ciphertext' | 'signature' | 'ephemeralKey' | 'nonce' | 'createdAt'>;
+type Metadata = Omit<Envelope, 'ciphertext' | 'signature' | 'ephemeralKey' | 'nonce' | 'createdAt'> & {
+  queuedAt?: number;
+  claimedAt?: number;
+  repliedAt?: number;
+};
 type EnrollmentResult = { ok: true; value: { owner: string; deviceId: string } } | { ok: false; error: string; status: number };
 const empty = z.strictObject({});
 const deviceIdArgs = z.strictObject({ deviceId: identifier });
@@ -315,7 +319,7 @@ export class OwnerRelay extends DurableObject {
         this.#rate(JSON.stringify(['account', p.issuer, p.subject]), 120, now);
         this.#rate('org', 600, now);
         const { ciphertext, signature, ephemeralKey, nonce, createdAt, ...metadata } = e;
-        this.ctx.storage.sql.exec('INSERT INTO attempts VALUES(?,?,?,?,?,?,?,?)', e.messageId, p.agentId, e.idempotencyKey, requestDigest, 'queued', e.expiresAt, e.toDevice, JSON.stringify(metadata));
+        this.ctx.storage.sql.exec('INSERT INTO attempts VALUES(?,?,?,?,?,?,?,?)', e.messageId, p.agentId, e.idempotencyKey, requestDigest, 'queued', e.expiresAt, e.toDevice, JSON.stringify({ ...metadata, queuedAt: now }));
         this.ctx.storage.sql.exec('INSERT INTO messages(message_id,to_device,expires_at,envelope) VALUES(?,?,?,?)', e.messageId, e.toDevice, e.expiresAt, JSON.stringify(e));
         return { messageId: e.messageId, state: 'queued' };
       }
@@ -346,7 +350,14 @@ export class OwnerRelay extends DurableObject {
         this.#route(e);
         if (this.#state(a, now) === 'expired') throw new RelayError('message_expired');
         if (a.state === 'queued' && o.state !== 'delivered') throw new RelayError('delivery_required');
-        if (stateRank[o.state] > stateRank[a.state]) this.ctx.storage.sql.exec('UPDATE attempts SET state=? WHERE message_id=?', o.state, o.messageId);
+        const state = stateRank[o.state] > stateRank[a.state] ? o.state : a.state;
+        const newClaim = o.state === 'claimed' && e.claimedAt === undefined;
+        const newReply = o.state === 'replied' && e.repliedAt === undefined;
+        if (newClaim) e.claimedAt = o.at;
+        if (newReply) e.repliedAt = o.at;
+        if (state !== a.state || newClaim || newReply) {
+          this.ctx.storage.sql.exec('UPDATE attempts SET state=?, metadata=? WHERE message_id=?', state, JSON.stringify(e), o.messageId);
+        }
         this.ctx.storage.sql.exec('DELETE FROM messages WHERE message_id=?', o.messageId);
         return null;
       }
@@ -355,7 +366,9 @@ export class OwnerRelay extends DurableObject {
         this.#own(p, fromDevice); this.#activeDevice(p.agentId);
         const a = this.#attempt(messageId);
         if (!a || a.from_device !== p.agentId) throw new RelayError('message_not_for_agent');
-        this.#route(JSON.parse(a.metadata)); return { state: this.#state(a, now) };
+        const e: Metadata = JSON.parse(a.metadata);
+        this.#route(e);
+        return { state: this.#state(a, now), queuedAt: e.queuedAt ?? null, claimedAt: e.claimedAt ?? null, repliedAt: e.repliedAt ?? null };
       }
       default: throw new RelayError('unsupported_operation', 400);
     }

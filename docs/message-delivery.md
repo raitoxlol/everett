@@ -156,6 +156,8 @@ reply. Status queries do not rewrite local receipts or establish task success.
 or an accepting hook marks the returned message ids consumed so they do not
 appear again. Records remain available for `reply_to` lookup until expiry.
 
+Dashboard consumers can use the [versioned delivery and agent status fields](dashboard-status.md).
+
 ## Wake proofs
 
 Run `everett proof wake --to <session> [--timeout 120] [--json]` to check one

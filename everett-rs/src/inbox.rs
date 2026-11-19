@@ -1,4 +1,4 @@
-use std::collections::HashSet;
+use std::collections::{BTreeMap, HashSet};
 use std::fs::{self, OpenOptions};
 use std::io::Write;
 use std::os::unix::fs::OpenOptionsExt;
@@ -50,7 +50,25 @@ fn done_path(session_id: &str) -> PathBuf {
     inbox_dir().join(format!("{}.done", session_id))
 }
 
-/// <sid>.jsonl and <sid>.done share <sid>.lock.
+fn pickup_times_path(session_id: &str) -> PathBuf {
+    done_path(session_id).with_extension("done-times.json")
+}
+
+fn pickup_times(session_id: &str) -> BTreeMap<String, i64> {
+    fs::read(pickup_times_path(session_id))
+        .ok()
+        .and_then(|data| serde_json::from_slice(&data).ok())
+        .unwrap_or_default()
+}
+
+// A failed evidence write leaves the durable acknowledgement intact.
+fn save_pickup_times(session_id: &str, times: &BTreeMap<String, i64>) {
+    if let Ok(data) = serde_json::to_vec(times) {
+        let _ = crate::storage::save(&pickup_times_path(session_id), &data);
+    }
+}
+
+/// <sid>.jsonl, <sid>.done and its timestamp sidecar share <sid>.lock.
 fn lock_path(target: &Path) -> PathBuf {
     target.with_extension("lock")
 }
@@ -242,15 +260,11 @@ pub fn pending(session_id: &str, at: Option<f64>) -> Vec<Map<String, Value>> {
 }
 
 pub fn mark_done(session_id: &str, ids: &[&str]) {
-    let ids: Vec<&&str> = ids.iter().filter(|i| !i.is_empty()).collect();
-    if ids.is_empty() {
-        return;
+    if let Ok(target) = path(session_id) {
+        if let Ok(_guard) = lock_file(&target) {
+            let _ = acknowledge_locked(session_id, ids);
+        }
     }
-    if persist_relay_context(session_id, &ids.iter().map(|id| **id).collect::<Vec<_>>()).is_err() {
-        return;
-    }
-    let body: String = ids.iter().map(|i| format!("{}\n", i)).collect();
-    let _ = append(&done_path(session_id), &body);
 }
 
 pub(crate) fn claim_pending(session_id: &str, selected: &[&str]) -> Result<HashSet<String>> {
@@ -275,16 +289,27 @@ fn acknowledge_locked(session_id: &str, ids: &[&str]) -> Result<()> {
     }
     let done = done_path(session_id);
     let mut body = read_acknowledgments(&done)?;
-    persist_relay_context(session_id, ids)?;
+    let mut existing: HashSet<&str> = body.split_whitespace().collect();
+    let ids: Vec<_> = ids.iter().copied().filter(|id| valid_id(id) && existing.insert(id)).collect();
+    if ids.is_empty() {
+        return Ok(());
+    }
+    persist_relay_context(session_id, &ids)?;
     if !body.is_empty() && !body.ends_with('\n') {
         body.push('\n');
     }
-    for id in ids {
+    for id in &ids {
         body.push_str(id);
         body.push('\n');
     }
     crate::storage::save(&done, body.as_bytes())
-        .map_err(|error| EverettError::new(2, format!("cannot save inbox acknowledgements: {error}")))
+        .map_err(|error| EverettError::new(2, format!("cannot save inbox acknowledgements: {error}")))?;
+    if let Some(at) = crate::delivery_status::unix_ms(now()) {
+        let mut times = pickup_times(session_id);
+        times.extend(ids.into_iter().map(|id| (id.to_owned(), at)));
+        save_pickup_times(session_id, &times);
+    }
+    Ok(())
 }
 
 fn read_acknowledgments(path: &Path) -> Result<String> {
@@ -430,13 +455,30 @@ pub fn sent_status(sender: &str, message_id: &str) -> Result<Value> {
     } else {
         "queued"
     };
-    Ok(json!({
+    use crate::delivery_status::{unix_ms, with_status, DeliveryState, Evidence};
+    let ts = |item: &Map<String, Value>| item.get("ts").and_then(Value::as_f64);
+    let at = now();
+    let evidence = Evidence {
+        queued_at_ms: ts(&request).and_then(unix_ms),
+        picked_up_at_ms: picked_up.then(|| pickup_times(&target).get(message_id).copied()).flatten(),
+        replied_at_ms: reply.as_ref().and_then(ts).and_then(unix_ms),
+        expires_at_ms: ts(&request).filter(|ts| unix_ms(*ts).is_some()).and_then(|ts| unix_ms(ts + TTL)),
+    };
+    let delivery = match state {
+        "replied" => DeliveryState::Replied,
+        "picked_up" => DeliveryState::PickedUp,
+        "expired" if evidence.expires_at_ms.is_some() => DeliveryState::Expired,
+        "queued" if evidence.queued_at_ms.is_some() => DeliveryState::Queued,
+        _ => DeliveryState::Unknown,
+    };
+    let agent = crate::cards::status(&target, at);
+    Ok(with_status(json!({
         "message_id": message_id,
         "to": target,
         "state": state,
         "picked_up": picked_up,
         "reply": reply.map(consumption_message),
-    }))
+    }), delivery, evidence, agent))
 }
 
 pub(crate) fn persist_status_reply_context(sender: &str, reply: &Value) -> Result<()> {
@@ -865,7 +907,13 @@ fn compact(session_id: &str) {
         let done_target = done_path(session_id);
         let tmp = done_target.with_extension("done.tmp");
         let body: String = live_done.iter().map(|i| format!("{i}\n")).collect();
-        let _ = fs::write(&tmp, body).and_then(|_| fs::rename(&tmp, &done_target));
+        if fs::write(&tmp, body).and_then(|_| fs::rename(&tmp, &done_target)).is_ok() {
+            let mut times = pickup_times(session_id);
+            times.retain(|id, _| keep_ids.contains(id.as_str()));
+            if pickup_times_path(session_id).exists() {
+                save_pickup_times(session_id, &times);
+            }
+        }
     }
     reap_stale(now);
 }
