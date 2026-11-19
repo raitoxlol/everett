@@ -252,6 +252,7 @@ export class HostedAuth extends DurableObject<HostedAuthEnv> {
   constructor(ctx: DurableObjectState, env: HostedAuthEnv) {
     super(ctx, env);
     ctx.storage.sql.exec(`
+      CREATE TABLE IF NOT EXISTS mesh_grants(id TEXT PRIMARY KEY, token_hash TEXT NOT NULL UNIQUE, account TEXT NOT NULL, agent_id TEXT NOT NULL, origin TEXT NOT NULL, state TEXT NOT NULL, created_at INTEGER NOT NULL, expires_at INTEGER NOT NULL);
       CREATE TABLE IF NOT EXISTS gh_states(state_hash TEXT PRIMARY KEY,binding_hash TEXT NOT NULL,return_to TEXT NOT NULL,expires_at INTEGER NOT NULL);
       CREATE TABLE IF NOT EXISTS owner_sessions(session_hash TEXT PRIMARY KEY,csrf_hash TEXT NOT NULL,github_id TEXT NOT NULL,login TEXT NOT NULL,expires_at INTEGER NOT NULL);
       CREATE TABLE IF NOT EXISTS device_requests(poll_hash TEXT PRIMARY KEY,user_code TEXT NOT NULL UNIQUE,name TEXT NOT NULL,state TEXT NOT NULL,agent_id TEXT,event_id TEXT NOT NULL UNIQUE,expires_at INTEGER NOT NULL,last_poll INTEGER NOT NULL,account TEXT,requester_hash TEXT);
@@ -427,6 +428,8 @@ export class HostedAuth extends DurableObject<HostedAuthEnv> {
 
   async #route(request: Request, url: URL, c: HostedConfig, host: string): Promise<Response> {
     const path = url.pathname;
+    if (path.startsWith('/v1/mesh/')) return this.#mesh(request, c, host);
+    if (path === '/enroll/mesh' && request.method === 'POST') return this.#meshDecision(request, c, host);
     if (request.method === 'GET') {
       if (path === '/auth/github') return this.#githubStart(request, url, c, host);
       if (path === '/auth/callback/github') return this.#githubCallback(request, url, c, host);
@@ -631,7 +634,7 @@ export class HostedAuth extends DurableObject<HostedAuthEnv> {
     return await this.#relayFor(identity).credentialActive(identity, agentId);
   }
   async #enrollPage(request: Request, url: URL, c: HostedConfig) {
-    const p = fields(url.searchParams, ['code', 'request']);
+    const p = fields(url.searchParams, ['code', 'request', 'mesh']);
     const session = this.#session(request, c);
     if (!session) {
       const returnTo = `${url.pathname}${url.search}`;
@@ -640,7 +643,12 @@ export class HostedAuth extends DurableObject<HostedAuthEnv> {
     }
     let callbackOrigin: string | undefined;
     let content = `<div class="auth-account"><span>Signed in as <strong>${esc(c.enrollment === 'owner' ? c.ownerLogin : session.account.login)}</strong></span><form method="post" action="/auth/logout">${csrfField(session.csrf)}<button class="auth-signout">Sign out</button></form></div>`;
-    if (p.request) {
+    if (p.mesh) {
+      identifier.parse(p.mesh);
+      const grant = this.#row<{ id: string; origin: string; state: string; expires_at: number }>('SELECT id,origin,state,expires_at FROM mesh_grants WHERE id=? AND account=?', p.mesh, session.account.subject);
+      if (!grant || grant.expires_at <= Date.now()) return html('<h1>Mesh request unavailable</h1>', 403);
+      content += `<div class="auth-lead"><h1>Read-only mesh console</h1><p>Scope <strong>mesh:read:v1</strong>. Device and session identifiers, observed last seen, aggregate queue and signed receipt metadata only. No messages, session cards, transcripts or keys. Expires ${esc(new Date(grant.expires_at).toISOString())}.</p></div><div class="auth-action"><p>Console origin <strong>${esc(grant.origin)}</strong></p><p>State ${esc(grant.state)}</p><form method="post" action="/enroll/mesh">${csrfField(session.csrf)}<input type="hidden" name="id" value="${esc(grant.id)}">${grant.state === 'pending' ? '<button name="decision" value="approve">Approve read access</button><button name="decision" value="deny">Deny</button>' : ''}${grant.state === 'approved' ? '<button name="decision" value="revoke">Revoke read access</button>' : ''}</form></div>`;
+    } else if (p.request) {
       const row = this.#row<AuthRequest>('SELECT * FROM auth_requests WHERE id=?', identifier.parse(p.request));
       const binding = cookies(request)[cookieName(c, 'oauth')] ?? '';
       const foreign = !!row && row.account !== null && row.account !== session.account.subject;
@@ -676,7 +684,50 @@ export class HostedAuth extends DurableObject<HostedAuthEnv> {
       const live = await this.#live(c, agent.agent_id);
       content += `<li>${esc(agent.name)} · ${esc(agent.agent_id)} · ${esc(agent.kind)} · ${live ? 'active' : 'revoked'}${live ? `<form method="post" action="/enroll/revoke">${csrfField(session.csrf)}<input type="hidden" name="agent_id" value="${esc(agent.agent_id)}"><button>Revoke</button></form>` : ''}</li>`;
     }
+    content += '</ul></section><section class="auth-credentials"><h2>Mesh read grants</h2><ul>';
+    for (const grant of this.ctx.storage.sql.exec<{ id: string; origin: string; state: string }>('SELECT id,origin,state FROM mesh_grants WHERE account=? ORDER BY created_at DESC LIMIT 64', session.account.subject)) content += `<li><a href="/enroll?mesh=${esc(grant.id)}">${esc(grant.origin)}</a> · ${esc(grant.state)}</li>`;
     return html(`${content}</ul>${agents.length > 256 ? '<p>Only the newest 256 credentials are displayed.</p>' : ''}</section>`, 200, callbackOrigin);
+  }
+  async #mesh(request: Request, c: HostedConfig, host: string): Promise<Response> {
+    const path = new URL(request.url).pathname;
+    const token = (request.headers.get('Authorization') ?? '').replace(/^Bearer /, '');
+    if (path === '/v1/mesh/setup' && request.method === 'POST') {
+      const principal = await this.authenticateRelayToken(token);
+      if (!principal || !await this.#live(c, principal.agentId)) throw new RelayError('invalid_token', 401);
+      const account = this.#row<{ account: string }>('SELECT account FROM hosted_agents WHERE agent_id=?', principal.agentId)!.account;
+      this.#rate(`mesh-setup:${account}`, 10);
+      const input = z.strictObject({ origin: z.string().max(256) }).parse(await body(request));
+      const origin = new URL(input.origin);
+      if (origin.protocol !== 'https:' || origin.origin !== input.origin || origin.username || origin.password) throw new RelayError('invalid_origin', 400);
+      if (this.#row<{ n: number }>("SELECT count(*) n FROM mesh_grants WHERE account=? AND expires_at>? AND state IN ('pending','approved')", account, Date.now())!.n >= 16) throw new RelayError('mesh_grant_limit', 429);
+      const id = crypto.randomUUID(), readToken = `emr_${crypto.randomUUID().replaceAll('-', '')}${crypto.randomUUID().replaceAll('-', '')}`;
+      const now = Date.now(), expiresAt = now + 24 * 60 * MINUTE;
+      this.ctx.storage.sql.exec('INSERT INTO mesh_grants VALUES(?,?,?,?,?,?,?,?)', id, hash(readToken), account, principal.agentId, input.origin, 'pending', now, expiresAt);
+      return json({ id, token: readToken, approvalUrl: `${host}/enroll?mesh=${id}`, expiresAt, owner:namespace(principal),scope: 'mesh:read:v1' }, 201);
+    }
+    if (path !== '/v1/mesh/snapshot' || request.method !== 'GET') return json({ error: 'not_found' }, 404);
+    if (!/^emr_[a-f0-9]{64}$/.test(token)) throw new RelayError('invalid_token', 401);
+    const grant = this.#row<{ account: string; agent_id: string; state: string; expires_at: number; origin: string }>('SELECT account,agent_id,state,expires_at,origin FROM mesh_grants WHERE token_hash=?', hash(token));
+    if (!grant) throw new RelayError('invalid_token', 401);
+    if (grant.state !== 'approved' || grant.expires_at <= Date.now() || !this.#accountAllowed(c, grant.account) || !await this.#live(c, grant.agent_id)) throw new RelayError('mesh_access_denied', 403);
+    if (request.headers.get('X-Everett-Console-Origin') && request.headers.get('X-Everett-Console-Origin') !== grant.origin) throw new RelayError('wrong_console', 403);
+    const identity = this.#identityFor(grant.account as Subject, c);
+    const principal: Principal = { ...identity, agentId: grant.agent_id, role: 'member', expiresAt: grant.expires_at };
+    const snapshot = await this.#relayFor(identity).meshSnapshot(principal);
+    const names = new Map(this.ctx.storage.sql.exec<{ agent_id: string; name: string }>('SELECT agent_id,name FROM hosted_agents WHERE account=? AND revoked=0', grant.account).toArray().map(row => [row.agent_id, row.name]));
+    return json({ ...snapshot, consoleOrigin: grant.origin, grantExpiresAt: grant.expires_at, devices: snapshot.devices.map(device => ({ ...device, name: names.get(device.deviceId) ?? null })) });
+  }
+  async #meshDecision(request: Request, c: HostedConfig, host: string): Promise<Response> {
+    const fields = await form(request, ['csrf', 'id', 'decision']);
+    const session = this.#mutation(request, c, fields);
+    identifier.parse(fields.id);
+    const decision = z.enum(['approve', 'deny', 'revoke']).parse(fields.decision);
+    const grant = this.#row<{ state: string; agent_id: string; expires_at: number }>('SELECT state,agent_id,expires_at FROM mesh_grants WHERE id=? AND account=?', fields.id, session.account.subject);
+    if (!grant || grant.expires_at <= Date.now()) throw new RelayError('mesh_request_unavailable', 403);
+    if (decision === 'approve' && (grant.state !== 'pending' || !await this.#live(c, grant.agent_id))) throw new RelayError('mesh_request_unavailable', 403);
+    if (decision === 'deny' && grant.state !== 'pending') throw new RelayError('mesh_request_unavailable', 403);
+    this.ctx.storage.sql.exec('UPDATE mesh_grants SET state=? WHERE id=? AND account=?', decision === 'approve' ? 'approved' : decision === 'deny' ? 'denied' : 'revoked', fields.id, session.account.subject);
+    return redirect(`${host}/enroll?mesh=${fields.id}`);
   }
   async #browserRevoke(request: Request, c: HostedConfig, host: string) {
     if (c.enrollment === 'owner') this.#rate('browser-mutation', 60);
