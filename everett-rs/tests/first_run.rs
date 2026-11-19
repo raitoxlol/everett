@@ -23,6 +23,16 @@ fn terminal(home: &std::path::Path, args: &[&str]) -> expectrl::Session {
 }
 
 #[test]
+fn plain_onboarding_welcome_distinguishes_local_setup_from_mcp_use() {
+    let fx = fixture();
+    let out = fx.run_stdin(&["onboard"], "q\n", &[]);
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let text = String::from_utf8_lossy(&out.stdout);
+    assert!(text.contains("Local setup needs no Everett account."), "{text}");
+    assert!(text.contains("Sign in to use Everett MCP tools."), "{text}");
+}
+
+#[test]
 fn first_terminal_run_onboards_and_cancellation_keeps_it_pending() {
     let fx = fixture();
     for _ in 0..2 {
