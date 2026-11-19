@@ -64,6 +64,7 @@ try {
   });
   await page.getByRole('searchbox',{name:'Filter devices'}).fill('');
   await page.setViewportSize({width,height:820});
+  await page.getByRole('searchbox',{name:'Filter devices'}).blur();
   if (process.env.MESH_SHOTS) await page.screenshot({path:process.env.MESH_SHOTS+'-mobile.png', fullPage:true});
   await check('all mobile nav links are visible and have 44px vertical touch targets', async () => {
     const links = page.getByRole('navigation',{name:'Console'}).getByRole('link');
@@ -73,6 +74,15 @@ try {
       return r.left >= 0 && r.right <= innerWidth && r.height >= 44;
     }));
     assert.ok(fit);
+  });
+  await check('phone-width search shows the full control on its own line', async () => {
+    const filter = page.getByRole('searchbox',{name:'Filter devices'});
+    const heading = page.getByRole('heading',{name:'Registered devices'});
+    const outer = await page.locator('[data-view="devices"] .panel-heading').first().boundingBox();
+    const input = await filter.boundingBox();
+    const title = await heading.boundingBox();
+    assert.ok(outer && title && input);
+    assert.ok(input.y >= title.y + title.height && input.width >= outer.width * 0.85);
   });
   await check('mobile session detail fits without sideways scrolling', async () => {
     const table = page.getByRole('table').last();
@@ -102,4 +112,3 @@ try {
   await browser?.close();
   server.kill();
 }
-
