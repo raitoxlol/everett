@@ -23,13 +23,13 @@ fn terminal(home: &std::path::Path, args: &[&str]) -> expectrl::Session {
 }
 
 #[test]
-fn plain_onboarding_welcome_explains_account_free_local_use() {
+fn plain_onboarding_welcome_distinguishes_local_setup_from_mcp_use() {
     let fx = fixture();
     let out = fx.run_stdin(&["onboard"], "q\n", &[]);
     assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
     let text = String::from_utf8_lossy(&out.stdout);
-    assert!(text.contains("Local agents need no Everett account."), "{text}");
-    assert!(text.contains("Sign-in is optional for cross-device delivery."), "{text}");
+    assert!(text.contains("Local setup needs no Everett account."), "{text}");
+    assert!(text.contains("Sign in to use Everett MCP tools."), "{text}");
 }
 
 #[test]

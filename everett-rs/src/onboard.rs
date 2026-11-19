@@ -28,7 +28,7 @@ pub fn event_label(event: &str) -> &str {
 
 pub const WELCOME_LINES: &[&str] = &[
     "Everett lists recent Claude Code, Codex, OMP, Pi, Hermes, and Grok sessions on this machine.",
-    "Local agents need no Everett account. Sign-in is optional for cross-device delivery.",
+    "Local setup needs no Everett account. Sign in to use Everett MCP tools.",
     "It lets those sessions hand work to each other instead of you copy-pasting between them.",
     "It shares merged memory through supported hooks, or agents can read it with everett_core.",
 ];
@@ -388,9 +388,9 @@ pub fn summary_lines(cfg: &OnboardConfig, result: &ApplyResult) -> Vec<String> {
         lines.extend([
             "Verify: `everett doctor` checks configuration and the MCP launcher.".to_string(),
             "It does not prove a client loaded Everett tools.".to_string(),
-            "Restart each selected MCP client; ask it to list Everett tools.".to_string(),
-            "Then call `everett_list`.".to_string(),
-            "Success: a returned session list; an empty list is also success.".to_string(),
+            "Restart each selected MCP client; ask it to list available Everett tools.".to_string(),
+            "Call `everett_ls`; a returned session list, even empty, verifies the tool.".to_string(),
+            "If it says an account is required, run `everett login` in this profile and retry.".to_string(),
             "Saved settings alone are not proof.".to_string(),
         ]);
     } else if mcp_selected {

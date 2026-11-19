@@ -410,11 +410,10 @@ fn screen_welcome(t: &mut Terminal<CrosstermBackend<io::Stdout>>, p: &Palette) -
                     f,
                     top + 3,
                     36,
-                    "Local agents need no Everett account.",
+                    "Local setup needs no Everett account.",
                     Style::default(),
                 );
-                put(f, top + 4, 36, "Sign-in is optional for cross-device", p.violet);
-                put(f, top + 5, 36, "delivery.", Style::default());
+                put(f, top + 4, 36, "Sign in to use Everett MCP tools.", p.violet);
                 primary_action(
                     f,
                     p,
@@ -423,9 +422,8 @@ fn screen_welcome(t: &mut Terminal<CrosstermBackend<io::Stdout>>, p: &Palette) -
                 );
                 put(f, area.height - 4, 4, "Choose. Review. Connect.", p.dim);
             } else {
-                put(f, y, 2, "Local agents need no Everett account.", p.cyan);
-                put(f, y + 2, 2, "Sign-in is optional for", p.violet);
-                put(f, y + 3, 2, "cross-device delivery.", Style::default());
+                put(f, y, 2, "Local setup needs no Everett account.", p.cyan);
+                put(f, y + 2, 2, "Sign in to use Everett MCP tools.", p.violet);
                 put(f, y + 5, 2, "Review every change first.", p.dim);
                 if area.width >= 60 {
                     draw_balloon(f, p, Rect::new(area.width - 18, y, 16, 6), motion.elapsed());
@@ -456,9 +454,9 @@ fn screen_account(t: &mut Terminal<CrosstermBackend<io::Stdout>>, p: &Palette) -
     let mut attempt = false;
     let mut verified = false;
     let mut status = if configured {
-        "Set up local agents without an account, or sign in to enable hosted\ncross-device delivery. Browser sign-in only opens after you confirm.".to_string()
+        "Configure local agents without an account; sign in to use Everett MCP tools. Browser sign-in only opens after you confirm.".to_string()
     } else {
-        "Sign-in is not available in this build; local setup is still available without an account.".to_string()
+        "Sign-in is not available in this build; local setup is available, but Everett MCP tools need sign-in.".to_string()
     };
     loop {
         t.draw(|f| {
@@ -586,7 +584,7 @@ fn explanation_lines(topic: ExplanationTopic, p: &Palette) -> Vec<Line<'static>>
                 Style::default(),
             ),
             ("Hooks and MCP setup vary by agent.", Style::default()),
-            ("No Everett account is needed for local setup.", p.dim),
+            ("Account-free local setup; MCP tools require sign-in.", p.dim),
         ],
         ExplanationTopic::Cloud => vec![
             ("Cloud assistants", p.cyan),
@@ -2097,7 +2095,7 @@ fn screen_summary(
                         "Run: everett doctor to check configuration and the MCP launcher; it does not prove a client loaded tools.".to_string()
                     }
                 } else if let Some(agent) = &tools {
-                    format!("Restart {}.\nAsk it to list Everett tools.\nThen call `everett_list`.", agent.name())
+                    format!("If signed out: everett login.\nRestart {}.\nAsk it to call `everett_ls`.", agent.name())
                 } else if let Some(choice) = remote.first() {
                     format!("Press d for {} setup steps.", choice.name())
                 } else {
