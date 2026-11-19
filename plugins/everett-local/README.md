@@ -2,6 +2,8 @@
 
 A local stdio plugin for the ChatGPT desktop app (Codex mode) and Codex.
 Uses the existing Everett account without a ChatGPT hosted OAuth connector.
+Run `everett login` in the same Everett profile before calling tools. Native MCP
+verifies the account online on every tool call, including `everett_whoami`.
 Requires Python 3.9+ and Everett 2.2.1+. Remote delivery still uses the configured
 Everett relay. Plugin version 0.3.1 makes the ChatGPT desktop layout the default.
 
@@ -49,6 +51,9 @@ python3 "$HOME/.local/share/everett-direct-plugin/plugins/everett-direct/scripts
 ```
 
 Doctor checks the runtime, not account authorization or relay reachability.
+After restarting the client, call `everett_ls`; a returned list, even empty,
+verifies tool use. Discovery alone does not. If runtime configuration is invalid,
+rerun `install.py --binary /absolute/path/to/everett` to repair it.
 A startup error goes to stderr and exits nonzero, leaving stdout for MCP.
 The plugin never creates a shared fake session identity, starts polling, opens
 a browser, downloads binaries, or modifies existing connectors. It adds no hooks.

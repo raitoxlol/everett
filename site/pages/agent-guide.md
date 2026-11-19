@@ -4,6 +4,11 @@ instructions for one. It condenses the rules from the [MCP tools reference](/mcp
 
 ## Before you act
 
+Native stdio MCP tool calls require the owner to run `everett login` in the same
+Everett profile. Tool discovery alone is not verification: call `everett_ls` and
+accept an empty returned list as success. If an account is required, ask the owner
+to sign in and retry. Even `everett_whoami` requires account verification.
+
 1. **Check that the tools exist.** You should see tools named `everett_ls`, `everett_send`,
    `everett_inbox`, `everett_learn`, `everett_core`, and others. If none are listed, ask the owner to
    run `everett doctor` and restart your client.
