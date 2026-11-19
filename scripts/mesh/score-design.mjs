@@ -38,7 +38,7 @@ try {
     for (const label of ['Overview','Devices','Cloud agents','Activity','Settings']) {
       await nav.getByRole('link',{name:label,exact:true}).waitFor();
     }
-    assert.match(await page.locator('#source').innerText(),/Fixture/);
+    assert.match(await page.locator('#source').innerText(),/Sample data/);
   });
   await scenario('device search narrows the enrolled device list', async () => {
     await page.goto(origin+'/#devices');
@@ -57,11 +57,12 @@ try {
   });
   await scenario('settings persist theme, density and time format', async () => {
     await page.goto(origin+'/#settings');
-    await page.getByLabel('Theme',{exact:true}).selectOption('light');
+    assert.equal(await page.getByLabel('Theme',{exact:true}).inputValue(),'light');
+    await page.getByLabel('Theme',{exact:true}).selectOption('dark');
     await page.getByLabel('Table density').selectOption('compact');
     await page.getByLabel('Time format').selectOption('absolute');
     await page.reload();
-    assert.equal(await page.getByLabel('Theme',{exact:true}).inputValue(),'light');
+    assert.equal(await page.getByLabel('Theme',{exact:true}).inputValue(),'dark');
     assert.equal(await page.getByLabel('Table density').inputValue(),'compact');
     assert.equal(await page.getByLabel('Time format').inputValue(),'absolute');
     await page.getByRole('heading',{name:'Connection and access'}).waitFor();
