@@ -5,7 +5,7 @@ mod common;
 
 use common::{fixture, lib_home, plant};
 use everett::hooks_common::auto_card;
-use everett::route::{describe, project_name, rank, relevant_sessions};
+use everett::route::{describe, local_route, project_name, rank, relevant_sessions};
 use everett::session::{clean, now, Session};
 use everett::timefmt::{epoch_from_iso, iso_from_epoch};
 use serde_json::json;
@@ -46,7 +46,9 @@ fn a_project_name_made_of_short_and_common_words_still_matches() {
     let pool = relevant_sessions("r-and-d budget", &[worker, coordinator], None);
     assert_eq!(pool[0].id, "coord-1");
     let quiet = session("lab-1", "/Users/alice/r-and-d", "unrelated");
-    assert!(rank("r-and-d budget", &[quiet], None)[0].0 > 0.0, "a named project is boosted");
+    assert!(rank("r-and-d budget", std::slice::from_ref(&quiet), None)[0].0 > 0.0, "a named project is boosted");
+    let routed = local_route("r-and-d", &[quiet], None, None);
+    assert_eq!(routed["decision"], "SESSION", "{routed:?}");
 }
 
 #[test]
