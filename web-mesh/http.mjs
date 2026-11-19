@@ -41,7 +41,10 @@ export default async function handler(req, res) {
 
     const request = new Request(url, { method: req.method, headers, body });
     const response = await createConsole(process.env)(request);
-    res.writeHead(response.status, Object.fromEntries(response.headers));
+    const responseHeaders = Object.fromEntries(response.headers);
+    const cookies = response.headers.getSetCookie();
+    if (cookies.length) responseHeaders['set-cookie'] = cookies;
+    res.writeHead(response.status, responseHeaders);
     res.end(Buffer.from(await response.arrayBuffer()));
   } catch {
     reject(503);

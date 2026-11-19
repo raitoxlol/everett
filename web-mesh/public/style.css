@@ -139,3 +139,5 @@ footer{display:flex;justify-content:space-between;gap:10px;margin-top:28px;paddi
 @media(prefers-reduced-motion:no-preference){
  .metric,.quiet,.nav a{transition:background-color .14s ease,border-color .14s ease,color .14s ease}
 }
+
+.sign-in-link{display:inline-block;text-decoration:none}.sign-in-link:hover{color:#150d08;text-decoration:none}
