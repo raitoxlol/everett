@@ -4,5 +4,5 @@ const result = spawnSync('node', ['node_modules/vitest/vitest.mjs','run','--conf
 process.stderr.write(result.stderr || '');
 if (result.signal || result.error) process.exit(2);
 let report; try { report=JSON.parse(readFileSync('/tmp/everett-mesh-score.json','utf8')); } catch { process.stderr.write(result.stdout); process.exit(2); }
-if(report.numTotalTests !== 7) { process.stderr.write(JSON.stringify(report)); process.exit(2); }
+if(report.numTotalTests !== 8) { process.stderr.write(JSON.stringify(report)); process.exit(2); }
 console.log('unmet=' + report.numFailedTests);

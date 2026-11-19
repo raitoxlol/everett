@@ -119,7 +119,15 @@ async function nativeCall(token: string, operation: string, args: unknown = {}) 
   return fetchWorker('/v2/relay/' + operation, { ...init, headers });
 }
 
-const meshCall = (token: string, path = '/v1/mesh/snapshot', init: RequestInit = {}) => fetchWorker(path, { ...init, headers: { ...Object.fromEntries(new Headers(init.headers)), Authorization: 'Bearer ' + token } });
+const consoleOrigin = 'https://console.example';
+function meshCall(token: string, path = '/v1/mesh/snapshot', init: RequestInit = {}) {
+  const headers = new Headers(init.headers);
+  headers.set('Authorization', 'Bearer ' + token);
+  if (path === '/v1/mesh/snapshot' && !headers.has('X-Everett-Console-Origin')) {
+    headers.set('X-Everett-Console-Origin', consoleOrigin);
+  }
+  return fetchWorker(path, { ...init, headers });
+}
 async function setup() {
  const browser = new Browser(); await browser.login(); const credential = await enroll(browser);
  const response = await meshCall(credential.token, '/v1/mesh/setup', json({ origin: 'https://console.example' }));
@@ -139,6 +147,8 @@ describe('mesh v1 opt-in boundary', () => {
   expect(page).toContain('mesh:read:v1'); expect(page).toContain('https://console.example');
   await approve(s);
   expect((await meshCall(s.grant.token)).status).toBe(200);
+  const noOrigin = await fetchWorker('/v1/mesh/snapshot', { headers: { Authorization: 'Bearer ' + s.grant.token } });
+  expect(noOrigin.status).toBe(403);
   expect((await nativeCall(s.grant.token, 'devices')).status).toBe(401);
   expect((await meshCall(s.grant.token, '/v1/mesh/setup', json({ origin: 'https://evil.example' }))).status).toBe(401);
  });
@@ -154,6 +164,27 @@ describe('mesh v1 opt-in boundary', () => {
   expect((await read()).status).toBe(200);
   expect((await s.browser.request('/enroll/mesh', form({ csrf: await s.browser.csrf(), id: s.grant.id, decision: 'revoke' }))).status).toBe(303);
   for (let i = 0; i < 3; i++) { const r = await read(); expect(r.status).toBe(403); expect(r.headers.get('Cache-Control')).toBe('no-store'); }
+ });
+ it('keeps an approved grant revocable after newer history fills the history window', async () => {
+  const s = await setup(); await approve(s);
+  const auth = env.AUTH_STATE!;
+  await runInDurableObject(auth.get(auth.idFromName(issuer)), (_instance, state) => {
+    const sql = state.storage.sql;
+    const grant = sql.exec<{ account: string; agent_id: string; created_at: number }>(
+      'SELECT account,agent_id,created_at FROM mesh_grants WHERE id=?', s.grant.id,
+    ).one();
+    for (let i = 1; i <= 65; i++) {
+      sql.exec('INSERT INTO mesh_grants VALUES (?,?,?,?,?,?,?,?)',
+        'history-' + i, 'history-hash-' + i, grant.account, grant.agent_id,
+        'https://historical-' + i + '.example', 'denied', grant.created_at + i, s.grant.expiresAt);
+    }
+  });
+  const page = await (await s.browser.request('/enroll')).text();
+  expect(page).toContain('href="/enroll?mesh=' + s.grant.id + '"');
+  expect(page).toContain('https://historical-65.example');
+  expect(page).not.toContain('https://historical-1.example');
+  const detail = await (await s.browser.request('/enroll?mesh=' + s.grant.id)).text();
+  expect(detail).toContain('Revoke read access');
  });
  it('stops access when the initiating native credential is revoked', async () => {
   const s = await setup(); await approve(s);
