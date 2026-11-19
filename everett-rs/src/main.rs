@@ -322,7 +322,7 @@ enum Cmd {
         omp: bool,
         #[arg(long)]
         grok: bool,
-        /// Pi extension: registers the MCP server per session with its id
+        /// Pi extension: exposes Everett tools through Pi's registerTool API per session
         #[arg(long)]
         pi: bool,
         /// Devin CLI hooks that bind `everett mcp --harness devin` to the session

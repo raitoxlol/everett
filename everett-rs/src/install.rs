@@ -681,7 +681,7 @@ pub fn mcp_snippet(harness: &str) -> String {
     let (command, args, env) = mcp_launch();
     match harness {
         "pi" => format!(
-            "# Pi: run `everett install-hooks --pi --apply`; the extension in {} registers the\n# everett MCP server per session with its EVERETT_SESSION_ID. Do not also list it in ~/.pi/agent/mcp.json.\n",
+            "# Pi: run `everett install-hooks --pi --apply`; the extension in {} exposes Everett tools through Pi's\n# registerTool API and starts a session-bound MCP bridge. Do not also list it in ~/.pi/agent/mcp.json.\n",
             pi_extension_path().display()
         ),
         "hermes" => format!(
@@ -745,7 +745,7 @@ pub fn mcp_snippet(harness: &str) -> String {
 
 pub fn apply_mcp(harness: &str, repair: bool) -> std::result::Result<String, String> {
     if harness == "pi" {
-        return apply("pi", None).map(|m| format!("{} (the extension registers the MCP server)", m));
+        return apply("pi", None).map(|m| format!("{} (the extension exposes Everett tools through Pi)", m));
     }
     if harness == "hermes" {
         return Err("Everett does not edit ~/.hermes/config.yaml; add the entry from `everett install-mcp --hermes`".into());
