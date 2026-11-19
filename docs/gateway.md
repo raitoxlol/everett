@@ -362,7 +362,7 @@ owner/workspace. This pass does not add end-user OAuth to stdio.
 Without an `oauth` block, HTTP requires a separately provisioned high-entropy bearer token in
 `EVERETT_GATEWAY_TOKEN` (32–512 ASCII characters without whitespace). Generate and
 store it securely outside the repository; never put it in command arguments, URLs,
-configuration examples, or logs. For OpenAI/ChatGPT, use [OAuth mode](#oauth-resource-server-mode-openai-chatgpt) instead.
+configuration examples, or logs. For OpenAI/ChatGPT, use [OAuth mode](#oauth-resource-server-mode-openai--chatgpt) instead.
 
 ```sh
 # Set EVERETT_GATEWAY_TOKEN securely in this process's environment first.
