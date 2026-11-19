@@ -123,12 +123,7 @@ pub fn find(target: &str, sessions: &[Session]) -> Result<Session> {
         sessions.iter().filter(|s| s.id.starts_with(target)).collect(),
         sessions.iter().filter(|s| s.title.trim().to_lowercase() == target_fold).collect(),
         sessions.iter().filter(|s| name(s) == target_fold).collect(),
-        sessions
-            .iter()
-            .filter(|s| {
-                s.cwd.trim_end_matches('/').rsplit('/').next().unwrap_or("").to_lowercase() == target_fold
-            })
-            .collect(),
+        sessions.iter().filter(|s| crate::route::project_name(s) == target_fold).collect(),
     ];
     for hits in passes {
         if hits.len() == 1 {
