@@ -440,6 +440,38 @@ credentials and cannot be used as gateway access tokens. The development issuer
 and actual provider/client connection must be verified before claiming hosted
 support.
 
+## Owner agent access over HTTPS
+
+A separate bearer connection can opt into the same MCP tool catalog as a local
+Everett agent. Add `"agent_tool_permissions": "/absolute/path/to/client-tools.json"`
+to its gateway binding. Use the built-in backend, a dedicated external agent ID,
+and a dedicated bearer key. Run the gateway in HTTP mode from a signed-in
+Everett profile. The gateway pins the caller to that binding and the native
+tools still verify the device account and enforce their normal rules.
+
+Keep the configuration and permission file in an owner-controlled directory.
+Use one file per client. Inspect or replace its grant on the gateway host:
+
+```sh
+everett gateway-permissions --file /absolute/path/to/client-tools.json
+everett gateway-permissions --file /absolute/path/to/client-tools.json --allow everett_whoami,everett_inbox
+everett gateway-permissions --file /absolute/path/to/client-tools.json --all
+everett gateway-permissions --file /absolute/path/to/client-tools.json --deny-all
+```
+
+The file contains the JSON string `"all"` or an array of exact native tool
+names. A manager should use the same file and replace it atomically with mode
+0600. The gateway reads it before discovery and each new call. Permission changes
+do not interrupt work already running. If the client caches discovery, refresh
+its tool list after a grant changes.
+
+Full access allows reads and writes available to a local agent, including
+session control, shared memory changes and relay administration. Use it for
+clients trusted with that access. If a bearer key leaks, deny all tools and
+rotate the key. Reuse neither a demo key nor another connector's key. Owner mode
+is separate from OAuth bindings, private identity handles, gateway-native start
+and gateway event subscriptions. Deploy remote connections behind HTTPS.
+
 ## Bounds and verification
 
 Configuration is capped at 16 KiB; HTTP request bodies, tool arguments, and stdio
