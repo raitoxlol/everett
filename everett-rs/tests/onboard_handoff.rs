@@ -176,15 +176,16 @@ fn run_in_pty(fx: &common::Fixture, input: &str, token: &str) -> (ExitStatus, St
     }
     master.write_all(input.as_bytes()).unwrap();
     master.flush().unwrap();
-    let status = child.wait().unwrap();
     loop {
         match master.read(&mut buf) {
             Ok(0) => break,
             Ok(read) => transcript.extend_from_slice(&buf[..read]),
             Err(error) if error.raw_os_error() == Some(libc::EIO) => break,
+            Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
             Err(error) => panic!("failed reading pty output: {error}"),
         }
     }
+    let status = child.wait().unwrap();
     let mut stderr = String::new();
     child
         .stderr
@@ -206,10 +207,13 @@ fn typed_yes_applies_only_the_selected_setup_and_preserves_other_settings() {
     let sentinel_path = sentinel(&fx);
     let codex_config = fx.write(".codex/config.toml", "model = \"sentinel-model\"\n");
     let (status, stdout, stderr) = run_in_pty(&fx, "yes\n", CODEX_VECTOR);
-    assert!(status.success(), "stdout={stdout}\nstderr={stderr}");
+    assert!(
+        status.success(),
+        "status={status:?}\nstdout={stdout:?}\nstderr={stderr:?}"
+    );
     assert!(
         stdout.contains("Local integration setup applied"),
-        "{stdout}"
+        "status={status:?}\nstdout={stdout:?}\nstderr={stderr:?}"
     );
     assert!(fx.home().join(".codex/hooks.json").is_file());
     let updated = std::fs::read_to_string(&codex_config).unwrap();
@@ -264,10 +268,13 @@ fn enter_no_and_eof_cancel_without_writes() {
         let fx = fixture();
         sentinel(&fx);
         let (status, stdout, stderr) = run_in_pty(&fx, input, CODEX_VECTOR);
-        assert!(status.success(), "stdout={stdout}\nstderr={stderr}");
+        assert!(
+            status.success(),
+            "input={input:?}\nstatus={status:?}\nstdout={stdout:?}\nstderr={stderr:?}"
+        );
         assert!(
             stdout.contains("Canceled. No files were changed."),
-            "{stdout}"
+            "input={input:?}\nstatus={status:?}\nstdout={stdout:?}\nstderr={stderr:?}"
         );
         assert_no_setup_writes(&fx);
     }
