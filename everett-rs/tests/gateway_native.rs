@@ -1626,6 +1626,33 @@ fn owner_agent_permission_journey() {
     assert_eq!(show(&["--deny-all"]), json!([]));
     assert!(names(&run(8, "tools/list", json!({}))).is_empty());
     denied(&call(9, "everett_whoami", json!({})));
+    assert_eq!(show(&["--all"]), json!("all"));
+    let runtime = c.home.join("owner-t3-runtime");
+    std::fs::create_dir(&runtime).unwrap();
+    let fixture = c.home.join("owner-t3");
+    std::fs::write(&fixture, r#"#!/bin/sh
+test -z "$EVERETT_SESSION_ID$EVERETT_HARNESS_NAME$EVERETT_GATEWAY_OWNER_AGENT$EVERETT_GATEWAY_WORKER$EVERETT_GATEWAY_TOKEN" || exit 3
+test "$T3CODE_HOME" = "$HOME/owner-t3-runtime" || exit 4
+echo "$$" > "$HOME/owner-t3-pid"
+exec /bin/sleep 10
+"#).unwrap();
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::set_permissions(&fixture, std::fs::Permissions::from_mode(0o700)).unwrap();
+    let binding = c.config_path(&json!({"agent_tool_permissions":file,"timeout":1,"max_workers":1}));
+    let mut command = c.command(&["gateway","--config",binding.to_str().unwrap(),"--transport","http","--port","0"]);
+    command.env("EVERETT_T3_BIN", &fixture).env("T3CODE_HOME", runtime);
+    let delayed_port = c.spawn_http(command);
+    let delayed = request(20, "tools/call", json!({"name":"everett_control","arguments":{
+        "action":"start","harness":"t3","project":"fixture","text":"Synthetic request","wait":true,"timeout":3
+    }}));
+    let result = body_json(&post(delayed_port, &delayed, &[]));
+    assert_eq!(result["result"]["structuredContent"]["completion_confirmed"], false, "{result}");
+    let pid = std::fs::read_to_string(c.home.join("owner-t3-pid")).unwrap().trim().parse().unwrap();
+    assert!(pid_alive(pid), "HTTP timeout killed the local request prematurely");
+    let probe = request(21, "tools/call", json!({"name":"everett_whoami"}));
+    let busy = body_json(&post(delayed_port, &probe, &[]));
+    assert_eq!(busy["result"]["content"][0]["text"], "gateway workers busy; retry later");
+    assert!(eventually_dead(pid), "native timeout failed to reap the T3 fixture");
     std::fs::write(&file, "invalid").unwrap();
     assert!(run(10, "tools/list", json!({})).get("error").is_some());
     denied(&call(11, "everett_whoami", json!({})));
