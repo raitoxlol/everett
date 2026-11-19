@@ -3,9 +3,19 @@ use std::path::PathBuf;
 
 use crate::error::{EverettError, Result};
 
+pub(crate) fn inherited_env() -> HashMap<String, String> {
+    let mut env: HashMap<String, String> = std::env::vars().collect();
+    if env.remove("EVERETT_GATEWAY_OWNER_AGENT").is_some() {
+        for key in ["EVERETT_SESSION_ID", "EVERETT_HARNESS_NAME", "EVERETT_GATEWAY_WORKER"] {
+            env.remove(key);
+        }
+    }
+    env
+}
+
 /// Environment for a headless harness run: card hooks stay quiet, hop count carries over.
 pub fn child_env(extra: &HashMap<String, String>) -> HashMap<String, String> {
-    let mut env: HashMap<String, String> = std::env::vars().collect();
+    let mut env = inherited_env();
     env.insert("EVERETT_SEND".into(), "1".into());
     for (k, v) in extra {
         env.insert(k.clone(), v.clone());

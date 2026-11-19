@@ -440,13 +440,57 @@ credentials and cannot be used as gateway access tokens. The development issuer
 and actual provider/client connection must be verified before claiming hosted
 support.
 
+## Owner agent access over HTTPS
+
+A separate bearer connection can opt into the same MCP tool catalog as a local
+Everett agent. Add `"agent_tool_permissions": "/absolute/path/to/client-tools.json"`
+to its gateway binding. Use the built-in backend, a dedicated external agent ID,
+and a dedicated bearer key. Run the gateway in HTTP mode from a signed-in
+Everett profile. The gateway pins the caller to that binding and the native
+tools still verify the device account and enforce their normal rules.
+
+Keep the configuration and permission file in an owner-controlled directory.
+Use one file per client. Inspect or replace its grant on the gateway host:
+
+```sh
+everett gateway-permissions --file /absolute/path/to/client-tools.json
+everett gateway-permissions --file /absolute/path/to/client-tools.json --allow everett_whoami,everett_inbox
+everett gateway-permissions --file /absolute/path/to/client-tools.json --all
+everett gateway-permissions --file /absolute/path/to/client-tools.json --deny-all
+```
+
+The file contains the JSON string `"all"` or an array of exact native tool
+names. A manager should use the same file and replace it atomically with mode
+0600. The gateway reads it before discovery and each new call. Permission changes
+do not interrupt work already running. If the client caches discovery, refresh
+its tool list after a grant changes.
+
+Each tool grant allows its native operations. For example, `everett_core` can
+read, search, forget and correct facts. The restricted gateway's
+`allow_shared_core` and `destinations` fields do not narrow owner-mode calls.
+Full access includes session control, shared memory changes and relay
+administration. Use it for clients trusted with that access. If a bearer key
+leaks, deny all tools and rotate the key. Reuse neither a demo key nor another
+connector's key. Owner mode uses the gateway host's configured T3 runtime,
+including `EVERETT_T3_BIN` and `T3CODE_HOME` when set, and is separate from
+OAuth bindings, private identity handles, gateway-native start and gateway event
+subscriptions. Deploy remote connections behind HTTPS.
+
+Prefer dispatch without waiting for long T3 turns. If an owner tool exceeds
+the HTTP response deadline, it can continue under the native operation's
+deadline and retains its worker slot until it exits. Check the session or
+request's state before retrying an unconfirmed call.
+
+
 ## Bounds and verification
 
 Configuration is capped at 16 KiB; HTTP request bodies, tool arguments, and stdio
 request frames at 64 KiB; returned tool results at 256 KiB. HTTP headers are capped
 at 16 KiB and 64 fields. Header and body reads each time out after five seconds.
-Each backend operation including startup times out at 1–30 seconds,
-and each process permits 1–8 workers (defaults: 20 seconds and two workers).
+The configured timeout is 1–30 seconds (default 20). For restricted bindings
+it limits backend operations. For owner mode it limits the HTTP tool response,
+and native work can continue under its own deadline. Each process permits 1–8
+workers (default two).
 Excess work fails immediately rather than creating an unbounded queue. HTTP is
 stateless and does not accumulate client sessions. The listener allows twice the
 worker count in concurrent connections, with one request per connection and a
