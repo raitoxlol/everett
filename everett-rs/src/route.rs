@@ -302,14 +302,15 @@ fn bm25(
 
 const PROJECT_BOOST: f64 = 3.0;
 
-/// [(score, option key, coverage)] best first; empty when the request has no terms.
+/// [(score, option key, coverage)] best first; empty when the request has no terms and names no project.
 pub fn rank(text: &str, sessions: &[Session], at: Option<f64>) -> Vec<(f64, String, f64)> {
     let query = tokens(text);
-    if query.is_empty() || sessions.is_empty() {
+    let request = words(text);
+    if query.is_empty() && !sessions.iter().any(|s| names_project(&request, s)) {
         return Vec::new();
     }
     let query_set: HashSet<String> = query.iter().cloned().collect();
-    let request = words(text);
+    let terms = query_set.len().max(1) as f64;
     let docs: Vec<(String, Vec<String>)> = sessions
         .iter()
         .enumerate()
@@ -331,11 +332,10 @@ pub fn rank(text: &str, sessions: &[Session], at: Option<f64>) -> Vec<(f64, Stri
         let mut raw_score = bm25(&query, doc, &df, docs.len(), average_length);
         let age_hours = ((current - session.last_active) / 3600.0).max(0.0);
         let recency = 1.0 / (1.0 + age_hours / 72.0);
-        let mut coverage = query_set.iter().filter(|t| doc.contains(*t)).count() as f64
-            / query_set.len() as f64;
+        let mut coverage = query_set.iter().filter(|t| doc.contains(*t)).count() as f64 / terms;
         if names_project(&request, session) {
             raw_score = raw_score * PROJECT_BOOST + PROJECT_BOOST;
-            coverage = coverage.max(1.0 / query_set.len() as f64);
+            coverage = coverage.max(1.0 / terms);
         }
         ranked.push((raw_score * recency, key.clone(), coverage));
     }
