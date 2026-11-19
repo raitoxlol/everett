@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Route, `send --to` and automatic cards name a T3 or Claude worktree session by its repository. A request reaches a project whose name has several words, such as `web-mesh`.
+- Keep comparisons such as `a < b and c > d` in session summaries and automatic cards.
+- Parse date-only timestamps, and stop dropping a timestamp whose fraction rounds up to the next second.
+- Show sessions older than two days in days in `everett ls` and `everett inbox`.
+
 ## 2.3.2 — maintenance candidate
 
 - Budget the complete encoded MCP inbox result before marking messages delivered. Large queues return bounded batches, and messages outside the returned batch remain queued (#165).
