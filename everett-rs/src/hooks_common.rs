@@ -222,7 +222,7 @@ fn markdown_lines(text: &str) -> Vec<(String, bool, bool)> {
         let line = ref_link.replace_all(&line, "$1");
         let line = angle_url.replace_all(&line, " ");
         let line = url.replace_all(&line, " ");
-        let line = tag.replace_all(&line, " ");
+        let line = crate::session::strip_tags(tag, &line);
         let line = heading_re().replace_all(&line, "");
         let line = quote.replace_all(&line, "");
         let line = bullet.replace_all(&line, "");
@@ -348,10 +348,9 @@ fn project_name(cwd: &str) -> String {
     if is_generic {
         return "Project".to_string();
     }
-    let name = crate::session::project_label(&path.unwrap().to_string_lossy());
-    if name == "-" || name == "~" {
+    let Some(name) = crate::session::project(&path.unwrap().to_string_lossy()) else {
         return "Project".to_string();
-    }
+    };
     let mut chars = name.chars();
     format!("{}{}", chars.next().unwrap().to_uppercase(), chars.as_str())
 }

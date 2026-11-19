@@ -8,7 +8,7 @@ use serde_json::{json, Map, Value};
 use crate::config;
 use crate::error::{EverettError, Result};
 use crate::proc::shlex_quote;
-use crate::session::{now, project_label, Session};
+use crate::session::{now, project, Session};
 
 pub const JEV_URL: &str = "https://api.typesafe.ai/v1/systemone";
 pub const JEV_MODEL: &str = "jev-1.13.0";
@@ -54,18 +54,16 @@ fn jev_reason(message: &str) -> &str {
 /// The session's project, casefolded — how a request names it. Worktrees count as their
 /// repository; the home directory and Codex chat folders are not projects.
 pub fn project_name(session: &Session) -> String {
-    let label = project_label(&session.cwd);
-    let folder = session.cwd.trim_end_matches('/').rsplit('/').next().unwrap_or("");
-    if label == "-" || label == "~" || (label == "chat" && !folder.eq_ignore_ascii_case("chat")) {
-        return String::new();
-    }
-    label.to_lowercase()
+    project(&session.cwd).unwrap_or_default().to_lowercase()
 }
 
-/// True when the request contains every word of the session's project name.
-fn names_project(query: &HashSet<String>, session: &Session) -> bool {
-    let project = tokens(&project_name(session));
-    !project.is_empty() && project.iter().all(|token| query.contains(token))
+/// True when the request spells out the session's project name, word for word and in order.
+fn names_project(request: &[String], session: &Session) -> bool {
+    let name = words(&project_name(session));
+    if name.is_empty() || (name.len() == 1 && tokens(&name[0]).is_empty()) {
+        return false;
+    }
+    request.windows(name.len()).any(|run| run == name)
 }
 
 const COORDINATOR_TERMS: &[&str] = &[
@@ -116,7 +114,7 @@ pub fn describe(session: &Session) -> String {
 /// Candidate sessions for routing: never the caller's own session; coordinators are dropped
 /// unless the request explicitly names that coordinator's own project.
 pub fn relevant_sessions(text: &str, sessions: &[Session], caller_id: Option<&str>) -> Vec<Session> {
-    let query_tokens: HashSet<String> = tokens(text).into_iter().collect();
+    let request = words(text);
     let without_caller: Vec<Session> = sessions
         .iter()
         .filter(|s| !(caller_id.is_some() && s.id == caller_id.unwrap()))
@@ -124,11 +122,11 @@ pub fn relevant_sessions(text: &str, sessions: &[Session], caller_id: Option<&st
         .collect();
     let mut filtered: Vec<Session> = without_caller
         .iter()
-        .filter(|s| !is_coordinator(s) || names_project(&query_tokens, s))
+        .filter(|s| !is_coordinator(s) || names_project(&request, s))
         .cloned()
         .collect();
     let mut pool = if filtered.is_empty() { without_caller } else { std::mem::take(&mut filtered) };
-    pool.sort_by_key(|s| (!names_project(&query_tokens, s), is_coordinator(s)));
+    pool.sort_by_key(|s| (!names_project(&request, s), is_coordinator(s)));
     pool
 }
 
@@ -258,11 +256,13 @@ fn token_re() -> &'static Regex {
     RE.get_or_init(|| Regex::new(r"[^\W_]+").unwrap())
 }
 
+fn words(text: &str) -> Vec<String> {
+    token_re().find_iter(&text.to_lowercase()).map(|m| m.as_str().to_string()).collect()
+}
+
 pub fn tokens(text: &str) -> Vec<String> {
-    let lowered = text.to_lowercase();
-    token_re()
-        .find_iter(&lowered)
-        .map(|m| m.as_str().to_string())
+    words(text)
+        .into_iter()
         .filter(|t| !STOP_WORDS.contains(&t.as_str()) && (t.chars().count() > 1 || !t.is_ascii()))
         .collect()
 }
@@ -309,6 +309,7 @@ pub fn rank(text: &str, sessions: &[Session], at: Option<f64>) -> Vec<(f64, Stri
         return Vec::new();
     }
     let query_set: HashSet<String> = query.iter().cloned().collect();
+    let request = words(text);
     let docs: Vec<(String, Vec<String>)> = sessions
         .iter()
         .enumerate()
@@ -332,7 +333,7 @@ pub fn rank(text: &str, sessions: &[Session], at: Option<f64>) -> Vec<(f64, Stri
         let recency = 1.0 / (1.0 + age_hours / 72.0);
         let mut coverage = query_set.iter().filter(|t| doc.contains(*t)).count() as f64
             / query_set.len() as f64;
-        if names_project(&query_set, session) {
+        if names_project(&request, session) {
             raw_score = raw_score * PROJECT_BOOST + PROJECT_BOOST;
             coverage = coverage.max(1.0 / query_set.len() as f64);
         }

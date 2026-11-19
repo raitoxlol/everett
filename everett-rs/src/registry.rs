@@ -122,7 +122,7 @@ pub fn find(target: &str, sessions: &[Session]) -> Result<Session> {
         aliases,
         sessions.iter().filter(|s| s.id.starts_with(target)).collect(),
         sessions.iter().filter(|s| s.title.trim().to_lowercase() == target_fold).collect(),
-        sessions.iter().filter(|s| name(s) == target_fold).collect(),
+        sessions.iter().filter(|s| name(s) == target_fold && crate::route::project_name(s) != target_fold).collect(),
         sessions.iter().filter(|s| crate::route::project_name(s) == target_fold).collect(),
     ];
     for hits in passes {
