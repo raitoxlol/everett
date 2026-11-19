@@ -144,7 +144,7 @@ h2{font-size:16px;letter-spacing:-.02em;font-weight:650}
 .sidebar-footer a{color:var(--muted);display:flex;justify-content:space-between;font-size:12px}
 .workspace-main{min-width:0}
 .top-actions{display:flex;gap:8px;align-items:center}
-.top-actions button:disabled{cursor:wait;opacity:.6}
+.top-actions button[aria-disabled="true"]{cursor:wait;opacity:.6}
 .source{display:inline-flex;gap:6px;align-items:center;color:var(--muted);font-size:12px;font-weight:550;white-space:nowrap}
 .source::before{content:"";width:6px;height:6px;border-radius:50%;background:currentColor}
 .source[data-source="cloudflare"]{color:var(--good)}
