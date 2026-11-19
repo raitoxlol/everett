@@ -348,13 +348,9 @@ fn project_name(cwd: &str) -> String {
     if is_generic {
         return "Project".to_string();
     }
-    let name = path
-        .unwrap()
-        .file_name()
-        .map(|n| n.to_string_lossy().to_string())
-        .unwrap_or_default();
+    let name = crate::session::project_label(&path.unwrap().to_string_lossy());
     let name = name.trim();
-    if name.is_empty() {
+    if name.is_empty() || name == "-" || name == "~" {
         return "Project".to_string();
     }
     let mut chars = name.chars();
