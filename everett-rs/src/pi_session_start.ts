@@ -205,51 +205,60 @@ async function registerToolBridge(pi) {
   let connectionController;
   let boundSession;
   const getSessionClient = async () => {
-    while (connecting) {
-      const pendingConnection = connecting;
-      const sessionClient = await pendingConnection;
-      if (sessionClient && !sessionClient.closed) return sessionClient;
-      if (connecting === pendingConnection) {
-        connecting = undefined;
-        connectionController = undefined;
+    while (true) {
+      if (connecting) {
+        const pendingConnection = connecting;
+        const sessionClient = await pendingConnection;
+        if (sessionClient && !sessionClient.closed) return sessionClient;
+        if (connecting === pendingConnection) {
+          connecting = undefined;
+          connectionController = undefined;
+        }
+        continue;
       }
-    }
-    if (activeClient && !activeClient.closed) return activeClient;
-    await activeClient?.close();
-    activeClient = undefined;
-    const sessionBinding = boundSession;
-    if (!sessionBinding) return undefined;
-    const { sessionId, cwd } = sessionBinding;
+      if (activeClient && !activeClient.closed) return activeClient;
+      const previousClient = activeClient;
+      const sessionBinding = boundSession;
+      if (!sessionBinding) return undefined;
+      const { sessionId, cwd } = sessionBinding;
 
-    const currentGeneration = generation;
-    const controller = new AbortController();
-    connectionController = controller;
-    const pendingConnection = (async () => {
-      try {
-        const sessionClient = await connectMcpServer({
-          ...process.env,
-          EVERETT_SESSION_ID: sessionId,
-          EVERETT_HARNESS_NAME: "pi",
-        }, { signal: controller.signal, cwd });
-        if (currentGeneration !== generation || sessionBinding !== boundSession) {
-          await sessionClient.close();
+      const currentGeneration = generation;
+      const controller = new AbortController();
+      connectionController = controller;
+      const pendingConnection = (async () => {
+        try {
+          await previousClient?.close();
+          if (currentGeneration !== generation || sessionBinding !== boundSession) return undefined;
+          if (activeClient === previousClient) activeClient = undefined;
+          const sessionClient = await connectMcpServer({
+            ...process.env,
+            EVERETT_SESSION_ID: sessionId,
+            EVERETT_HARNESS_NAME: "pi",
+          }, { signal: controller.signal, cwd });
+          if (currentGeneration !== generation || sessionBinding !== boundSession) {
+            await sessionClient.close();
+            return undefined;
+          }
+          activeClient = sessionClient;
+          return sessionClient;
+        } catch (error) {
+          if (currentGeneration === generation && !controller.signal.aborted) report("could not reconnect to Everett", error);
           return undefined;
         }
-        activeClient = sessionClient;
-        return sessionClient;
-      } catch (error) {
-        if (currentGeneration === generation && !controller.signal.aborted) report("could not reconnect to Everett", error);
-        return undefined;
+      })();
+      connecting = pendingConnection;
+      let sessionClient;
+      try {
+        sessionClient = await pendingConnection;
+      } finally {
+        if (connecting === pendingConnection) {
+          connecting = undefined;
+          connectionController = undefined;
+        }
       }
-    })();
-    connecting = pendingConnection;
-    try {
-      return await pendingConnection;
-    } finally {
-      if (connecting === pendingConnection) {
-        connecting = undefined;
-        connectionController = undefined;
-      }
+      if (sessionClient && !sessionClient.closed) return sessionClient;
+      if (currentGeneration !== generation) continue;
+      return undefined;
     }
   };
   const start = async (_event, ctx) => {

@@ -24,6 +24,7 @@ async function fixture(tools, options = {}) {
   const extension = path.join(dir, "everett.mjs");
   const bindLog = path.join(dir, "binds.jsonl");
   const requestLog = path.join(dir, "requests.jsonl");
+  const processLog = path.join(dir, "processes.jsonl");
   const packageDir = path.join(dir, "node_modules", "typebox");
   await mkdir(packageDir, { recursive: true });
   await writeFile(path.join(packageDir, "package.json"), JSON.stringify({ name: "typebox", type: "module", exports: "./index.js" }));
@@ -36,11 +37,13 @@ const tools = ${JSON.stringify(tools)};
 const options = ${JSON.stringify(options)};
 const bindLog = ${JSON.stringify(bindLog)};
 const requestLog = ${JSON.stringify(requestLog)};
+const processLog = ${JSON.stringify(processLog)};
 if (process.argv[2] === "hook" && process.argv[3] === "pi_bind") {
   fs.appendFileSync(bindLog, JSON.stringify({ sessionId: process.argv[4], cwd: process.cwd() }) + String.fromCharCode(10));
   process.exit(0);
 }
 if (process.argv[2] !== "mcp") process.exit(2);
+fs.appendFileSync(processLog, JSON.stringify({ pid: process.pid, sessionId: process.env.EVERETT_SESSION_ID || "bootstrap" }) + String.fromCharCode(10));
 readline.createInterface({ input: process.stdin }).on("line", (line) => {
   const request = JSON.parse(line);
   if (request.method === "notifications/initialized") {
@@ -73,7 +76,7 @@ readline.createInterface({ input: process.stdin }).on("line", (line) => {
 });
 `);
   await chmod(executable, 0o755);
-  return { dir, extension, bindLog, requestLog };
+  return { dir, extension, bindLog, requestLog, processLog };
 }
 
 async function waitForLog(file, needle) {
@@ -210,6 +213,44 @@ test("Pi bridge reconnects after aborting a blocked send without retrying it", a
     assert.ok(calls.every((call) => call.sessionId === sessionId));
   } finally {
     await pi.events.get("session_shutdown")();
+  }
+});
+
+test("Pi bridge shares one reconnect for concurrent reads and closes all children on shutdown", async () => {
+  const fx = await fixture([
+    { name: "everett_send", inputSchema: { type: "object", properties: {} } },
+    { name: "everett_whoami", inputSchema: { type: "object", properties: {} } },
+  ], { blockCallName: "everett_send" });
+  const pi = piApi();
+  await loadExtension(fx, pi.api);
+  const sessionId = "pi-shared-reconnect-session";
+  const shutdown = pi.events.get("session_shutdown");
+  await pi.events.get("session_start")({}, { sessionManager: { getSessionId: () => sessionId } });
+  let stopped = false;
+  try {
+    const controller = new AbortController();
+    const sendCall = pi.tools.get("everett_send").execute("call-send", {}, controller.signal);
+    await waitForLog(fx.requestLog, '"name":"everett_send"');
+    controller.abort();
+    await assert.rejects(sendCall, /aborted/);
+
+    const [firstRead, secondRead] = await Promise.all([
+      pi.tools.get("everett_whoami").execute("call-read-1", {}),
+      pi.tools.get("everett_whoami").execute("call-read-2", {}),
+    ]);
+    assert.equal(firstRead.content[0].text, `${sessionId}:everett_whoami`);
+    assert.equal(secondRead.content[0].text, `${sessionId}:everett_whoami`);
+
+    const processes = (await readFile(fx.processLog, "utf8")).trim().split("\n").map((line) => JSON.parse(line));
+    const sessionProcesses = processes.filter((entry) => entry.sessionId === sessionId);
+    assert.equal(sessionProcesses.length, 2);
+    assert.equal(new Set(processes.map((entry) => entry.pid)).size, processes.length);
+
+    await shutdown();
+    stopped = true;
+    for (const { pid } of processes) assert.throws(() => process.kill(pid, 0), { code: "ESRCH" });
+  } finally {
+    if (!stopped) await shutdown();
   }
 });
 
