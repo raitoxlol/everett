@@ -1,0 +1,1 @@
+{"name":"everett-private-mesh-console","private":true,"type":"module","engines":{"node":">=22"},"scripts":{"dev":"node dev.mjs","test":"node --test test/*.test.mjs","check":"node --check server.mjs && node --check api/handler.mjs && node --check public/app.js"}}

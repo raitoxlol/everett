@@ -1,0 +1,35 @@
+const $=id=>document.getElementById(id);
+const node=(tag,text,className)=>{const el=document.createElement(tag);if(text!==undefined)el.textContent=text;if(className)el.className=className;return el;};
+let generation=0,inFlight=false;
+function clear(){ $('data').replaceChildren();$('data').hidden=true;$('source').textContent='Access not verified'; }
+function notice(text,kind=''){const el=$('notice');el.textContent=text;el.className='notice '+kind;}
+function ago(at){if(at===null)return 'Never observed';const seconds=Math.round((Date.now()-at)/1000);if(seconds<0)return 'Clock ahead';if(seconds<60)return seconds+'s ago';if(seconds<3600)return Math.floor(seconds/60)+'m ago';if(seconds<86400)return Math.floor(seconds/3600)+'h ago';return Math.floor(seconds/86400)+'d ago';}
+function age(at,label='Last seen'){const el=node('p',label+' · '+ago(at),'age');if(at!==null){el.dataset.at=at;el.dataset.label=label;el.title=new Date(at).toISOString();}return el;}
+function section(title,caption){const el=node('section'),head=node('div',undefined,'section-head');head.append(node('h2',title),node('p',caption));el.append(head);return el;}
+function render(data){
+ const root=$('data');root.replaceChildren();root.hidden=false;$('login').hidden=true;$('signout').hidden=false;
+ const fixture=data.source==='fixture';$('source').textContent=fixture?'Fixture · no live verification':'Cloudflare · read only';
+ notice(fixture?'Fixture data. These devices and receipts are examples. No live mesh access is verified.':'Read access approved. Refreshes every 15 seconds while this tab is visible. Last seen records a request, not an online guarantee.',fixture?'fixture':'');
+ const overview=node('div',undefined,'overview');
+ for(const [value,label]of[[data.devices.length,'devices'],[data.sessions.length,'sessions'],[data.queue.queued,'queued']]){const p=node('p');p.append(node('strong',String(value)),document.createTextNode(label));overview.append(p);}
+ overview.append(node('p','Owner '+data.owner,'owner'));root.append(overview);
+ const grid=node('div',undefined,'grid'),devices=section('Devices','Observed identity'),sessions=section('Sessions','Separate self-reports');grid.append(devices,sessions);root.append(grid);
+ if(!data.devices.length)devices.append(node('p','No registered devices observed. Register a device with Everett to see its identity here.','empty'));
+ for(const d of data.devices){const card=node('article',undefined,'device');card.append(node('h3',d.name??'Unnamed device'),node('p',d.deviceId,'id'),age(d.lastSeen),node('p',d.lastSeenConfidence==='unavailable'?'Confidence unavailable':'Server-observed request','confidence'));devices.append(card);}
+ if(!data.sessions.length)sessions.append(node('p','No exposed sessions. Session cards and message content are never included in this console.','empty'));
+ else {const wrap=node('div',undefined,'table-wrap'),table=node('table'),head=node('thead'),row=node('tr');for(const title of ['Session / device','Last exposure','Self-reported status'])row.append(node('th',title));head.append(row);table.append(head);const body=node('tbody');
+ for(const s of data.sessions){const tr=node('tr'),identity=node('td'),seen=node('td'),status=node('td');identity.append(node('h3',s.harness),node('p',s.sessionId,'id'),node('p',s.deviceId,'id'));seen.append(age(s.lastSeen,'Exposed'),node('p','Server-observed','confidence'));status.append(node('span',s.selfReported.status??'Unavailable','status'));if(s.selfReported.observedAt!==null)status.append(age(s.selfReported.observedAt,'Report age'));status.append(node('p',s.selfReported.confidence==='unavailable'?'No status adapter connected':'Self-reported · unverified','confidence'));tr.append(identity,seen,status);body.append(tr);}table.append(body);wrap.append(table);sessions.append(wrap);}
+ const receipts=section('Receipt timeline','Signed observations only');receipts.classList.add('receipt-section');root.append(receipts);
+ if(!data.receipts.length)receipts.append(node('p','No signed receipts in this window. A queued message does not establish delivery. Receipts appear after a recipient signs an observation.','empty'));
+ else {const timeline=node('ol',undefined,'timeline');for(const r of data.receipts){const item=node('li');item.append(node('h3',r.state),node('p',r.messageId,'id'),node('p',r.deviceId,'id'),age(r.at,'Observed'),node('p','Signed device observation','confidence'));timeline.append(item);}receipts.append(timeline);}
+ receipts.append(node('p','Receipts record what a recipient reported. They do not prove that a task completed. Newest 100 receipts; up to 2,000 retained per owner.','note'));
+ if(Object.values(data.truncated).some(Boolean))root.append(node('p','A display limit was reached. Device and session lists may be incomplete; queue count remains aggregate.','note window'));
+ root.append(age(data.serverNow,'Cloudflare snapshot'),node('p','Read grant expires '+new Date(data.grantExpiresAt).toLocaleString()+'. Revoke it in Everett account access.','note'));
+}
+async function refresh(){if(inFlight||document.hidden)return;inFlight=true;const current=generation;try{const response=await fetch('/api/mesh',{cache:'no-store',signal:AbortSignal.timeout(10000)});if(current!==generation)return;if(!response.ok){clear();if(response.status===401){$('login').hidden=false;$('signout').hidden=true;notice('Sign in to read this private mesh.');}else if(response.status===403){$('login').hidden=true;notice('Read access ended. Mesh data has been cleared. Ask the owner to approve a new read grant.','error');}else if(response.status===404){notice('This console is off. Its owner must initiate setup and approve read access.');}else{notice('Mesh source unavailable. Data cleared; waiting for a fresh authorized read.','error');}return;}render(await response.json());}catch{if(current===generation){clear();notice('Mesh source unavailable. Data cleared; waiting for a fresh authorized read.','error');}}finally{inFlight=false;}}
+$('login-form').addEventListener('submit',async event=>{event.preventDefault();const secret=$('secret').value;$('secret').value='';try{const response=await fetch('/api/login',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:new URLSearchParams({secret}),signal:AbortSignal.timeout(10000)});if(!response.ok){notice('Console sign-in failed. Check the access secret with its owner.','error');return;}generation++;await refresh();}catch{notice('Console sign-in unavailable. Try again.','error');}});
+$('signout').addEventListener('click',async()=>{generation++;clear();$('signout').hidden=true;try{await fetch('/api/logout',{method:'POST'});}finally{$('login').hidden=false;notice('Signed out. Mesh data cleared.');}});
+setInterval(refresh,15000);
+setInterval(()=>{for(const el of document.querySelectorAll('[data-at]'))el.textContent=el.dataset.label+' · '+ago(Number(el.dataset.at));},5000);
+document.addEventListener('visibilitychange',()=>{generation++;if(document.hidden)clear();else refresh();});
+refresh();
