@@ -17,7 +17,8 @@ try {
   }
 
   const report = JSON.parse(readFileSync(reportFile, 'utf8'));
-  if (report.numTotalTests !== 8 || report.numPassedTests + report.numFailedTests !== 8 ||
+  const expectedTests = 9;
+  if (report.numTotalTests !== expectedTests || report.numPassedTests + report.numFailedTests !== expectedTests ||
       (result.status === 0) !== (report.numFailedTests === 0)) {
     throw new Error('Incomplete or inconsistent mesh test report');
   }

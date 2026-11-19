@@ -128,12 +128,14 @@ function meshCall(token: string, path = '/v1/mesh/snapshot', init: RequestInit =
   }
   return fetchWorker(path, { ...init, headers });
 }
+async function requestGrant(token: string) {
+ const response = await meshCall(token, '/v1/mesh/setup', json({ origin: consoleOrigin }));
+ expect(response.status).toBe(201);
+ return await response.json() as { id: string; token: string; approvalUrl: string; expiresAt: number };
+}
 async function setup() {
  const browser = new Browser(); await browser.login(); const credential = await enroll(browser);
- const response = await meshCall(credential.token, '/v1/mesh/setup', json({ origin: 'https://console.example' }));
- expect(response.status).toBe(201);
- const grant = await response.json() as { id: string; token: string; approvalUrl: string; expiresAt: number };
- return { browser, credential, grant };
+ return { browser, credential, grant: await requestGrant(credential.token) };
 }
 async function approve(s: Awaited<ReturnType<typeof setup>>) {
  const csrf = await s.browser.csrf('/enroll?mesh=' + s.grant.id);
@@ -173,6 +175,9 @@ describe('mesh v1 opt-in boundary', () => {
     const grant = sql.exec<{ account: string; agent_id: string; created_at: number }>(
       'SELECT account,agent_id,created_at FROM mesh_grants WHERE id=?', s.grant.id,
     ).one();
+    sql.exec('INSERT INTO mesh_grants VALUES (?,?,?,?,?,?,?,?)',
+      'expired-history', 'expired-history-hash', grant.account, grant.agent_id,
+      'https://expired-history.example', 'approved', grant.created_at - 32 * 86400000, grant.created_at - 31 * 86400000);
     for (let i = 1; i <= 65; i++) {
       sql.exec('INSERT INTO mesh_grants VALUES (?,?,?,?,?,?,?,?)',
         'history-' + i, 'history-hash-' + i, grant.account, grant.agent_id,
@@ -183,6 +188,9 @@ describe('mesh v1 opt-in boundary', () => {
   expect(page).toContain('href="/enroll?mesh=' + s.grant.id + '"');
   expect(page).toContain('https://historical-65.example');
   expect(page).not.toContain('https://historical-1.example');
+  await runInDurableObject(auth.get(auth.idFromName(issuer)), (_instance, state) => {
+    expect(state.storage.sql.exec("SELECT id FROM mesh_grants WHERE id='expired-history'").toArray()).toEqual([]);
+  });
   const detail = await (await s.browser.request('/enroll?mesh=' + s.grant.id)).text();
   expect(detail).toContain('Revoke read access');
  });
@@ -196,8 +204,56 @@ describe('mesh v1 opt-in boundary', () => {
   expect((await meshCall(s.credential.token, '/v1/mesh/setup', json({ origin: 'http://console.example' }))).status).toBe(400);
   expect((await meshCall(s.credential.token, '/v1/mesh/setup', json({ origin: 'https://console.example', scope: 'write' }))).status).toBe(400);
   await approve(s);
-  vi.spyOn(Date, 'now').mockReturnValue(s.grant.expiresAt + 1);
+  const dayMs = 86400000;
+  expect(s.grant.expiresAt).toBeGreaterThan(Date.now() + dayMs - 30000);
+  expect(s.grant.expiresAt).toBeLessThanOrEqual(Date.now() + dayMs);
+  const clock = vi.spyOn(Date, 'now').mockReturnValue(s.grant.expiresAt - 1);
+  expect((await meshCall(s.grant.token)).status).toBe(200);
+  clock.mockReturnValue(s.grant.expiresAt);
   expect((await meshCall(s.grant.token)).status).toBe(403);
+
+  const browser = new Browser(); await browser.login();
+  expect((await browser.request('/enroll?mesh=' + s.grant.id)).status).toBe(403);
+  expect(await (await browser.request('/enroll')).text()).toContain(consoleOrigin + ' · expired');
+  const grant = await requestGrant(s.credential.token);
+  expect(grant.expiresAt).toBe(s.grant.expiresAt + dayMs);
+  expect((await meshCall(grant.token)).status).toBe(403);
+  await approve({ ...s, browser, grant });
+  const renewed = await meshCall(grant.token);
+  expect(renewed.status).toBe(200);
+  expect(await renewed.json()).toMatchObject({ grantExpiresAt: grant.expiresAt });
+  expect((await meshCall(s.grant.token)).status).toBe(403);
+ });
+ it('keeps sessions on displayed devices visible when newer sessions belong to an omitted device', async () => {
+  const s = await setup();
+  await approve(s);
+  const who = await (await nativeCall(s.credential.token, 'whoami')).json() as { result: { owner: string } };
+  await runInDurableObject(env.OWNERS.get(env.OWNERS.idFromName(who.result.owner)), (_instance, state) => {
+    const sql = state.storage.sql;
+    const subject = sql.exec<{ subject: string }>('SELECT subject FROM credentials WHERE agent_id=?', s.credential.agent_id).one().subject;
+    for (let i = 0; i < 257; i++) {
+      const agent = 'test-device-' + String(i).padStart(3, '0');
+      sql.exec("INSERT INTO credentials VALUES (?,?,'active')", agent, subject);
+      sql.exec("INSERT INTO devices VALUES (?,'{}')", agent);
+    }
+    sql.exec("INSERT INTO session_cards(agent_id,session,harness,card,updated_at) VALUES ('test-device-000','visible-session','codex','',1)");
+    sql.exec("INSERT INTO session_cards(agent_id,session,harness,card,updated_at) VALUES ('test-device-256','hidden-0','codex','',2)");
+  });
+  const check = async () => {
+    const response = await meshCall(s.grant.token);
+    expect(response.status).toBe(200);
+    expect(await response.json()).toMatchObject({
+      sessions: [expect.objectContaining({ sessionId: 'visible-session' })],
+      truncated: { devices: true, sessions: true },
+    });
+  };
+  await check();
+  await runInDurableObject(env.OWNERS.get(env.OWNERS.idFromName(who.result.owner)), (_instance, state) => {
+    for (let i = 1; i <= 256; i++) state.storage.sql.exec(
+      "INSERT INTO session_cards(agent_id,session,harness,card,updated_at) VALUES ('test-device-256',?,'codex','',?)", 'hidden-' + i, i + 2,
+    );
+  });
+  await check();
  });
  it('projects genuine signed relay receipts, session IDs and aggregate queue without content or keys', async () => {
   const s = await setup(); const second = await enroll(s.browser, 'nuc-test');
