@@ -5,7 +5,7 @@ mod common;
 
 use common::{fixture, lib_home, plant};
 use everett::hooks_common::auto_card;
-use everett::route::{describe, project_name, relevant_sessions};
+use everett::route::{describe, project_name, rank, relevant_sessions};
 use everett::session::{clean, now, Session};
 use everett::timefmt::{epoch_from_iso, iso_from_epoch};
 use serde_json::json;
@@ -33,8 +33,20 @@ fn a_request_naming_a_hyphenated_project_reaches_its_coordinator() {
     let pool = relevant_sessions("what's the status of web-mesh", &[worker.clone(), coordinator.clone()], None);
     let ids: Vec<&str> = pool.iter().map(|s| s.id.as_str()).collect();
     assert_eq!(ids, ["coord-1", "work-1"]);
-    let pool = relevant_sessions("what's the status of the mesh", &[worker, coordinator], None);
-    assert_eq!(pool.iter().map(|s| s.id.as_str()).collect::<Vec<_>>(), ["work-1"], "half a name is not the project");
+    for request in ["what's the status of the mesh", "check web latency and mesh reliability"] {
+        let pool = relevant_sessions(request, &[worker.clone(), coordinator.clone()], None);
+        assert_eq!(pool.iter().map(|s| s.id.as_str()).collect::<Vec<_>>(), ["work-1"], "{request}");
+    }
+}
+
+#[test]
+fn a_project_name_made_of_short_and_common_words_still_matches() {
+    let coordinator = session("coord-1", "/Users/alice/r-and-d", "Coordinator session: delegating to the lab workers.");
+    let worker = session("work-1", "/Users/alice/Atlas", "Implementing the Atlas ingest pipeline.");
+    let pool = relevant_sessions("r-and-d budget", &[worker, coordinator], None);
+    assert_eq!(pool[0].id, "coord-1");
+    let quiet = session("lab-1", "/Users/alice/r-and-d", "unrelated");
+    assert!(rank("r-and-d budget", &[quiet], None)[0].0 > 0.0, "a named project is boosted");
 }
 
 #[test]
@@ -44,6 +56,10 @@ fn a_worktree_session_routes_under_its_repository() {
     assert!(describe(&s).contains("project=everett "), "{}", describe(&s));
     let s = session("wt-2", "/Users/w/src/Api/.claude/worktrees/fix-retry/", "");
     assert_eq!(project_name(&s), "api");
+    let s = session("wt-3", "/Users/w/.t3/worktrees/chat/t3-1a2b3c4d", "");
+    assert_eq!(project_name(&s), "chat");
+    let s = session("chat-1", "/Users/w/Documents/Codex/2026-10-19/chat", "");
+    assert_eq!(project_name(&s), "", "a Codex chat folder is not a project");
 }
 
 #[test]
@@ -52,6 +68,12 @@ fn send_to_a_repository_name_finds_its_worktree_session() {
     let sessions = [session("wt-1", WORKTREE, ""), session("other-1", "/Users/w/Projects/atlas", "")];
     assert_eq!(everett::registry::find("everett", &sessions).unwrap().id, "wt-1");
     assert_eq!(everett::registry::find("Atlas", &sessions).unwrap().id, "other-1");
+    let sessions = [
+        session("wt-1", WORKTREE, "What: Everett: Fix the login flow. State: Fix the login flow."),
+        session("wt-2", "/Users/w/.t3/worktrees/everett/t3-0a1b2c3d", ""),
+    ];
+    let error = everett::registry::find("everett", &sessions).unwrap_err();
+    assert!(error.message.contains("matches 2 sessions"), "{}", error.message);
 }
 
 #[test]
@@ -64,6 +86,7 @@ fn an_automatic_card_names_the_repository_behind_a_worktree() {
 #[test]
 fn comparisons_survive_text_cleaning() {
     assert_eq!(clean("retry while attempts < 3 and delay > 2", 200), "retry while attempts < 3 and delay > 2");
+    assert_eq!(clean("a<b+1 && c>d", 200), "a<b+1 && c>d");
     assert_eq!(clean("<system-reminder>context</system-reminder> ship <b>it</b><!-- note -->", 200), "context ship it");
     let _h = lib_home();
     let c = card("Retry while attempts < 3 and delay > 2 seconds.", "/work/atlas");
@@ -89,8 +112,8 @@ fn a_fraction_that_rounds_up_carries_into_the_next_second() {
 fn ls_shows_old_sessions_in_days() {
     let fx = fixture();
     let path = plant(&fx, "claude.jsonl", ".claude/projects/app/claude.jsonl");
-    let aged = std::process::Command::new("touch").args(["-d", "3 days ago"]).arg(&path).status().unwrap();
-    assert!(aged.success());
+    let aged = std::time::SystemTime::now() - std::time::Duration::from_secs(3 * 86400 + 3600);
+    std::fs::File::options().write(true).open(&path).unwrap().set_modified(aged).unwrap();
     let out = fx.stdout(&fx.run(&["ls", "--hours", "200"]));
     let columns: Vec<&str> = out.split_whitespace().collect();
     assert!(columns.contains(&"3d"), "{out}");
