@@ -848,7 +848,12 @@ fn main() {
             ExternalCmd::Remove { id } => cli::cmd_external_remove(&id),
         },
         Cmd::Control { action: ControlCmd::Read { thread, session, messages } } => {
-            cli::cmd_control_read(thread.as_deref().unwrap_or_default(), session.as_deref(), messages)
+            cli::cmd_control_read(
+                thread.as_deref().unwrap_or_default(),
+                session.as_deref(),
+                messages,
+                a.hours,
+            )
         }
         Cmd::Control { action: ControlCmd::Threads { project } } => {
             cli::cmd_control_threads(project.as_deref().unwrap_or_default())
