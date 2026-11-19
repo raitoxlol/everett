@@ -87,6 +87,9 @@ pub struct Args {
     pub hermes: bool,
     pub repair: bool,
     pub onboard_yes: bool,
+    pub onboard_handoff: Option<String>,
+    pub onboard_handoff_preview: bool,
+    pub onboard_span_days_explicit: bool,
     pub span_days: i64,
     pub no_backfill: bool,
     pub no_mcp: bool,
@@ -1676,6 +1679,9 @@ pub fn cmd_logout(args: &Args) -> i32 {
 }
 
 pub fn cmd_onboard(args: &Args) -> i32 {
+    if args.onboard_handoff.is_some() || args.onboard_handoff_preview {
+        return crate::onboard_handoff::run(args);
+    }
     crate::onboard::run(args)
 }
 
