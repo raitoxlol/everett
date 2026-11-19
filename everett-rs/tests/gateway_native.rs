@@ -1,5 +1,7 @@
 //! Native gateway journeys over stdio and HTTP. The test binary doubles as the synthetic
 //! backend (`--fixture-backend`), so no model, harness, or other runtime is involved.
+#[path = "gateway_native/conversation_identity.rs"]
+mod conversation_identity;
 #[path = "gateway_native/events.rs"]
 mod events_acceptance;
 #[path = "gateway_native/identity_diagnostics.rs"]
@@ -1659,6 +1661,8 @@ exec /bin/sleep 10
 }
 
 const CASES: &[Case] = &[
+    ("conversation_identity_bearer", conversation_identity::bearer),
+    ("conversation_identity_oauth", conversation_identity::oauth),
     ("owner_agent_permission_journey", owner_agent_permission_journey),
     ("hosted_start_checks_model_effort_and_effective_receipt", hosted_start_checks_model_effort_and_effective_receipt),
     ("dot_picks_up_only_the_event_message_and_replies", dot_picks_up_only_the_event_message_and_replies),
