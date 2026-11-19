@@ -410,36 +410,31 @@ fn screen_welcome(t: &mut Terminal<CrosstermBackend<io::Stdout>>, p: &Palette) -
                     f,
                     top + 3,
                     36,
-                    "The agents you already use.",
+                    "Local agents need no Everett account.",
                     Style::default(),
                 );
-                put(f, top + 4, 36, "On this computer and beyond.", p.violet);
-                put(
-                    f,
-                    top + 5,
-                    36,
-                    "You choose what to connect.",
-                    Style::default(),
-                );
+                put(f, top + 4, 36, "Sign-in is optional for cross-device", p.violet);
+                put(f, top + 5, 36, "delivery.", Style::default());
                 primary_action(
                     f,
                     p,
                     Rect::new(36, top + 7, area.width - 38, 3),
-                    "Sign in and get started",
+                    "Choose setup path",
                 );
-                put(f, area.height - 4, 4, "Sign in. Choose. Connect.", p.dim);
+                put(f, area.height - 4, 4, "Choose. Review. Connect.", p.dim);
             } else {
-                put(f, y, 2, "Your agents, connected.", p.cyan);
-                put(f, y + 2, 2, "Here and beyond this computer.", p.violet);
-                put(f, y + 4, 2, "Review every change first.", p.dim);
-                if area.width >= 54 {
+                put(f, y, 2, "Local agents need no Everett account.", p.cyan);
+                put(f, y + 2, 2, "Sign-in is optional for", p.violet);
+                put(f, y + 3, 2, "cross-device delivery.", Style::default());
+                put(f, y + 5, 2, "Review every change first.", p.dim);
+                if area.width >= 60 {
                     draw_balloon(f, p, Rect::new(area.width - 18, y, 16, 6), motion.elapsed());
                 }
                 primary_action(
                     f,
                     p,
                     Rect::new(2, area.height - 4, area.width - 4, 3),
-                    "Sign in and get started",
+                    "Choose setup path",
                 );
             }
             footer(f, p, "d explore Everett   q quit");
@@ -463,11 +458,11 @@ fn screen_account(t: &mut Terminal<CrosstermBackend<io::Stdout>>, p: &Palette) -
     let mut status = if configured {
         "Set up local agents without an account, or sign in to enable hosted\ncross-device delivery. Browser sign-in only opens after you confirm.".to_string()
     } else {
-        "Account sign-in is not available in this build yet.".to_string()
+        "Sign-in is not available in this build; local setup is still available without an account.".to_string()
     };
     loop {
         t.draw(|f| {
-            if let Some(y) = draw_frame(f, p, 2, "Sign in to Everett") {
+            if let Some(y) = draw_frame(f, p, 2, "Choose how to connect") {
                 let area = f.area();
                 f.render_widget(
                     Paragraph::new(status.as_str())
@@ -495,7 +490,7 @@ fn screen_account(t: &mut Terminal<CrosstermBackend<io::Stdout>>, p: &Palette) -
                     } else if configured {
                         "enter sign in   l continue locally   b back   q quit"
                     } else {
-                        "l continue locally   b back   q quit"
+                        "enter or l continue locally   b back   q quit"
                     },
                 );
             }
@@ -2096,9 +2091,13 @@ fn screen_summary(
                     p.dim,
                 );
                 let next = if !result.errors.is_empty() {
-                    "Run: everett doctor".to_string()
+                    if area.height <= 14 {
+                        "Run: everett doctor (configuration/MCP launcher check).".to_string()
+                    } else {
+                        "Run: everett doctor to check configuration and the MCP launcher; it does not prove a client loaded tools.".to_string()
+                    }
                 } else if let Some(agent) = &tools {
-                    format!("Restart {}. Ask it to list Everett tools.", agent.name())
+                    format!("Restart {}.\nAsk it to list Everett tools.\nThen call `everett_list`.", agent.name())
                 } else if let Some(choice) = remote.first() {
                     format!("Press d for {} setup steps.", choice.name())
                 } else {

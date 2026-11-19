@@ -566,9 +566,15 @@ fn onboard_tui_compact_account_keeps_local_and_quit_choices_visible() {
         .env("EVERETT_NO_ANIM", "1");
     let mut p = spawn_tui_command(cmd, 54, 14);
     p.see("Welcome to Everett");
+    let welcome = p.screen();
+    assert!(welcome.contains("Local agents need no Everett account."), "{welcome}");
+    assert!(welcome.contains("Sign-in is optional for"), "{welcome}");
+    assert!(welcome.contains("cross-device delivery."), "{welcome}");
+    assert!(welcome.contains("Enter ↵   Choose setup path"), "{welcome}");
     p.send("\r");
-    p.see("Sign in to Everett");
+    p.see("Choose how to connect");
     let screen = p.screen();
+    assert!(screen.contains("Enter ↵   Sign in with GitHub"), "{screen}");
     assert!(screen.contains("enter sign in"), "{screen}");
     assert!(screen.contains("l continue locally"), "{screen}");
     assert!(screen.contains("q quit"), "{screen}");
@@ -588,8 +594,12 @@ fn onboard_tui_full_wizard_applies() {
     fx.write("AGENTS.md", "Existing user rules.\n");
     let mut p = spawn_tui(&fx);
     p.see("Welcome to Everett");
+    let welcome = p.screen();
+    assert!(welcome.contains("Local agents need no Everett account."), "{welcome}");
+    assert!(welcome.contains("Sign-in is optional for cross-device"), "{welcome}");
+    assert!(welcome.contains("Choose setup path"), "{welcome}");
     for screen in [
-        "Sign in to Everett",
+        "Choose how to connect",
         "Choose your agents",
         "Review your setup",
     ] {
@@ -598,15 +608,34 @@ fn onboard_tui_full_wizard_applies() {
             p.review();
         } else {
             p.see(screen);
+            if screen == "Choose how to connect" {
+                let account = p.screen();
+                assert!(account.contains("local setup is still available") && account.contains("without an account."), "{account}");
+                assert!(account.contains("enter or l continue locally"), "{account}");
+            }
         }
     }
     p.send("a");
     p.see("Local setup applied");
     p.see("Agent tools are not verified yet.");
-    p.see("Restart Claude Code.");
+    p.see("Restart Claude Code");
+    p.see("call `everett_list`");
     if let Ok(path) = std::env::var("EVERETT_SUMMARY_FRAME") {
         std::fs::write(path, serde_json::to_vec(&p.frame()).unwrap()).unwrap();
     }
+    p.send("d");
+    p.see("checks configuration and the MCP launcher");
+    p.see("does not prove a client loaded Everett tools");
+    p.see("Restart each selected MCP client");
+    p.see("empty list is also success");
+    p.see("Saved settings alone are not proof");
+    p.send("\r");
+    p.see("Local setup applied");
+    p.resize(54, 14);
+    let compact = p.screen();
+    assert!(compact.contains("Restart Claude Code"), "{compact}");
+    assert!(compact.contains("call `everett_list`"), "{compact}");
+    p.resize(80, 24);
     p.send("\r");
     p.see("Teach your agents about Everett");
     p.see("Prompt / review before applying");
@@ -642,7 +671,7 @@ fn onboard_tui_agents_empty_and_discovery_only() {
     let mut p = spawn_tui(&fx);
     p.see("Welcome to Everett");
     p.send("\r");
-    p.see("Sign in to Everett");
+    p.see("Choose how to connect");
     p.send("\r");
     p.see("No supported agents found");
     p.see("everett onboard again.");
@@ -652,9 +681,9 @@ fn onboard_tui_agents_empty_and_discovery_only() {
     std::fs::create_dir_all(fx.home().join(".hermes")).unwrap();
     let mut p = spawn_tui_with(&fx, &[], 54, 14);
     p.see("Welcome to Everett");
-    p.see("Enter ↵   Sign in and get started");
+    p.see("Enter ↵   Choose setup path");
     p.send("\r");
-    p.see("Sign in to Everett");
+    p.see("Choose how to connect");
     p.send("\r");
     p.see("discovery only");
     p.see("Enter ↵   Continue without integrations");
@@ -678,7 +707,7 @@ fn onboard_tui_custom_agent_selection_survives_resize_and_back() {
     let mut p = spawn_tui(&fx);
     p.see("Welcome to Everett");
     p.send("\r");
-    p.see("Sign in to Everett");
+    p.see("Choose how to connect");
     p.send("\r");
     p.see("Choose your agents");
     p.see("[x] Claude Code");
@@ -751,7 +780,7 @@ fn onboard_tui_deselected_agent_preserves_existing_settings() {
     let mut p = spawn_tui_with(&fx, &["--no-backfill"], 80, 24);
     p.see("Welcome to Everett");
     p.send("\r");
-    p.see("Sign in to Everett");
+    p.see("Choose how to connect");
     p.send("\r");
     p.see("Choose your agents");
     p.send(" ");
@@ -786,7 +815,7 @@ fn onboard_tui_agent_toggle_respects_no_mcp() {
     let mut p = spawn_tui_with(&fx, &["--no-mcp", "--no-backfill"], 80, 24);
     p.see("Welcome to Everett");
     p.send("\r");
-    p.see("Sign in to Everett");
+    p.see("Choose how to connect");
     p.send("\r");
     p.see("Choose your agents");
     p.send("  ");
@@ -818,7 +847,7 @@ fn onboard_tui_animation_and_multiple_colors_reach_the_terminal() {
     std::fs::create_dir_all(fx.home().join(".hermes")).unwrap();
     let mut p = spawn_tui_command(tui_command(&fx, &["--no-backfill"]), 80, 24);
     p.see("Welcome to Everett");
-    p.see("Enter ↵   Sign in and get started");
+    p.see("Enter ↵   Choose setup path");
     let first = p.screen();
     std::thread::sleep(std::time::Duration::from_millis(200));
     assert_ne!(first, p.screen(), "welcome animation did not reach the PTY");
@@ -832,7 +861,7 @@ fn onboard_tui_animation_and_multiple_colors_reach_the_terminal() {
     record(&mut p, 45);
     let pressed = std::time::Instant::now();
     p.send("\r");
-    p.see("Sign in to Everett");
+    p.see("Choose how to connect");
     assert!(
         pressed.elapsed() < std::time::Duration::from_secs(2),
         "animation delayed input"
@@ -948,7 +977,7 @@ fn onboard_tui_optional_explanation_and_account_back_navigation() {
     let fx = fixture();
     plant(&fx, "claude.jsonl", ".claude/projects/app/claude.jsonl");
     let mut p = spawn_tui(&fx);
-    p.see("Enter ↵   Sign in and get started");
+    p.see("Enter ↵   Choose setup path");
     p.send("d");
     p.see("What can Everett do?");
     p.see("Hand off work");
@@ -971,12 +1000,12 @@ fn onboard_tui_optional_explanation_and_account_back_navigation() {
     p.send("\r");
     p.see("Welcome to Everett");
     p.send("\r");
-    p.see("Sign in to Everett");
-    p.see("Account sign-in is not available");
+    p.see("Choose how to connect");
+    p.see("Sign-in is not available in this build");
     p.send("l");
     p.see("Choose your agents");
     p.send("b");
-    p.see("Sign in to Everett");
+    p.see("Choose how to connect");
     p.send("b");
     p.see("Welcome to Everett");
     p.send("\r3q");
