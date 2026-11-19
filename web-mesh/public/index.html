@@ -29,7 +29,7 @@
         <div class="page-heading"><h1 id="title">Mesh overview</h1><p id="description">See what your devices and agents are doing.</p></div>
         <p id="notice" class="notice" role="status" aria-live="polite">Checking console access…</p>
         <section id="login" class="panel login" hidden>
-          <h2>Sign in to Everett</h2><p>Use the access secret for this console.</p>
+          <h2>Sign in to Everett</h2><p id="login-description">Use the access secret for this console.</p><a id="github-login" class="primary sign-in-link" href="/api/login" hidden>Continue with GitHub</a>
           <form id="login-form"><label for="secret">Console access secret</label><input type="password" id="secret" name="secret" required autocomplete="current-password" maxlength="256"><button class="primary" type="submit">Sign in</button></form>
         </section>
         <div id="data" hidden>

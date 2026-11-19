@@ -21,6 +21,7 @@ let prefs = { ...defaultPrefs };
 let snapshot = null;
 let pending = null;
 let approved = false;
+let githubLogin = false;
 let currentView = 'overview';
 
 const viewResults = {
@@ -248,6 +249,7 @@ function settings() {
 
 function render(data) {
   snapshot = data;
+  githubLogin = data.authentication === 'github';
   approved = true;
   const fixture = data.source === 'fixture';
   source(fixture ? 'Fixture' : 'Cloudflare', data.source);
@@ -294,11 +296,15 @@ async function refresh() {
     if (data) { render(data); return; }
     clear();
     if (response.status === 401) {
+      const { error } = await response.json();
+      if (pending !== ctrl || document.hidden) return;
       approved = false;
-      $('login').hidden = false;
+      githubLogin = error === 'github_sign_in_required';
+      showLogin();
       $('signout').hidden = true;
       $('refresh').hidden = true;
-      notice('Sign in to view this private workspace.');
+      const failed = githubLogin && new URL(location.href).searchParams.get('auth') === 'failed';
+      notice(failed ? 'GitHub sign-in failed. Use the account that owns this Everett mesh.' : 'Sign in to view this private workspace.', failed ? 'error' : '');
     } else if (response.status === 403) {
       notice('Read access ended. Mesh data has been cleared.', 'error');
     } else if (response.status === 404) {
@@ -315,6 +321,15 @@ async function refresh() {
       $('refresh').disabled = false;
     }
   }
+}
+
+function showLogin() {
+  $('login').hidden = false;
+  $('github-login').hidden = !githubLogin;
+  $('login-form').hidden = githubLogin;
+  $('login-description').textContent = githubLogin
+    ? 'Use the GitHub account that owns this Everett mesh.'
+    : 'Use the access secret for this console.';
 }
 
 $('login-form').addEventListener('submit', async event => {
@@ -341,7 +356,7 @@ $('signout').addEventListener('click', async () => {
     if (!response.ok) throw new Error('Logout failed');
     notice('Signed out.');
   } catch { notice('Could not confirm sign-out. Close this console if the device is shared.', 'error'); }
-  $('login').hidden = false;
+  showLogin();
 });
 $('refresh').addEventListener('click', refresh);
 $('device-filter').addEventListener('input', () => { if (snapshot) devices(); });

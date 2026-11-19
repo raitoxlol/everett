@@ -6,6 +6,28 @@ The console is disabled until `ENABLED=true`; a read grant starts pending and
 requires a separate owner decision in Everett account access. No deployment or
 production account changes are part of this implementation.
 
+## Hosted dashboard
+
+Use a dedicated Vercel project with `web-mesh` as its root. The console opens at
+`/dashboard` on that project's exact origin, for example
+`https://dashboard.raitox.tech/dashboard`. Everett's Cloudflare issuer retains its
+own origin and remains responsible for read-grant approval and revocation.
+
+Register a dedicated GitHub OAuth app for the console origin. Set its callback
+to `https://<console-origin>/api/github-callback` and configure
+`CONSOLE_AUTH=github`, `GITHUB_CLIENT_ID` and `GITHUB_CLIENT_SECRET` in the
+server environment. Do not use a GitHub app with repository or organization
+permissions. The console checks the GitHub account ID against the account in its
+Everett read grant. GitHub sign-in does not approve or replace that grant.
+The console keeps the OAuth client secret and token exchange on the server.
+The GitHub access token is discarded after checking the identity.
+
+Connected devices and exposed sessions come from Cloudflare. To expose a local
+device, enroll it in that same Everett account and register it with the relay.
+The separate gateway hosted-agent directory and remote owner write controls
+are not yet connected. The console shows the directory as unavailable until
+there is an authenticated source.
+
 ## Initiate setup
 
 Use Node 22 or newer. This package has no dependencies or install step.
@@ -38,15 +60,17 @@ Each console instance serves exactly one configured owner. Configure:
 | --- | --- |
 | `ENABLED` | Must be exactly `true`. Defaults off. |
 | `CONSOLE_ORIGIN` | Exact HTTPS console origin; loopback HTTP only for local work. |
-| `CONSOLE_SECRET` | Generated 256-bit console login secret. Keep private. |
+| `CONSOLE_AUTH` | Set to `github` for the hosted flow. The default `secret` mode supports local and legacy setups. |
+| `GITHUB_CLIENT_ID`, `GITHUB_CLIENT_SECRET` | Dedicated GitHub OAuth app for the exact console callback. |
+| `CONSOLE_SECRET` | Generated 256-bit login secret used only in `secret` mode. |
 | `SESSION_KEY` | Independent generated 256-bit cookie signing key. |
 | `MESH_ENDPOINT` | Exact Cloudflare issuer origin. |
 | `MESH_TOKEN` | Narrow `emr_` read bearer, never a native/gateway credential. |
 | `MESH_OWNER` | Pinned owner namespace from the setup response. |
 | `MESH_MODE` | Optional `fixture` for explicitly labeled examples. Never automatic. |
 
-Store the generated console access secret in the owner's password manager and
-use it at the console's sign-in form. The browser receives only an opaque,
+In `secret` mode, store the generated access secret in the owner's password
+manager and use it at the sign-in form. The browser receives only an opaque,
 HttpOnly, Secure, SameSite=Strict, 15-minute signed session cookie. Source tokens
 and the session signing key stay server-side. The console secret is a random
 access secret, not a human-selected password. Rotate it and `SESSION_KEY`
