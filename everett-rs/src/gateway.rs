@@ -2,6 +2,7 @@ pub mod diagnostics;
 mod identities;
 mod event_http;
 mod native_start;
+pub mod permissions;
 mod worker;
 pub use worker::run as run_internal_worker;
 pub(crate) use worker::{mcp_call as call_scoped_worker, mcp_enabled as scoped_worker_enabled};
@@ -99,6 +100,8 @@ struct Binding {
     project: String,
     destinations: BTreeSet<String>,
     allow_shared_core: bool,
+    #[serde(default)]
+    agent_tool_permissions: Option<PathBuf>,
     #[serde(default = "default_backend_command")]
     backend_command: Vec<String>,
     #[serde(skip)]
@@ -269,6 +272,15 @@ impl Binding {
                 })
         }) {
             return Err("oauth needs https issuer, resource and introspection_endpoint URLs (http only on loopback), one scope token and a nonempty printable owner_account when configured".into());
+        }
+        if let Some(path) = &binding.agent_tool_permissions {
+            if !path.is_absolute() || binding.oauth.is_some() || binding.events
+                || binding.require_identity_handle || binding.native_start.is_some()
+                || !worker::is_builtin(&binding.backend_command)
+            {
+                return Err("agent_tool_permissions requires an absolute path, the built-in backend and a separate bearer binding without gateway-only grants".into());
+            }
+            permissions::Grant::load(path)?;
         }
         if let Some(policy) = &binding.native_start {
             policy.validate(&binding)?;
@@ -507,6 +519,34 @@ impl Gateway {
         Ok((Arc::new(binding), Some(agent)))
     }
 
+    async fn call_owner_agent(
+        &self,
+        binding: &Binding,
+        path: &Path,
+        request: CallToolRequestParams,
+    ) -> Result<CallToolResult, String> {
+        if !permissions::Grant::load(path)?.permits(&request.name) {
+            return Err("tool is not granted to this connection".into());
+        }
+        let _permit = self.workers.try_acquire().map_err(|_| "gateway workers busy; retry later")?;
+        let mut command = backend_command(binding, true);
+        command.env("EVERETT_GATEWAY_OWNER_AGENT", "1");
+        command.env_remove("EVERETT_GATEWAY_EXACT_IDS");
+        command.env_remove("EVERETT_SEND");
+        command.env_remove("EVERETT_ROUTER");
+        let mut child = command.spawn().map_err(|_| BACKEND_ERROR)?;
+        let call = worker::Call::OwnerAgent {
+            name: request.name.into_owned(),
+            arguments: request.arguments.unwrap_or_default(),
+        };
+        let result = timeout(Duration::from_secs_f64(binding.timeout), worker::dispatch(call, &mut child))
+            .await
+            .unwrap_or_else(|_| Err(BACKEND_ERROR.into()));
+        let _ = child.kill().await;
+        let _ = child.wait().await;
+        serde_json::from_value(result?).map_err(|_| BACKEND_ERROR.into())
+    }
+
     async fn call(
         &self,
         binding: &Binding,
@@ -703,6 +743,11 @@ fn backend_command(binding: &Binding, use_worker: bool) -> Command {
 
 impl ServerHandler for Gateway {
     fn get_info(&self) -> ServerConfig {
+        if self.binding.agent_tool_permissions.is_some() {
+            return ServerConfig::new(ServerCapabilities::builder().enable_tools().build())
+                .with_server_info(Implementation::new("everett-owner-agent", env!("CARGO_PKG_VERSION")))
+                .with_instructions("Use the Everett tools granted to this connection by the owner.");
+        }
         ServerConfig::new(ServerCapabilities::builder().enable_tools().build())
             .with_server_info(Implementation::new(
                 "everett-owner-gateway",
@@ -720,6 +765,16 @@ impl ServerHandler for Gateway {
         ctx: RequestContext<RoleServer>,
     ) -> Result<ListToolsResult, ErrorData> {
         let (binding, agent) = self.bound(&ctx).map_err(|e| ErrorData::invalid_request(e, None))?;
+        if let Some(path) = &binding.agent_tool_permissions {
+            let grant = permissions::Grant::load(path).map_err(|e| ErrorData::invalid_request(e, None))?;
+            let tools = crate::mcp::tools().iter().filter(|tool| {
+                tool["name"].as_str().is_some_and(|name| grant.permits(name))
+            }).map(|tool| {
+                serde_json::from_value(tool.clone())
+                    .map_err(|_| ErrorData::internal_error("cannot encode Everett tool", None))
+            }).collect::<Result<Vec<Tool>, _>>()?;
+            return Ok(ListToolsResult::with_all_items(tools));
+        }
         let mut tools = binding.tools();
         if binding.native_start.as_ref().is_some_and(|p| p.permits(agent.as_ref())) {
             tools.push(native_start::tool());
@@ -731,20 +786,22 @@ impl ServerHandler for Gateway {
         request: CallToolRequestParams,
         ctx: RequestContext<RoleServer>,
     ) -> Result<CallToolResponse, ErrorData> {
-        let outcome = match self.bound(&ctx) {
+        let mut result = match self.bound(&ctx) {
             Ok((binding, agent)) => {
-                self.call(&binding, agent.as_ref(), &request.name, request.arguments.unwrap_or_default())
-                    .await
+                let outcome = if let Some(path) = &binding.agent_tool_permissions {
+                    self.call_owner_agent(&binding, path, request).await
+                } else {
+                    self.call(&binding, agent.as_ref(), &request.name, request.arguments.unwrap_or_default())
+                        .await
+                        .map(|data| {
+                            let unconfirmed = request.name == "everett_start" && data["dispatch_confirmed"] != true;
+                            let mut result = CallToolResult::structured(data);
+                            if unconfirmed { result.is_error = Some(true); }
+                            result
+                        })
+                };
+                outcome.unwrap_or_else(|error| CallToolResult::error(vec![ContentBlock::text(error)]))
             }
-            Err(error) => Err(error),
-        };
-        let mut result = match outcome {
-            Ok(data) => {
-                let unconfirmed = request.name == "everett_start" && data["dispatch_confirmed"] != true;
-                let mut result = CallToolResult::structured(data);
-                if unconfirmed { result.is_error = Some(true); }
-                result
-            },
             Err(error) => CallToolResult::error(vec![ContentBlock::text(error)]),
         };
         if serde_json::to_vec(&result)
@@ -1031,6 +1088,9 @@ async fn serve(binding: Binding, transport: &str, port: u16) -> Result<(), Strin
         binding: Arc::new(binding),
         oauth: false,
     };
+    if transport == "stdio" && gateway.binding.agent_tool_permissions.is_some() {
+        return Err("agent_tool_permissions requires authenticated HTTP".into());
+    }
     if transport == "stdio" && gateway.binding.events {
         return Err("Events require authenticated HTTP".into());
     }
@@ -1291,6 +1351,7 @@ mod tests {
             project: "everett".into(),
             destinations: BTreeSet::from(["agent-two".into()]),
             allow_shared_core: true,
+            agent_tool_permissions: None,
             backend_command: vec!["/bin/false".into()],
             max_workers: 2,
             timeout: 1.0,
