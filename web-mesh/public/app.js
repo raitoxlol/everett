@@ -196,19 +196,25 @@ function overview() {
 function devices() {
   const query = $('device-filter').value.trim().toLowerCase();
   const visible = snapshot.devices.filter(d => ((d.name || '') + ' ' + d.deviceId).toLowerCase().includes(query));
+  const visibleIds = new Set(visible.map(d => d.deviceId));
+  const sessions = snapshot.sessions.filter(s => !query || visibleIds.has(s.deviceId));
   table('device-list', ['Device', 'Last seen', 'Observation'],
     visible.map(d => [label(d.name || 'Unnamed device', d.deviceId), clock(d.lastSeen),
       make('span', d.lastSeen === null ? 'Unavailable' : 'Server-observed request', 'confidence')]),
     query ? 'No matching devices.' : 'No devices have registered.');
   table('session-list', ['Session', 'Device', 'Last exposure', 'Self-reported status'],
-    snapshot.sessions.map(s => {
+    sessions.map(s => {
       const report = s.selfReported;
       const status = make('div');
-      status.append(tag(report.status || 'Unavailable'));
-      if (report.observedAt !== null) status.append(clock(report.observedAt));
-      status.append(make('span', report.status ? 'Self-reported · unverified' : 'No report available', 'confidence'));
+      if (report.status) {
+        status.append(tag(report.status));
+        if (report.observedAt !== null) status.append(clock(report.observedAt));
+        status.append(make('span', 'Self-reported · unverified', 'confidence'));
+      } else {
+        status.append(make('span', 'No report', 'subtle'));
+      }
       return [label(s.harness, s.sessionId), make('span', deviceName(s.deviceId)), clock(s.lastSeen), status];
-    }), 'No exposed sessions.');
+    }), query ? 'No sessions on matching devices.' : 'No exposed sessions.');
 }
 
 function cloud() {
