@@ -13,7 +13,6 @@ enum Agent {
     Claude,
     Codex,
     Omp,
-    Pi,
     Grok,
     Devin,
 }
@@ -24,7 +23,6 @@ impl Agent {
             Self::Claude => "claude",
             Self::Codex => "codex",
             Self::Omp => "omp",
-            Self::Pi => "pi",
             Self::Grok => "grok",
             Self::Devin => "devin",
         }
@@ -35,7 +33,6 @@ impl Agent {
             Self::Claude => "Claude Code",
             Self::Codex => "Codex",
             Self::Omp => "OMP",
-            Self::Pi => "Pi",
             Self::Grok => "Grok CLI",
             Self::Devin => "Devin CLI",
         }
@@ -76,9 +73,6 @@ fn parse_token(token: &str) -> Result<Plan, &'static str> {
     if !handoff.hooks && !handoff.mcp {
         return Err("handoff plan selects no actions");
     }
-    if handoff.agent == Agent::Pi && (!handoff.hooks || handoff.mcp) {
-        return Err("Pi handoff must select its extension only");
-    }
     Ok(Plan {
         agent: handoff.agent,
         hooks: handoff.hooks,
@@ -89,7 +83,6 @@ fn parse_token(token: &str) -> Result<Plan, &'static str> {
 fn hook_path(agent: Agent) -> PathBuf {
     match agent {
         Agent::Omp => crate::install::omp_extension_path(),
-        Agent::Pi => crate::install::pi_extension_path(),
         other => crate::install::settings_path(other.harness()),
     }
 }
@@ -99,7 +92,6 @@ fn destinations(plan: Plan) -> Vec<(&'static str, PathBuf)> {
     if plan.hooks {
         let action = match plan.agent {
             Agent::Omp => "OMP session extension",
-            Agent::Pi => "Pi session extension (includes Everett tools)",
             _ => "session hooks",
         };
         paths.push((action, hook_path(plan.agent)));
@@ -124,8 +116,6 @@ fn review(plan: Plan) -> String {
             "  - {}",
             match plan.agent {
                 Agent::Omp => "Install the OMP session extension".to_string(),
-                Agent::Pi =>
-                    "Install the Pi session extension (includes Everett tools)".to_string(),
                 _ => format!("Install {} session hooks", plan.agent.label()),
             }
         ));
@@ -170,7 +160,7 @@ fn apply(plan: Plan) -> Vec<(&'static str, Result<String, String>)> {
     if plan.hooks {
         let harness = plan.agent.harness();
         let result = match plan.agent {
-            Agent::Omp | Agent::Pi => crate::install::apply(harness, None),
+            Agent::Omp => crate::install::apply(harness, None),
             _ => {
                 let events = crate::install::HOOKS
                     .iter()
@@ -299,11 +289,9 @@ mod tests {
             r#"{"version":1,"agent":"claude","agent":"codex","hooks":true,"mcp":true}"#,
             r#"{"version":1,"agent":"claude","hooks":"true","mcp":true}"#,
             r#"{"version":1,"agent":"unknown","hooks":true,"mcp":true}"#,
+            r#"{"version":1,"agent":"pi","hooks":true,"mcp":false}"#,
             r#"{"version":2,"agent":"claude","hooks":true,"mcp":true}"#,
             r#"{"version":1,"agent":"claude","hooks":false,"mcp":false}"#,
-            r#"{"version":1,"agent":"pi","hooks":false,"mcp":true}"#,
-            r#"{"version":1,"agent":"pi","hooks":true,"mcp":true}"#,
-            r#"{"version":1,"agent":"pi","hooks":false,"mcp":false}"#,
         ] {
             let bad = token(raw);
             let error = parse_token(&bad).unwrap_err();
