@@ -118,11 +118,16 @@ pub fn find(target: &str, sessions: &[Session]) -> Result<Session> {
         )));
     }
     let target_fold = target.to_lowercase();
+    let mut named: Vec<&Session> = sessions.iter().filter(|s| name(s) == target_fold).collect();
+    // A lone card that only repeats its own project name must not hide the project's other sessions.
+    if named.len() == 1 && crate::route::project_name(named[0]) == target_fold {
+        named.clear();
+    }
     let passes: Vec<Vec<&Session>> = vec![
         aliases,
         sessions.iter().filter(|s| s.id.starts_with(target)).collect(),
         sessions.iter().filter(|s| s.title.trim().to_lowercase() == target_fold).collect(),
-        sessions.iter().filter(|s| name(s) == target_fold && crate::route::project_name(s) != target_fold).collect(),
+        named,
         sessions.iter().filter(|s| crate::route::project_name(s) == target_fold).collect(),
     ];
     for hits in passes {
