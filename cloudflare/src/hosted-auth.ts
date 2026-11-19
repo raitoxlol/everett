@@ -685,7 +685,24 @@ export class HostedAuth extends DurableObject<HostedAuthEnv> {
       content += `<li>${esc(agent.name)} · ${esc(agent.agent_id)} · ${esc(agent.kind)} · ${live ? 'active' : 'revoked'}${live ? `<form method="post" action="/enroll/revoke">${csrfField(session.csrf)}<input type="hidden" name="agent_id" value="${esc(agent.agent_id)}"><button>Revoke</button></form>` : ''}</li>`;
     }
     content += '</ul></section><section class="auth-credentials"><h2>Mesh read grants</h2><ul>';
-    for (const grant of this.ctx.storage.sql.exec<{ id: string; origin: string; state: string }>('SELECT id,origin,state FROM mesh_grants WHERE account=? ORDER BY created_at DESC LIMIT 64', session.account.subject)) content += `<li><a href="/enroll?mesh=${esc(grant.id)}">${esc(grant.origin)}</a> · ${esc(grant.state)}</li>`;
+    const now = Date.now();
+    const activeGrants = this.ctx.storage.sql.exec<{ id: string; origin: string; state: string }>(
+      "SELECT id,origin,state FROM mesh_grants WHERE account=? AND expires_at>? AND state IN ('pending','approved') ORDER BY created_at DESC",
+      session.account.subject, now,
+    ).toArray();
+    for (const grant of activeGrants) {
+      content += `<li><a href="/enroll?mesh=${esc(grant.id)}">${esc(grant.origin)}</a> · ${esc(grant.state)}</li>`;
+    }
+    if (!activeGrants.length) content += '<li>No pending or approved grants.</li>';
+    const history = this.ctx.storage.sql.exec<{ origin: string; state: string; expires_at: number }>(
+      "SELECT origin,state,expires_at FROM mesh_grants WHERE account=? AND (expires_at<=? OR state NOT IN ('pending','approved')) ORDER BY created_at DESC LIMIT 64",
+      session.account.subject, now,
+    );
+    content += '</ul><h3>Recent grant history</h3><ul>';
+    for (const grant of history) {
+      const state = (grant.state === 'approved' || grant.state === 'pending') && grant.expires_at <= now ? 'expired' : grant.state;
+      content += `<li>${esc(grant.origin)} · ${esc(state)}</li>`;
+    }
     return html(`${content}</ul>${agents.length > 256 ? '<p>Only the newest 256 credentials are displayed.</p>' : ''}</section>`, 200, callbackOrigin);
   }
   async #mesh(request: Request, c: HostedConfig, host: string): Promise<Response> {
@@ -711,7 +728,7 @@ export class HostedAuth extends DurableObject<HostedAuthEnv> {
     const grant = this.#row<{ account: string; agent_id: string; state: string; expires_at: number; origin: string }>('SELECT account,agent_id,state,expires_at,origin FROM mesh_grants WHERE token_hash=?', hash(token));
     if (!grant) throw new RelayError('invalid_token', 401);
     if (grant.state !== 'approved' || grant.expires_at <= Date.now() || !this.#accountAllowed(c, grant.account) || !await this.#live(c, grant.agent_id)) throw new RelayError('mesh_access_denied', 403);
-    if (request.headers.get('X-Everett-Console-Origin') && request.headers.get('X-Everett-Console-Origin') !== grant.origin) throw new RelayError('wrong_console', 403);
+    if (request.headers.get('X-Everett-Console-Origin') !== grant.origin) throw new RelayError('wrong_console', 403);
     const identity = this.#identityFor(grant.account as Subject, c);
     const principal: Principal = { ...identity, agentId: grant.agent_id, role: 'member', expiresAt: grant.expires_at };
     const snapshot = await this.#relayFor(identity).meshSnapshot(principal);

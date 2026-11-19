@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
-import { createServer } from 'node:http';
+import { createServer, request as httpRequest } from 'node:http';
 import { createRequire } from 'node:module';
 import { mkdtemp,writeFile,readFile,rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -48,7 +48,7 @@ try {
  const start=await owner('/auth/github?return_to=/enroll'),github=new URL(start.headers.get('Location'));
  assert.equal((await owner('/auth/callback/github?'+new URLSearchParams({state:github.searchParams.get('state'),code:'synthetic-local-only'}))).status,303);
  const a=await register(await enroll('Mac local E2E'),31),b=await register(await enroll('NUC local E2E'),33);
- await native(a.token,'exposeSession',{session:'local-e2e-session',harness:'codex',card:'LOCAL-PRIVATE-CARD'});
+ await native(a.token,'exposeSession',{session:'local-e2e-session',harness:'h'.repeat(160),card:'LOCAL-PRIVATE-CARD'});
  const credentialFile=join(privateDir,'credential.json'),output=join(privateDir,'console.env');
  await writeFile(credentialFile,JSON.stringify({...a,issuer,owner:a.device.owner,expires_at:Date.now()+3600000}),{mode:0o600});
  const setup=spawn(process.execPath,[join(root,'web-mesh/setup.mjs'),'request','--credential-file',credentialFile,'--origin',consoleOrigin,'--output',output,'--allow-local'],{cwd:root,stdio:['ignore','pipe','pipe']});let setupOut='';setup.stdout.on('data',d=>setupOut+=String(d));const [code]=await once(setup,'exit');assert.equal(code,0,'setup CLI');
@@ -68,7 +68,16 @@ try {
  config.ENABLED='true';config.CONSOLE_SECRET='synthetic-local-console-secret-only-20261119';config.PORT='18870';await launch('web-mesh/dev.mjs',[],config);
  const login=await fetch(consoleOrigin+'/api/login',{...form({secret:config.CONSOLE_SECRET}),headers:{'Content-Type':'application/x-www-form-urlencoded',Origin:consoleOrigin}});assert.equal(login.status,204);const sessionCookie=login.headers.get('Set-Cookie').split(';')[0];
  const dashboardRead=()=>fetch(consoleOrigin+'/api/mesh',{headers:{Cookie:sessionCookie}});
- const first=await dashboardRead();assert.equal(first.status,200);const view=await first.json();assert.equal(view.receipts[0].messageId,e.messageId);const text=JSON.stringify(view);for(const hidden of ['LOCAL-PRIVATE-CARD','LOCAL-E2E-CONTENT-PRIVATE',e.ciphertext,a.token,config.MESH_TOKEN])assert.ok(!text.includes(hidden));
+ const first=await dashboardRead();assert.equal(first.status,200);const view=await first.json();assert.equal(view.receipts[0].messageId,e.messageId);assert.equal(view.sessions[0].harness,'h'.repeat(160));const text=JSON.stringify(view);for(const hidden of ['LOCAL-PRIVATE-CARD','LOCAL-E2E-CONTENT-PRIVATE',e.ciphertext,a.token,config.MESH_TOKEN])assert.ok(!text.includes(hidden));
+ const unexpectedQuery = await fetch(consoleOrigin+'/api/mesh?path=mesh',{headers:{Cookie:sessionCookie}});
+ assert.equal(unexpectedQuery.status,400);
+ const wrongHostStatus = await new Promise((resolve,reject) => {
+  httpRequest(consoleOrigin+'/api/mesh',{headers:{Host:'other.example',Cookie:sessionCookie}},res=>{
+   res.resume();
+   resolve(res.statusCode);
+  }).once('error',reject).end();
+ });
+ assert.equal(wrongHostStatus,403);
  let revoked=false;
  async function revoke(){assert.equal((await owner('/enroll/mesh',form({csrf:await csrf('/enroll?mesh='+grantId),id:grantId,decision:'revoke'}))).status,303);revoked=true;const denied=await dashboardRead();assert.equal(denied.status,403);assert.ok(!(await denied.text()).includes(e.messageId));}
  console.log('PASS local actual Worker + setup CLI + Vercel handler: default denial, owner approval, encrypted enqueue, signed delivered receipt, content exclusion, same-session reads. GitHub provider is synthetic.');
@@ -76,5 +85,8 @@ try {
   control=createServer(async(req,res)=>{if(req.method==='POST'&&req.url==='/revoke'){await revoke();res.writeHead(200);res.end('revoked');}else if(req.method==='GET'&&req.url==='/state'){res.writeHead(200,{'Content-Type':'application/json'});res.end(JSON.stringify({revoked,console:consoleOrigin,messageId:e.messageId}));}else if(req.method==='POST'&&req.url==='/stop'){res.writeHead(200);res.end('stopping');process.emit('SIGTERM');}else{res.writeHead(404);res.end();}}).listen(controlPort,'127.0.0.1');
   console.log('LOCAL BROWSER READY '+consoleOrigin+'; login secret synthetic-local-console-secret-only-20261119; control POST http://127.0.0.1:18871/revoke. No production systems.');
   await new Promise(resolve=>{process.once('SIGTERM',resolve);process.once('SIGINT',resolve)});
- } else {await revoke();console.log('PASS opt-out denies the same existing dashboard session on its next request (403, no receipt data).');}
+ } else {await revoke();console.log('PASS opt-out denies the same existing dashboard session on its next request (403, no receipt data).');
+  const logout = await fetch(consoleOrigin+'/api/logout',{method:'POST',headers:{Origin:consoleOrigin,Cookie:sessionCookie}});
+  assert.equal(logout.status,204);
+  assert.match(logout.headers.get('Set-Cookie'),/Max-Age=0/);}
 } finally {await cleanup();}

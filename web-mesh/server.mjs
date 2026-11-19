@@ -13,7 +13,7 @@ export function adaptSnapshot(value,config) {
   const sessions=list(value.sessions,256).map(s=>{
     const reported=s.selfReported;
     const status=reported?.status===null||reported?.status===undefined?null:oneOf(reported.status,['idle','busy','blocked','offline']);
-    return {deviceId:text(s.deviceId),sessionId:text(s.sessionId),harness:text(s.harness,64),lastSeen:time(s.lastSeen),lastSeenConfidence:oneOf(s.lastSeenConfidence,['server-observed-exposure']),selfReported:{status,observedAt:status===null?null:time(reported.observedAt),confidence:status===null?'unavailable':'self-reported'}};
+    return {deviceId:text(s.deviceId),sessionId:text(s.sessionId),harness:text(s.harness,160),lastSeen:time(s.lastSeen),lastSeenConfidence:oneOf(s.lastSeenConfidence,['server-observed-exposure']),selfReported:{status,observedAt:status===null?null:time(reported.observedAt),confidence:status===null?'unavailable':'self-reported'}};
   });
   const receipts=list(value.receipts,100).map(r=>({messageId:text(r.messageId),deviceId:text(r.deviceId),state:oneOf(r.state,['delivered','claimed','replied']),at:time(r.at),confidence:oneOf(r.confidence,['signed-device-observation'])}));
   const queued=time(value.queue.queued);

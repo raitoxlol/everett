@@ -93,7 +93,10 @@ Browser input cannot select an owner, source URL, scope or relay operation.
 Cloudflare isolates grants by verified GitHub account, then selects its immutable
 owner namespace. The relay rechecks the stored credential/membership and filters
 projection queries by subject. Grants contain a token hash, not the raw token;
-there is no public HTTP path to the relay's internal projection RPC. Read tokens
+there is no public HTTP path to the relay's internal projection RPC. The console
+checks the incoming HTTP host against its configured origin. Cloudflare requires
+the matching console-origin header as a configuration check. The read token is
+still a bearer credential and must remain private. Read tokens
 are not accepted by the native relay verifier and cannot enqueue or revoke.
 Consent mutations use the existing owner session, same-origin check and CSRF.
 
