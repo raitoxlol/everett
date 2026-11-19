@@ -1,11 +1,13 @@
-use axum::http::{header, HeaderMap};
-
-use super::{
-    identities, json, permissions, strong_secret, Binding, Digest, HttpBoundary, IntoResponse,
-    Method, OAuthAgent, Response, Sha256, StatusCode, Value,
+use axum::{
+    http::{header, HeaderMap, Method, StatusCode},
+    response::{IntoResponse, Response},
 };
 use serde::Deserialize;
+use serde_json::{json, Value};
+use sha2::{Digest, Sha256};
 use subtle::ConstantTimeEq;
+
+use super::{identities, permissions, strong_secret, Binding, HttpBoundary, OAuthAgent};
 
 pub(super) const HANDLE_HEADER: &str = "everett-identity-handle";
 pub(super) const ADMIN_HEADER: &str = "everett-identity-admin";
@@ -50,7 +52,8 @@ enum Operation {
         kind: String,
     },
     Revoke {
-        identity_handle: String,
+        identity_handle: Option<String>,
+        session_id: Option<String>,
     },
 }
 
@@ -99,7 +102,14 @@ pub(super) async fn manage(
             name,
             kind,
         } => identities::create(&binding, &registration_key, &name, &kind),
-        Operation::Revoke { identity_handle } => identities::revoke(&binding, &identity_handle),
+        Operation::Revoke {
+            identity_handle,
+            session_id,
+        } => match (identity_handle, session_id) {
+            (Some(handle), None) => identities::revoke(&binding, &handle),
+            (None, Some(id)) => identities::revoke_session(&binding, &id),
+            _ => Err("provide exactly one identity_handle or session_id to revoke".into()),
+        },
     })
     .await;
     match result {
