@@ -97,24 +97,30 @@ pub fn warn(message: &str) {
 /// Short name for where a session runs: its folder, or the repo behind a T3 or Claude worktree.
 /// Codex app chat folders (`Codex/<date>/<prompt-slug>`) are not projects and read as "chat".
 pub fn project_label(cwd: &str) -> String {
-    project_label_in(cwd, &home())
+    project_in(cwd, &home()).unwrap_or_else(|label| label.to_string())
 }
 
-fn project_label_in(cwd: &str, home: &Path) -> String {
+/// The project a session runs in; None for the home directory, a chat folder, or no folder.
+pub fn project(cwd: &str) -> Option<String> {
+    project_in(cwd, &home()).ok()
+}
+
+/// The project name, or the label shown for a folder that is not a project.
+fn project_in(cwd: &str, home: &Path) -> Result<String, &'static str> {
     let path = Path::new(cwd.trim_end_matches('/'));
     if path.as_os_str().is_empty() {
-        return "-".to_string();
+        return Err("-");
     }
     if path == home {
-        return "~".to_string();
+        return Err("~");
     }
     let parts: Vec<&str> = path.iter().filter_map(|part| part.to_str()).collect();
     if let Some(worktree) = parts.windows(3).find(|w| w[0] == ".t3" && w[1] == "worktrees") {
-        return worktree[2].to_string();
+        return Ok(worktree[2].to_string());
     }
     if let Some(i) = parts.windows(2).position(|w| w == [".claude", "worktrees"]) {
         if i > 0 {
-            return parts[i - 1].to_string();
+            return Ok(parts[i - 1].to_string());
         }
     }
     let dated = |s: &str| {
@@ -124,9 +130,9 @@ fn project_label_in(cwd: &str, home: &Path) -> String {
     };
     let n = parts.len();
     if n >= 3 && parts[n - 3].eq_ignore_ascii_case("codex") && dated(parts[n - 2]) {
-        return "chat".to_string();
+        return Err("chat");
     }
-    parts[n - 1].to_string()
+    Ok(parts[n - 1].to_string())
 }
 
 pub fn home() -> PathBuf {
@@ -226,10 +232,26 @@ pub fn scan_full(path: &Path, limit_lines: usize) -> Vec<Map<String, Value>> {
     rows
 }
 
+/// Blank out the `candidates` matches that read as markup, leaving comparisons such as
+/// `a<b+1 && c>d` alone: a tag name ends at whitespace, `/` or the closing bracket.
+pub(crate) fn strip_tags<'a>(candidates: &Regex, text: &'a str) -> std::borrow::Cow<'a, str> {
+    candidates.replace_all(text, |found: &regex::Captures| {
+        let inner = &found[0][1..found[0].len() - 1];
+        if inner.starts_with(['!', '?']) {
+            return " ".to_string();
+        }
+        let inner = inner.strip_prefix('/').unwrap_or(inner);
+        let rest = inner.trim_start_matches(|c: char| c.is_ascii_alphanumeric() || "_:.-".contains(c));
+        let tag = inner.starts_with(|c: char| c.is_ascii_alphabetic())
+            && (rest.is_empty() || rest == "/" || rest.starts_with(char::is_whitespace));
+        if tag { " ".to_string() } else { found[0].to_string() }
+    })
+}
+
 pub fn clean(text: &str, limit: usize) -> String {
     static TAG: std::sync::OnceLock<Regex> = std::sync::OnceLock::new();
     let re = TAG.get_or_init(|| Regex::new(r"<[A-Za-z/!?][^>]{0,79}>").unwrap());
-    let no_tags = re.replace_all(text, " ");
+    let no_tags = strip_tags(re, text);
     let collapsed: String = no_tags.split_whitespace().collect::<Vec<_>>().join(" ");
     let take: String = collapsed.chars().take(limit).collect();
     take
@@ -283,7 +305,7 @@ mod tests {
             ),
             ("/Users/w/notes/2026-10-19/standup", "standup"),
         ] {
-            assert_eq!(project_label_in(cwd, home), want, "{cwd}");
+            assert_eq!(project_in(cwd, home).unwrap_or_else(|label| label.to_string()), want, "{cwd}");
         }
     }
 
