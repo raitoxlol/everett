@@ -12,7 +12,7 @@ See [native MCP sign-in](auth.md#native-mcp-sign-in).
 | Claude Code | `CLAUDE_CODE_SESSION_ID` in the MCP process env | `everett install-mcp --claude --apply` |
 | Codex | per-call `_meta.threadId` (Unreleased) | `everett install-mcp --codex --apply` |
 | Grok CLI 1.0.4+ | `GROK_SESSION_ID` | `everett install-mcp --grok --apply` |
-| Pi | Everett's Pi extension registers the MCP server per session with `EVERETT_SESSION_ID` (Unreleased) | `everett install-hooks --pi --apply`; do not also list Everett in `~/.pi/agent/mcp.json` |
+| Pi | Everett's extension exposes tools through Pi's `registerTool` API and starts a session-bound MCP bridge with `EVERETT_SESSION_ID` (Unreleased) | `everett install-hooks --pi --apply`; do not also list Everett in `~/.pi/agent/mcp.json` |
 | OMP | `everett mcp --harness omp` + the OMP extension records the session the omp process holds (Unreleased) | `everett install-hooks --omp --apply` and `everett install-mcp --omp --repair --apply` |
 | Devin CLI | `everett mcp --harness devin` + `SessionStart`/`UserPromptSubmit` hooks record the session (Unreleased) | `everett install-hooks --devin --apply` and `everett install-mcp --devin --repair --apply` |
 | Hermes | `everett mcp --harness hermes`; binds only to the single interactive Hermes session created in the server's directory since the hermes process started (Unreleased) | add the entry printed by `everett install-mcp --hermes` to `~/.hermes/config.yaml`. Gateway mode cannot be bound |
