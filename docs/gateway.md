@@ -487,8 +487,9 @@ request's state before retrying an unconfirmed call.
 Configuration is capped at 16 KiB; HTTP request bodies, tool arguments, and stdio
 request frames at 64 KiB; returned tool results at 256 KiB. HTTP headers are capped
 at 16 KiB and 64 fields. Header and body reads each time out after five seconds.
-Each backend operation including startup times out at 1–30 seconds,
-and each process permits 1–8 workers (defaults: 20 seconds and two workers).
+The configured timeout is 1–30 seconds (default 20). For restricted bindings
+it limits backend operations. For owner mode it limits the HTTP tool response,nd native work can continue under its own deadline. Each process permits 1–8
+workers (default two).
 Excess work fails immediately rather than creating an unbounded queue. HTTP is
 stateless and does not accumulate client sessions. The listener allows twice the
 worker count in concurrent connections, with one request per connection and a
