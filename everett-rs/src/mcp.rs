@@ -53,7 +53,7 @@ pub fn tools() -> &'static Vec<Value> {
                 "inputSchema": {"type": "object", "properties": {
                     "hours": hours_prop(),
                     "all": {"type": "boolean", "description": "Include automation sessions, as with everett ls --all. Defaults to false."},
-                    "harness": {"type": "string", "enum": ["claude", "codex", "omp", "pi", "hermes", "grok", "devin", "openai-dot", "grok-bot"], "description": "Only this harness."},
+                    "harness": {"type": "string", "enum": crate::harness::ALL, "description": "Only this harness."},
                 }, "additionalProperties": false},
             }),
             json!({

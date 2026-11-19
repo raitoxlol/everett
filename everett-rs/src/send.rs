@@ -799,6 +799,28 @@ pub(crate) fn send_local_inbox(
     })
 }
 
+pub(crate) fn queue_conversation_inbox(
+    to: &str,
+    text: &str,
+    caller: &str,
+    caller_harness: &str,
+) -> Result<Map<String, Value>> {
+    if to == caller || external::device_target(to).is_some() {
+        return Err(EverettError::new(2, "Conversation sends require another local inbox."));
+    }
+    let who = sender_info_as(Some(caller), Some(caller_harness));
+    let message = post_inbox_message(to, text, &who, None)?;
+    Ok(Map::from_iter([
+        ("mode".into(), json!("inbox")),
+        ("to".into(), json!(to)),
+        ("message_id".into(), message["id"].clone()),
+        ("reply_inbox".into(), json!(caller)),
+        ("queued".into(), json!(true)),
+        ("delivered".into(), json!(false)),
+        ("wake".into(), json!(false)),
+    ]))
+}
+
 struct InboxOptions<'a> {
     local_only: bool,
     wait: f64,
@@ -851,30 +873,10 @@ fn send_inbox_with_options(
     }
     let who = sender_info_as(caller, caller_harness);
     let sender = who.get("sender").and_then(|v| v.as_str()).unwrap_or(inbox::HUMAN);
-    let hops = caller_hops_for(Some(sender));
-    if let Some(limit) = inbox::hop_limit().filter(|l| hops >= *l) {
-        return Err(EverettError::new(
-            7,
-            format!("Hop limit reached ({}/{}): answer here instead of forwarding again.", hops, limit),
-        ));
-    }
-    let mut metadata = inbox::relay_context(sender).as_ref().and_then(inbox::forward_provenance);
-    if let Some(binding) = t3_binding {
-        metadata.get_or_insert_with(Map::new).insert(
-            "t3_ping".into(), json!({"thread_id": binding.thread, "harness": session.harness, "data_home": binding.data_home}),
-        );
-    }
-    let message = inbox::post(
-        &session.id,
-        text,
-        sender,
-        "message",
-        "",
-        hops + 1,
-        who.get("from_harness").and_then(|v| v.as_str()).unwrap_or(""),
-        who.get("from_card").and_then(|v| v.as_str()).unwrap_or(""),
-        metadata,
-    )?;
+    let t3_ping = t3_binding.map(|binding| json!({
+        "thread_id": binding.thread, "harness": session.harness, "data_home": binding.data_home,
+    }));
+    let message = post_inbox_message(&session.id, text, &who, t3_ping)?;
     let webhook = if external::is_external(&session.harness) {
         match crate::receiver_webhook::after_local_queue(&session.id, &session.harness, &message) {
             Ok(value) => value,
@@ -924,6 +926,37 @@ fn send_inbox_with_options(
         result.remove("pickup_note");
     }
     Ok(result)
+}
+
+fn post_inbox_message(
+    to: &str,
+    text: &str,
+    who: &Map<String, Value>,
+    t3_ping: Option<Value>,
+) -> Result<Map<String, Value>> {
+    let sender = who.get("sender").and_then(|v| v.as_str()).unwrap_or(inbox::HUMAN);
+    let hops = caller_hops_for(Some(sender));
+    if let Some(limit) = inbox::hop_limit().filter(|limit| hops >= *limit) {
+        return Err(EverettError::new(
+            7,
+            format!("Hop limit reached ({}/{}): answer here instead of forwarding again.", hops, limit),
+        ));
+    }
+    let mut metadata = inbox::relay_context(sender).as_ref().and_then(inbox::forward_provenance);
+    if let Some(ping) = t3_ping {
+        metadata.get_or_insert_with(Map::new).insert("t3_ping".into(), ping);
+    }
+    inbox::post(
+        to,
+        text,
+        sender,
+        "message",
+        "",
+        hops + 1,
+        who.get("from_harness").and_then(|v| v.as_str()).unwrap_or(""),
+        who.get("from_card").and_then(|v| v.as_str()).unwrap_or(""),
+        metadata,
+    )
 }
 
 /// Answer an inbox message: the reply goes to the original sender's inbox.

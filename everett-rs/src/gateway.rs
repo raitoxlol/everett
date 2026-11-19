@@ -1,3 +1,4 @@
+mod conversation;
 pub mod diagnostics;
 mod identities;
 mod event_http;
@@ -62,6 +63,8 @@ const SECURITY_HEADERS: &[&str] = &[
     "authorization",
     "content-length",
     "transfer-encoding",
+    conversation::HANDLE_HEADER,
+    conversation::ADMIN_HEADER,
 ];
 const BACKEND_ERROR: &str = "backend unavailable, incompatible, or request timed out";
 const INSTRUCTIONS: &str = "This connection authorizes owner-scoped gateway access. Read the selected inbox for handoffs; reply using reply_to. Send only to authorized full IDs. Delivery is inbox-only; no automatic routing or bot wake-up. Only when everett_start is advertised has the owner separately granted a fixed-project T3 start; it requires a private identity_handle and durable request_id, confirms dispatch only, and grants no additional send/read/control access. Shared core, when enabled, includes the owner's global core. To register this chat separately, call everett_identity(action=create, registration_key=<fresh private random key>, name=<chat name>, kind=chat|dot|codex). Keep identity_handle private and pass it on subsequent calls; omit session_id. A name or host conversation metadata never authenticates an inbox.";
@@ -94,6 +97,10 @@ struct Binding {
     events: bool,
     #[serde(default)]
     require_identity_handle: bool,
+    #[serde(default)]
+    conversation_identity: bool,
+    #[serde(skip)]
+    conversation_worker: Option<worker::PinnedWorker>,
     agent_id: String,
     harness: String,
     cwd: PathBuf,
@@ -273,6 +280,19 @@ impl Binding {
         }) {
             return Err("oauth needs https issuer, resource and introspection_endpoint URLs (http only on loopback), one scope token and a nonempty printable owner_account when configured".into());
         }
+        if binding.conversation_identity
+            && (binding.events
+                || binding.require_identity_handle
+                || binding.allow_shared_core
+                || binding.native_start.is_some()
+                || binding.oauth.as_ref().is_some_and(|oauth| oauth.owner_account.is_none()))
+        {
+            return Err("conversation_identity requires an owner_account for OAuth and no legacy handles, shared core, events, or native start".into());
+        }
+        if binding.conversation_identity {
+            binding.conversation_worker = Some(worker::PinnedWorker::new(&binding.backend_command)
+                .ok_or("conversation_identity requires the built-in backend")?);
+        }
         if let Some(path) = &binding.agent_tool_permissions {
             if !path.is_absolute() || binding.oauth.is_some() || binding.events
                 || binding.require_identity_handle || binding.native_start.is_some()
@@ -286,6 +306,10 @@ impl Binding {
             policy.validate(&binding)?;
         }
         Ok(binding)
+    }
+
+    fn owner_agent_permissions(&self) -> Option<&Path> {
+        self.agent_tool_permissions.as_deref().filter(|_| !self.conversation_identity)
     }
 
     fn reply_message(&self, message_id: &str) -> Result<Value, String> {
@@ -420,12 +444,22 @@ impl Binding {
             ("everett_card", "Update only this agent's session card.", json!({"session_id":own,"what":short,"state":short,"next":short}), vec!["what","state","next"]),
             ("everett_send", "Queue an inbox-only message to an authorized full ID, or reply to an owned message. No automatic bot wake-up.", json!({"session_id":own,"text":{"type":"string","minLength":1,"maxLength":16000},"to":{"type":"string","minLength":1,"maxLength":128,"description":"Exact full ID from everett_whoami.authorized_destinations. The gateway checks the current owner allowlist on every send."},"reply_to":{"type":"string","minLength":1,"maxLength":128}}), vec!["text"]),
         ];
-        specs.into_iter().filter(|(name, ..)| *name != "everett_core" || self.allow_shared_core)
-            .map(|(name, description, mut properties, mut required)| {
-                if self.requires_handle(name) {
-                    required.push("identity_handle");
+        specs.into_iter().filter(|(name, ..)| {
+                if self.conversation_identity {
+                    conversation::is_tool(name)
+                } else {
+                    *name != "everett_core" || self.allow_shared_core
                 }
-                properties["identity_handle"] = json!({"type":"string","minLength":64,"maxLength":64,"description":"Private handle for this registered conversation. For everett_identity, supply it only when revoking."});
+            })
+            .map(|(name, description, mut properties, mut required)| {
+                if self.conversation_identity {
+                    properties.as_object_mut().expect("tool properties").remove("session_id");
+                } else {
+                    if self.requires_handle(name) {
+                        required.push("identity_handle");
+                    }
+                    properties["identity_handle"] = json!({"type":"string","minLength":64,"maxLength":64,"description":"Private handle for this registered conversation. For everett_identity, supply it only when revoking."});
+                }
                 serde_json::from_value(json!({
                 "name":name,"description":description,
                 "inputSchema":{"type":"object","properties":properties,"required":required,"additionalProperties":false},
@@ -530,7 +564,7 @@ impl Gateway {
         }
         let permit = self.workers.clone().try_acquire_owned()
             .map_err(|_| "gateway workers busy; retry later")?;
-        let mut command = backend_command(binding, true);
+        let mut command = backend_command(binding, Some(Path::new(&binding.backend_command[0])));
         command.env("EVERETT_GATEWAY_OWNER_AGENT", "1");
         command.env_remove("EVERETT_GATEWAY_EXACT_IDS");
         command.env_remove("EVERETT_SEND");
@@ -574,7 +608,14 @@ impl Gateway {
         agent: Option<&OAuthAgent>,
         name: &str,
         mut arguments: Map<String, Value>,
+        conversation_handle: Option<&str>,
     ) -> Result<Value, String> {
+        if binding.conversation_identity {
+            conversation::authorize_tool(binding, name)?;
+            if arguments.contains_key("identity_handle") || arguments.contains_key("session_id") {
+                return Err("conversation identity comes from the authenticated HTTP request".into());
+            }
+        }
         if name == "everett_identity" {
             let action = arguments.get("action").and_then(Value::as_str).ok_or("action is required")?;
             let allowed: &[&str] = match action {
@@ -596,12 +637,18 @@ impl Gateway {
             };
         }
         let mut selected = binding.clone();
-        let private_identity = arguments.contains_key("identity_handle");
+        let argument_handle = arguments.remove("identity_handle");
+        let handle = if binding.conversation_identity {
+            Some(conversation_handle.ok_or("private conversation handle required")?)
+        } else {
+            argument_handle.as_ref().map(|value| value.as_str().ok_or("identity_handle must be a string")).transpose()?
+        };
+        let private_identity = handle.is_some();
         if binding.requires_handle(name) && !private_identity {
             return Err("identity_handle is required; register a private inbox with everett_identity".into());
         }
-        if let Some(handle) = arguments.remove("identity_handle") {
-            selected.agent_id = identities::resolve(binding, handle.as_str().ok_or("identity_handle must be a string")?)?;
+        if let Some(handle) = handle {
+            selected.agent_id = identities::resolve(binding, handle)?;
         }
         let binding = &selected;
         if name == "everett_start" {
@@ -616,10 +663,16 @@ impl Gateway {
             .workers
             .try_acquire()
             .map_err(|_| "gateway workers busy; retry later")?;
-        let built_in = worker::is_builtin(&binding.backend_command);
-        let mut child = backend_command(binding, built_in).spawn().map_err(|_| BACKEND_ERROR)?;
+        let worker = if binding.conversation_identity {
+            Some(binding.conversation_worker.as_ref()
+                .and_then(|worker| worker.path_for(&binding.backend_command))
+                .ok_or("conversation identity requires the original built-in worker")?)
+        } else {
+            worker::is_builtin(&binding.backend_command).then(|| Path::new(&binding.backend_command[0]))
+        };
+        let mut child = backend_command(binding, worker).spawn().map_err(|_| BACKEND_ERROR)?;
         let operation = async {
-            if built_in {
+            if worker.is_some() {
                 let request = worker::Call::authorized(binding, name, &args)?;
                 return worker::dispatch(request, &mut child).await;
             }
@@ -710,8 +763,11 @@ impl Gateway {
             data["gateway_runtime"] = crate::build_info::value();
             data["authorized_destinations"] = json!(binding.destinations);
             data["capabilities"] = json!({"native_session_start": binding.native_start.as_ref().is_some_and(|p| p.permits(agent)), "automatic_wake": false, "delivery": "inbox"});
-            if binding.require_identity_handle {
+            if binding.require_identity_handle || binding.conversation_identity {
                 data["capabilities"]["private_inbox_required"] = json!(true);
+            }
+            if binding.conversation_identity {
+                data["capabilities"]["private_inbox_transport"] = json!("http_header");
             }
             if let Some(oauth) = &binding.oauth {
                 data["gateway_resource"] = json!(oauth.resource);
@@ -729,9 +785,9 @@ impl Gateway {
     }
 }
 
-fn backend_command(binding: &Binding, use_worker: bool) -> Command {
-    let mut command = Command::new(&binding.backend_command[0]);
-    if use_worker {
+fn backend_command(binding: &Binding, worker: Option<&Path>) -> Command {
+    let mut command = Command::new(worker.unwrap_or_else(|| Path::new(&binding.backend_command[0])));
+    if worker.is_some() {
         command.arg("gateway-worker");
     } else {
         command.args(&binding.backend_command[1..]);
@@ -764,7 +820,12 @@ fn backend_command(binding: &Binding, use_worker: bool) -> Command {
 
 impl ServerHandler for Gateway {
     fn get_info(&self) -> ServerConfig {
-        if self.binding.agent_tool_permissions.is_some() {
+        if self.binding.conversation_identity {
+            return ServerConfig::new(ServerCapabilities::builder().enable_tools().build())
+                .with_server_info(Implementation::new("everett-conversation-gateway", env!("CARGO_PKG_VERSION")))
+                .with_instructions("Use the Everett tools for this conversation. Your HTTP client must supply the private handle. Omit identity arguments.");
+        }
+        if self.binding.owner_agent_permissions().is_some() {
             return ServerConfig::new(ServerCapabilities::builder().enable_tools().build())
                 .with_server_info(Implementation::new("everett-owner-agent", env!("CARGO_PKG_VERSION")))
                 .with_instructions("Use the Everett tools granted to this connection by the owner.");
@@ -786,7 +847,7 @@ impl ServerHandler for Gateway {
         ctx: RequestContext<RoleServer>,
     ) -> Result<ListToolsResult, ErrorData> {
         let (binding, agent) = self.bound(&ctx).map_err(|e| ErrorData::invalid_request(e, None))?;
-        if let Some(path) = &binding.agent_tool_permissions {
+        if let Some(path) = binding.owner_agent_permissions() {
             let grant = permissions::Grant::load(path).map_err(|e| ErrorData::invalid_request(e, None))?;
             let tools = crate::mcp::tools().iter().filter(|tool| {
                 tool["name"].as_str().is_some_and(|name| grant.permits(name))
@@ -797,6 +858,10 @@ impl ServerHandler for Gateway {
             return Ok(ListToolsResult::with_all_items(tools));
         }
         let mut tools = binding.tools();
+        if binding.conversation_identity {
+            let grant = conversation::grant(&binding).map_err(|e| ErrorData::invalid_request(e, None))?;
+            tools.retain(|tool| grant.as_ref().is_none_or(|grant| grant.permits(&tool.name)));
+        }
         if let Some(policy) = binding.native_start.as_ref().filter(|p| p.permits(agent.as_ref())) {
             tools.push(native_start::tool(policy));
         }
@@ -809,10 +874,13 @@ impl ServerHandler for Gateway {
     ) -> Result<CallToolResponse, ErrorData> {
         let mut result = match self.bound(&ctx) {
             Ok((binding, agent)) => {
-                let outcome = if let Some(path) = &binding.agent_tool_permissions {
+                let outcome = if let Some(path) = binding.owner_agent_permissions() {
                     self.call_owner_agent(&binding, path, request).await
                 } else {
-                    self.call(&binding, agent.as_ref(), &request.name, request.arguments.unwrap_or_default())
+                    let handle = ctx.extensions.get::<axum::http::request::Parts>()
+                        .and_then(|parts| parts.headers.get(conversation::HANDLE_HEADER))
+                        .and_then(|value| value.to_str().ok());
+                    self.call(&binding, agent.as_ref(), &request.name, request.arguments.unwrap_or_default(), handle)
                         .await
                         .map(|data| {
                             let unconfirmed = request.name == "everett_start" && data["dispatch_confirmed"] != true;
@@ -849,6 +917,7 @@ struct HttpBoundary {
     event_scope: String,
     gateway: Gateway,
     auth: HttpAuth,
+    identity_admin: Option<[u8; 32]>,
     requests: Arc<Semaphore>,
     event_requests: Arc<Semaphore>,
 }
@@ -1044,6 +1113,9 @@ async fn http_boundary(
                 return verifier.challenge(None);
             };
             match verifier.verify(token).await {
+                Ok(agent) if binding.conversation_identity && agent.client_id.is_empty() => {
+                    return verifier.challenge(Some("token carries no OAuth client identity"));
+                }
                 Ok(agent) if !binding.destinations.contains(&agent.agent_id) => Some(agent),
                 Ok(_) => return verifier.challenge(Some("token agent is also a configured destination")),
                 Err((StatusCode::UNAUTHORIZED, reason)) => return verifier.challenge(Some(reason)),
@@ -1054,6 +1126,9 @@ async fn http_boundary(
     let headers = request.headers();
     if let Some(rejected) = host_and_origin(headers, binding) {
         return rejected;
+    }
+    if !binding.conversation_identity && headers.contains_key(conversation::HANDLE_HEADER) {
+        return (StatusCode::BAD_REQUEST, "Private conversation transport is disabled").into_response();
     }
     if !matches!(
         *request.method(),
@@ -1078,6 +1153,9 @@ async fn http_boundary(
         Ok(Err(_)) => return StatusCode::PAYLOAD_TOO_LARGE.into_response(),
         Err(_) => return StatusCode::GATEWAY_TIMEOUT.into_response(),
     };
+    if request.uri().path() == conversation::LIFECYCLE_PATH {
+        return conversation::manage(&state, request.method(), request.headers(), &bytes, agent.as_ref()).await;
+    }
     if let Some(response) = event_http::dispatch(&state, request.method(), request.uri(), request.headers(), &bytes, agent.as_ref(), event_token).await {
         return response;
     }
@@ -1111,6 +1189,9 @@ async fn serve(binding: Binding, transport: &str, port: u16) -> Result<(), Strin
     };
     if transport == "stdio" && gateway.binding.agent_tool_permissions.is_some() {
         return Err("agent_tool_permissions requires authenticated HTTP".into());
+    }
+    if transport == "stdio" && gateway.binding.conversation_identity {
+        return Err("conversation_identity requires authenticated HTTP".into());
     }
     if transport == "stdio" && gateway.binding.events {
         return Err("Events require authenticated HTTP".into());
@@ -1153,6 +1234,19 @@ async fn serve(binding: Binding, transport: &str, port: u16) -> Result<(), Strin
         }
         HttpAuth::Bearer(Sha256::digest(token.as_bytes()).into())
     };
+    let identity_admin = if gateway.binding.conversation_identity {
+        let digest = conversation::admin_digest()?;
+        if let HttpAuth::Bearer(bearer_digest) = &auth {
+            if bool::from(digest.ct_eq(bearer_digest)) {
+                return Err("conversation identity admin credential must differ from the connection bearer".into());
+            }
+            let binding = Arc::make_mut(&mut gateway.binding);
+            binding.identity_owner = Some(format!("{}:{}", binding.agent_id, hex::encode(bearer_digest)));
+        }
+        Some(digest)
+    } else {
+        None
+    };
     let connection_limit = gateway.binding.max_workers * 2;
     let event_scope = match &auth {
         HttpAuth::Bearer(digest) => hex::encode(digest),
@@ -1165,6 +1259,7 @@ async fn serve(binding: Binding, transport: &str, port: u16) -> Result<(), Strin
         events,
         event_scope,
         auth,
+        identity_admin,
         requests: Arc::new(Semaphore::new(gateway.binding.max_workers * 2)),
         event_requests: Arc::new(Semaphore::new(gateway.binding.max_workers)),
         gateway: gateway.clone(),
@@ -1186,6 +1281,7 @@ async fn serve(binding: Binding, transport: &str, port: u16) -> Result<(), Strin
     let app = Router::new()
         .route(PROTECTED_RESOURCE, get(metadata))
         .route(&format!("{PROTECTED_RESOURCE}/{{*path}}"), get(metadata))
+        .route(conversation::LIFECYCLE_PATH, axum::routing::any(metadata))
         .nest_service("/mcp", service)
         .layer(middleware::from_fn_with_state(state, http_boundary));
     let listener = tokio::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, port))
@@ -1364,6 +1460,8 @@ mod tests {
         Binding {
             events: false,
             require_identity_handle: false,
+            conversation_identity: false,
+            conversation_worker: None,
             agent_id: "dot-one".into(),
             identity_owner: None,
             harness: "openai-dot".into(),
