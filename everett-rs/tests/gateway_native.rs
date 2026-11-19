@@ -1586,7 +1586,53 @@ fn events_catalog_is_authenticated_and_scoped() {
     assert_eq!(body_json(&post(port, &wrong, &[]))["error"]["code"], -32602);
 }
 
+fn owner_agent_permission_journey() {
+    let c = ctx();
+    common::native_mcp_account(&c.home);
+    let file = c.home.join("permissions.json");
+    let file_arg = file.to_str().unwrap();
+    let show = |flag: &[&str]| {
+        let mut args = vec!["gateway-permissions", "--file", file_arg];
+        args.extend_from_slice(flag);
+        let out = c.cli(&args);
+        assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+        serde_json::from_slice::<Value>(&out.stdout).unwrap()
+    };
+    assert_eq!(show(&["--all"]), json!("all"));
+    assert_eq!(show(&[]), json!("all"));
+    let port = c.http_server(&json!({"agent_tool_permissions":file}));
+    let request = |id, method: &str, params: Value|
+        json!({"jsonrpc":"2.0","id":id,"method":method,"params":params});
+    let run = |id, method, params| {
+        let response = post(port, &request(id, method, params), &[]);
+        assert_eq!(response.status, 200);
+        body_json(&response)
+    };
+    let init = request(1, "initialize", initialize());
+    assert_eq!(post(port, &init, &[("Authorization", None)]).status, 401);
+    assert!(run(1, "initialize", initialize())["result"]["protocolVersion"].is_string());
+    let catalog = run(2, "tools/list", json!({}));
+    let names = |response: &Value| response["result"]["tools"].as_array().unwrap().iter()
+        .map(|tool| tool["name"].clone()).collect::<Vec<_>>();
+    let native = everett::mcp::tools().iter().map(|tool| tool["name"].clone()).collect::<Vec<_>>();
+    assert_eq!(names(&catalog), native);
+    let call = |id, name, arguments| run(id, "tools/call", json!({"name":name,"arguments":arguments}));
+    assert_eq!(success(&call(3, "everett_whoami", json!({})))["session_id"], "dot-one");
+    success(&call(4, "everett_card", json!({"what":"Synthetic task","state":"Testing","next":"Report"})));
+    success(&call(5, "everett_ls", json!({})));
+    assert_eq!(show(&["--allow", "everett_whoami"]), json!(["everett_whoami"]));
+    assert_eq!(names(&run(6, "tools/list", json!({}))), vec![json!("everett_whoami")]);
+    denied(&call(7, "everett_card", json!({"what":"Denied","state":"Denied","next":"Denied"})));
+    assert_eq!(show(&["--deny-all"]), json!([]));
+    assert!(names(&run(8, "tools/list", json!({}))).is_empty());
+    denied(&call(9, "everett_whoami", json!({})));
+    std::fs::write(&file, "invalid").unwrap();
+    assert!(run(10, "tools/list", json!({})).get("error").is_some());
+    denied(&call(11, "everett_whoami", json!({})));
+}
+
 const CASES: &[Case] = &[
+    ("owner_agent_permission_journey", owner_agent_permission_journey),
     ("dot_picks_up_only_the_event_message_and_replies", dot_picks_up_only_the_event_message_and_replies),
     ("events_verified_token_lease", events_acceptance::verified_token_lease),
     ("events_identity_and_lifetime", events_acceptance::identity_and_lifetime),
