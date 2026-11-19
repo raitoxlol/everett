@@ -698,7 +698,8 @@ export class HostedAuth extends DurableObject<HostedAuthEnv> {
       this.#rate(`mesh-setup:${account}`, 10);
       const input = z.strictObject({ origin: z.string().max(256) }).parse(await body(request));
       const origin = new URL(input.origin);
-      if (origin.protocol !== 'https:' || origin.origin !== input.origin || origin.username || origin.password) throw new RelayError('invalid_origin', 400);
+      const local = new URL(c.issuer).protocol === 'http:' && ['localhost', '127.0.0.1', '[::1]'].includes(new URL(c.issuer).hostname) && origin.protocol === 'http:' && ['localhost', '127.0.0.1', '[::1]'].includes(origin.hostname);
+      if ((!local && origin.protocol !== 'https:') || origin.origin !== input.origin || origin.username || origin.password) throw new RelayError('invalid_origin', 400);
       if (this.#row<{ n: number }>("SELECT count(*) n FROM mesh_grants WHERE account=? AND expires_at>? AND state IN ('pending','approved')", account, Date.now())!.n >= 16) throw new RelayError('mesh_grant_limit', 429);
       const id = crypto.randomUUID(), readToken = `emr_${crypto.randomUUID().replaceAll('-', '')}${crypto.randomUUID().replaceAll('-', '')}`;
       const now = Date.now(), expiresAt = now + 24 * 60 * MINUTE;
