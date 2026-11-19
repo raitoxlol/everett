@@ -113,6 +113,7 @@ try {
   const longHarness = 'h'.repeat(160);
   let revisedSnapshot = false;
   let queued = 2;
+  let emptyInventory = false;
   await page.clock.install();
   await page.route('**/api/mesh', async route => {
     const upstream = await route.fetch();
@@ -120,6 +121,10 @@ try {
     sample.sessions[0].harness = longHarness;
     if (revisedSnapshot) sample.devices[0].name = 'Mac after refresh';
     sample.queue.queued = queued;
+    if (emptyInventory) {
+      sample.devices = [];
+      sample.sessions = [];
+    }
     await route.fulfill({json:{ ...sample, source:'cloudflare', cloudAgents:null }});
   });
   await page.goto(origin+'/everett/dashboard');
@@ -157,6 +162,23 @@ try {
     await page.clock.fastForward(15000);
     await queue.getByText('3',{exact:true}).waitFor();
     assert.equal(await queue.evaluate(el => document.activeElement === el), true);
+  });
+  await check('polling keeps focus on the manual Refresh button', async () => {
+    const refresh = page.getByRole('button',{name:'Refresh',exact:true});
+    await refresh.focus();
+    queued = 4;
+    await page.clock.fastForward(15000);
+    await page.getByRole('link',{name:/Queued messages/}).getByText('4',{exact:true}).waitFor();
+    assert.equal(await refresh.evaluate(el => document.activeElement === el), true);
+  });
+  await page.goto(origin + '/everett/dashboard#devices');
+  await check('empty inventory keeps present focus but leaves the next tab sequence', async () => {
+    const region = page.getByRole('region',{name:'Device table'});
+    await region.focus();
+    emptyInventory = true;
+    await page.clock.fastForward(15000);
+    await page.getByText('No registered devices.',{exact:true}).waitFor();
+    assert.equal(await region.evaluate(el => document.activeElement === el && el.tabIndex === -1), true);
   });
   console.log('unmet='+unmet);
 } finally {

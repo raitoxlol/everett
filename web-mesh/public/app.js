@@ -129,7 +129,7 @@ function table(destination, headings, rows, empty) {
     wrap.setAttribute('aria-label', headings[0] + ' table');
     root.append(wrap);
   }
-  wrap.tabIndex = rows.length || wrap === document.activeElement ? 0 : -1;
+  wrap.tabIndex = rows.length ? 0 : -1;
   if (!rows.length) { wrap.replaceChildren(make('p', empty, 'empty')); return; }
   const grid = make('table');
   grid.setAttribute('role', 'table');
@@ -272,7 +272,7 @@ function settings() {
   else link.removeAttribute('href');
   $('permissions-note').textContent = fixture
     ? 'To connect a mesh, request a read grant with the Everett setup CLI.'
-    : 'Grants expire 24 hours after the request. To renew, request and approve a new grant, then replace MESH_TOKEN.';
+    : 'Grants expire 24 hours after the request. To renew, request and approve a new grant, replace MESH_TOKEN in the server environment, and redeploy.';
 }
 
 function showSignedIn(authentication) {
@@ -319,7 +319,7 @@ async function refresh() {
   if (signedOut || pending || document.hidden) return;
   const ctrl = new AbortController();
   pending = ctrl;
-  $('refresh').disabled = true;
+  $('refresh').setAttribute('aria-disabled', 'true');
   try {
     const response = await fetch('/api/mesh', {
       cache: 'no-store', signal: AbortSignal.any([ctrl.signal, AbortSignal.timeout(10000)]),
@@ -343,7 +343,7 @@ async function refresh() {
       if (pending !== ctrl || document.hidden) return;
       if (error === 'mesh_access_revoked') {
         showSignedIn(authentication);
-        notice('Mesh read access ended. Approve a new grant and replace MESH_TOKEN in the console settings.', 'error');
+        notice('Mesh read access ended. Request and approve a new grant, replace MESH_TOKEN in the server environment, and redeploy.', 'error');
       } else notice('Could not load mesh data. Try refreshing.', 'error');
     } else if (response.status === 404) {
       notice('The owner must enable the console and approve a read grant.');
@@ -356,7 +356,7 @@ async function refresh() {
   } finally {
     if (pending === ctrl) {
       pending = null;
-      $('refresh').disabled = false;
+      $('refresh').removeAttribute('aria-disabled');
     }
   }
 }
@@ -395,8 +395,12 @@ $('signout').addEventListener('click', async () => {
     const response = await fetch('/api/logout', { method: 'POST', signal: AbortSignal.timeout(10000) });
     if (!response.ok) throw new Error('Logout failed');
     notice('Signed out.');
-  } catch { notice('Could not confirm sign-out. Close this tab on a shared device.', 'error'); }
-  showLogin();
+    showLogin();
+  } catch {
+    source('Sign-out unconfirmed', 'unknown');
+    $('signout').hidden = false;
+    notice('Could not confirm sign-out. Try again.', 'error');
+  }
 });
 $('refresh').addEventListener('click', refresh);
 $('device-filter').addEventListener('input', () => { if (snapshot) devices(); });

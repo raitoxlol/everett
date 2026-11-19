@@ -112,6 +112,20 @@ try {
     await page.getByRole('button', { name: 'Sign in' }).click();
     await page.locator('#data').waitFor({ state: 'visible' });
   });
+  await scenario('failed sign-out stays unconfirmed and lets the owner retry', async () => {
+    await page.route('**/api/logout', route => route.fulfill({status:502}), {times:1});
+    const signout = page.getByRole('button', { name:'Sign out', exact:true });
+    await signout.click();
+    await page.getByText('Could not confirm sign-out. Try again.', {exact:true}).waitFor();
+    assert.equal(await page.locator('#source').innerText(), 'Sign-out unconfirmed');
+    assert.equal(await page.locator('#data').isVisible(), false);
+    assert.equal(await page.locator('#login').isVisible(), false);
+    await signout.click();
+    await page.getByText('Signed out.', {exact:true}).waitFor();
+    await page.locator('#secret').fill(secret);
+    await page.getByRole('button', {name:'Sign in', exact:true}).click();
+    await page.locator('#data').waitFor({state:'visible'});
+  });
   await scenario('a fresh authenticated view keeps refresh and sign-out available after grant denial', async () => {
     let revoked = true;
     await page.route('**/api/mesh', async route => {
@@ -123,7 +137,7 @@ try {
     await page.clock.install();
     await page.goto(origin + '/everett/dashboard#devices');
     await page.getByText('Mesh read access ended.', { exact: false }).waitFor();
-    assert.match(await page.locator('#notice').innerText(), /MESH_TOKEN/);
+    assert.match(await page.locator('#notice').innerText(), /Request and approve.*MESH_TOKEN in the server environment.*redeploy/);
     await page.getByRole('button', { name: 'Refresh' }).waitFor();
     await page.getByRole('button', { name: 'Sign out' }).waitFor();
     assert.equal(await page.locator('#data').isVisible(), false);
@@ -132,7 +146,7 @@ try {
     await page.clock.fastForward(15000);
     await page.getByText('fixture-mac-01', { exact: true }).waitFor();
   });
-  assert.equal(count,7);
+  assert.equal(count,8);
   console.log('unmet='+failures);
 } finally {
   await browser?.close();
