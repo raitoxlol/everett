@@ -228,7 +228,7 @@ pub fn scan_full(path: &Path, limit_lines: usize) -> Vec<Map<String, Value>> {
 
 pub fn clean(text: &str, limit: usize) -> String {
     static TAG: std::sync::OnceLock<Regex> = std::sync::OnceLock::new();
-    let re = TAG.get_or_init(|| Regex::new(r"<[^>]{1,80}>").unwrap());
+    let re = TAG.get_or_init(|| Regex::new(r"<[A-Za-z/!?][^>]{0,79}>").unwrap());
     let no_tags = re.replace_all(text, " ");
     let collapsed: String = no_tags.split_whitespace().collect::<Vec<_>>().join(" ");
     let take: String = collapsed.chars().take(limit).collect();
