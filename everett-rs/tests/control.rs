@@ -421,6 +421,79 @@ fn cli_control_read_resolves_a_local_session_prefix() {
     assert!(String::from_utf8_lossy(&denied.stderr).contains("Remote-derived"));
 }
 
+#[test]
+fn cli_control_read_uses_the_global_hours_window_for_local_sessions() {
+    use std::time::{Duration, SystemTime};
+
+    let fx = fixture();
+    let ten_days_ago = SystemTime::now() - Duration::from_secs(10 * 24 * 60 * 60);
+    let timestamp = chrono::DateTime::<chrono::Utc>::from(ten_days_ago).to_rfc3339();
+    let rows = [json!({
+        "type":"user", "sessionId":CLAUDE, "cwd":fx.home(), "timestamp":timestamp,
+        "message":{"role":"user","content":"synthetic ten-day-old session"}
+    })];
+    let path = fx.write(
+        &format!(".claude/projects/p/{CLAUDE}.jsonl"),
+        &common::jsonl(&rows),
+    );
+    fs::File::open(path)
+        .unwrap()
+        .set_times(fs::FileTimes::new().set_modified(ten_days_ago))
+        .unwrap();
+
+    let listed = fx.run(&["ls", "--hours", "264", "--json"]);
+    assert!(
+        listed.status.success(),
+        "{}",
+        String::from_utf8_lossy(&listed.stderr)
+    );
+    let sessions: Value = serde_json::from_slice(&listed.stdout).unwrap();
+    assert!(sessions
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|session| session["id"] == CLAUDE));
+
+    let default = fx.run(&["control", "read", "--session", CLAUDE, "--messages", "1"]);
+    assert!(!default.status.success());
+    assert!(String::from_utf8_lossy(&default.stderr).contains("no session matches"));
+
+    let narrow = fx.run(&[
+        "--hours",
+        "168",
+        "control",
+        "read",
+        "--session",
+        CLAUDE,
+        "--messages",
+        "1",
+    ]);
+    assert!(!narrow.status.success());
+    assert!(String::from_utf8_lossy(&narrow.stderr).contains("no session matches"));
+
+    let out = fx.run(&[
+        "--hours",
+        "264",
+        "control",
+        "read",
+        "--session",
+        CLAUDE,
+        "--messages",
+        "1",
+    ]);
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let result: Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(result["session_id"], CLAUDE);
+    assert_eq!(
+        result["messages"],
+        json!([{"role":"user","text":"synthetic ten-day-old session"}])
+    );
+}
+
 #[cfg(target_os = "linux")]
 #[test]
 fn cli_reads_a_transcript_larger_than_its_memory_budget() {
