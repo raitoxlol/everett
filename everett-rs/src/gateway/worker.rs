@@ -2,7 +2,8 @@
 //! operations a binding can grant and is carried over the child's stdio.
 use std::{
     io::{self, Read},
-    path::Path,
+    os::unix::fs::MetadataExt,
+    path::{Path, PathBuf},
 };
 
 use serde::{Deserialize, Serialize};
@@ -17,14 +18,83 @@ use super::{Binding, BACKEND_ERROR, MAX_INBOX, MAX_RESULT};
 const MAX_REQUEST: usize = MAX_INBOX + super::MAX_BODY;
 
 pub(super) fn is_builtin(command: &[String]) -> bool {
-    command.len() == 2
-        && command[1] == "mcp"
-        && std::env::current_exe()
-            .ok()
-            .and_then(|path| path.canonicalize().ok())
-            .is_some_and(|current| {
-                Path::new(&command[0]).canonicalize().ok().as_ref() == Some(&current)
-            })
+    std::env::current_exe()
+        .ok()
+        .and_then(|path| path.canonicalize().ok())
+        .is_some_and(|current| mcp_executable(command).as_ref() == Some(&current))
+}
+
+fn mcp_executable(command: &[String]) -> Option<PathBuf> {
+    match command {
+        [executable, mode] if mode == "mcp" => Path::new(executable).canonicalize().ok(),
+        _ => None,
+    }
+}
+
+#[derive(Clone)]
+pub(super) struct PinnedWorker {
+    executable: PathBuf,
+    device: u64,
+    inode: u64,
+}
+
+impl PinnedWorker {
+    pub(super) fn new(command: &[String]) -> Option<Self> {
+        let executable = std::env::current_exe().ok()?.canonicalize().ok()?;
+        let metadata = executable.metadata().ok()?;
+        let worker = Self {
+            executable,
+            device: metadata.dev(),
+            inode: metadata.ino(),
+        };
+        worker.path_for(command)?;
+        Some(worker)
+    }
+
+    pub(super) fn path_for(&self, command: &[String]) -> Option<&Path> {
+        if mcp_executable(command).as_ref() != Some(&self.executable) {
+            return None;
+        }
+        let metadata = self.executable.metadata().ok()?;
+        (metadata.dev() == self.device && metadata.ino() == self.inode)
+            .then_some(self.executable.as_path())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::{fs, os::unix::fs::symlink};
+
+    #[test]
+    fn pinned_worker_does_not_launch_through_a_configured_alias() {
+        let dir = tempfile::tempdir().unwrap();
+        let executable = dir.path().canonicalize().unwrap().join("everett");
+        let alias = dir.path().join("alias");
+        let replacement = dir.path().join("replacement");
+        fs::write(&executable, "original executable").unwrap();
+        fs::write(&replacement, "different executable").unwrap();
+        symlink(&executable, &alias).unwrap();
+        let metadata = executable.metadata().unwrap();
+        let worker = PinnedWorker {
+            executable,
+            device: metadata.dev(),
+            inode: metadata.ino(),
+        };
+        let command = [alias.to_string_lossy().into_owned(), "mcp".into()];
+        let verified = worker.path_for(&command).unwrap();
+
+        fs::remove_file(&alias).unwrap();
+        symlink(&replacement, &alias).unwrap();
+        assert_eq!(fs::read_to_string(verified).unwrap(), "original executable");
+        assert!(worker.path_for(&command).is_none());
+
+        fs::remove_file(&alias).unwrap();
+        symlink(verified, &alias).unwrap();
+        fs::rename(verified, dir.path().join("previous")).unwrap();
+        fs::rename(&replacement, verified).unwrap();
+        assert!(worker.path_for(&command).is_none());
+    }
 }
 
 #[derive(Deserialize, Serialize)]
@@ -102,7 +172,11 @@ impl Call {
             "everett_send" if args.contains_key("to") => {
                 let to = string("to")?;
                 let text = string("text")?;
-                if binding.conversation_identity { Self::Queue { to, text } } else { Self::Send { to, text } }
+                if binding.conversation_identity {
+                    Self::Queue { to, text }
+                } else {
+                    Self::Send { to, text }
+                }
             }
             "everett_send" => Self::Reply {
                 message: binding

@@ -99,6 +99,8 @@ struct Binding {
     require_identity_handle: bool,
     #[serde(default)]
     conversation_identity: bool,
+    #[serde(skip)]
+    conversation_worker: Option<worker::PinnedWorker>,
     agent_id: String,
     harness: String,
     cwd: PathBuf,
@@ -283,10 +285,13 @@ impl Binding {
                 || binding.require_identity_handle
                 || binding.allow_shared_core
                 || binding.native_start.is_some()
-                || !worker::is_builtin(&binding.backend_command)
                 || binding.oauth.as_ref().is_some_and(|oauth| oauth.owner_account.is_none()))
         {
-            return Err("conversation_identity requires the built-in backend, an owner_account for OAuth, and no legacy handles, shared core, events, or native start".into());
+            return Err("conversation_identity requires an owner_account for OAuth and no legacy handles, shared core, events, or native start".into());
+        }
+        if binding.conversation_identity {
+            binding.conversation_worker = Some(worker::PinnedWorker::new(&binding.backend_command)
+                .ok_or("conversation_identity requires the built-in backend")?);
         }
         if let Some(path) = &binding.agent_tool_permissions {
             if !path.is_absolute() || binding.oauth.is_some() || binding.events
@@ -559,7 +564,7 @@ impl Gateway {
         }
         let permit = self.workers.clone().try_acquire_owned()
             .map_err(|_| "gateway workers busy; retry later")?;
-        let mut command = backend_command(binding, true);
+        let mut command = backend_command(binding, Some(Path::new(&binding.backend_command[0])));
         command.env("EVERETT_GATEWAY_OWNER_AGENT", "1");
         command.env_remove("EVERETT_GATEWAY_EXACT_IDS");
         command.env_remove("EVERETT_SEND");
@@ -658,13 +663,16 @@ impl Gateway {
             .workers
             .try_acquire()
             .map_err(|_| "gateway workers busy; retry later")?;
-        let built_in = worker::is_builtin(&binding.backend_command);
-        if binding.conversation_identity && !built_in {
-            return Err("conversation identity requires the built-in worker".into());
-        }
-        let mut child = backend_command(binding, built_in).spawn().map_err(|_| BACKEND_ERROR)?;
+        let worker = if binding.conversation_identity {
+            Some(binding.conversation_worker.as_ref()
+                .and_then(|worker| worker.path_for(&binding.backend_command))
+                .ok_or("conversation identity requires the original built-in worker")?)
+        } else {
+            worker::is_builtin(&binding.backend_command).then(|| Path::new(&binding.backend_command[0]))
+        };
+        let mut child = backend_command(binding, worker).spawn().map_err(|_| BACKEND_ERROR)?;
         let operation = async {
-            if built_in {
+            if worker.is_some() {
                 let request = worker::Call::authorized(binding, name, &args)?;
                 return worker::dispatch(request, &mut child).await;
             }
@@ -777,9 +785,9 @@ impl Gateway {
     }
 }
 
-fn backend_command(binding: &Binding, use_worker: bool) -> Command {
-    let mut command = Command::new(&binding.backend_command[0]);
-    if use_worker {
+fn backend_command(binding: &Binding, worker: Option<&Path>) -> Command {
+    let mut command = Command::new(worker.unwrap_or_else(|| Path::new(&binding.backend_command[0])));
+    if worker.is_some() {
         command.arg("gateway-worker");
     } else {
         command.args(&binding.backend_command[1..]);
@@ -1453,6 +1461,7 @@ mod tests {
             events: false,
             require_identity_handle: false,
             conversation_identity: false,
+            conversation_worker: None,
             agent_id: "dot-one".into(),
             identity_owner: None,
             harness: "openai-dot".into(),
