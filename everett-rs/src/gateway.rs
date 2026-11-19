@@ -528,23 +528,44 @@ impl Gateway {
         if !permissions::Grant::load(path)?.permits(&request.name) {
             return Err("tool is not granted to this connection".into());
         }
-        let _permit = self.workers.try_acquire().map_err(|_| "gateway workers busy; retry later")?;
+        let permit = self.workers.clone().try_acquire_owned()
+            .map_err(|_| "gateway workers busy; retry later")?;
         let mut command = backend_command(binding, true);
         command.env("EVERETT_GATEWAY_OWNER_AGENT", "1");
         command.env_remove("EVERETT_GATEWAY_EXACT_IDS");
         command.env_remove("EVERETT_SEND");
         command.env_remove("EVERETT_ROUTER");
+        for key in ["EVERETT_T3_BIN", "T3CODE_HOME"] {
+            if let Some(value) = std::env::var_os(key) {
+                command.env(key, value);
+            }
+        }
         let mut child = command.spawn().map_err(|_| BACKEND_ERROR)?;
         let call = worker::Call::OwnerAgent {
             name: request.name.into_owned(),
             arguments: request.arguments.unwrap_or_default(),
         };
-        let result = timeout(Duration::from_secs_f64(binding.timeout), worker::dispatch(call, &mut child))
-            .await
-            .unwrap_or_else(|_| Err(BACKEND_ERROR.into()));
-        let _ = child.kill().await;
-        let _ = child.wait().await;
-        serde_json::from_value(result?).map_err(|_| BACKEND_ERROR.into())
+        let task = tokio::spawn(async move {
+            let _permit = permit;
+            let result = worker::dispatch(call, &mut child).await;
+            let _ = child.kill().await;
+            let _ = child.wait().await;
+            result
+        });
+        match timeout(Duration::from_secs_f64(binding.timeout), task).await {
+            Ok(Ok(Ok(data))) => serde_json::from_value(data).map_err(|_| BACKEND_ERROR.into()),
+            Ok(Ok(Err(error))) => Err(format!("{error}. The tool may have run; check its state before retrying.")),
+            Ok(Err(_)) => Err("Worker ended with an unconfirmed outcome; check state before retrying.".into()),
+            Err(_) => {
+                let mut result = CallToolResult::structured(json!({
+                    "completion_confirmed": false,
+                    "retry_safe": false,
+                    "message": "The request exceeded the HTTP response deadline. It may still be running or have dispatched. Check its state before retrying."
+                }));
+                result.is_error = Some(true);
+                Ok(result)
+            }
+        }
     }
 
     async fn call(
