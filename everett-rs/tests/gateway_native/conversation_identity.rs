@@ -5,6 +5,7 @@ const ADMIN_HEADER: &str = "Everett-Identity-Admin";
 const ADMIN_TOKEN: &str = "synthetic-owner-identity-credential-not-real";
 const LIFECYCLE: &str = "/mcp/identity";
 const OTHER_TOKEN: &str = "synthetic-independent-gateway-credential-not-real";
+const LEGACY_TOKEN: &str = "synthetic-legacy-owner-gateway-credential-not-real";
 
 fn manage(port: u16, token: &str, request: &Value) -> Reply {
     http_at(
@@ -104,9 +105,11 @@ pub(super) fn bearer() {
         assert!(c.cli(&command).status.success());
     };
     update_grant(&["--all"]);
-    let legacy = c.http_server(&json!({"agent_tool_permissions":grant}));
+    let mut legacy_command = bearer_command(&c, &json!({"agent_tool_permissions":grant}));
+    legacy_command.env("EVERETT_GATEWAY_TOKEN", LEGACY_TOKEN);
+    let legacy = c.spawn_http(legacy_command);
     let binding = json!({"agent_tool_permissions":grant,"conversation_identity":true,
-        "allow_shared_core":false,"harness":"devin-bot"});
+        "allow_shared_core":false,"harness":"devin-bot","destinations":["agent-two","queue-only-local"]});
     let port = c.spawn_http(bearer_command(&c, &binding));
     for changes in [
         json!({"agent_tool_permissions":null}),
@@ -118,12 +121,33 @@ pub(super) fn bearer() {
             Some(2)
         );
     }
-    assert_eq!(manage(legacy, TOKEN, &create('a')).status, 404);
+    assert_eq!(manage(legacy, LEGACY_TOKEN, &create('a')).status, 404);
     assert_eq!(
-        success(&call(legacy, TOKEN, None, "everett_whoami", json!({})))["session_id"],
+        success(&call(
+            legacy,
+            LEGACY_TOKEN,
+            None,
+            "everett_whoami",
+            json!({})
+        ))["session_id"],
         "dot-one"
     );
-    assert_eq!(catalog(legacy, TOKEN).len(), everett::mcp::tools().len());
+    assert_eq!(
+        catalog(legacy, LEGACY_TOKEN).len(),
+        everett::mcp::tools().len()
+    );
+    let whoami =
+        json!({"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"everett_whoami"}});
+    assert_eq!(post(legacy, &whoami, &[]).status, 401);
+    assert_eq!(
+        post(
+            port,
+            &whoami,
+            &[("Authorization", Some(&format!("Bearer {LEGACY_TOKEN}")))]
+        )
+        .status,
+        401
+    );
     assert_eq!(
         catalog(port, TOKEN),
         [
@@ -167,6 +191,27 @@ pub(super) fn bearer() {
     let restarted = c.spawn_http(bearer_command(&c, &binding));
     assert_eq!(registered(restarted, TOKEN, &create('a')), a);
     assert_eq!(registered(restarted, TOKEN, &create('b')), b);
+    let backend = c.home.join("backend-link");
+    let binary = std::env::var_os("EVERETT_VERIFY_BINARY").unwrap_or_else(|| BIN.into());
+    std::os::unix::fs::symlink(binary, &backend).unwrap();
+    let changed_backend = c.spawn_http(bearer_command(
+        &c,
+        &merged(&binding, &json!({"backend_command":[backend,"mcp"]})),
+    ));
+    let fallback = c.home.join("fallback-backend");
+    std::fs::write(&fallback, "#!/bin/sh\n: > \"$HOME/fallback-started\"\n").unwrap();
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::set_permissions(&fallback, std::fs::Permissions::from_mode(0o700)).unwrap();
+    std::fs::remove_file(&backend).unwrap();
+    std::os::unix::fs::symlink(fallback, backend).unwrap();
+    denied(&call(
+        changed_backend,
+        TOKEN,
+        Some(a_handle),
+        "everett_whoami",
+        json!({}),
+    ));
+    assert!(!c.home.join("fallback-started").exists());
     let mut command = bearer_command(&c, &binding);
     command.env("EVERETT_GATEWAY_TOKEN", OTHER_TOKEN);
     let independent = c.spawn_http(command);
@@ -283,7 +328,15 @@ pub(super) fn bearer() {
         ],
     )));
     assert_eq!(
-        post(legacy, &spoofed, &[(HEADER, Some(a_handle))]).status,
+        post(
+            legacy,
+            &spoofed,
+            &[
+                (HEADER, Some(a_handle)),
+                ("Authorization", Some(&format!("Bearer {LEGACY_TOKEN}")))
+            ]
+        )
+        .status,
         400
     );
     let duplicate = format!("POST /mcp HTTP/1.1\r\nHost: 127.0.0.1:8788\r\nAuthorization: Bearer {TOKEN}\r\n{HEADER}: {a_handle}\r\n{HEADER}: {b_handle}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
@@ -356,6 +409,16 @@ pub(super) fn bearer() {
     let last: Value = serde_json::from_str(rows.lines().last().unwrap()).unwrap();
     assert_eq!(last["from"], a_id);
     assert_eq!(last["id"], receipt["message_id"]);
+    let queued = success(&call(
+        port,
+        TOKEN,
+        Some(a_handle),
+        "everett_send",
+        json!({"to":"queue-only-local","text":"Queue without a destination registry scan"}),
+    ));
+    assert_eq!(queued["queued"], true);
+    assert_eq!(queued["to"], "queue-only-local");
+    assert!(inboxes.join("queue-only-local.jsonl").is_file());
     for name in [
         "everett_ls",
         "everett_core",
@@ -436,11 +499,32 @@ pub(super) fn bearer() {
         .unwrap()
         .iter()
         .any(|session| session["id"] == b_id));
+    let revoke_by_address = json!({"action":"revoke","session_id":b_id});
+    assert_eq!(
+        manage(independent, OTHER_TOKEN, &revoke_by_address).status,
+        400
+    );
+    assert_eq!(
+        http_at(port, "POST", LIFECYCLE, &revoke_by_address.to_string(), &[]).status,
+        403
+    );
+    let revoked = json!({"session_id":b_id,"revoked":true});
+    assert_eq!(body_json(&manage(port, TOKEN, &revoke_by_address)), revoked);
+    assert_eq!(body_json(&manage(port, TOKEN, &revoke_by_address)), revoked);
+    denied(&call(
+        port,
+        TOKEN,
+        Some(b_handle),
+        "everett_card",
+        card("Denied"),
+    ));
 }
 
 pub(super) fn oauth() {
     let c = ctx();
     let issuer = fake_issuer();
+    let legacy_token = access('f');
+    let legacy_resource = "https://legacy.example.test/mcp";
     let (a, b, renewed, old, other_client) = (
         access('a'),
         access('b'),
@@ -461,7 +545,14 @@ pub(super) fn oauth() {
         "agent-other-client",
         json!({"everett_account":"github:alice", "client_id":"https://other.example/client"}),
     );
-    let legacy = c.oauth_server(&issuer.url);
+    issuer.grant(
+        &legacy_token,
+        "agent-original",
+        json!({"everett_account":"github:alice","aud":legacy_resource}),
+    );
+    let legacy = c.spawn_http(
+        c.oauth_command(&json!({"oauth":{"issuer":issuer.url,"resource":legacy_resource}})),
+    );
     let mut command = c.oauth_command(&json!({
         "oauth":{"issuer":issuer.url,"resource":RESOURCE,"owner_account":"github:alice"},
         "conversation_identity":true,"allow_shared_core":false
@@ -469,11 +560,43 @@ pub(super) fn oauth() {
     command.env("EVERETT_GATEWAY_IDENTITY_ADMIN_TOKEN", ADMIN_TOKEN);
     let port = c.spawn_http(command);
     assert_eq!(
-        success(&call(legacy, &a, None, "everett_whoami", json!({})))["session_id"],
-        "agent-a"
+        success(&call(
+            legacy,
+            &legacy_token,
+            None,
+            "everett_whoami",
+            json!({})
+        ))["session_id"],
+        "agent-original"
     );
-    assert_eq!(manage(legacy, &a, &create('a')).status, 404);
-    let legacy_identity = success(&call(legacy, &a, None, "everett_identity", create('a')));
+    let whoami =
+        json!({"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"everett_whoami"}});
+    assert_eq!(
+        post(
+            legacy,
+            &whoami,
+            &[("Authorization", Some(&format!("Bearer {a}")))]
+        )
+        .status,
+        401
+    );
+    assert_eq!(
+        post(
+            port,
+            &whoami,
+            &[("Authorization", Some(&format!("Bearer {legacy_token}")))]
+        )
+        .status,
+        401
+    );
+    assert_eq!(manage(legacy, &legacy_token, &create('a')).status, 404);
+    let legacy_identity = success(&call(
+        legacy,
+        &legacy_token,
+        None,
+        "everett_identity",
+        create('a'),
+    ));
     assert_eq!(
         catalog(port, &a),
         [
@@ -515,7 +638,7 @@ pub(super) fn oauth() {
     ));
     denied(&call(
         legacy,
-        &a,
+        &legacy_token,
         None,
         "everett_inbox",
         json!({"identity_handle":handle}),
