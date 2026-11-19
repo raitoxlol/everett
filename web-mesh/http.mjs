@@ -18,7 +18,17 @@ export default async function handler(req, res) {
       if (value !== undefined) headers.set(name, Array.isArray(value) ? value.join(',') : value);
     }
     let body;
-    if (!['GET', 'HEAD'].includes(req.method)) {
+    const contentType = headers.get('Content-Type')?.split(';', 1)[0].trim();
+    const bufferedLogin = req.method === 'POST' && url.pathname === '/api/login' &&
+      contentType === 'application/x-www-form-urlencoded' && 'body' in req;
+    if (bufferedLogin) {
+      if (Number(headers.get('Content-Length')) > 4096) return reject(413);
+      const fields = req.body;
+      if (fields && Object.keys(fields).length === 1 && typeof fields.secret === 'string') {
+        body = new URLSearchParams({ secret: fields.secret }).toString();
+        if (body.length > 4096) return reject(413);
+      }
+    } else if (!['GET', 'HEAD'].includes(req.method)) {
       const chunks = [];
       let size = 0;
       for await (const chunk of req) {
