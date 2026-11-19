@@ -64,9 +64,9 @@ pub(crate) fn clamp_timeout(timeout: Option<f64>, wait: bool) -> Result<f64> {
     Ok(t.min(MAX_WAIT))
 }
 
-/// An Everett session id or prefix, resolved over the last week of sessions.
-pub fn resolve_session(target: &str) -> Result<Session> {
-    let sessions = crate::registry::scan(168.0, true, None, "");
+/// An Everett session id or prefix, resolved over the requested look-back window.
+pub fn resolve_session(target: &str, since_hours: f64) -> Result<Session> {
+    let sessions = crate::registry::scan(since_hours, true, None, "");
     crate::registry::find(target, &sessions)
 }
 
