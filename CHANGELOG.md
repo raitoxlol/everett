@@ -9,6 +9,18 @@
 - Keep comparisons such as `a < b and c > d` in session summaries and automatic cards.
 - Parse date-only timestamps, and stop dropping a timestamp whose fraction rounds up to the next second.
 - Show sessions older than two days in days in `everett ls` and `everett inbox`.
+- Require Cloudflare native account verification on every local MCP tool call; local CLI setup and SSH peers remain account-free. Clarify onboarding paths and client-side tool verification (#211, #216).
+- Add a private, opt-in read-only mesh console with owner-approved expiring read grants, and a documentation site built from the repository Markdown (#214, #221).
+- Add a Hermes-supported portable plugin and repair Pi tool registration, session working directories, cancellation and reconnection (#220, #217).
+- Add owner MCP tool grants and CLI management, isolate remote conversation inboxes, and require private inbox handles in strict hosted mode (#210, #213, #219).
+- Restore opt-in authenticated MCP Events, advertise them to MCP 2.0 clients, and support exact event-message pickup for ChatGPT Dots (#169, #207, #208).
+- Add local request status, retained reply lookup, sent-request recovery and recipient filters in CLI/MCP. Retain recovery IDs on failed T3 sends and reuse confirmed dispatches on retry (#174, #177, #178, #179, #190, #193, #196, #198, #199, #200, #202, #205).
+- List and address exact T3 thread IDs, discover managed runtimes and honor `T3CODE_HOME`; add CLI thread listing and recent transcript reads, including Devin ATIF. Honor the CLI look-back window and stream long JSONL histories (#180, #181, #183, #184, #194, #195, #197, #201, #203, #212).
+- Add delivery evidence and verified T3 model selection; distinguish pending pings from confirmed dispatch and show follow-up commands (#176, #215).
+- Add learned-fact expiry and CLI search with JSON scope/expiry metadata (#189, #191, #192).
+- Explain identity provenance, support automation-session MCP listings and gateway conversation-kind filters, and show actual remote preview transports (#168, #173, #186, #187).
+- Claim inbox messages before returning them and acknowledge hook pickup before returning work; recover valid status despite unrelated unreadable relay receipts (#175, #185, #188).
+- Improve Everett Local runtime configuration errors, narrow-terminal resize guidance, and Devin listings with a single activity timestamp (#172, #182, #204).
 
 ## 2.3.2 — maintenance candidate
 
