@@ -13,7 +13,7 @@ const views = {
   activity: 'Activity',
   settings: 'Settings',
 };
-const defaultPrefs = { theme: 'dark', density: 'comfortable', 'time-format': 'relative' };
+const defaultPrefs = { theme: 'light', density: 'comfortable', 'time-format': 'relative' };
 const choices = { theme: ['dark', 'light', 'system'], density: ['comfortable', 'compact'], 'time-format': ['relative', 'absolute'] };
 const systemTheme = matchMedia('(prefers-color-scheme: dark)');
 const prefKey = 'everett.mesh.display.v1';
@@ -197,9 +197,9 @@ function overview() {
     const meta = make('div', undefined, 'entry-meta');
     meta.append(make('span', deviceName(s.deviceId), 'secondary'), clock(s.lastSeen));
     return [s.harness, s.sessionId, meta];
-  }), 'No sessions have been exposed.');
-  entries('device-summary', devices.slice(0, 5).map(d => [d.name || 'Unnamed device', d.deviceId, clock(d.lastSeen)]), 'No devices have registered.');
-  entries('recent-receipts', receipts.slice(0, 5).map(r => [r.state[0].toUpperCase() + r.state.slice(1), deviceName(r.deviceId), clock(r.at)]), 'No signed receipts in this window.');
+  }), 'No exposed sessions.');
+  entries('device-summary', devices.slice(0, 5).map(d => [d.name || 'Unnamed device', d.deviceId, clock(d.lastSeen)]), 'No registered devices.');
+  entries('recent-receipts', receipts.slice(0, 5).map(r => [r.state[0].toUpperCase() + r.state.slice(1), deviceName(r.deviceId), clock(r.at)]), 'No receipts yet.');
 }
 
 function devices() {
@@ -209,8 +209,8 @@ function devices() {
   const sessions = snapshot.sessions.filter(s => !query || visibleIds.has(s.deviceId));
   table('device-list', ['Device', 'Last seen', 'Observation'],
     visible.map(d => [label(d.name || 'Unnamed device', d.deviceId), clock(d.lastSeen),
-      make('span', d.lastSeen === null ? 'Unavailable' : 'Server-observed request', 'confidence')]),
-    query ? 'No matching devices.' : 'No devices have registered.');
+      make('span', d.lastSeen === null ? 'Unavailable' : 'Request observed', 'confidence')]),
+    query ? 'No matching devices.' : 'No registered devices.');
   table('session-list', ['Session', 'Device', 'Last exposure', 'Self-reported status'],
     sessions.map(s => {
       const report = s.selfReported;
@@ -228,13 +228,15 @@ function devices() {
 
 function cloud() {
   const records = snapshot.cloudAgents;
-  $('cloud-source').textContent = records ? 'Sample hosted identities' : 'Gateway directory';
+  $('cloud-source').textContent = records ? 'Sample hosted identities' : '';
+  $('cloud-source').hidden = records === null;
+  $('cloud-search').hidden = records === null;
   $('cloud-filter').disabled = records === null;
   const query = $('cloud-filter').value.trim().toLowerCase();
   const visible = (records || []).filter(row => [row.name, row.agentId, row.kind].join(' ').toLowerCase().includes(query));
   table('cloud-list', ['Agent', 'Kind', 'Source'],
     visible.map(row => [label(row.name, row.agentId), make('span', row.kind), tag('Fixture')]),
-    records ? 'No matching cloud agents.' : 'The gateway’s hosted directory is not connected to this console.');
+    records ? 'No matching cloud agents.' : 'No gateway directory connected.');
 }
 
 function activity() {
@@ -242,13 +244,13 @@ function activity() {
   const visible = snapshot.receipts.filter(r => state === 'all' || r.state === state);
   table('receipt-list', ['Receipt', 'Device', 'State', 'Observed'],
     visible.map(r => [make('span', r.messageId, 'id'), make('span', deviceName(r.deviceId)), tag(r.state), clock(r.at)]),
-    state === 'all' ? 'No signed receipts in this window.' : 'No receipts in this state.');
+    state === 'all' ? 'No receipts yet.' : 'No receipts in this state.');
 }
 
 function settings() {
   const fixture = snapshot.source === 'fixture';
   const fields = [
-    ['Data source', fixture ? 'Fixture data' : 'Cloudflare'],
+    ['Data source', fixture ? 'Sample data' : 'Cloudflare'],
     ['Console origin', location.origin],
     ['Read scope', fixture ? 'No live grant' : 'mesh:read:v1'],
     ['Grant expiry', fixture ? 'No live grant' : new Date(snapshot.grantExpiresAt).toLocaleString()],
@@ -264,8 +266,8 @@ function settings() {
   if (snapshot.accountUrl) link.href = snapshot.accountUrl;
   else link.removeAttribute('href');
   $('permissions-note').textContent = fixture
-    ? 'This preview uses sample data. To connect a mesh, request a read grant with the Everett setup CLI and approve it in account access.'
-    : 'Read grants last 24 hours from request time. Renew by requesting and approving a new grant, then updating this console’s server configuration. Manage or revoke access in Everett account access.';
+    ? 'To connect a mesh, request a read grant with the Everett setup CLI.'
+    : 'Read grants expire 24 hours after the request. To renew, approve a new grant and update the console token.';
 }
 
 function showSignedIn(authentication) {
@@ -280,12 +282,12 @@ function render(data) {
   snapshot = data;
   showSignedIn(data.authentication);
   const fixture = data.source === 'fixture';
-  source(fixture ? 'Fixture' : 'Cloudflare', data.source);
-  $('source').title = fixture ? 'Sample data' : 'Owner-approved read access';
-  notice(fixture ? 'Sample data for this preview.' : '', fixture ? 'fixture' : '');
+  source(fixture ? 'Sample data' : 'Cloudflare', data.source);
+  $('source').title = fixture ? 'Local fixture' : 'Owner-approved read access';
+  notice('');
   $('data').hidden = false;
   drawView();
-  $('snapshot-time').replaceChildren(fixture ? 'Fixture refreshed ' : 'Cloudflare refreshed ', clock(data.serverNow));
+  $('snapshot-time').replaceChildren('Updated ', clock(data.serverNow));
 }
 
 function drawView() {
@@ -299,7 +301,7 @@ function clear() {
   for (const id of privateResults) $(id).replaceChildren();
   $('account-link').removeAttribute('href');
   $('account-link').hidden = true;
-  source('Access not verified', 'unknown');
+  source('Unavailable', 'unknown');
 }
 
 function cancelRefresh() {
@@ -330,21 +332,21 @@ async function refresh() {
       $('signout').hidden = true;
       $('refresh').hidden = true;
       const failed = githubLogin && new URL(location.href).searchParams.get('auth') === 'failed';
-      notice(failed ? 'GitHub sign-in failed. Use the account that owns this Everett mesh.' : 'Sign in to view this private workspace.', failed ? 'error' : '');
+      notice(failed ? 'GitHub sign-in failed. Use the mesh owner’s account.' : '', failed ? 'error' : '');
     } else if (response.status === 403) {
       const { error, authentication } = await response.json();
       if (pending !== ctrl || document.hidden) return;
       if (error === 'mesh_access_revoked') {
         showSignedIn(authentication);
-        notice('Mesh read access ended. Ask the Everett owner to approve a new read grant and update this console’s server configuration.', 'error');
-      } else notice('The mesh source is unavailable. Data has been cleared.', 'error');
+        notice('Mesh read access ended. Ask the owner to approve a new grant.', 'error');
+      } else notice('Could not load mesh data. Try refreshing.', 'error');
     } else if (response.status === 404) {
-      notice('The owner needs to enable this console and approve a read grant.');
-    } else notice('The mesh source is unavailable. Data has been cleared.', 'error');
+      notice('The owner must enable the console and approve a read grant.');
+    } else notice('Could not load mesh data. Try refreshing.', 'error');
   } catch {
     if (pending === ctrl) {
       clear();
-      notice('The mesh source is unavailable. Data has been cleared.', 'error');
+      notice('Could not load mesh data. Try refreshing.', 'error');
     }
   } finally {
     if (pending === ctrl) {
@@ -358,9 +360,8 @@ function showLogin() {
   $('login').hidden = false;
   $('github-login').hidden = !githubLogin;
   $('login-form').hidden = githubLogin;
-  $('login-description').textContent = githubLogin
-    ? 'Use the GitHub account that owns this Everett mesh.'
-    : 'Use the access secret for this console.';
+  $('login-description').hidden = !githubLogin;
+  $('login-description').textContent = githubLogin ? 'Use the mesh owner’s GitHub account.' : '';
 }
 
 $('login-form').addEventListener('submit', async event => {
@@ -388,7 +389,7 @@ $('signout').addEventListener('click', async () => {
     const response = await fetch('/api/logout', { method: 'POST', signal: AbortSignal.timeout(10000) });
     if (!response.ok) throw new Error('Logout failed');
     notice('Signed out.');
-  } catch { notice('Could not confirm sign-out. Close this console if the device is shared.', 'error'); }
+  } catch { notice('Could not confirm sign-out. Close this tab on a shared device.', 'error'); }
   showLogin();
 });
 $('refresh').addEventListener('click', refresh);

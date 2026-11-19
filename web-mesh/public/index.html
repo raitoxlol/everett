@@ -1,34 +1,41 @@
 <!doctype html>
-<html lang="en" data-theme="dark">
+<html lang="en" data-theme="light">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1">
-  <meta name="color-scheme" content="dark light">
-  <title>Everett · Mesh console</title>
+  <meta name="color-scheme" content="light dark">
+  <title>Everett Mesh</title>
   <link rel="stylesheet" href="/style.css">
   <script src="/app.js" defer></script>
 </head>
 <body>
   <a class="skip" href="#main">Skip to content</a>
+  <header class="topbar">
+    <a class="brand" href="#overview" aria-label="Everett overview"><span class="brand-mark" aria-hidden="true"></span>everett</a>
+    <div class="top-actions">
+      <span id="source" class="source">Checking access</span>
+      <button id="refresh" class="quiet" hidden>Refresh</button>
+      <button id="signout" class="quiet" hidden>Sign out</button>
+    </div>
+  </header>
   <div class="shell">
     <aside class="sidebar">
-      <a class="brand" href="#overview" aria-label="Everett overview"><span class="brand-mark" aria-hidden="true"></span>everett</a>
+      <p class="nav-heading">Mesh</p>
       <nav aria-label="Console" class="nav">
-        <a href="#overview">Overview</a>
-        <a href="#devices">Devices</a>
-        <a href="#cloud">Cloud agents</a>
-        <a href="#activity">Activity</a>
-        <a href="#settings">Settings</a>
+        <a href="#overview"><span class="nav-icon icon-overview" aria-hidden="true"></span>Overview</a>
+        <a href="#devices"><span class="nav-icon icon-devices" aria-hidden="true"></span>Devices</a>
+        <a href="#cloud"><span class="nav-icon icon-cloud" aria-hidden="true"></span>Cloud agents</a>
+        <a href="#activity"><span class="nav-icon icon-activity" aria-hidden="true"></span>Activity</a>
+        <a href="#settings"><span class="nav-icon icon-settings" aria-hidden="true"></span>Settings</a>
       </nav>
       <div class="sidebar-footer"><a href="https://raitox.tech/everett" target="_blank" rel="noreferrer">About Everett <span aria-hidden="true">↗</span></a></div>
     </aside>
     <div class="workspace-main">
-      <header class="topbar"><span id="source" class="source">Checking access</span><div class="top-actions"><button id="refresh" class="quiet" hidden>Refresh</button><button id="signout" class="quiet" hidden>Sign out</button></div></header>
       <main id="main" tabindex="-1">
         <div class="page-heading"><h1 id="title">Mesh overview</h1></div>
-        <p id="notice" class="notice" role="status" aria-live="polite">Checking console access…</p>
+        <p id="notice" class="notice" role="status" aria-live="polite">Checking access…</p>
         <section id="login" class="panel login" hidden>
-          <h2>Sign in to Everett</h2><p id="login-description">Use the access secret for this console.</p><a id="github-login" class="primary sign-in-link" href="/api/login" hidden>Continue with GitHub</a>
+          <h1>Sign in to Everett</h1><p id="login-description" hidden></p><a id="github-login" class="primary sign-in-link" href="/api/login" hidden>Continue with GitHub</a>
           <form id="login-form"><label for="secret">Console access secret</label><input type="password" id="secret" name="secret" required autocomplete="current-password" maxlength="256"><button class="primary" type="submit">Sign in</button></form>
         </section>
         <div id="data" hidden>
@@ -36,26 +43,26 @@
             <div id="metrics" class="metrics"></div>
             <div class="overview-grid">
               <div class="overview-inventory">
-                <section class="panel"><div class="panel-heading"><h2>Exposed sessions</h2><a href="#devices">View inventory <span aria-hidden="true">→</span></a></div><div id="session-summary"></div></section>
+                <section class="panel"><div class="panel-heading"><h2>Exposed sessions</h2><a href="#devices">View sessions <span aria-hidden="true">→</span></a></div><div id="session-summary"></div></section>
                 <section class="panel"><div class="panel-heading"><h2>Registered devices</h2><a href="#devices">View devices <span aria-hidden="true">→</span></a></div><div id="device-summary"></div></section>
               </div>
               <section class="panel"><div class="panel-heading"><h2>Recent receipts</h2><a href="#activity">View activity <span aria-hidden="true">→</span></a></div><div id="recent-receipts"></div></section>
             </div>
           </section>
           <section data-view="devices" hidden>
-            <section class="panel"><div class="panel-heading"><div><h2>Registered devices</h2><p>Last seen records a request and does not guarantee a device is online.</p></div><label class="search"><span class="sr-only">Filter devices</span><input id="device-filter" type="search" placeholder="Search name or device ID"></label></div><div id="device-list"></div></section>
-            <section class="panel secondary-panel"><div class="panel-heading"><div><h2>Exposed sessions</h2><p>Session exposure and optional self-reported status.</p></div></div><div id="session-list"></div></section>
+            <section class="panel"><div class="panel-heading"><div><h2>Registered devices</h2><p>Last seen is the time of the last request.</p></div><label class="search"><span class="sr-only">Filter devices</span><input id="device-filter" type="search" placeholder="Search name or device ID"></label></div><div id="device-list"></div></section>
+            <section class="panel secondary-panel"><div class="panel-heading"><h2>Exposed sessions</h2></div><div id="session-list"></div></section>
           </section>
           <section data-view="cloud" hidden>
-            <section class="panel"><div class="panel-heading"><div><h2>Hosted directory</h2><p id="cloud-source"></p></div><label class="search"><span class="sr-only">Filter cloud agents</span><input id="cloud-filter" type="search" placeholder="Filter cloud agents"></label></div><div id="cloud-list"></div></section>
+            <section class="panel"><div class="panel-heading"><div><h2>Hosted directory</h2><p id="cloud-source"></p></div><label id="cloud-search" class="search"><span class="sr-only">Filter cloud agents</span><input id="cloud-filter" type="search" placeholder="Filter cloud agents"></label></div><div id="cloud-list"></div></section>
           </section>
           <section data-view="activity" hidden>
-            <section class="panel"><div class="panel-heading"><div><h2>Receipt timeline</h2><p>Signed device observations of delivery, pickup, and replies.</p></div><label class="field">State <select id="receipt-filter"><option value="all">All states</option><option value="delivered">Delivered</option><option value="claimed">Claimed</option><option value="replied">Replied</option></select></label></div><div id="receipt-list"></div><p class="panel-note">The latest 100 receipts show what devices reported. A receipt does not verify task completion.</p></section>
+            <section class="panel"><div class="panel-heading"><h2>Receipt timeline</h2><label class="field">State <select id="receipt-filter"><option value="all">All states</option><option value="delivered">Delivered</option><option value="claimed">Claimed</option><option value="replied">Replied</option></select></label></div><div id="receipt-list"></div><p class="panel-note">Shows up to 100 signed device receipts. Task completion is unverified.</p></section>
           </section>
           <section data-view="settings" hidden>
-            <section class="panel"><div class="panel-heading"><div><h2>Connection and access</h2><p>Manage consent in your Everett account.</p></div><a class="button quiet" id="account-link" rel="noreferrer" target="_blank" hidden>Manage access <span aria-hidden="true">↗</span></a></div><dl id="connection" class="details"></dl><p id="permissions-note" class="panel-note"></p></section>
-            <section class="panel secondary-panel"><div class="panel-heading"><div><h2>Display preferences</h2><p>Saved for this browser.</p></div><button id="reset-prefs" class="quiet">Reset</button></div><div class="pref-grid">
-              <div class="field"><label for="theme">Theme</label><select id="theme"><option value="dark">Everett dark</option><option value="light">Everett light</option><option value="system">System</option></select></div>
+            <section class="panel"><div class="panel-heading"><h2>Connection and access</h2><a class="button quiet" id="account-link" rel="noreferrer" target="_blank" hidden>Manage access <span aria-hidden="true">↗</span></a></div><dl id="connection" class="details"></dl><p id="permissions-note" class="panel-note"></p></section>
+            <section class="panel secondary-panel"><div class="panel-heading"><div><h2>Display preferences</h2><p>Applies to this browser.</p></div><button id="reset-prefs" class="quiet">Reset</button></div><div class="pref-grid">
+              <div class="field"><label for="theme">Theme</label><select id="theme"><option value="dark">Dark</option><option value="light">Light</option><option value="system">System</option></select></div>
               <div class="field"><label for="density">Table density</label><select id="density"><option value="comfortable">Comfortable</option><option value="compact">Compact</option></select></div>
               <div class="field"><label for="time-format">Time format</label><select id="time-format"><option value="relative">Relative</option><option value="absolute">Local date and time</option></select></div>
             </div></section>

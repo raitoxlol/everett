@@ -30,7 +30,7 @@ try {
   await page.locator('#secret').fill(password);
   await page.getByRole('button',{name:'Sign in',exact:true}).click();
   await page.locator('#data').waitFor();
-  assert.match(await page.locator('#source').innerText(), /Fixture/);
+  assert.match(await page.locator('#source').innerText(), /Sample data/);
 
   if (process.env.MESH_SHOTS) await page.screenshot({path:process.env.MESH_SHOTS+'-overview.png', fullPage:true});
   await check('overview has one compact metric band with distinct linked segments', async () => {
