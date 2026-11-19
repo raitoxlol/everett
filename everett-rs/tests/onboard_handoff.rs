@@ -133,13 +133,14 @@ fn run_in_pty(fx: &common::Fixture, input: &str, token: &str) -> (ExitStatus, St
         ws_xpixel: 0,
         ws_ypixel: 0,
     };
+    let window_ptr = &mut window;
     let opened = unsafe {
         libc::openpty(
             &mut master,
             &mut slave,
             std::ptr::null_mut(),
             std::ptr::null_mut(),
-            &mut window,
+            window_ptr,
         )
     };
     assert_eq!(opened, 0, "could not open test pty");
