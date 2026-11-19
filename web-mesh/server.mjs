@@ -16,9 +16,19 @@ export function adaptSnapshot(value,config) {
     return {deviceId:text(s.deviceId),sessionId:text(s.sessionId),harness:text(s.harness,160),lastSeen:time(s.lastSeen),lastSeenConfidence:oneOf(s.lastSeenConfidence,['server-observed-exposure']),selfReported:{status,observedAt:status===null?null:time(reported.observedAt),confidence:status===null?'unavailable':'self-reported'}};
   });
   const receipts=list(value.receipts,100).map(r=>({messageId:text(r.messageId),deviceId:text(r.deviceId),state:oneOf(r.state,['delivered','claimed','replied']),at:time(r.at),confidence:oneOf(r.confidence,['signed-device-observation'])}));
+  const cloudAgents = source === 'fixture' && value.cloudAgents
+    ? list(value.cloudAgents, 64).map(agent => ({
+      agentId: text(agent.agentId, 160),
+      name: text(agent.name, 100),
+      kind: oneOf(agent.kind, ['codex', 'chat', 'dot']),
+    }))
+    : null;
+  const accountUrl = source === 'cloudflare' && config.MESH_ENDPOINT
+    ? new URL('/enroll', config.MESH_ENDPOINT).href
+    : null;
   const queued=time(value.queue.queued);
   const truncated={};for(const key of ['devices','sessions','receipts']){if(typeof value.truncated?.[key]!=='boolean')throw Error('invalid projection');truncated[key]=value.truncated[key];}
-  return {version:'everett.mesh.v1',source,verification:source==='fixture'?'fixture-only':'cloudflare-read',owner:text(value.owner,2048),serverNow,grantExpiresAt:time(value.grantExpiresAt),fetchedAt:Date.now(),devices,sessions,queue:{queued},receipts,truncated};
+  return {version:'everett.mesh.v1',source,verification:source==='fixture'?'fixture-only':'cloudflare-read',owner:text(value.owner,2048),serverNow,grantExpiresAt:time(value.grantExpiresAt),fetchedAt:Date.now(),devices,sessions,cloudAgents,accountUrl,queue:{queued},receipts,truncated};
 }
 const equal = (a,b) => {const x=Buffer.from(a),y=Buffer.from(b);return x.length===y.length&&timingSafeEqual(x,y);};
 const local = url => url.protocol==='http:'&&['127.0.0.1','localhost','[::1]'].includes(url.hostname);
