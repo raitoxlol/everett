@@ -1,0 +1,133 @@
+{
+  "local_queued": {
+    "message_id": "mfixture0001",
+    "to": "worker",
+    "schema_version": 1,
+    "state": "queued",
+    "picked_up": false,
+    "reply": null,
+    "delivery": {
+      "state": "queued",
+      "evidence": {
+        "queued_at_ms": 1795082400000,
+        "picked_up_at_ms": null,
+        "replied_at_ms": null,
+        "expires_at_ms": 1795687200000
+      }
+    },
+    "agent": {
+      "freshness": "current",
+      "what": "Retry audit",
+      "state": "Checking cases",
+      "next": "Report the cap",
+      "updated_at_ms": 1795082400000
+    }
+  },
+  "local_picked_up_legacy": {
+    "message_id": "mfixture0001",
+    "to": "worker",
+    "schema_version": 1,
+    "state": "picked_up",
+    "picked_up": true,
+    "reply": null,
+    "delivery": {
+      "state": "picked_up",
+      "evidence": {
+        "queued_at_ms": 1795082400000,
+        "picked_up_at_ms": null,
+        "replied_at_ms": null,
+        "expires_at_ms": 1795687200000
+      }
+    },
+    "agent": {
+      "freshness": "current",
+      "what": "Retry audit",
+      "state": "Checking cases",
+      "next": "Report the cap",
+      "updated_at_ms": 1795082400000
+    }
+  },
+  "local_replied_stale_card": {
+    "message_id": "mfixture0001",
+    "to": "worker",
+    "schema_version": 1,
+    "state": "replied",
+    "picked_up": true,
+    "reply": {
+      "id": "mfixture0002",
+      "kind": "reply",
+      "to": "sender",
+      "text": "The retry cap is five.",
+      "reply_to": "mfixture0001",
+      "ts": 1795082404.0,
+      "from": "worker",
+      "from_harness": "claude",
+      "from_card": "",
+      "hops": 0
+    },
+    "delivery": {
+      "state": "replied",
+      "evidence": {
+        "queued_at_ms": 1795082400000,
+        "picked_up_at_ms": 1795082402000,
+        "replied_at_ms": 1795082404000,
+        "expires_at_ms": 1795687200000
+      }
+    },
+    "agent": {
+      "freshness": "stale",
+      "what": null,
+      "state": "unknown",
+      "next": null,
+      "updated_at_ms": 1794982400000
+    }
+  },
+  "local_expired": {
+    "message_id": "mfixture0001",
+    "to": "worker",
+    "schema_version": 1,
+    "state": "expired",
+    "picked_up": false,
+    "reply": null,
+    "delivery": {
+      "state": "expired",
+      "evidence": {
+        "queued_at_ms": 1795082400000,
+        "picked_up_at_ms": null,
+        "replied_at_ms": null,
+        "expires_at_ms": 1795687200000
+      }
+    },
+    "agent": {
+      "freshness": "unknown",
+      "what": null,
+      "state": "unknown",
+      "next": null,
+      "updated_at_ms": null
+    }
+  },
+  "relay_unconfirmed": {
+    "message_id": "mfixture0003",
+    "state": "unconfirmed",
+    "posted": false,
+    "expires_at": 1795168800000,
+    "note": "A local retry record exists; relay queueing has not been confirmed. Run everett relay to retry before expiry.",
+    "schema_version": 1,
+    "delivery": {
+      "state": "unknown",
+      "evidence": {
+        "queued_at_ms": null,
+        "picked_up_at_ms": null,
+        "replied_at_ms": null,
+        "expires_at_ms": 1795168800000
+      }
+    },
+    "agent": {
+      "freshness": "unknown",
+      "what": null,
+      "state": "unknown",
+      "next": null,
+      "updated_at_ms": null
+    }
+  }
+}

@@ -38,9 +38,13 @@ local T3, another plugin, a shell command, or an inbox message for a hosted star
 
 An explicitly authorized start can consume the owner's model allowance. Use a
 private identity handle and one fresh durable request ID. Retain the exact ID
-and text before dispatch. Reuse both after any timeout or reconnect; never
-change IDs to retry an uncertain launch. The owner fixes the project, provider
-and model. Do not ask for broader grants or expose general remote control.
+and inputs before dispatch. Reuse them after any timeout or reconnect. The owner
+fixes the project and provider and grants model and effort pairs. When the
+tool advertises model and effort, omit them to use the defaults or send a
+granted pair. Verify `effective` against `requested` for a selection
+claim. Legacy CLI receipts report `effective: null`.
+`dispatch_not_started` confirms a preflight rejection. After resolving the
+diagnostic, retry it with the original request ID and inputs.
 
 A confirmed start receipt proves dispatch only. Independently verify the native
 provider identity, intended target, inbox pickup and correlated reply before

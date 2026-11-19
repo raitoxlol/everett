@@ -2,6 +2,7 @@ pub mod build_info;
 pub mod adapters;
 pub mod auth;
 pub mod cards;
+mod delivery_status;
 pub mod claude_wake;
 pub mod cli;
 pub mod cloudflare_auth;
