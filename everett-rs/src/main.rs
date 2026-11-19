@@ -24,7 +24,7 @@ const HELP_GROUPS: &[(&str, &[&str])] = &[
     ),
     (
         "Advanced: devices and external agents",
-        &["relay", "peer", "devices", "gateway", "external", "tunnel"],
+        &["relay", "peer", "devices", "gateway", "gateway-permissions", "external", "tunnel"],
     ),
 ];
 
@@ -97,6 +97,17 @@ enum Cmd {
         transport: String,
         #[arg(long, default_value_t = 8788)]
         port: u16,
+    },
+    /// inspect or edit the tool grant for an owner MCP connection
+    GatewayPermissions {
+        #[arg(long)]
+        file: std::path::PathBuf,
+        #[arg(long, conflicts_with_all = ["allow", "deny_all"])]
+        all: bool,
+        #[arg(long, value_delimiter = ',', conflicts_with = "deny_all")]
+        allow: Vec<String>,
+        #[arg(long)]
+        deny_all: bool,
     },
     /// register and manage owner-authorized external inboxes
     External {
@@ -1067,6 +1078,8 @@ fn main() {
             transport,
             port,
         } => everett::gateway::run(&config, &transport, port),
+        Cmd::GatewayPermissions { file, all, allow, deny_all } =>
+            everett::gateway::permissions::run(&file, all, allow, deny_all),
         Cmd::InstallMcp {
             claude,
             codex,
