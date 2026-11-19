@@ -53,7 +53,7 @@ fn onboard_yes_end_to_end_flags_and_idempotence() {
     claude_session(&h.path(), "c-fresh", "/work/app", "fix the login bug", 0.0);
     let hooks_only = cli(&h, &["onboard", "--yes", "--no-backfill", "--no-mcp"]);
     assert_eq!(hooks_only.status.code(), Some(0));
-    assert!(!stdout(&hooks_only).contains("everett_list"), "{}", stdout(&hooks_only));
+    assert!(!stdout(&hooks_only).contains("everett_ls"), "{}", stdout(&hooks_only));
     assert!(!cards::card_path("c-fresh").unwrap().exists());
     assert_eq!(install::mcp_status("claude").0, "missing");
     assert_eq!(install::installed("claude", None).unwrap()["SessionStart"], "ok");
@@ -66,8 +66,9 @@ fn onboard_yes_end_to_end_flags_and_idempotence() {
         "`everett doctor` checks configuration and the MCP launcher",
         "does not prove a client loaded Everett tools",
         "Restart each selected MCP client",
-        "call `everett_list`",
-        "empty list is also success",
+        "Call `everett_ls`",
+        "even empty, verifies the tool",
+        "run `everett login` in this profile and retry",
         "Saved settings alone are not proof",
     ] {
         assert!(text.contains(guidance), "missing {guidance:?}: {text}");

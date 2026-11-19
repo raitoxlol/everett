@@ -567,9 +567,8 @@ fn onboard_tui_compact_account_keeps_local_and_quit_choices_visible() {
     let mut p = spawn_tui_command(cmd, 54, 14);
     p.see("Welcome to Everett");
     let welcome = p.screen();
-    assert!(welcome.contains("Local agents need no Everett account."), "{welcome}");
-    assert!(welcome.contains("Sign-in is optional for"), "{welcome}");
-    assert!(welcome.contains("cross-device delivery."), "{welcome}");
+    assert!(welcome.contains("Local setup needs no Everett account."), "{welcome}");
+    assert!(welcome.contains("Sign in to use Everett MCP tools."), "{welcome}");
     assert!(welcome.contains("Enter ↵   Choose setup path"), "{welcome}");
     p.send("\r");
     p.see("Choose how to connect");
@@ -595,8 +594,8 @@ fn onboard_tui_full_wizard_applies() {
     let mut p = spawn_tui(&fx);
     p.see("Welcome to Everett");
     let welcome = p.screen();
-    assert!(welcome.contains("Local agents need no Everett account."), "{welcome}");
-    assert!(welcome.contains("Sign-in is optional for cross-device"), "{welcome}");
+    assert!(welcome.contains("Local setup needs no Everett account."), "{welcome}");
+    assert!(welcome.contains("Sign in to use Everett MCP tools."), "{welcome}");
     assert!(welcome.contains("Choose setup path"), "{welcome}");
     for screen in [
         "Choose how to connect",
@@ -610,7 +609,7 @@ fn onboard_tui_full_wizard_applies() {
             p.see(screen);
             if screen == "Choose how to connect" {
                 let account = p.screen();
-                assert!(account.contains("local setup is still available") && account.contains("without an account."), "{account}");
+                assert!(account.contains("local setup is available") && account.contains("MCP tools need sign-in."), "{account}");
                 assert!(account.contains("enter or l continue locally"), "{account}");
             }
         }
@@ -619,7 +618,8 @@ fn onboard_tui_full_wizard_applies() {
     p.see("Local setup applied");
     p.see("Agent tools are not verified yet.");
     p.see("Restart Claude Code");
-    p.see("call `everett_list`");
+    p.see("call `everett_ls`");
+    p.see("If signed out: everett login.");
     if let Ok(path) = std::env::var("EVERETT_SUMMARY_FRAME") {
         std::fs::write(path, serde_json::to_vec(&p.frame()).unwrap()).unwrap();
     }
@@ -627,15 +627,18 @@ fn onboard_tui_full_wizard_applies() {
     p.see("checks configuration and the MCP launcher");
     p.see("does not prove a client loaded Everett tools");
     p.see("Restart each selected MCP client");
-    p.see("empty list is also success");
+    p.see("even empty, verifies the tool");
+    p.see("run `everett login` in this profile");
     p.see("Saved settings alone are not proof");
     p.send("\r");
     p.see("Local setup applied");
     p.resize(54, 14);
     let compact = p.screen();
     assert!(compact.contains("Restart Claude Code"), "{compact}");
-    assert!(compact.contains("call `everett_list`"), "{compact}");
+    assert!(compact.contains("call `everett_ls`"), "{compact}");
     p.resize(80, 24);
+    p.send("x");
+    p.see("Get your agent instruction prompt");
     p.send("\r");
     p.see("Teach your agents about Everett");
     p.see("Prompt / review before applying");
@@ -985,7 +988,7 @@ fn onboard_tui_optional_explanation_and_account_back_navigation() {
     p.see("Get a reply");
     p.send("2");
     p.see("Claude Code / Codex / OMP / Pi / Hermes");
-    p.see("No Everett account is needed for local setup.");
+    p.see("Account-free local setup; MCP tools require sign-in.");
     p.send("3");
     p.see("OpenAI Dots / Grok Bot");
     p.see("Hark: connection support needs verification.");
@@ -1002,6 +1005,7 @@ fn onboard_tui_optional_explanation_and_account_back_navigation() {
     p.send("\r");
     p.see("Choose how to connect");
     p.see("Sign-in is not available in this build");
+    p.see("Everett MCP tools need");
     p.send("l");
     p.see("Choose your agents");
     p.send("b");

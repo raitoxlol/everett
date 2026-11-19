@@ -15,6 +15,14 @@ struct Server {
 impl Server {
     fn new(fx: &Fixture, env: &[(&str, &str)]) -> Self {
         common::native_mcp_account(&fx.home());
+        Self::spawn(fx, env)
+    }
+
+    fn new_signed_out(fx: &Fixture, env: &[(&str, &str)]) -> Self {
+        Self::spawn(fx, env)
+    }
+
+    fn spawn(fx: &Fixture, env: &[(&str, &str)]) -> Self {
         let mut cmd = Command::new(env!("CARGO_BIN_EXE_everett"));
         cmd.arg("mcp")
             .env_clear()
@@ -46,6 +54,18 @@ impl Server {
             "initialize",
             Some(json!({"protocolVersion": "2025-06-18", "capabilities": {},
             "clientInfo": {"name": "test", "version": "0"}})),
+        );
+        assert_eq!(init["result"]["protocolVersion"], "2025-06-18");
+        s.send_line(&json!({"jsonrpc": "2.0", "method": "notifications/initialized"}).to_string());
+        s
+    }
+
+    fn start_signed_out(fx: &Fixture, env: &[(&str, &str)]) -> Self {
+        let mut s = Self::new_signed_out(fx, env);
+        let init = s.request(
+            "initialize",
+            Some(json!({"protocolVersion": "2025-06-18", "capabilities": {},
+            "clientInfo": {"name": "signed-out-test", "version": "0"}})),
         );
         assert_eq!(init["result"]["protocolVersion"], "2025-06-18");
         s.send_line(&json!({"jsonrpc": "2.0", "method": "notifications/initialized"}).to_string());
@@ -234,6 +254,54 @@ fn round_trip_over_pipes() {
         listing["structuredContent"]
     );
     s.close();
+}
+
+#[test]
+fn onboard_printed_tool_is_advertised_and_requires_authentication() {
+    let fx = home_with_claude_session();
+    let mut command = Command::new(env!("CARGO_BIN_EXE_everett"));
+    command
+        .args(["onboard", "--yes", "--no-backfill"])
+        .env_clear()
+        .env("HOME", fx.home())
+        .env("EVERETT_HOME", fx.home())
+        .env("EVERETT_NOTIFY", "none")
+        .env("PATH", "/usr/bin:/bin");
+    let summary = command.output().unwrap();
+    assert!(summary.status.success(), "{}", String::from_utf8_lossy(&summary.stdout));
+    let summary = String::from_utf8_lossy(&summary.stdout);
+    let tool_name = summary
+        .lines()
+        .find_map(|line| {
+            line.split_once("Call `")
+                .and_then(|(_, rest)| rest.split('`').next())
+                .map(str::to_owned)
+        })
+        .expect("onboard summary names the MCP tool");
+    assert_eq!(tool_name, "everett_ls");
+    assert!(!fx.home().join(".everett/cloudflare-auth.json").exists());
+
+    let mut server = Server::start_signed_out(&fx, &[]);
+    let tools = server.request("tools/list", None)["result"]["tools"].clone();
+    assert!(tools
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|tool| tool["name"].as_str() == Some(&tool_name)));
+    let denied = server.call(&tool_name, json!({}));
+    assert_eq!(denied["isError"], true);
+    assert!(denied["content"][0]["text"].as_str().unwrap().contains("Local Everett MCP requires an account"));
+    server.close();
+
+    let mut signed_in = Server::start(&fx, &[]);
+    let allowed = signed_in.call(&tool_name, json!({}));
+    assert_eq!(allowed["isError"], false);
+    assert!(allowed["structuredContent"]["sessions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|session| session["id"] == "c-1"));
+    signed_in.close();
 }
 
 #[test]
