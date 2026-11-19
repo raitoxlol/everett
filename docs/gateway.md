@@ -465,12 +465,22 @@ names. A manager should use the same file and replace it atomically with mode
 do not interrupt work already running. If the client caches discovery, refresh
 its tool list after a grant changes.
 
-Full access allows reads and writes available to a local agent, including
-session control, shared memory changes and relay administration. Use it for
-clients trusted with that access. If a bearer key leaks, deny all tools and
-rotate the key. Reuse neither a demo key nor another connector's key. Owner mode
-is separate from OAuth bindings, private identity handles, gateway-native start
-and gateway event subscriptions. Deploy remote connections behind HTTPS.
+Each tool grant allows its native operations. For example, `everett_core` can
+read, search, forget and correct facts. The restricted gateway's
+`allow_shared_core` and `destinations` fields do not narrow owner-mode calls.
+Full access includes session control, shared memory changes and relay
+administration. Use it for clients trusted with that access. If a bearer key
+leaks, deny all tools and rotate the key. Reuse neither a demo key nor another
+connector's key. Owner mode uses the gateway host's configured T3 runtime,
+including `EVERETT_T3_BIN` and `T3CODE_HOME` when set, and is separate from
+OAuth bindings, private identity handles, gateway-native start and gateway event
+subscriptions. Deploy remote connections behind HTTPS.
+
+Prefer dispatch without waiting for long T3 turns. If an owner tool exceeds
+the HTTP response deadline, it can continue under the native operation's
+deadline and retains its worker slot until it exits. Check the session or
+request's state before retrying an unconfirmed call.
+
 
 ## Bounds and verification
 
