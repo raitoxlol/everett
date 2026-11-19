@@ -26,6 +26,12 @@ jobs:
         working-directory: everett-rs
     steps:
       - uses: actions/checkout@v7
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Test the Pi extension tool bridge
+        working-directory: .
+        run: node --test everett-rs/tests/pi_session_start.test.mjs
       - name: Verify bounded host and poll-health evidence
         working-directory: .
         run: python3 -m unittest discover -s scripts -p test_diagnose_tunnel_host.py -v
