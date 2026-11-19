@@ -1,0 +1,14 @@
+{
+  "name": "everett-docs-site",
+  "private": true,
+  "type": "module",
+  "description": "Static documentation site for Everett, built from README.md and docs/.",
+  "scripts": {
+    "build": "node build.mjs",
+    "check": "node build.mjs --strict",
+    "serve": "node serve.mjs"
+  },
+  "dependencies": {
+    "marked": "15.0.12"
+  }
+}
