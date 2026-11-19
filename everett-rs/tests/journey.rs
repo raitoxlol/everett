@@ -631,13 +631,7 @@ fn onboard_tui_full_wizard_applies() {
     p.see("run `everett login` in this profile");
     p.see("Saved settings alone are not proof");
     p.send("\r");
-    p.see("Local setup applied");
-    p.resize(54, 14);
-    let compact = p.screen();
-    assert!(compact.contains("Restart Claude Code"), "{compact}");
-    assert!(compact.contains("call `everett_ls`"), "{compact}");
-    p.resize(80, 24);
-    p.send("x");
+    p.see("d results   enter continue   q exit");
     p.see("Get your agent instruction prompt");
     p.send("\r");
     p.see("Teach your agents about Everett");
@@ -665,6 +659,30 @@ fn onboard_tui_full_wizard_applies() {
         serde_json::from_str(&std::fs::read_to_string(fx.home().join(".claude.json")).unwrap())
             .unwrap();
     assert!(claude_json["mcpServers"]["everett"].is_object());
+}
+
+#[cfg(unix)]
+#[test]
+fn onboard_tui_compact_summary_shows_priority_next_steps() {
+    let fx = fixture();
+    plant(&fx, "claude.jsonl", ".claude/projects/app/claude.jsonl");
+    let mut p = spawn_tui_with(&fx, &[], 54, 14);
+    p.see("Welcome to Everett");
+    p.send("\r");
+    p.see("Choose how to connect");
+    p.send("\r");
+    p.see("Choose your agents");
+    p.send("\r");
+    p.review();
+    p.send("a");
+    p.see("Local setup applied");
+    let summary = p.screen();
+    assert!(summary.contains("If signed out: everett login."), "{summary}");
+    assert!(summary.contains("Restart Claude Code."), "{summary}");
+    assert!(summary.contains("Ask it to call `everett_ls`."), "{summary}");
+    assert!(fx.home().join(".claude/settings.json").exists());
+    p.send("q");
+    p.exited();
 }
 
 #[cfg(unix)]
