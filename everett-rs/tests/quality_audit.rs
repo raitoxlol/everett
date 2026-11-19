@@ -76,6 +76,12 @@ fn send_to_a_repository_name_finds_its_worktree_session() {
     ];
     let error = everett::registry::find("everett", &sessions).unwrap_err();
     assert!(error.message.contains("matches 2 sessions"), "{}", error.message);
+    let sessions = [
+        session("in-1", "/Users/w/Projects/atlas", "What: Atlas: Fix the login flow."),
+        session("out-1", "/Users/w/Projects/other", "What: Atlas: Plan the atlas launch."),
+    ];
+    let error = everett::registry::find("atlas", &sessions).unwrap_err();
+    assert!(error.message.contains("matches 2 sessions"), "{}", error.message);
 }
 
 #[test]
