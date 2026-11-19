@@ -122,11 +122,15 @@ function label(text, detail) {
 
 function table(destination, headings, rows, empty) {
   const root = $(destination);
-  if (!rows.length) { root.replaceChildren(make('p', empty, 'empty')); return; }
-  const wrap = make('div', undefined, 'table-wrap');
-  wrap.tabIndex = 0;
-  wrap.setAttribute('role', 'region');
-  wrap.setAttribute('aria-label', headings[0] + ' table');
+  let wrap = root.firstElementChild;
+  if (!wrap) {
+    wrap = make('div', undefined, 'table-wrap');
+    wrap.setAttribute('role', 'region');
+    wrap.setAttribute('aria-label', headings[0] + ' table');
+    root.append(wrap);
+  }
+  wrap.tabIndex = rows.length || wrap === document.activeElement ? 0 : -1;
+  if (!rows.length) { wrap.replaceChildren(make('p', empty, 'empty')); return; }
   const grid = make('table');
   grid.setAttribute('role', 'table');
   const header = make('tr');
@@ -156,8 +160,7 @@ function table(destination, headings, rows, empty) {
     body.append(tr);
   }
   grid.append(head, body);
-  wrap.append(grid);
-  root.replaceChildren(wrap);
+  wrap.replaceChildren(grid);
 }
 
 function entries(destination, rows, empty) {
@@ -176,23 +179,25 @@ function deviceName(id) {
   return snapshot.devices.find(device => device.deviceId === id)?.name || id;
 }
 
-function metric(name, value, view, detail) {
-  const el = make('a', undefined, 'metric');
-  el.href = '#' + view;
-  el.append(make('span', name), make('strong', String(value)));
-  if (detail) el.append(make('small', detail));
-  return el;
+function metrics(items) {
+  const root = $('metrics');
+  items.forEach(([name, value, view, detail], index) => {
+    const link = root.children[index] || root.appendChild(make('a', undefined, 'metric'));
+    link.href = '#' + view;
+    link.replaceChildren(make('span', name), make('strong', String(value)));
+    if (detail) link.append(make('small', detail));
+  });
 }
 
 function overview() {
   const { devices, sessions, queue, receipts, cloudAgents, truncated } = snapshot;
   const count = (value, clipped) => clipped ? value + '+' : value;
-  $('metrics').replaceChildren(
-    metric('Registered devices', count(devices.length, truncated.devices), 'devices'),
-    metric('Exposed sessions', count(sessions.length, truncated.sessions), 'devices'),
-    metric('Queued messages', queue.queued, 'activity'),
-    metric('Cloud agents', cloudAgents?.length ?? '—', 'cloud', cloudAgents ? undefined : 'Directory unavailable'),
-  );
+  metrics([
+    ['Registered devices', count(devices.length, truncated.devices), 'devices'],
+    ['Exposed sessions', count(sessions.length, truncated.sessions), 'devices'],
+    ['Queued messages', queue.queued, 'activity'],
+    ['Cloud agents', cloudAgents?.length ?? '—', 'cloud', cloudAgents ? undefined : 'Directory unavailable'],
+  ]);
   entries('session-summary', sessions.slice(0, 5).map(s => {
     const meta = make('div', undefined, 'entry-meta');
     meta.append(make('span', deviceName(s.deviceId), 'secondary'), clock(s.lastSeen));
@@ -214,7 +219,7 @@ function devices() {
   table('session-list', ['Session', 'Device', 'Last exposure', 'Self-reported status'],
     sessions.map(s => {
       const report = s.selfReported;
-      const status = make('div');
+      const status = make('div', undefined, 'report-status');
       if (report.status) {
         status.append(tag(report.status));
         if (report.observedAt !== null) status.append(clock(report.observedAt));
@@ -222,7 +227,7 @@ function devices() {
       } else {
         status.append(make('span', 'No report', 'subtle'));
       }
-      return [label(s.harness, s.sessionId), make('span', deviceName(s.deviceId)), clock(s.lastSeen), status];
+      return [label(s.harness, s.sessionId), make('span', deviceName(s.deviceId), 'secondary'), clock(s.lastSeen), status];
     }), query ? 'No sessions on matching devices.' : 'No exposed sessions.');
 }
 
@@ -234,8 +239,8 @@ function cloud() {
   $('cloud-filter').disabled = records === null;
   const query = $('cloud-filter').value.trim().toLowerCase();
   const visible = (records || []).filter(row => [row.name, row.agentId, row.kind].join(' ').toLowerCase().includes(query));
-  table('cloud-list', ['Agent', 'Kind', 'Source'],
-    visible.map(row => [label(row.name, row.agentId), make('span', row.kind), tag('Fixture')]),
+  table('cloud-list', ['Agent', 'Kind'],
+    visible.map(row => [label(row.name, row.agentId), make('span', row.kind, 'secondary')]),
     records ? 'No matching cloud agents.' : 'No gateway directory connected.');
 }
 
@@ -243,7 +248,7 @@ function activity() {
   const state = $('receipt-filter').value;
   const visible = snapshot.receipts.filter(r => state === 'all' || r.state === state);
   table('receipt-list', ['Receipt', 'Device', 'State', 'Observed'],
-    visible.map(r => [make('span', r.messageId, 'id'), make('span', deviceName(r.deviceId)), tag(r.state), clock(r.at)]),
+    visible.map(r => [make('span', r.messageId, 'id'), make('span', deviceName(r.deviceId), 'secondary'), tag(r.state), clock(r.at)]),
     state === 'all' ? 'No receipts yet.' : 'No receipts in this state.');
 }
 
@@ -267,7 +272,7 @@ function settings() {
   else link.removeAttribute('href');
   $('permissions-note').textContent = fixture
     ? 'To connect a mesh, request a read grant with the Everett setup CLI.'
-    : 'Read grants expire 24 hours after the request. To renew, approve a new grant and update the console token.';
+    : 'Grants expire 24 hours after the request. To renew, request and approve a new grant, then replace MESH_TOKEN.';
 }
 
 function showSignedIn(authentication) {
@@ -283,7 +288,7 @@ function render(data) {
   showSignedIn(data.authentication);
   const fixture = data.source === 'fixture';
   source(fixture ? 'Sample data' : 'Cloudflare', data.source);
-  $('source').title = fixture ? 'Local fixture' : 'Owner-approved read access';
+  if (!fixture) $('source').title = 'Owner-approved read access';
   notice('');
   $('data').hidden = false;
   drawView();
@@ -338,7 +343,7 @@ async function refresh() {
       if (pending !== ctrl || document.hidden) return;
       if (error === 'mesh_access_revoked') {
         showSignedIn(authentication);
-        notice('Mesh read access ended. Ask the owner to approve a new grant.', 'error');
+        notice('Mesh read access ended. Approve a new grant and replace MESH_TOKEN in the console settings.', 'error');
       } else notice('Could not load mesh data. Try refreshing.', 'error');
     } else if (response.status === 404) {
       notice('The owner must enable the console and approve a read grant.');
@@ -357,6 +362,7 @@ async function refresh() {
 }
 
 function showLogin() {
+  source('Signed out', 'signed-out');
   $('login').hidden = false;
   $('github-login').hidden = !githubLogin;
   $('login-form').hidden = githubLogin;
@@ -404,6 +410,10 @@ for (const key of Object.keys(prefs)) {
 }
 $('reset-prefs').addEventListener('click', () => { prefs = { ...defaultPrefs }; applyPrefs(true); });
 systemTheme.addEventListener('change', () => applyPrefs());
+document.querySelector('.skip').addEventListener('click', event => {
+  event.preventDefault();
+  $('main').focus();
+});
 window.addEventListener('hashchange', setView);
 document.addEventListener('visibilitychange', () => {
   if (document.hidden) {

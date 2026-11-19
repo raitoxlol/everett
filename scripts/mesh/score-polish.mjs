@@ -71,7 +71,7 @@ try {
     assert.equal(await links.count(),5);
     const fit = await links.evaluateAll(items => items.every(el => {
       const r = el.getBoundingClientRect();
-      return r.left >= 0 && r.right <= innerWidth && r.height >= 44;
+      return r.left >= 0 && r.right <= innerWidth && r.height >= 44 && el.scrollWidth <= el.clientWidth;
     }));
     assert.ok(fit);
   });
@@ -94,10 +94,32 @@ try {
     assert.ok(fit);
   });
 
+  await check('skip link focuses the current device view', async () => {
+    const skip = page.getByRole('link',{name:'Skip to content'});
+    await skip.focus();
+    await skip.press('Enter');
+    assert.equal(new URL(page.url()).hash, '#devices');
+    assert.equal(await page.locator('main').evaluate(el => document.activeElement === el), true);
+    assert.equal(await page.getByRole('heading',{name:'Devices',exact:true}).count(), 1);
+  });
+  await page.goto(origin + '/everett/dashboard#settings');
+  await check('phone settings values sit below their labels', async () => {
+    const label = await page.getByText('Console origin',{exact:true}).boundingBox();
+    const value = await page.locator('#connection dd').filter({hasText:origin}).boundingBox();
+    assert.ok(label && value && value.y >= label.y + label.height);
+  });
+
   await page.setViewportSize({width:1440,height:900});
+  const longHarness = 'h'.repeat(160);
+  let revisedSnapshot = false;
+  let queued = 2;
+  await page.clock.install();
   await page.route('**/api/mesh', async route => {
     const upstream = await route.fetch();
     const sample = await upstream.json();
+    sample.sessions[0].harness = longHarness;
+    if (revisedSnapshot) sample.devices[0].name = 'Mac after refresh';
+    sample.queue.queued = queued;
     await route.fulfill({json:{ ...sample, source:'cloudflare', cloudAgents:null }});
   });
   await page.goto(origin+'/everett/dashboard');
@@ -106,6 +128,35 @@ try {
   await check('a healthy Cloudflare read does not occupy a second status banner', async () => {
     assert.equal(await page.locator('#notice').isVisible(), false);
     assert.equal(await page.locator('#data').isVisible(), true);
+  });
+  await check('a maximum-length session harness stays inside the phone overview', async () => {
+    await page.setViewportSize({width,height:820});
+    const label = page.getByText(longHarness,{exact:true});
+    await label.waitFor();
+    assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth));
+    const row = label.locator('xpath=ancestor::li');
+    const text = await label.boundingBox();
+    const meta = await row.locator('.entry-meta').boundingBox();
+    assert.ok(text && meta && text.x + text.width <= meta.x);
+  });
+  await page.goto(origin + '/everett/dashboard#devices');
+  await check('automatic refresh retains keyboard focus on the device table', async () => {
+    const region = page.getByRole('region',{name:'Device table'});
+    await region.focus();
+    revisedSnapshot = true;
+    await page.clock.fastForward(15000);
+    await page.getByText('Mac after refresh',{exact:true}).first().waitFor();
+    assert.equal(await region.evaluate(el => document.activeElement === el), true);
+  });
+  await page.goto(origin + '/everett/dashboard#overview');
+  await check('automatic refresh updates metrics without dropping keyboard focus', async () => {
+    const queue = page.getByRole('link',{name:/Queued messages/});
+    await queue.focus();
+    queued = 3;
+    await queue.getByText('2',{exact:true}).waitFor();
+    await page.clock.fastForward(15000);
+    await queue.getByText('3',{exact:true}).waitFor();
+    assert.equal(await queue.evaluate(el => document.activeElement === el), true);
   });
   console.log('unmet='+unmet);
 } finally {
