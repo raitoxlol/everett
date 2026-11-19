@@ -1,0 +1,11 @@
+{
+  "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
+  "name": "everett-hermes",
+  "version": "0.1.0",
+  "description": "Use Everett's local session tools from Hermes Agent.",
+  "author": {
+    "name": "Wright/raitoxlol"
+  },
+  "repository": "https://github.com/raitoxlol/everett",
+  "license": "MIT"
+}
