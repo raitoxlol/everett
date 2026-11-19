@@ -1,0 +1,202 @@
+# Private mesh console
+
+A read-only Vercel-targeted console. Cloudflare remains the authority for consent,
+account ownership, credential liveness, identities, queue counts and receipts.
+The console is disabled until `ENABLED=true`; a read grant starts pending and
+requires a separate owner decision in Everett account access.
+
+## Hosted dashboard
+
+Use a dedicated Vercel project with `web-mesh` as its root. The console opens at
+`/everett/dashboard` on that project's exact origin, for example
+`https://raitox.tech/everett/dashboard`. Everett's Cloudflare issuer retains its
+own origin and remains responsible for read-grant approval and revocation.
+
+Register a dedicated GitHub OAuth app for the console origin. Set its callback
+to `https://<console-origin>/api/github-callback` and configure
+`CONSOLE_AUTH=github`, `GITHUB_CLIENT_ID` and `GITHUB_CLIENT_SECRET` in the
+server environment. Do not use a GitHub app with repository or organization
+permissions. The console checks the GitHub account ID against the account in its
+Everett read grant. GitHub sign-in does not approve or replace that grant.
+The console keeps the OAuth client secret and token exchange on the server.
+The GitHub access token is discarded after checking the identity.
+
+Connected devices and exposed sessions come from Cloudflare. To expose a local
+device, enroll it in that same Everett account and register it with the relay.
+The separate gateway hosted-agent directory and remote owner write controls
+are not yet connected. The console shows the directory as unavailable until
+there is an authenticated source.
+
+## Initiate setup
+
+Use Node 22 or newer. This package has no dependencies or install step.
+
+```sh
+node web-mesh/setup.mjs request \
+  --credential-file "$HOME/.everett/cloudflare-auth.json" \
+  --origin https://your-private-console.example \
+  --output /absolute/private/directory/mesh-console.env
+```
+
+The CLI reads an owner-only native credential, authenticates to its issuer and
+writes a new mode-0600 configuration without printing either bearer token. It
+will not overwrite an existing file. An agent can invoke the same command; it
+cannot approve its own request. The owner opens the printed approval URL, checks
+the console origin, expiry and `mesh:read:v1` scope, then approves or denies.
+Pending and approved grants expire 24 hours after the request was created.
+Approval does not extend that deadline. The console shows the exact deadline in
+Settings. Denied, revoked, and expired grants cannot be reapproved. The account
+page shows up to 64 recent historical grants and the issuer removes records 30
+days after expiry. A revoked initiating native credential or membership also
+stops reads.
+
+The generated file leaves `ENABLED=false`. After approval, set it to `true` in
+this console's private server environment. Configure a private Vercel project
+with root directory `web-mesh` and its checked-in `vercel.json`. No public env
+prefixes are used. Deploying or changing Vercel/Cloudflare production settings
+requires separate authorization. The local checks exercise the Worker and console
+handler with a simulated GitHub provider.
+
+Each console instance serves exactly one configured owner. Configure:
+
+| Server variable | Meaning |
+| --- | --- |
+| `ENABLED` | Must be exactly `true`. Defaults off. |
+| `CONSOLE_ORIGIN` | Exact HTTPS console origin; loopback HTTP only for local work. |
+| `CONSOLE_AUTH` | Set to `github` for the hosted flow. The default `secret` mode supports local and legacy setups. |
+| `GITHUB_CLIENT_ID`, `GITHUB_CLIENT_SECRET` | Dedicated GitHub OAuth app for the exact console callback. |
+| `CONSOLE_SECRET` | Generated 256-bit login secret used only in `secret` mode. |
+| `SESSION_KEY` | Independent generated 256-bit cookie signing key. |
+| `MESH_ENDPOINT` | Exact Cloudflare issuer origin. |
+| `MESH_TOKEN` | Narrow `emr_` read bearer, never a native/gateway credential. |
+| `MESH_OWNER` | Pinned owner namespace from the setup response. |
+| `MESH_MODE` | Optional `fixture` for explicitly labeled examples. Never automatic. |
+
+In `secret` mode, store the generated access secret in the owner's password
+manager and use it at the sign-in form. The browser receives only an opaque,
+HttpOnly, Secure, SameSite=Strict, 15-minute signed session cookie. Source tokens
+and the session signing key stay server-side. The console secret is a random
+access secret, not a human-selected password. Rotate it and `SESSION_KEY`
+together to invalidate all browser sessions. Sign out clears this browser's
+cookie; an already copied cookie remains valid until its 15-minute expiry or
+key rotation. Vercel deployment protection can provide an additional boundary,
+but the server does not trust client-supplied identity headers.
+
+## Renew a grant
+
+Before or after expiry, run the same setup command with the same origin and a
+new private output path. Open the new approval URL and approve the new grant
+in Everett account access. Copy only the replacement `MESH_TOKEN` into the
+protected console's server environment and redeploy that environment so its
+functions read the new value. Keep `MESH_ENDPOINT`, `MESH_OWNER`, OAuth settings
+and `SESSION_KEY` unchanged for a same-owner rotation. Verify the new deployment
+shows the known devices and the new grant deadline, then revoke the previous
+grant if it is still active. A Vercel rollback to a deployment with an expired or
+revoked token cannot recover access.
+
+An expired or revoked grant clears the mesh view on the next failed refresh.
+A fresh GitHub sign-in alone does not renew it. The setup CLI is the renewal entry
+point and owner approval is required for every replacement.
+
+## Revoke access
+
+Open the issuer's `/enroll` account page, select the console in **Mesh read
+grants**, and revoke it. Cloudflare checks the grant and native account liveness
+on every snapshot. No source response is cached. An open visible console polls
+every 15 seconds and clears all mesh data after a denied or failed read. Hidden
+tabs clear their data immediately and reauthorize when visible. Data already
+viewed cannot be recalled; no streaming or immediate browser push is claimed.
+
+## Versioned boundary
+
+`everett.mesh.v1` is independent of #103. The server adapter reconstructs an
+allowlisted response, pins the owner and console origin, checks the version and
+limits, and rejects unknown versions. It never forwards upstream JSON wholesale.
+Browser input cannot select an owner, source URL, scope or relay operation.
+
+- Device IDs are registered Everett identities. Last seen means the last
+  successful server-observed relay request, not a connectivity guarantee.
+- Session IDs/harnesses come from authenticated device exposure. Their exposure
+  timestamp is server-observed; running processes are not independently attested.
+  Session card text is excluded.
+- Queue counts aggregate nonexpired queued attempts between the account's active
+  devices. No message payload or attempt envelope is returned.
+- The timeline records monotonic recipient observations only after the existing
+  signature verifier accepts them. It records the signed device timestamp with
+  the existing five-minute clock tolerance. Signed observations are evidence of
+  what a device reported, not proof that a task completed. There are no invented
+  historical receipts: recording begins with this Worker version. Up to 2,000
+  observations are retained per owner and the newest 100 are shown.
+- Self-reported status is a separate optional slot. The live projection reports
+  it unavailable until a future status adapter is explicitly wired. The adapter
+  supports only `idle`, `busy`, `blocked`, `offline`, a timestamp and the fixed
+  confidence `self-reported`. It cannot relabel a status report as a signed
+  receipt. Fixtures illustrate report age and unverified confidence.
+
+Cloudflare isolates grants by verified GitHub account, then selects its immutable
+owner namespace. The relay rechecks the stored credential/membership and filters
+projection queries by subject. Grants contain a token hash, not the raw token;
+there is no public HTTP path to the relay's internal projection RPC. The console
+checks the incoming HTTP host against its configured origin. Cloudflare requires
+the matching console-origin header as a configuration check. The read token is
+still a bearer credential and must remain private. Read tokens
+are not accepted by the native relay verifier and cannot enqueue or revoke.
+Consent mutations use the existing owner session, same-origin check and CSRF.
+
+Receipt/last-seen metadata is recorded by the relay independently of whether a
+console is enabled. This does not enable access; a pending/absent grant cannot
+read it. No message body, transcript, session card, ciphertext, signature,
+idempotency key, native credential or gateway credential enters the projection.
+
+## Local checks
+
+```sh
+npm --prefix cloudflare run typecheck
+npm --prefix cloudflare test
+node scripts/mesh/score.mjs
+npm --prefix web-mesh test
+npm --prefix web-mesh run check
+node web-mesh/test/local-e2e.mjs
+```
+
+The Worker suite covers default denial, explicit approval, CSRF, expiry, native
+credential revocation, grant revocation using an existing reader, scoped-token
+rejection by write APIs, two-account isolation, signed receipts, queue counts,
+content exclusion and Durable Object eviction. Only GitHub's provider response
+is synthetic. Worker storage, routing, enrollment, signature validation and
+receipt persistence execute in the real local workerd runtime.
+
+`local-e2e.mjs` runs the production Worker locally on 18869, invokes the setup CLI,
+approves using a synthetic owner, enqueues an encrypted message, submits a real
+signed recipient observation, then reads it through the actual Node console
+handler on 18870. It revokes and checks that the same console session gets 403.
+It never contacts production. Temporary native/read credentials are private and
+removed on exit. `--hold` keeps this disposable local environment open for a
+browser check. Its loopback-only control server on 18871 accepts `POST /revoke`
+and `POST /stop`. Those control endpoints exist only in the test runner, not
+in the application. Port conflicts fail instead of reusing another server.
+
+For visual fixture work, set `ENABLED=true`, `MESH_MODE=fixture`, an exact
+`CONSOLE_ORIGIN`, `CONSOLE_SECRET` and `SESSION_KEY`, then run
+`npm --prefix web-mesh run dev`. No fixture is ever substituted for an upstream
+failure. Both the API and the visible page label fixtures; they are not live
+verification.
+
+## Future controls and audit design
+
+Write controls are deliberately absent from the browser API and Worker read
+scope. A future change must add a new, separately approved capability; a read
+grant cannot be upgraded in place. Proposed controls are pause routing, drain a
+device queue and revoke a device. Each needs exact owner/device binding, bounded
+expiry, fresh owner confirmation, idempotency, replay protection and enforcement
+at the Cloudflare authority, including a final liveness check at execution.
+
+Before enabling any control, add a durable append-only audit stream in the owner
+namespace. Suggested `everett.mesh.audit.v1` fields are event ID, server timestamp,
+verified actor ID, action, scope/grant ID, target device ID, decision, result,
+request correlation ID and previous-event digest. Store no bodies or credentials.
+Record approval, denial, revocation, attempted forbidden control and execution
+outcome. Audit access needs its own retention/privacy policy and read scope.
+The current receipt timeline is not an audit log, and current grant state is not
+an immutable consent history. No control implementation or audit completeness
+is claimed by this version.
