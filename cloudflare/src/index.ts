@@ -36,7 +36,7 @@ function relayFailure(result: Extract<RelayResult, { ok: false }>, env: Env): Re
 async function relayRequest(request: Request, env: Env, verifier: PrincipalVerifier = hostedVerifier(env)): Promise<Response> {
   const url = new URL(request.url);
   if (request.method === 'GET' && url.pathname === '/health') return Response.json({ backend: 'cloudflare', status: env.AUTHENTICATOR || env.EVERETT_ISSUER ? 'configuration-present' : 'authentication-unconfigured' });
-  if (hostedAuthPaths(url.pathname)) {
+  if (url.pathname.startsWith('/v1/mesh/') || hostedAuthPaths(url.pathname)) {
     if (!env.EVERETT_ISSUER || !env.AUTH_STATE) return Response.json({ error: 'authentication_unconfigured' }, { status: 503, headers: { 'Cache-Control': 'no-store' } });
     return env.AUTH_STATE.get(env.AUTH_STATE.idFromName(env.EVERETT_ISSUER)).fetch(new Request(request, { redirect: 'manual' }));
   }

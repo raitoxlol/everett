@@ -37,6 +37,8 @@ export class OwnerRelay extends DurableObject {
       CREATE TABLE IF NOT EXISTS messages (seq INTEGER PRIMARY KEY AUTOINCREMENT, message_id TEXT NOT NULL UNIQUE, to_device TEXT NOT NULL, expires_at INTEGER NOT NULL, envelope TEXT NOT NULL);
       CREATE INDEX IF NOT EXISTS message_recipient ON messages(to_device,seq);
       CREATE INDEX IF NOT EXISTS message_expiry ON messages(expires_at);
+      CREATE TABLE IF NOT EXISTS mesh_seen(agent_id TEXT PRIMARY KEY, at INTEGER NOT NULL);
+      CREATE TABLE IF NOT EXISTS mesh_receipts(seq INTEGER PRIMARY KEY AUTOINCREMENT, message_id TEXT NOT NULL, device_id TEXT NOT NULL, state TEXT NOT NULL, at INTEGER NOT NULL, UNIQUE(message_id,state));
       CREATE TABLE IF NOT EXISTS rates (scope TEXT PRIMARY KEY, window INTEGER NOT NULL, count INTEGER NOT NULL);
     `);
   }
@@ -150,6 +152,32 @@ export class OwnerRelay extends DurableObject {
     }
   }
 
+  async meshSnapshot(input: Principal) {
+    const p = principalSchema.parse(input);
+    this.#authorize(p);
+    const now = Date.now();
+    const devices = this.ctx.storage.sql.exec<{ agent_id: string; at: number | null }>("SELECT d.agent_id,s.at FROM devices d JOIN credentials c ON c.agent_id=d.agent_id JOIN members m ON m.subject=c.subject LEFT JOIN mesh_seen s ON s.agent_id=d.agent_id WHERE c.subject=? AND c.status='active' AND m.status='active' ORDER BY d.agent_id LIMIT 257", p.subject).toArray();
+    const deviceCap = devices.length > 256;
+    const displayedDevices = devices.slice(0, 256);
+    const lastDeviceId = displayedDevices.at(-1)?.agent_id ?? null;
+    const activeSessions = "FROM session_cards s JOIN devices d ON d.agent_id=s.agent_id JOIN credentials c ON c.agent_id=s.agent_id WHERE c.subject=? AND c.status='active'";
+    const sessions = this.ctx.storage.sql.exec<{ agent_id: string; session: string; harness: string; updated_at: number }>(
+      `SELECT s.agent_id,s.session,s.harness,s.updated_at ${activeSessions} AND s.agent_id<=? ORDER BY s.updated_at DESC,s.seq DESC LIMIT 257`,
+      p.subject, lastDeviceId,
+    ).toArray();
+    const omittedSessions = deviceCap && !!this.#row(
+      `SELECT 1 ${activeSessions} AND s.agent_id>? LIMIT 1`, p.subject, lastDeviceId,
+    );
+    const queue = this.#row<{ queued: number }>("SELECT count(*) queued FROM attempts a JOIN credentials f ON f.agent_id=a.from_device JOIN credentials t ON t.agent_id=a.to_device WHERE f.subject=? AND t.subject=? AND f.status='active' AND t.status='active' AND a.state='queued' AND a.expires_at>?", p.subject,p.subject,now)!;
+    const receipts = this.ctx.storage.sql.exec<{ message_id: string; device_id: string; state: string; at: number }>("SELECT r.message_id,r.device_id,r.state,r.at FROM mesh_receipts r JOIN attempts a ON a.message_id=r.message_id JOIN credentials f ON f.agent_id=a.from_device JOIN credentials t ON t.agent_id=a.to_device WHERE f.subject=? AND t.subject=? AND f.status='active' AND t.status='active' ORDER BY r.seq DESC LIMIT 101",p.subject,p.subject).toArray();
+    return {
+      version: 'everett.mesh.v1' as const, source: 'cloudflare' as const, owner: namespace(p), serverNow: now,
+      devices: displayedDevices.map(d => ({ deviceId:d.agent_id,lastSeen:d.at,lastSeenConfidence:d.at === null ? 'unavailable' : 'server-observed-request' })),
+      sessions: sessions.slice(0,256).map(s => ({ deviceId:s.agent_id,sessionId:s.session,harness:s.harness,lastSeen:s.updated_at,lastSeenConfidence:'server-observed-exposure',selfReported:{ status:null,confidence:'unavailable',observedAt:null } })),
+      queue, receipts:receipts.slice(0,100).map(r => ({ messageId:r.message_id,deviceId:r.device_id,state:r.state,at:r.at,confidence:'signed-device-observation' })),
+      truncated: { devices:deviceCap,sessions:sessions.length>256 || omittedSessions,receipts:receipts.length>100 },
+    };
+  }
   async revokeCredential(identityInput: Identity, agentIdInput: string): Promise<boolean> {
     const identity = identitySchema.safeParse(identityInput), agent = identifier.safeParse(agentIdInput);
     if (!identity.success || !agent.success || this.#owner() !== namespace(identity.data)) return false;
@@ -198,6 +226,7 @@ export class OwnerRelay extends DurableObject {
       const p = principalSchema.parse(principalInput);
       const value = await this.ctx.storage.transaction(async () => {
         const result = this.#execute(p, op, args);
+        this.ctx.storage.sql.exec('INSERT INTO mesh_seen VALUES(?,?) ON CONFLICT(agent_id) DO UPDATE SET at=excluded.at', p.agentId, Date.now());
         if (op === 'enqueue' || op === 'accept' || op === 'observe') await this.#scheduleExpiry();
         return result;
       });
@@ -357,6 +386,10 @@ export class OwnerRelay extends DurableObject {
         if (newReply) e.repliedAt = o.at;
         if (state !== a.state || newClaim || newReply) {
           this.ctx.storage.sql.exec('UPDATE attempts SET state=?, metadata=? WHERE message_id=?', state, JSON.stringify(e), o.messageId);
+        }
+        if (state !== a.state) {
+          this.ctx.storage.sql.exec('INSERT OR IGNORE INTO mesh_receipts(message_id,device_id,state,at) VALUES(?,?,?,?)', o.messageId, o.deviceId, o.state, o.at);
+          this.ctx.storage.sql.exec('DELETE FROM mesh_receipts WHERE seq <= (SELECT max(seq)-2000 FROM mesh_receipts)');
         }
         this.ctx.storage.sql.exec('DELETE FROM messages WHERE message_id=?', o.messageId);
         return null;
