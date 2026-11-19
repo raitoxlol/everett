@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import { EventEmitter } from "node:events";
 import os from "node:os";
 import path from "node:path";
@@ -263,9 +263,10 @@ test("Pi bridge launches the session server and binding hook in the Pi context c
   const sessionId = "pi-context-cwd-session";
   await pi.events.get("session_start")({}, { cwd: piCwd, sessionManager: { getSessionId: () => sessionId } });
   try {
+    const canonicalPiCwd = await realpath(piCwd);
     const result = await pi.tools.get("everett_whoami").execute("call-cwd", {});
-    assert.equal(result.content[0].text, `${sessionId}:everett_whoami:${piCwd}`);
-    assert.equal((await readFile(fx.bindLog, "utf8")).trim(), JSON.stringify({ sessionId, cwd: piCwd }));
+    assert.equal(result.content[0].text, `${sessionId}:everett_whoami:${canonicalPiCwd}`);
+    assert.equal((await readFile(fx.bindLog, "utf8")).trim(), JSON.stringify({ sessionId, cwd: canonicalPiCwd }));
   } finally {
     await pi.events.get("session_shutdown")();
   }
@@ -323,11 +324,12 @@ test("Pi runtimes with native MCP registration retain the existing path", async 
   await loadExtension(fx, pi);
   const nativeCwd = path.join(fx.dir, "pi-native-session-cwd");
   await mkdir(nativeCwd);
+  const canonicalNativeCwd = await realpath(nativeCwd);
   events.get("session_start")({}, { cwd: nativeCwd, sessionManager: { getSessionId: () => "pi-native-session" } });
   assert.equal(calls[0][0], "unregister");
   assert.equal(calls[1][0], "register");
   assert.equal(calls[1][1], "everett");
   assert.equal(calls[1][2].cwd, nativeCwd);
   assert.equal(calls[1][2].env.EVERETT_SESSION_ID, "pi-native-session");
-  assert.equal((await readFile(fx.bindLog, "utf8")).trim(), JSON.stringify({ sessionId: "pi-native-session", cwd: nativeCwd }));
+  assert.equal((await readFile(fx.bindLog, "utf8")).trim(), JSON.stringify({ sessionId: "pi-native-session", cwd: canonicalNativeCwd }));
 });
