@@ -170,7 +170,7 @@ fn markdown_lines(text: &str) -> Vec<(String, bool, bool)> {
     static URL: OnceLock<Regex> = OnceLock::new();
     let url = URL.get_or_init(|| Regex::new(r"https?://\S+").unwrap());
     static TAG: OnceLock<Regex> = OnceLock::new();
-    let tag = TAG.get_or_init(|| Regex::new(r"<[^>]{1,200}>").unwrap());
+    let tag = TAG.get_or_init(|| Regex::new(r"<[A-Za-z/!?][^>]{0,199}>").unwrap());
     static QUOTE: OnceLock<Regex> = OnceLock::new();
     let quote = QUOTE.get_or_init(|| Regex::new(r"^\s*>+\s?").unwrap());
     static BULLET: OnceLock<Regex> = OnceLock::new();
