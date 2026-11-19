@@ -128,6 +128,7 @@ function table(destination, headings, rows, empty) {
   wrap.setAttribute('role', 'region');
   wrap.setAttribute('aria-label', headings[0] + ' table');
   const grid = make('table');
+  grid.setAttribute('role', 'table');
   const header = make('tr');
   for (const heading of headings) {
     const th = make('th', heading);
@@ -137,10 +138,18 @@ function table(destination, headings, rows, empty) {
   const head = make('thead');
   head.append(header);
   const body = make('tbody');
+  body.setAttribute('role', 'rowgroup');
   for (const row of rows) {
     const tr = make('tr');
-    for (const value of row) {
+    tr.setAttribute('role', 'row');
+    for (const [index, value] of row.entries()) {
       const cell = make('td');
+      cell.setAttribute('role', 'cell');
+      if (index > 0) {
+        const title = make('span', headings[index], 'mobile-label');
+        title.setAttribute('aria-hidden', 'true');
+        cell.append(title);
+      }
       cell.append(value);
       tr.append(cell);
     }
