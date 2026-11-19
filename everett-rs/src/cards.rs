@@ -43,6 +43,36 @@ pub fn read_card_body(session_id: &str) -> Option<(String, f64)> {
     read_card_full(&card_path(session_id)?).map(|(body, mtime, _)| (body, mtime))
 }
 
+pub(crate) fn status(session_id: &str, now: f64) -> crate::delivery_status::AgentStatus {
+    use crate::delivery_status::{unix_ms, AgentStatus, CardFreshness};
+    let Some((body, mtime, source)) = card_path(session_id).as_ref().and_then(read_card_full) else {
+        return AgentStatus::unknown(None);
+    };
+    let timestamp = unix_ms(mtime);
+    if source != "agent" || timestamp.is_none() || mtime > now {
+        return AgentStatus::unknown(timestamp);
+    }
+    if now - mtime >= STALE_AFTER {
+        return AgentStatus { freshness: CardFreshness::Stale, ..AgentStatus::unknown(timestamp) };
+    }
+    let field = |name: &str| {
+        let mut fields = body.lines().filter_map(|line| {
+            let (key, value) = line.trim().split_once(':')?;
+            key.eq_ignore_ascii_case(name).then(|| clean(value, 300))
+        });
+        let value = fields.next()?;
+        (!value.is_empty() && fields.next().is_none()).then_some(value)
+    };
+    let Some(state) = field("state") else { return AgentStatus::unknown(timestamp) };
+    AgentStatus {
+        freshness: CardFreshness::Current,
+        what: field("what"),
+        state,
+        next: field("next"),
+        updated_at_ms: timestamp,
+    }
+}
+
 pub fn is_auto_card(session_id: &str) -> bool {
     card_path(session_id)
         .and_then(|p| fs::read_to_string(p).ok())
@@ -109,7 +139,7 @@ pub fn coverage(sessions: &[Session]) -> Coverage {
 
 pub const INSTRUCTION: &str = "REQUIRED — Everett card. Other agents route work to this session using a card at {path}. \
 In your FIRST reply that does any work (even a plain answer), write that file: plain markdown, max 50 words — \
-what this session is about, current state, next step. Rewrite it when the topic or state changes. \
+use three lines labeled What:, State:, and Next:. Rewrite it when the topic or state changes. \
 One quick file write; do not mention it to the user.";
 
 #[cfg(test)]

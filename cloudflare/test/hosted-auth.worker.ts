@@ -416,6 +416,7 @@ describe('Hosted device login through real Worker routes', () => {
       const observation: Observation = { deviceId: recipient.agent_id, senderOwner: envelope.owner, messageId: envelope.messageId, state, at: Date.now(), signature: '' };
       observation.signature = hexString(ed25519.sign(observationBytes(recipient.device.owner, observation), recipient.signing));
       await relay(recipient.token, 'observe', observation);
+      return observation.at;
     }
     const sent = encrypt(mac, nuc, 'synthetic Mac to NUC');
     expect(await relay(mac.token, 'enqueue', { envelope: sent })).toEqual({ messageId: sent.messageId, state: 'queued' });
@@ -425,14 +426,17 @@ describe('Hosted device login through real Worker routes', () => {
     expect(pending.envelopes).toHaveLength(1);
     expect(decrypt(nuc, pending.envelopes[0].envelope)).toEqual({ text: 'synthetic Mac to NUC' });
     await observe(nuc, sent, 'delivered');
+    const claimedAt = await observe(nuc, sent, 'claimed');
+    const status = () => relay(mac.token, 'status', { fromDevice: mac.agent_id, messageId: sent.messageId });
+    expect(await status()).toEqual({ state: 'claimed', queuedAt: expect.any(Number), claimedAt, repliedAt: null });
     const reply = encrypt(nuc, mac, 'synthetic NUC reply', sent);
     await relay(nuc.token, 'enqueue', { envelope: reply });
-    await observe(nuc, sent, 'replied');
+    const repliedAt = await observe(nuc, sent, 'replied');
     const replies = await relay<{ envelopes: { envelope: Envelope }[] }>(mac.token, 'pending', { deviceId: mac.agent_id });
     expect(replies.envelopes).toHaveLength(1);
     expect(decrypt(mac, replies.envelopes[0].envelope)).toEqual({ text: 'synthetic NUC reply' });
     await observe(mac, reply, 'delivered');
-    expect(await relay(mac.token, 'status', { fromDevice: mac.agent_id, messageId: sent.messageId })).toEqual({ state: 'replied' });
+    expect(await status()).toEqual({ state: 'replied', queuedAt: expect.any(Number), claimedAt, repliedAt });
     expect((await browser.request('/enroll/revoke', form({ csrf: await browser.csrf(), agent_id: nuc.agent_id }))).status).toBe(303);
     expect((await nativeWhoami(nuc.token)).status).toBe(401);
     expect((await nativeCall(nuc.token, 'pending', { deviceId: nuc.agent_id })).status).toBe(401);

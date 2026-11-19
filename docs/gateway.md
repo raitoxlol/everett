@@ -221,11 +221,9 @@ the grant, refreshing client tool registrations, and running a live model test
 require separate owner authorization. Source and fixture tests do not establish
 that an existing hosted connector supports it.
 
-The only native operation is `everett_start`, using a fixed T3 project ID,
-provider instance and model. It does not expose `everett_control`, arbitrary
-commands, per-call paths, worktrees, provider/model overrides, automatic wake,
-transcript reads or new message destinations. Existing remote-derived callers
-remain refused by local `everett_control`.
+The only native operation is `everett_start`. The owner fixes the T3 project
+and provider instance and sets the default model and optional reasoning effort.
+Existing remote-derived callers remain refused by local `everett_control`.
 
 The optional block in the local gateway configuration is:
 
@@ -251,21 +249,42 @@ identity. The configured CLI must support `thread start --json` and `-` for
 stdin, and must already reach the intended T3 server. No server is installed or
 started by this feature.
 
+To require verifiable model and effort selection, also configure
+`"effort": "xhigh"` and `"mcp_endpoint": "http://127.0.0.1:PORT/mcp"` in
+`native_start`. Supply the existing scoped T3 MCP bearer through
+`EVERETT_T3_MCP_TOKEN` in the gateway process environment. The gateway uses
+the literal loopback address, checks the model and its `reasoningEffort` option
+against the T3 catalog, and launches through `t3_thread_launch`. It requires
+that receipt to report the same provider instance, model, and effort. Some T3
+CLI versions can submit model options through `--option`. Their start receipts
+only carry project, thread and run IDs.
+
 Register a chat with `everett_identity` first. Then call:
 
 ```text
 everett_start(identity_handle=<private handle>,
-              request_id=<fresh 32..128 character URL-safe ID>, text=<request>)
+              request_id=<fresh 32..128 character URL-safe ID>, text=<request>,
+              model="gpt-6.2-sol", effort="xhigh")
 ```
 
-Keep the private handle and reuse exactly the same request ID and text after a
-timeout or reconnect. A private identity is required so retry scope survives
+When MCP transport is configured, omitted `model` and `effort` fields use the
+owner's defaults. Owners can optionally configure up to 32 additional pairs
+in `allowed_selections`, for example
+`[{"model":"gpt-6.1-sol","effort":"high"}]`. The resolved pair must match the
+default or an allowed pair and be available on the fixed provider. For a
+legacy CLI grant, omit both arguments. Keep the private handle and reuse the
+same request ID and inputs after a timeout or reconnect. A private identity is
+required so retry scope survives
 normal account/client reapproval. Another chat cannot read or retry that chat's
-receipt. Changing the text or owner policy under the same ID is rejected.
+receipt. While a request has a journal reservation, changing the text, resolved
+pair, or owner policy under the same ID is rejected.
 
 Before dispatch, the gateway commits a reservation in the private
-`~/.everett/gateway-starts.sqlite` journal. Retries and concurrent requests return
-the recorded result; they never launch again. If the gateway crashes after the
+`~/.everett/gateway-starts.sqlite` journal. A confirmed MCP preflight failure
+releases the reservation and returns `dispatch_not_started` with
+`t3_mcp_unavailable` or `t3_model_or_effort_unavailable`. Resolve the issue
+and retry with the same request ID and inputs. Once a launch may have been
+sent, retries return the recorded result. If the gateway crashes after the
 reservation, the result remains `dispatch_unconfirmed`, even if T3 actually
 started the run. The owner must reconcile T3 before attempting a new request ID.
 Back up this journal with the gateway state; deleting it loses duplicate-start
@@ -273,8 +292,10 @@ protection. It stores request fingerprints and bounded receipts, not prompts,
 tokens or handles. It retains at most 256 requests per issuer/resource/account/
 client scope; reaching the limit requires owner reconciliation.
 
-`state=dispatch_confirmed` requires a valid command-specific CLI receipt with
-the exact project ID and nonempty thread/run IDs. It confirms dispatch only.
+`state=dispatch_confirmed` requires a valid T3 receipt with the exact project
+ID and nonempty thread/run IDs. `requested` contains the resolved model and
+effort. `effective` contains the verified selection for MCP dispatch and is
+null for legacy CLI or uncertain receipts. The receipt establishes T3 dispatch.
 `native_session_id=null` means the gateway has not established the native
 provider's session identity. Pickup, completion and correlated reply remain
 explicitly unconfirmed. The returned thread ID is not an Everett destination;
@@ -283,9 +304,10 @@ the owner must separately verify and authorize a full native ID for messaging.
 Uncertain results set MCP `isError=true`, retain the durable reservation and
 include a bounded diagnostic code: `cli_unavailable`, `cli_io_error`, `cli_exit`,
 `cli_timeout`, `cli_output_too_large`, `invalid_receipt`,
-`destination_mismatch_or_missing_run`, or `interrupted_or_pending`. Raw CLI
-output is not returned. Prompts travel over stdin, and gateway credentials are
-not forwarded to the CLI. The trusted CLI can still access the owner's stores;
+`destination_mismatch_or_missing_run`, `interrupted_or_pending`,
+`t3_mcp_launch_unconfirmed`, or `t3_effective_selection_mismatch`. The
+legacy command receives the prompt over stdin and runs with a limited
+environment. MCP sends the prompt over the configured loopback connection. The trusted CLI can still access the owner's stores;
 this is not an OS sandbox. Cancellation kills only the gateway-owned CLI process
 group; it cannot cancel a model run already accepted by the independent T3 server.
 

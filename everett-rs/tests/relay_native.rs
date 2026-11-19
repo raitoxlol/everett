@@ -591,3 +591,40 @@ fn provenance_threads_and_processes_preserve_external_taint_and_maximum_hops() {
     assert!(everett::send::hop_env().is_err());
     assert!(everett::peer::send("unpaired/codex/target", "synthetic", Some("test"), None).is_err());
 }
+
+#[test]
+fn dashboard_relay_status_requires_a_claim_and_preserves_signed_timestamps() {
+    let (f, server, mid) = status_fixture(true, "queued", false);
+    let status = |state: Value| {
+        *server.status.lock().unwrap() = state;
+        let output = f.run(&["peer", "status", "id:agent-b", &mid]);
+        assert!(output.status.success(), "{output:?}");
+        serde_json::from_str::<Value>(&f.stdout(&output)).unwrap()
+    };
+    let at = 1_800_000_000_123_i64;
+    let delivered = status(json!({"state":"delivered","queuedAt":at}));
+    assert_eq!(delivered["state"], "delivered");
+    assert_eq!(delivered["schema_version"], 1);
+    assert_eq!(delivered["delivery"]["state"], "unknown");
+    assert_eq!(delivered["delivery"]["evidence"]["queued_at_ms"], at);
+    assert_eq!(delivered["delivery"]["evidence"].get("picked_up_at_ms"), Some(&Value::Null));
+    assert_eq!(delivered["agent"]["state"], "unknown");
+    let claimed = status(json!({"state":"claimed","queuedAt":at,"claimedAt":at+1}));
+    assert_eq!(claimed["delivery"]["state"], "picked_up");
+    assert_eq!(claimed["delivery"]["evidence"]["picked_up_at_ms"], at+1);
+    assert_eq!(claimed["agent"], delivered["agent"]);
+    let older_snapshot = status(json!({"state":"queued","queuedAt":at}));
+    assert_eq!(older_snapshot["delivery"]["state"], "queued");
+    assert_eq!(older_snapshot["delivery"]["evidence"]["picked_up_at_ms"], Value::Null);
+    let replied = status(json!({"state":"replied","queuedAt":at,"claimedAt":at+1,"repliedAt":at+2}));
+    assert_eq!(replied["delivery"]["state"], "replied");
+    assert_eq!(replied["delivery"]["evidence"]["replied_at_ms"], at+2);
+    let receipt_path = f.home().join(".everett/relay-cloudflare/outgoing/status.json");
+    let mut receipt: Value = serde_json::from_slice(&fs::read(&receipt_path).unwrap()).unwrap();
+    receipt["state"] = json!("replied");
+    receipt["replied_at"] = json!(at+3);
+    fs::write(receipt_path, serde_json::to_vec(&receipt).unwrap()).unwrap();
+    let retained = status(Value::Null);
+    assert_eq!(retained["delivery"], replied["delivery"]);
+    assert_eq!(server.status_calls.load(std::sync::atomic::Ordering::SeqCst), 4);
+}

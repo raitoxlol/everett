@@ -797,8 +797,8 @@ impl ServerHandler for Gateway {
             return Ok(ListToolsResult::with_all_items(tools));
         }
         let mut tools = binding.tools();
-        if binding.native_start.as_ref().is_some_and(|p| p.permits(agent.as_ref())) {
-            tools.push(native_start::tool());
+        if let Some(policy) = binding.native_start.as_ref().filter(|p| p.permits(agent.as_ref())) {
+            tools.push(native_start::tool(policy));
         }
         Ok(ListToolsResult::with_all_items(tools))
     }
