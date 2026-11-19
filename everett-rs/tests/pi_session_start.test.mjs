@@ -37,7 +37,7 @@ const options = ${JSON.stringify(options)};
 const bindLog = ${JSON.stringify(bindLog)};
 const requestLog = ${JSON.stringify(requestLog)};
 if (process.argv[2] === "hook" && process.argv[3] === "pi_bind") {
-  fs.appendFileSync(bindLog, JSON.stringify({ sessionId: process.argv[4] }) + String.fromCharCode(10));
+  fs.appendFileSync(bindLog, JSON.stringify({ sessionId: process.argv[4], cwd: process.cwd() }) + String.fromCharCode(10));
   process.exit(0);
 }
 if (process.argv[2] !== "mcp") process.exit(2);
@@ -64,7 +64,7 @@ readline.createInterface({ input: process.stdin }).on("line", (line) => {
     if (options.blockCallName === request.params.name) while (true) {}
     result = options.failCall
       ? { isError: true, content: [{ type: "text", text: "fixture tool failed" }] }
-      : { content: [{ type: "text", text: process.env.EVERETT_SESSION_ID + ":" + request.params.name }] };
+      : { content: [{ type: "text", text: process.env.EVERETT_SESSION_ID + ":" + request.params.name + (options.includeCwd ? ":" + process.cwd() : "") }] };
   } else {
     process.stdout.write(JSON.stringify({ jsonrpc: "2.0", id: request.id, error: { code: -32601, message: "method not found" } }) + String.fromCharCode(10));
     return;
@@ -114,7 +114,7 @@ test("Pi tools bridge lists schemas and forwards a session-bound call", async ()
   try {
     const result = await pi.tools.get("everett_whoami").execute("call-1", {});
     assert.equal(result.content[0].text, "pi-fixture-session:everett_whoami");
-    assert.equal((await readFile(fx.bindLog, "utf8")).trim(), JSON.stringify({ sessionId: "pi-fixture-session" }));
+    assert.equal((await readFile(fx.bindLog, "utf8")).trim(), JSON.stringify({ sessionId: "pi-fixture-session", cwd: process.cwd() }));
   } finally {
     await pi.events.get("session_shutdown")();
   }
@@ -213,6 +213,23 @@ test("Pi bridge reconnects after aborting a blocked send without retrying it", a
   }
 });
 
+test("Pi bridge launches the session server and binding hook in the Pi context cwd", async () => {
+  const fx = await fixture([{ name: "everett_whoami", inputSchema: { type: "object", properties: {} } }], { includeCwd: true });
+  const piCwd = path.join(fx.dir, "pi-session-cwd");
+  await mkdir(piCwd);
+  const pi = piApi();
+  await loadExtension(fx, pi.api);
+  const sessionId = "pi-context-cwd-session";
+  await pi.events.get("session_start")({}, { cwd: piCwd, sessionManager: { getSessionId: () => sessionId } });
+  try {
+    const result = await pi.tools.get("everett_whoami").execute("call-cwd", {});
+    assert.equal(result.content[0].text, `${sessionId}:everett_whoami:${piCwd}`);
+    assert.equal((await readFile(fx.bindLog, "utf8")).trim(), JSON.stringify({ sessionId, cwd: piCwd }));
+  } finally {
+    await pi.events.get("session_shutdown")();
+  }
+});
+
 test("Pi MCP client rejects pending requests when stdin emits EPIPE", async () => {
   const fx = await fixture([]);
   const extension = await import(pathToFileURL(fx.extension));
@@ -263,9 +280,13 @@ test("Pi runtimes with native MCP registration retain the existing path", async 
     },
   };
   await loadExtension(fx, pi);
-  events.get("session_start")({}, { sessionManager: { getSessionId: () => "pi-native-session" } });
+  const nativeCwd = path.join(fx.dir, "pi-native-session-cwd");
+  await mkdir(nativeCwd);
+  events.get("session_start")({}, { cwd: nativeCwd, sessionManager: { getSessionId: () => "pi-native-session" } });
   assert.equal(calls[0][0], "unregister");
   assert.equal(calls[1][0], "register");
   assert.equal(calls[1][1], "everett");
+  assert.equal(calls[1][2].cwd, nativeCwd);
   assert.equal(calls[1][2].env.EVERETT_SESSION_ID, "pi-native-session");
+  assert.equal((await readFile(fx.bindLog, "utf8")).trim(), JSON.stringify({ sessionId: "pi-native-session", cwd: nativeCwd }));
 });
