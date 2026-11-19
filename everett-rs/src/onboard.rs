@@ -28,6 +28,7 @@ pub fn event_label(event: &str) -> &str {
 
 pub const WELCOME_LINES: &[&str] = &[
     "Everett lists recent Claude Code, Codex, OMP, Pi, Hermes, and Grok sessions on this machine.",
+    "Local agents need no Everett account. Sign-in is optional for cross-device delivery.",
     "It lets those sessions hand work to each other instead of you copy-pasting between them.",
     "It shares merged memory through supported hooks, or agents can read it with everett_core.",
 ];
@@ -349,6 +350,7 @@ pub fn run_apply(
 
 pub fn summary_lines(cfg: &OnboardConfig, result: &ApplyResult) -> Vec<String> {
     let warnings = setup_warnings(cfg, result);
+    let mcp_selected = cfg.mcp.iter().any(|(_, on)| *on);
     let mut lines = if warnings.is_empty() {
         vec!["Everett onboarding complete.".to_string()]
     } else {
@@ -381,6 +383,18 @@ pub fn summary_lines(cfg: &OnboardConfig, result: &ApplyResult) -> Vec<String> {
         ));
     } else {
         lines.push("Backfill: skipped".to_string());
+    }
+    if mcp_selected && result.errors.is_empty() {
+        lines.extend([
+            "Verify: `everett doctor` checks configuration and the MCP launcher.".to_string(),
+            "It does not prove a client loaded Everett tools.".to_string(),
+            "Restart each selected MCP client; ask it to list Everett tools.".to_string(),
+            "Then call `everett_list`.".to_string(),
+            "Success: a returned session list; an empty list is also success.".to_string(),
+            "Saved settings alone are not proof.".to_string(),
+        ]);
+    } else if mcp_selected {
+        lines.push("`everett doctor` checks configuration and the MCP launcher; it does not prove a client loaded Everett tools.".to_string());
     }
     lines.extend([
         String::new(),

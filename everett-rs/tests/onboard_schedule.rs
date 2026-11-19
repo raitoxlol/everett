@@ -51,7 +51,9 @@ fn stdout(out: &Output) -> String {
 fn onboard_yes_end_to_end_flags_and_idempotence() {
     let h = lib_home();
     claude_session(&h.path(), "c-fresh", "/work/app", "fix the login bug", 0.0);
-    assert_eq!(cli(&h, &["onboard", "--yes", "--no-backfill", "--no-mcp"]).status.code(), Some(0));
+    let hooks_only = cli(&h, &["onboard", "--yes", "--no-backfill", "--no-mcp"]);
+    assert_eq!(hooks_only.status.code(), Some(0));
+    assert!(!stdout(&hooks_only).contains("everett_list"), "{}", stdout(&hooks_only));
     assert!(!cards::card_path("c-fresh").unwrap().exists());
     assert_eq!(install::mcp_status("claude").0, "missing");
     assert_eq!(install::installed("claude", None).unwrap()["SessionStart"], "ok");
@@ -60,6 +62,16 @@ fn onboard_yes_end_to_end_flags_and_idempotence() {
     assert_eq!(out.status.code(), Some(0));
     let text = stdout(&out);
     assert!(text.contains("Everett onboarding complete.") && text.contains("1 card(s) written"), "{text}");
+    for guidance in [
+        "`everett doctor` checks configuration and the MCP launcher",
+        "does not prove a client loaded Everett tools",
+        "Restart each selected MCP client",
+        "call `everett_list`",
+        "empty list is also success",
+        "Saved settings alone are not proof",
+    ] {
+        assert!(text.contains(guidance), "missing {guidance:?}: {text}");
+    }
     assert!(std::fs::read_to_string(cards::card_path("c-fresh").unwrap()).unwrap().starts_with(cards::AUTO_MARKER));
     assert_eq!(install::mcp_status("claude").0, "ready");
     assert!(!config::config_path().exists() && !trunk_schedule::plist_path().exists());
