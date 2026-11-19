@@ -155,7 +155,7 @@ pub fn tools() -> &'static Vec<Value> {
             }),
             json!({
                 "name": "everett_card",
-                "description": "Write YOUR session's card, which other agents use to route work to you. Keep it short (50 words total). Rewrite it when your topic or state changes.",
+                "description": "Write YOUR session's card, which other agents use to route work to you. Use lines labeled What:, State:, and Next: (50 words total). Rewrite it when your topic or state changes.",
                 "inputSchema": {"type": "object", "properties": {
                     "what": s("What this session is about."),
                     "state": s("Where it stands now."),

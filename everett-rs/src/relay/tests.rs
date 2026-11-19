@@ -347,6 +347,9 @@ fn per_agent_key_paths_and_exact_idempotent_ciphertext_retry() {
         session: "sender".into(),
         harness: "claude".into(),
         posted: false,
+        posted_at: None,
+        replied_at: None,
+        relay_evidence: None,
         state: State::Queued,
         reply_pending: None,
     };
@@ -831,7 +834,7 @@ fn newly_posted_local_requests_keep_polling_active_without_reposting() {
             peer: "id:agent-b".into(),
             envelope: a.seal(&b.device, "posted-activity", &payload(1), milliseconds() - age, TTL, None, None).unwrap(),
             digest: "fixture".into(), session: "sender".into(), harness: "claude".into(),
-            posted: true, state, reply_pending: None,
+            posted: true, posted_at: None, replied_at: None, relay_evidence: None, state, reply_pending: None,
         };
         write(&path, &out).unwrap();
         let before = fs::read(&path).unwrap();

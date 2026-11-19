@@ -388,9 +388,15 @@ describe('Encrypted queue and observations', () => {
     await expect(call(b.p, 'observe', { ...observe(b, e), signature: '00'.repeat(64) })).rejects.toThrow('invalid_signature');
     await call(b.p, 'observe', observe(b, e));
     expect((await call(b.p, 'pending', { deviceId: b.p.agentId })).envelopes).toEqual([]);
-    await call(b.p, 'observe', observe(b, e, 'replied'));
+    const status = () => call(a.p, 'status', { fromDevice: a.p.agentId, messageId: e.messageId });
+    expect(await status()).toEqual({ state: 'delivered', queuedAt: expect.any(Number), claimedAt: null, repliedAt: null });
+    const reply = observe(b, e, 'replied');
+    await call(b.p, 'observe', reply);
+    expect(await status()).toEqual({ state: 'replied', queuedAt: expect.any(Number), claimedAt: null, repliedAt: reply.at });
+    const claim = observe(b, e, 'claimed');
+    await call(b.p, 'observe', claim);
     await call(b.p, 'observe', observe(b, e, 'claimed'));
-    expect(await call(a.p, 'status', { fromDevice: a.p.agentId, messageId: e.messageId })).toEqual({ state: 'replied' });
+    expect(await status()).toEqual({ state: 'replied', queuedAt: expect.any(Number), claimedAt: claim.at, repliedAt: reply.at });
     expect(await call(a.p, 'enqueue', { envelope: e })).toEqual({ messageId: e.messageId, state: 'replied' });
   });
   it('serializes duplicate requests and rejects changed idempotency payloads and reused message IDs', async () => {

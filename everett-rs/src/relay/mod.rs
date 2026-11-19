@@ -129,9 +129,22 @@ struct Outgoing {
     session: String,
     harness: String,
     posted: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    posted_at: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    replied_at: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    relay_evidence: Option<RelayEvidence>,
     state: State,
     #[serde(default)]
     reply_pending: Option<Parent>,
+}
+
+#[derive(Clone, Copy, Default, PartialEq, Eq, Deserialize, Serialize)]
+struct RelayEvidence {
+    queued_at: Option<i64>,
+    claimed_at: Option<i64>,
+    replied_at: Option<i64>,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -840,6 +853,9 @@ fn prepare(
         session,
         harness,
         posted: false,
+        posted_at: None,
+        replied_at: None,
+        relay_evidence: None,
         state: State::Queued,
         reply_pending: match payload {
             Payload::Inbox { reply_to, .. } if !reply_to.is_empty() => parent,
@@ -885,8 +901,11 @@ async fn post(client: &mut RelayClient, path: &Path, outgoing: &Outgoing) -> Res
     .await?;
     let _guard = crate::storage::lock(&root().join("outgoing.lock"))?;
     let mut current: Outgoing = read(path)?;
-    current.posted = true;
-    write(path, &current)?;
+    if !current.posted {
+        current.posted = true;
+        current.posted_at = Some(milliseconds());
+        write(path, &current)?;
+    }
     Ok(result)
 }
 
@@ -1097,8 +1116,8 @@ pub fn status(name: &str, mid: &str) -> Result<Value> {
         _ => None,
     };
     if let Some((state, note)) = local {
-        return Ok(json!({"message_id":mid,"state":state,"posted":outgoing.posted,
-            "expires_at":outgoing.envelope.expires_at,"note":note}));
+        let evidence = outgoing.relay_evidence.unwrap_or_default();
+        return Ok(delivery_status(&outgoing, state, note, evidence));
     }
     runtime(async move {
         let mut client = client(&owner).await?;
@@ -1107,7 +1126,12 @@ pub fn status(name: &str, mid: &str) -> Result<Value> {
             Some(state @ ("queued" | "expired" | "delivered" | "claimed" | "replied")) => state,
             _ => return Err(bad("invalid relay status state")),
         };
-        let latest: Outgoing = read(&path)?;
+        let snapshot = RelayEvidence {
+            queued_at: status["queuedAt"].as_i64(),
+            claimed_at: status["claimedAt"].as_i64(),
+            replied_at: status["repliedAt"].as_i64(),
+        };
+        let latest = retain_relay_evidence(&path, snapshot)?;
         let (state, note) = match latest.state {
             State::Replied => ("replied", "A correlated reply was received locally. Task success is not implied."),
             State::Delivered if matches!(server_state, "queued" | "expired") => {
@@ -1115,11 +1139,55 @@ pub fn status(name: &str, mid: &str) -> Result<Value> {
             }
             _ => (server_state, "Server state reflects signed observations, never session wake-up."),
         };
-        Ok(
-            json!({"message_id":outgoing.envelope.message_id,"state":state,"posted":latest.posted,
-                "expires_at":outgoing.envelope.expires_at,"note":note}),
-        )
+        let evidence = if latest.state == State::Replied {
+            latest.relay_evidence.unwrap_or_default()
+        } else {
+            snapshot
+        };
+        Ok(delivery_status(&latest, state, note, evidence))
     })
+}
+
+fn retain_relay_evidence(path: &Path, snapshot: RelayEvidence) -> Result<Outgoing> {
+    let guard = crate::storage::lock(&root().join("outgoing.lock")).ok();
+    let mut latest: Outgoing = read(path)?;
+    let previous = latest.relay_evidence.unwrap_or_default();
+    let merged = RelayEvidence {
+        queued_at: previous.queued_at.or(snapshot.queued_at),
+        claimed_at: previous.claimed_at.or(snapshot.claimed_at),
+        replied_at: previous.replied_at.or(snapshot.replied_at),
+    };
+    if merged != previous {
+        latest.relay_evidence = Some(merged);
+        if guard.is_some() {
+            let _ = write(path, &latest);
+        }
+    }
+    Ok(latest)
+}
+
+fn delivery_status(outgoing: &Outgoing, state: &str, note: &str, relay: RelayEvidence) -> Value {
+    use crate::delivery_status::{with_status, AgentStatus, DeliveryState, Evidence};
+    let delivery = match state {
+        "queued" => DeliveryState::Queued,
+        "claimed" => DeliveryState::PickedUp,
+        "replied" => DeliveryState::Replied,
+        "expired" => DeliveryState::Expired,
+        _ => DeliveryState::Unknown,
+    };
+    let evidence = Evidence {
+        queued_at_ms: relay.queued_at.or(outgoing.posted_at),
+        picked_up_at_ms: relay.claimed_at,
+        replied_at_ms: relay.replied_at.or(outgoing.replied_at),
+        expires_at_ms: Some(outgoing.envelope.expires_at),
+    };
+    with_status(
+        json!({"message_id":outgoing.envelope.message_id,"state":state,"posted":outgoing.posted,
+            "expires_at":outgoing.envelope.expires_at,"note":note}),
+        delivery,
+        evidence,
+        AgentStatus::unknown(None),
+    )
 }
 
 pub fn agent_status(mid: &str) -> Result<Value> {
@@ -1128,7 +1196,7 @@ pub fn agent_status(mid: &str) -> Result<Value> {
     status(&outgoing.peer, mid)
 }
 
-fn observe(owner: &str, envelope: &Envelope, mid: &str, state: State) -> Result<()> {
+fn observe_reply_import(owner: &str, envelope: &Envelope, mid: &str, received_at: i64) -> Result<()> {
     let _guard = crate::storage::lock(&root().join("outgoing.lock"))?;
     let (path, mut out) = find_outgoing(owner, mid)?;
     if out.envelope.from_device != envelope.to_device
@@ -1141,7 +1209,8 @@ fn observe(owner: &str, envelope: &Envelope, mid: &str, state: State) -> Result<
         return Err(bad("receipt is from the wrong device"));
     }
     if out.state != State::Replied {
-        out.state = state;
+        out.state = State::Replied;
+        out.replied_at = Some(received_at);
         write(&path, &out)?;
     }
     Ok(())
@@ -1285,7 +1354,7 @@ fn import_inner(keys: &Keys, envelope: &Envelope, now: i64, publish: bool) -> Re
                 ));
             }
             if !reply_to.is_empty() {
-                observe(&keys.device.owner, envelope, &reply_to, State::Replied)?;
+                observe_reply_import(&keys.device.owner, envelope, &reply_to, now)?;
             }
         }
     }
