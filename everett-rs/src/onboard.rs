@@ -10,10 +10,18 @@ use crate::session::home;
 pub const ALL_HOURS: f64 = 24.0 * 365.0 * 5.0;
 
 /// Harnesses whose hooks live in a settings file Everett can toggle event-by-event.
-pub const HOOK_HARNESSES: &[&str] = &["claude", "codex", "grok"];
+pub const HOOK_HARNESSES: &[&str] = &["claude", "codex", "grok", "devin"];
 pub const MCP_HARNESSES: &[&str] = &["claude", "codex", "omp", "pi", "grok", "devin"];
 /// `hooks_common::auto_card` only knows how to build a fallback card for these harnesses.
 pub const BACKFILL_HARNESSES: &[&str] = &["claude", "codex", "grok"];
+
+pub fn devin_hook_label(event: &str) -> &str {
+    match event {
+        "SessionStart" => "Bind the Devin caller when the session starts",
+        "UserPromptSubmit" => "Refresh the Devin caller binding at each prompt",
+        other => other,
+    }
+}
 
 pub fn event_label(event: &str) -> &str {
     match event {
@@ -595,8 +603,9 @@ fn run_plain(args: &crate::cli::Args) -> Result<i32, QuitOnboarding> {
         }
         let path = crate::install::settings_path(harness);
         for event in events {
+            let label = if harness == "devin" { devin_hook_label(event) } else { event_label(event) };
             let on = ask_yes(
-                &format!("  {}: install {} in {}?", harness, event_label(event), path.display()),
+                &format!("  {}: install {} in {}?", harness, label, path.display()),
                 true,
             )?;
             if let Some((_, map)) = cfg.hooks.iter_mut().find(|(h, _)| *h == *harness) {

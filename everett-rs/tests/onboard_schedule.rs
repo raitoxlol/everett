@@ -48,14 +48,17 @@ fn stdout(out: &Output) -> String {
 }
 
 #[test]
-fn onboard_pi_and_hermes() {
+fn onboard_pi_hermes_and_devin() {
     let h = lib_home();
-    for store in [".pi/agent/sessions", ".hermes"] {
+    for store in [".pi/agent/sessions", ".hermes", ".local/share/devin/cli"] {
         std::fs::create_dir_all(h.path().join(store)).unwrap();
     }
     let result = cli(&h, &["onboard", "--yes", "--no-backfill"]);
     assert!(result.status.success());
     assert!(install::pi_extension_path().is_file());
+    let hooks = install::installed("devin", None).unwrap();
+    assert_eq!(hooks["SessionStart"], "ok");
+    assert_eq!(hooks["UserPromptSubmit"], "ok");
     assert!(stdout(&result).contains("hermes plugins install raitoxlol/everett#plugins/everett-hermes"));
     assert!(!h.path().join(".omp/agent/mcp.json").exists());
 }

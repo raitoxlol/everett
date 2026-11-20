@@ -22,6 +22,8 @@ pub fn stores() -> &'static [(&'static str, &'static str)] {
 fn store_path(harness: &str, relative: &str) -> std::path::PathBuf {
     if harness == "pi" {
         crate::adapters::pi::agent_dir().join("sessions")
+    } else if harness == "hermes" {
+        crate::adapters::hermes::profile_home(&home())
     } else {
         home().join(relative)
     }

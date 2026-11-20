@@ -10,11 +10,24 @@ use crate::timefmt::iso_from_epoch;
 pub const INTERACTIVE: &[&str] = &["cli", "tui", "desktop", "webui"];
 pub const AUTOMATED: &[&str] = &["cron", "oneshot", "webhook", "kanban", "delegate", "subagent"];
 
+/// Hermes allows a standalone home or a selected named profile.
+pub fn profile_home(default_home: &std::path::Path) -> PathBuf {
+    std::env::var("HERMES_HOME").ok()
+        .filter(|dir| !dir.is_empty())
+        .map(|dir| paths::expanduser(&dir))
+        .unwrap_or_else(|| default_home.join(".hermes"))
+}
+
 pub fn databases() -> Vec<(String, PathBuf)> {
-    let root = home().join(".hermes");
+    let root = profile_home(&home());
     let mut found = Vec::new();
     if root.join("state.db").is_file() {
-        found.push(("default".to_string(), root.join("state.db")));
+        let profile = if root.parent().and_then(|p| p.file_name()).is_some_and(|p| p == "profiles") {
+            root.file_name().and_then(|p| p.to_str()).unwrap_or("default")
+        } else {
+            "default"
+        };
+        found.push((profile.to_owned(), root.join("state.db")));
     }
     let mut profiles = paths::glob(&root, "profiles/*/state.db");
     profiles.sort();

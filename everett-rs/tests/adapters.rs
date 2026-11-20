@@ -74,6 +74,15 @@ fn hermes_db_listed() {
     assert_eq!(s["cwd"], "/work/herm");
     assert_eq!(s["first_user"], "write the hermes adapter");
     assert_eq!(s["auto"], false);
+
+    let selected = fx.home().join("portable/profiles/research");
+    std::fs::create_dir_all(&selected).unwrap();
+    std::fs::rename(&db, selected.join("state.db")).unwrap();
+    assert!(fx.ls_json().is_empty());
+    let out = fx.run_stdin(&["ls", "--json"], "", &[("HERMES_HOME", selected.to_str().unwrap())]);
+    assert!(out.status.success());
+    let list: Vec<serde_json::Value> = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(session(&list, "h-1")["profile"], "research");
 }
 
 #[test]
