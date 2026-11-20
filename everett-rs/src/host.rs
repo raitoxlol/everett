@@ -279,7 +279,7 @@ pub fn setup_hint(harness: &str) -> String {
         "pi" => "Run `everett install-hooks --pi --apply`; the Everett Pi extension exposes tools through Pi's registerTool API and binds each MCP bridge to the session. Then restart pi.".into(),
         "omp" => "Run `everett install-hooks --omp --apply` and `everett install-mcp --omp --repair --apply`, then restart omp.".into(),
         "devin" => "Run `everett install-hooks --devin --apply` and `everett install-mcp --devin --repair --apply`, then restart devin.".into(),
-        "hermes" => "Register `everett mcp --harness hermes` in ~/.hermes/config.yaml (see `everett install-mcp --hermes`), restart hermes, and run one Hermes CLI session per directory; gateway mode cannot be bound.".into(),
+        "hermes" => "A shared Hermes gateway cannot identify a conversation from its process. For handoffs, open the everett-hermes skill and use Hermes's local terminal with its session binding.".into(),
         "claude" | "codex" | "grok" => format!("{} binds automatically; rerun `everett install-mcp --{} --repair --apply` and restart it.", harness, harness),
         _ => "Register Everett with `everett install-mcp --<harness> --apply` (it writes the right launcher), or set EVERETT_SESSION_ID in this MCP server's launch environment; see docs/mcp-identity.md.".into(),
     }

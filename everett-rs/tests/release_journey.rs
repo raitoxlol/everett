@@ -90,9 +90,13 @@ struct Wire {
 
 impl Wire {
     fn start(home: &Home, caller: &str) -> Self {
+        Self::launch(home, &["mcp"], "EVERETT_SESSION_ID", caller, "claude")
+    }
+
+    fn launch(home: &Home, args: &[&str], variable: &str, caller: &str, harness: &str) -> Self {
         common::native_mcp_account(home.root.path());
-        let mut cmd = home.command(&["mcp"], caller);
-        cmd.env("EVERETT_HARNESS_NAME", "claude").stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::null());
+        let mut cmd = home.command(args, "");
+        cmd.env(variable, caller).env("EVERETT_HARNESS_NAME", harness).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::null());
         let mut child = cmd.spawn().unwrap();
         let stdin = child.stdin.take();
         let stdout = BufReader::new(child.stdout.take().unwrap());
@@ -262,4 +266,58 @@ fn release_journey_over_cli_and_all_mcp_tools() {
     let mut seen = wire.close();
     seen.extend(worker_wire.close());
     assert_eq!(seen, TOOLS.iter().map(|t| t.to_string()).collect());
+}
+
+/// The provider clients require accounts for headless turns. Exercise the wire
+/// contract with their real store formats and explicitly fixture-bound callers.
+#[test]
+fn grok_and_devin_fixture_handoff() {
+    let home = Home::new();
+    let grok_dir = home.path().join(".grok/sessions/%2Fwork/grok-worker");
+    std::fs::create_dir_all(&grok_dir).unwrap();
+    std::fs::write(grok_dir.join("summary.json"), json!({
+        "info": {"id": "grok-worker", "cwd": "/work"},
+        "generated_title": "Fixture Grok worker"
+    }).to_string()).unwrap();
+    std::fs::write(grok_dir.join("chat_history.jsonl"), "").unwrap();
+
+    let devin_dir = home.path().join(".local/share/devin/cli");
+    std::fs::create_dir_all(&devin_dir).unwrap();
+    let db = rusqlite::Connection::open(devin_dir.join("sessions.db")).unwrap();
+    db.execute_batch("CREATE TABLE sessions (id TEXT, working_directory TEXT, title TEXT,
+        created_at REAL, last_activity_at REAL);
+        INSERT INTO sessions VALUES ('devin-worker', '/work', 'Fixture Devin worker', unixepoch(), unixepoch());").unwrap();
+    drop(db);
+    for (root, harness) in [(".grok", "grok"), (".config/devin", "devin")] {
+        let skill = home.path().join(root).join("skills/fixture-check");
+        std::fs::create_dir_all(&skill).unwrap();
+        std::fs::write(skill.join("SKILL.md"), format!("---\nname: fixture-check\ndescription: Local fixture\n---\nProof for {harness}")).unwrap();
+    }
+
+    let mut grok = Wire::launch(&home, &["mcp"], "GROK_SESSION_ID", "grok-worker", "grok");
+    let mut devin = Wire::launch(&home, &["mcp", "--harness", "devin"], "EVERETT_SESSION_ID", "devin-worker", "devin");
+    for (wire, harness, sid) in [(&mut grok, "grok", "grok-worker"), (&mut devin, "devin", "devin-worker")] {
+        assert_eq!(wire.call("everett_whoami", json!({}))["session_id"], sid);
+        let sessions = wire.call("everett_ls", json!({"harness": harness}));
+        assert!(ids(&sessions["sessions"]).contains(sid));
+        let skill = wire.call("everett_skill", json!({"action": "get", "source": harness, "name": "fixture-check"}));
+        assert!(skill["content"].as_str().unwrap().contains(&format!("Proof for {harness}")));
+    }
+    fn exchange(sender: &mut Wire, receiver: &mut Wire, target: &str) {
+        let sent = sender.call("everett_send", json!({"to": target, "mode": "inbox", "text": "Fixture request"}));
+        let mid = sent["message_id"].as_str().unwrap();
+        let received = receiver.call("everett_inbox", json!({}));
+        assert_eq!(received["messages"][0]["id"], mid);
+        receiver.call("everett_send", json!({"reply_to": mid, "text": "Fixture reply"}));
+        let reply = sender.call("everett_inbox", json!({"reply_to": mid}));
+        assert_eq!(reply["messages"][0]["from"], target);
+        assert_eq!(reply["messages"][0]["reply_to"], mid);
+        let status = sender.call("everett_status", json!({"message_id": mid}));
+        assert_eq!(status["state"], "replied");
+        assert_eq!(status["picked_up"], true);
+    }
+    exchange(&mut grok, &mut devin, "devin-worker");
+    exchange(&mut devin, &mut grok, "grok-worker");
+    grok.close();
+    devin.close();
 }
