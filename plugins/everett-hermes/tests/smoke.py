@@ -64,11 +64,14 @@ def _content_text(value) -> str:
 
 
 def _marker(payload: dict) -> str | None:
-    serialized = json.dumps(payload, ensure_ascii=False)
-    if SIGNED_OUT in serialized:
-        return SIGNED_OUT
-    if SIGNED_IN in serialized:
-        return SIGNED_IN
+    if not payload.get("tools"):
+        return None  # Hermes also sends this conversation to tool-free auxiliary model calls.
+    for message in payload.get("messages", []):
+        if message.get("role") == "user":
+            content = _content_text(message.get("content"))
+            for marker in (SIGNED_OUT, SIGNED_IN):
+                if content.startswith(marker + ":"):
+                    return marker
     return None
 
 
@@ -333,7 +336,8 @@ def _make_install_source(root: Path) -> str:
     subprocess.run([git, "-C", str(repository), "init", "--quiet"], check=True, capture_output=True, text=True)
     subprocess.run([git, "-C", str(repository), "add", "--", *[f"plugins/everett-hermes/{name}" for name in files]],
                    check=True, capture_output=True, text=True)
-    subprocess.run([git, "-C", str(repository), "-c", "commit.gpgsign=false", "commit", "--quiet", "-m", "smoke fixture"],
+    subprocess.run([git, "-C", str(repository), "-c", "user.name=Everett fixture", "-c", "user.email=fixture@example.invalid",
+                    "-c", "commit.gpgsign=false", "commit", "--quiet", "-m", "smoke fixture"],
                    check=True, capture_output=True, text=True)
     return repository.as_uri() + "#plugins/everett-hermes"
 
@@ -754,6 +758,7 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--everett-binary", required=True, help="Path to the Everett executable to test")
     parser.add_argument("--hermes-executable", required=True, help="Path to the Hermes Agent CLI executable")
+    parser.add_argument("--upstream", action="store_true", help="Install the published repository subdirectory from GitHub")
     arguments = parser.parse_args()
     everett = _resolve_executable(arguments.everett_binary, "Everett")
     hermes = _resolve_executable(arguments.hermes_executable, "Hermes")
@@ -768,10 +773,9 @@ def main() -> int:
         installed = False
         try:
             home, hermes_home, env = _create_clean_profile(temp, hermes, everett, issuer_url)
-            source = _make_install_source(temp)
-            package = temp / "source" / "plugins" / "everett-hermes"
-            _run(hermes, ["plugins", "doctor", str(package), "--ci"], env, home)
-            print("Hermes plugin doctor: passed")
+            source = "raitoxlol/everett#plugins/everett-hermes" if arguments.upstream else _make_install_source(temp)
+            _run(hermes, ["plugins", "doctor", str(PLUGIN_ROOT), "--ci"], env, home)
+            print("Hermes plugin doctor: local checkout passed")
             _run(hermes, ["plugins", "install", source, "--no-enable"], env, home)
             installed = True
             _run(hermes, ["plugins", "enable", "everett-hermes"], env, home)
@@ -808,7 +812,7 @@ def main() -> int:
             if any(row.get("name") == "everett-hermes" for row in _plugin_rows(hermes, env, home)
                    if isinstance(row, dict)):
                 raise SmokeFailure("Hermes plugin manager still listed everett-hermes after removal")
-            print("Hermes plugin manager: local file:// repo/subdirectory installed, enabled, and removed")
+            print(f"Hermes plugin manager: {source} installed, enabled, and removed")
             print("Hermes client: tool_search -> tool_describe -> tool_call completed")
             print(f"Signed-out whoami: {ACCOUNT_ERROR} Run `everett login` in this Everett profile, then retry.")
             print("Loopback fixture: whoami account verified; everett_ls returned sessions")

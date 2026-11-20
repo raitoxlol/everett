@@ -48,6 +48,19 @@ fn stdout(out: &Output) -> String {
 }
 
 #[test]
+fn onboard_pi_and_hermes() {
+    let h = lib_home();
+    for store in [".pi/agent/sessions", ".hermes"] {
+        std::fs::create_dir_all(h.path().join(store)).unwrap();
+    }
+    let result = cli(&h, &["onboard", "--yes", "--no-backfill"]);
+    assert!(result.status.success());
+    assert!(install::pi_extension_path().is_file());
+    assert!(stdout(&result).contains("hermes plugins install raitoxlol/everett#plugins/everett-hermes"));
+    assert!(!h.path().join(".omp/agent/mcp.json").exists());
+}
+
+#[test]
 fn onboard_yes_end_to_end_flags_and_idempotence() {
     let h = lib_home();
     claude_session(&h.path(), "c-fresh", "/work/app", "fix the login bug", 0.0);
