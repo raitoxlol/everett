@@ -1,6 +1,9 @@
 # Changelog
 
-## Unreleased
+## 2.4.0
+
+- Bind local handoffs to the active harness session (#231). Ambiguous route results and exposed cards include an address callers can use (#232).
+- Connect Pi during onboarding and guide Hermes users through local setup (#229). The skill hub selects a relevant playbook and links Devin threads managed by T3 (#228).
 
 - Add the skill hub: `everett skills`, the `everett_skill` MCP tool, and MCP prompts expose every harness's `SKILL.md` playbooks to any client. Extra roots come from `EVERETT_SKILL_DIRS` or `[skills] dirs` in `~/.everett/config.toml`.
 - The skill hub hands over one skill instead of a catalog: `everett_skill` `match` and `everett skills --match` pick the skill that fits a task, MCP instructions name a short per-project list, and the Claude Code and Codex prompt hooks add a skill the user names or suggest one that fits. Only skill folders the user keeps are suggested unasked.

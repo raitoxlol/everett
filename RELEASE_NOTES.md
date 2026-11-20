@@ -1,18 +1,17 @@
-# Everett 2.3.2 maintenance update
+# Everett 2.4.0
 
-- Fix hosted inbox reads that could mark messages delivered before the gateway rejected an oversized response. Budget the complete encoded MCP result before consumption, return bounded batches, and leave unreturned messages queued. Metadata that cannot fit returns an error before consumption.
-- Warn that a timed-out or abnormally exited T3 dispatch may already have delivered the turn. Check the thread before retrying.
-- Harden the repository's read-only tunnel-health diagnostic on Python 3.9 for fractional RFC3339 timestamps and recursive JSON input. The diagnostic does not establish model completion or a recovery-time guarantee.
+Everett can route a request to a local coding session, show whether it was picked up, and retrieve the retained reply. When several sessions match, use an address from the route results or an exposed card to choose the recipient (#231, #232).
 
-Release archives are exercised on native Linux and macOS runners for both
-architectures. Candidate workflow runs do not publish a release.
+Pi connects during onboarding, and Hermes users get local setup instructions (#229). The skill hub selects a playbook for a task, and Everett recognizes Devin threads managed by T3 Code (#228).
 
-This maintenance update does not establish public GA acceptance. Hosted tool
-registration, owner-scoped native start, receiver pickup and a correlated reply
-are separate checks. A transport disconnect can strand an upstream request even
-after local recovery. Reconcile sends and starts before retrying; never infer
-completion from a healthy connection. Older clients may need one normal tool
-refresh to adopt the stable destination schema. A new ChatGPT-mode GUI
-conversation and outside-account acceptance require their own live evidence.
+Local CLI setup and routing work without an Everett account. Run `everett login` once per profile for local MCP tool calls. Grok CLI and Devin headless turns depend on provider access. Outside-hosted inbox and wake integrations remain in preview and require separate acceptance on the configured connection.
 
-See CHANGELOG.md and the client-specific setup and verification documentation.
+Install the runtime on Linux or macOS:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/raitoxlol/everett/v2.4.0/install.sh -o everett-install.sh
+EVERETT_VERSION=v2.4.0 sh everett-install.sh
+everett --version
+```
+
+See the [full changelog](https://github.com/raitoxlol/everett/blob/v2.4.0/CHANGELOG.md).
