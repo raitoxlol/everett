@@ -1340,19 +1340,25 @@ fn draw_agents(
                 features.push(Line::from(Span::styled("Everett tools", p.violet)));
             }
             if let Some((_, events)) = cfg.hooks.iter().find(|(h, _)| *h == agent.harness) {
-                if events.get("SessionStart").copied().unwrap_or(false)
-                    || events.get("extension").copied().unwrap_or(false)
-                {
-                    features.push(Line::from(Span::styled("Share session context", p.cyan)));
-                }
-                if events.get("Stop").copied().unwrap_or(false) {
-                    features.push(Line::from(Span::styled("Save session cards", p.accent)));
-                }
-                if ["UserPromptSubmit", "PostToolUse", "extension"]
-                    .iter()
-                    .any(|event| events.get(*event).copied().unwrap_or(false))
-                {
-                    features.push(Line::from(Span::styled("Deliver messages", p.green)));
+                if agent.harness == "devin" {
+                    if events.values().any(|on| *on) {
+                        features.push(Line::from(Span::styled("Bind the Devin caller", p.cyan)));
+                    }
+                } else {
+                    if events.get("SessionStart").copied().unwrap_or(false)
+                        || events.get("extension").copied().unwrap_or(false)
+                    {
+                        features.push(Line::from(Span::styled("Share session context", p.cyan)));
+                    }
+                    if events.get("Stop").copied().unwrap_or(false) {
+                        features.push(Line::from(Span::styled("Save session cards", p.accent)));
+                    }
+                    if ["UserPromptSubmit", "PostToolUse", "extension"]
+                        .iter()
+                        .any(|event| events.get(*event).copied().unwrap_or(false))
+                    {
+                        features.push(Line::from(Span::styled("Deliver messages", p.green)));
+                    }
                 }
             }
         }
@@ -1440,6 +1446,7 @@ fn screen_agent_details(
         let (e_get, e_set) = (event.clone(), event.clone());
         items.push(CheckItem {
             label: match event.as_str() {
+                _ if agent.harness == "devin" => onboard::devin_hook_label(event),
                 "SessionStart" => "Share context when a session starts",
                 "Stop" => "Save a session card when a task stops",
                 "UserPromptSubmit" => "Receive messages at the next prompt",

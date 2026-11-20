@@ -4,7 +4,7 @@
 
 use std::collections::HashMap;
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 
 use regex::Regex;
@@ -329,13 +329,19 @@ pub fn backup(path: &PathBuf) -> Option<PathBuf> {
     Some(dest)
 }
 
-fn write_json(path: &PathBuf, data: &Map<String, Value>) -> std::io::Result<()> {
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent)?;
+fn write_json(path: &Path, data: &Map<String, Value>) -> std::io::Result<()> {
+    use std::io::{ErrorKind, Write};
+    let parent = path.parent().unwrap_or(Path::new("."));
+    fs::create_dir_all(parent)?;
+    let mut tmp = tempfile::NamedTempFile::new_in(parent)?;
+    writeln!(tmp, "{}", serde_json::to_string_pretty(data)?)?;
+    match fs::metadata(path) {
+        Ok(metadata) => tmp.as_file().set_permissions(metadata.permissions())?,
+        Err(error) if error.kind() == ErrorKind::NotFound => {}
+        Err(error) => return Err(error),
     }
-    let tmp = path.with_file_name(format!("{}.everett-tmp", path.file_name().unwrap_or_default().to_string_lossy()));
-    fs::write(&tmp, serde_json::to_string_pretty(data)? + "\n")?;
-    fs::rename(&tmp, path)
+    tmp.persist(path)?;
+    Ok(())
 }
 
 pub fn snippet(harness: &str) -> String {
