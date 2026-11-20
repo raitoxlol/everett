@@ -42,7 +42,7 @@ pub struct Skill {
 }
 
 /// Lower rank wins when several sources provide the same skill name.
-fn source_rank(source: &str) -> u8 {
+pub(crate) fn source_rank(source: &str) -> u8 {
     match source {
         "project" => 0,
         "extra" => 1,
