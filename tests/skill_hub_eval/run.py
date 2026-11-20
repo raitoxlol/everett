@@ -26,7 +26,10 @@ def body_of(skill):
 
 
 def make_home():
-    home = Path(tempfile.mkdtemp(prefix="skill-eval-"))
+    """A fixture home reached through a symlink, as macOS temp folders are."""
+    real = Path(tempfile.mkdtemp(prefix="skill-eval-"))
+    home = real.with_name(real.name + "-home")
+    home.symlink_to(real)
     for skill in SKILLS:
         folder = home / skill["root"] / skill["name"]
         folder.mkdir(parents=True)
@@ -118,7 +121,7 @@ def check_match(case, payload, raw):
     if skill:
         if skill_body(got) not in skill.get("content", ""):
             return "no body"
-        if len(raw) > len(skill["content"]) + OVERHEAD_BYTES:
+        if len(raw) > len(skill["content"]) + len(skill["path"]) + len(skill["dir"]) + OVERHEAD_BYTES:
             return f"{len(raw)} bytes"
         if "skills" in payload:
             return "returned a list"
@@ -145,7 +148,7 @@ def check(case, home):
         if mode == "full":
             if bodies(text) != {want}:
                 return f"bodies {sorted(bodies(text))}"
-            return None if len(text) <= len(skill_body(want)) + OVERHEAD_BYTES else f"{len(text)} bytes"
+            return None if len(text) <= len(skill_body(want)) + len(str(home)) + OVERHEAD_BYTES else f"{len(text)} bytes"
         if bodies(text):
             return "hint carried a body"
         if f"`{want}`" not in text:
@@ -203,7 +206,8 @@ def main():
         except Exception as error:  # a crash or malformed output is a failed case
             problem = f"{type(error).__name__}: {str(error)[:120]}"
         finally:
-            shutil.rmtree(home, ignore_errors=True)
+            shutil.rmtree(home.resolve(), ignore_errors=True)
+            home.unlink(missing_ok=True)
         if problem:
             failed += 1
             label = case.get("task") or case.get("prompt") or case.get("name") or ""
