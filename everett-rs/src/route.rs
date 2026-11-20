@@ -367,6 +367,10 @@ fn local_route_result(input: &str, choice: &str, confidence: f64) -> Map<String,
     r
 }
 
+fn describe_candidate(session: &Session) -> String {
+    format!("id={} {}", session.id, describe(session))
+}
+
 pub fn local_route(text: &str, sessions: &[Session], at: Option<f64>, caller_id: Option<&str>) -> Map<String, Value> {
     let sessions = relevant_sessions(text, sessions, caller_id);
     if sessions.is_empty() {
@@ -382,7 +386,7 @@ pub fn local_route(text: &str, sessions: &[Session], at: Option<f64>, caller_id:
         r.insert("suggested".into(), Value::Null);
         r.insert(
             "candidates".into(),
-            json!(sessions.iter().take(3).map(describe).collect::<Vec<_>>()),
+            json!(sessions.iter().take(3).map(describe_candidate).collect::<Vec<_>>()),
         );
         return r;
     }
@@ -401,11 +405,11 @@ pub fn local_route(text: &str, sessions: &[Session], at: Option<f64>, caller_id:
         let candidates: Vec<String> = ranked
             .iter()
             .take(3)
-            .map(|(_, key, _)| describe(&sessions[key[1..].parse::<usize>().unwrap_or(0)]))
+            .map(|(_, key, _)| describe_candidate(&sessions[key[1..].parse::<usize>().unwrap_or(0)]))
             .collect();
         let mut r = local_route_result(text, "none", (confidence * 1000.0).round() / 1000.0);
         r.insert("decision".into(), json!("ASK"));
-        r.insert("suggested".into(), json!(describe(&sessions[best_idx])));
+        r.insert("suggested".into(), json!(describe_candidate(&sessions[best_idx])));
         r.insert("candidates".into(), json!(candidates));
         return r;
     }
@@ -444,7 +448,7 @@ fn normalize(text: &str, answer: &Map<String, Value>, options: &HashMap<String, 
         base.insert("command".into(), json!(new_command(text)));
         return Ok(base);
     }
-    let mut candidates: Vec<String> = options.get(choice).map(describe).into_iter().collect();
+    let mut candidates: Vec<String> = options.get(choice).map(describe_candidate).into_iter().collect();
     if candidates.is_empty() {
         let pool: Vec<Session> = {
             let mut keys: Vec<&String> = options.keys().collect();
@@ -454,13 +458,13 @@ fn normalize(text: &str, answer: &Map<String, Value>, options: &HashMap<String, 
         candidates = rank(text, &pool, None)
             .into_iter()
             .take(3)
-            .map(|(_, key, _)| describe(&pool[key[1..].parse::<usize>().unwrap_or(0)]))
+            .map(|(_, key, _)| describe_candidate(&pool[key[1..].parse::<usize>().unwrap_or(0)]))
             .collect();
     }
     base.insert("decision".into(), json!("ASK"));
     base.insert(
         "suggested".into(),
-        options.get(choice).map(|s| json!(describe(s))).unwrap_or(Value::Null),
+        options.get(choice).map(|s| json!(describe_candidate(s))).unwrap_or(Value::Null),
     );
     base.insert("candidates".into(), json!(candidates));
     Ok(base)

@@ -5,6 +5,11 @@ wake its provider, or prove that it read the request.
 
 See [agent support and wake](agent-support.md) for the per-agent capability table.
 
+When local routing returns `ASK`, each candidate string starts with `id=SESSION`.
+After choosing a row, pass that full ID to `everett send --to` or the MCP
+`everett_send` tool's `to` argument. An ID shared by multiple visible sessions
+cannot identify a unique recipient.
+
 ## Default local sends
 
 `everett send` and `everett_send` default to `ping`. An idle local target runs
@@ -94,6 +99,11 @@ claims from the caller. Cards are plaintext account-visible metadata; do not put
 secrets in an exposed card. Exposure is opt-in, with a limit of 32 cards per agent.
 
 `everett relay authors` lists exposed cards across all pages without pairing.
+For a card on another device, pass its complete `target` value
+(`id:DEVICE/HARNESS/SESSION`) as `to` and choose `mode: "inbox"` for queued
+delivery. Use the local session ID for a card on the current device.
+A device can expose a given session ID under one harness at a time. Withdraw
+the original exposure before reusing that ID under a different harness.
 The dashboard shows the same authenticated cards separately from local stores,
 with author, agent, and session tags. Only active account peers are visible;
 revoked credentials or memberships are filtered on every read. Cross-owner grants
