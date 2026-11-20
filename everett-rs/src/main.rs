@@ -17,7 +17,7 @@ const HELP_GROUPS: &[(&str, &[&str])] = &[
         "Work across sessions",
         &["send", "route", "inbox", "reply", "sent", "status", "retry", "proof", "event", "events", "subscribe"],
     ),
-    ("Shared memory", &["learn", "core", "trunk", "cards"]),
+    ("Shared memory", &["learn", "core", "trunk", "cards", "skills"]),
     (
         "Setup and account",
         &["install-hooks", "install-mcp", "mcp", "login", "whoami", "identity", "logout"],
@@ -143,6 +143,25 @@ enum Cmd {
         /// with --regenerate-auto: look-back window (default: the global --hours)
         #[arg(long)]
         hours: Option<f64>,
+    },
+    /// list or print skills from every harness's skill directories (the MCP skill hub)
+    Skills {
+        /// print this skill's instructions instead of listing
+        #[arg(long)]
+        get: Option<String>,
+        /// only skills from this source (claude, codex, agents, devin, hermes, claude-plugins, devin-plugins, project, extra)
+        #[arg(long)]
+        source: Option<String>,
+        /// print the one skill that fits this task, or nothing
+        #[arg(long = "match", value_name = "TASK")]
+        task: Option<String>,
+        /// list the few skills named up front in this project
+        #[arg(long)]
+        shortlist: bool,
+        /// filter the list by name or description
+        query: Option<String>,
+        #[arg(long)]
+        json: bool,
     },
     /// open a read-only local dashboard in your browser
     Dashboard {
@@ -891,6 +910,9 @@ fn main() {
             a.regen_hours = hours;
             cli::cmd_cards(&a)
         }
+        Cmd::Skills { task: Some(task), json, .. } => cli::cmd_skill_match(&task, json),
+        Cmd::Skills { shortlist: true, json, .. } => cli::cmd_skill_shortlist(json),
+        Cmd::Skills { query, get, source, json, .. } => cli::cmd_skills(query.as_deref(), get.as_deref(), source.as_deref(), json),
         Cmd::Dashboard { port, no_open } => everett::dashboard::serve(a.hours, port, no_open),
         Cmd::Route { text, json, router } => {
             a.text = Some(text);

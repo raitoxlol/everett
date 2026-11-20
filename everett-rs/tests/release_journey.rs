@@ -12,7 +12,7 @@ use std::time::{Duration, SystemTime};
 
 const TOOLS: &[&str] = &[ "everett_agent_relay", "everett_agent_send", "everett_agent_status",
     "everett_card", "everett_control", "everett_core", "everett_event", "everett_inbox", "everett_learn",
-    "everett_ls", "everett_retry", "everett_route", "everett_send", "everett_sent", "everett_status", "everett_subscribe", "everett_whoami"];
+    "everett_ls", "everett_retry", "everett_route", "everett_send", "everett_sent", "everett_skill", "everett_status", "everett_subscribe", "everett_whoami"];
 
 fn binary() -> PathBuf {
     let path = std::env::var_os("EVERETT_VERIFY_BINARY").map(PathBuf::from).unwrap_or_else(|| env!("CARGO_BIN_EXE_everett").into());
@@ -177,6 +177,7 @@ fn release_journey_over_cli_and_all_mcp_tools() {
     assert_eq!(identity["session_id"], "verify-sender");
     assert!(identity["runtime"]["revision"].as_str().is_some_and(|s| !s.is_empty()));
     assert!(identity["runtime"]["dirty"].is_boolean());
+    assert!(wire.call("everett_skill", json!({"action": "list"}))["count"].is_u64());
     for (sid, what) in [("verify-sender", "Email templates"), ("verify-worker", "Upload retries")] {
         let caller = if sid == "verify-worker" { &mut worker_wire } else { &mut wire };
         caller.call("everett_card", json!({"session_id": sid, "what": what, "state": "Reviewing", "next": "Run checks"}));

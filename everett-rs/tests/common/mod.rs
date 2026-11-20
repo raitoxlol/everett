@@ -36,7 +36,8 @@ impl Fixture {
             .env_remove("EVERETT_SEND")
             .env("EVERETT_HOP_LIMIT", "on")
             .env_remove("EVERETT_HOPS")
-            .env_remove("EVERETT_SESSION_ID");
+            .env_remove("EVERETT_SESSION_ID")
+            .env_remove("EVERETT_SKILL_DIRS");
         scrub_caller_identity(&mut cmd);
         cmd.output().unwrap()
     }
@@ -57,6 +58,7 @@ impl Fixture {
             .env("EVERETT_HOP_LIMIT", "on")
             .env_remove("EVERETT_HOPS")
             .env_remove("EVERETT_SESSION_ID")
+            .env_remove("EVERETT_SKILL_DIRS")
             .stdin(std::process::Stdio::piped())
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::piped());
@@ -252,6 +254,58 @@ pub fn mcp_calls(
     results
 }
 
+/// Like mcp_calls, but each entry is a raw (method, params) request so tests can
+/// exercise non-tool MCP methods (prompts/list, prompts/get). Returns full responses.
+pub fn mcp_exchange(
+    fixture: &Fixture,
+    args: &[&str],
+    env: &[(&str, &str)],
+    requests: &[(String, serde_json::Value)],
+) -> Vec<serde_json::Value> {
+    use std::io::{BufRead, BufReader, Write};
+    let mut cmd = Command::new("/bin/sh");
+    native_mcp_account(&fixture.home());
+    let pidfile = fixture.home().join(".mcp-server.pid");
+    let _ = std::fs::remove_file(&pidfile);
+    cmd.args(["-c", r#"exec 3<&0; ( "$0" "$@" <&3 3<&- & echo $! > "$EVERETT_HOME/.mcp-server.pid" )"#, env!("CARGO_BIN_EXE_everett"), "mcp"])
+        .args(args)
+        .env_clear()
+        .env("HOME", fixture.home())
+        .env("EVERETT_HOME", fixture.home())
+        .env("EVERETT_NOTIFY", "none")
+        .env("EVERETT_HOP_LIMIT", "on")
+        .env("PATH", HERMETIC_PATH)
+        .current_dir(fixture.home())
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null());
+    for (k, v) in env {
+        cmd.env(k, v);
+    }
+    let mut child = cmd.spawn().unwrap();
+    let mut stdin = child.stdin.take().unwrap();
+    let mut stdout = BufReader::new(child.stdout.take().unwrap());
+    let mut send = |msg: serde_json::Value| {
+        stdin.write_all(format!("{}\n", msg).as_bytes()).unwrap();
+        stdin.flush().unwrap();
+    };
+    send(serde_json::json!({"jsonrpc":"2.0","id":0,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"test","version":"0"}}}));
+    let mut line = String::new();
+    stdout.read_line(&mut line).unwrap();
+    send(serde_json::json!({"jsonrpc":"2.0","method":"notifications/initialized"}));
+    let mut results = Vec::new();
+    for (i, (method, params)) in requests.iter().enumerate() {
+        send(serde_json::json!({"jsonrpc":"2.0","id":i + 1,"method":method,"params":params}));
+        let mut line = String::new();
+        stdout.read_line(&mut line).unwrap();
+        results.push(serde_json::from_str(&line).unwrap());
+    }
+    drop(stdin);
+    let _ = child.wait();
+    wait_for_exit(&pidfile);
+    results
+}
+
 /// Text of an MCP tool result, parsed as JSON when it is JSON.
 pub fn tool_json(result: &serde_json::Value) -> serde_json::Value {
     let text = result["content"][0]["text"].as_str().unwrap_or("");
@@ -290,6 +344,7 @@ const SANDBOX_UNSET: &[&str] = &[
     "EVERETT_SEND",
     "EVERETT_HOPS",
     "EVERETT_MERGE_LLM",
+    "EVERETT_SKILL_DIRS",
     "CLAUDE_CODE_ENTRYPOINT",
     "CLAUDECODE",
     "EVERETT_NOTIFY_COMMAND",

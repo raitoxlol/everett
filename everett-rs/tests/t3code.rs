@@ -153,6 +153,24 @@ fn current_t3_without_provider_transcript_uses_native_driver_and_readonly_projec
 }
 
 #[test]
+fn devin_threads_from_the_acp_registry_driver_are_recognized() {
+    let fx = fixture();
+    let con = v2(&fx);
+    add(&con, "devin-chat", Some("dirt-carrot"), "acpRegistry");
+    add(&con, "other-acp", Some("other-native"), "acpRegistry");
+    con.execute(
+        "UPDATE orchestration_v2_projection_provider_threads          SET payload_json=json_set(payload_json,'$.providerInstanceId','devin') WHERE thread_id='devin-chat'",
+        [],
+    )
+    .unwrap();
+    let sessions = list(&fx, "devin");
+    assert_eq!(sessions.len(), 1, "{sessions:?}");
+    assert_eq!(sessions[0]["id"], "dirt-carrot");
+    assert_eq!(sessions[0]["source"], "t3code");
+    assert_eq!(sessions[0]["t3_thread_id"], "devin-chat");
+}
+
+#[test]
 fn t3_filters_old_deleted_archived_unknown_missing_and_mismatched_native_references() {
     let fx = fixture();
     let con = v2(&fx);

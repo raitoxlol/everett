@@ -33,7 +33,10 @@ const INSTRUCTIONS: &str =
      it before sending. Answer messages you receive with everett_send(reply_to=...). Use everett_learn to push \
      durable facts that every session should know into the shared core, and everett_core to read it. Keep your own \
      card current with everett_card so others can route to you, and report done / blocked / needs-input with \
-     everett_event.";
+     everett_event. everett_skill is the skill hub over the SKILL.md playbooks installed for every harness on this machine. \
+     When the user names a skill -- /hill-climb, /full-send, or \"use the X skill\" -- load it with \
+     everett_skill get and follow it. When a task could use a playbook, call everett_skill match with the task; \
+     it returns the one skill that fits, or none.";
 
 fn s(desc: &str) -> Value {
     json!({"type": "string", "description": desc})
@@ -161,6 +164,17 @@ pub fn tools() -> &'static Vec<Value> {
                     "state": s("Where it stands now."),
                     "next": s("The next step."),
                 }, "required": ["what", "state", "next"], "additionalProperties": false},
+            }),
+            json!({
+                "name": "everett_skill",
+                "description": "The skill hub: list and read the SKILL.md playbooks installed for every harness on this machine (Claude Code, Codex, .agents, Devin plugins, project skills). action=match with task returns the one skill that fits what you are doing, or null -- prefer it to listing. action=get with name loads a skill the user named (/hill-climb, \"use the X skill\"); pass source to pick another harness's version. action=list with an optional query browses. Follow the returned instructions.",
+                "inputSchema": {"type": "object", "properties": {
+                    "action": {"type": "string", "enum": ["match", "get", "list"], "default": "list"},
+                    "task": s("What you are trying to do, for action=match."),
+                    "query": s("Filter list results by name or description."),
+                    "name": s("Skill name for action=get."),
+                    "source": s("Optional source for get: claude, codex, agents, devin, hermes, claude-plugins, devin-plugins, project, extra."),
+                }, "additionalProperties": false},
             }),
             json!({
                 "name": "everett_whoami",
@@ -1091,6 +1105,38 @@ pub(crate) fn tool_card(
     Ok(out)
 }
 
+/// The fixed guidance plus the few skills worth naming in this project.
+fn instructions() -> String {
+    let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
+    match crate::skill_match::shortlist_text(&cwd) {
+        shortlist if shortlist.is_empty() => INSTRUCTIONS.to_string(),
+        shortlist => format!("{INSTRUCTIONS}\n\n{shortlist}"),
+    }
+}
+
+fn tool_skill(args: &Map<String, Value>) -> std::result::Result<Map<String, Value>, ToolFailure> {
+    let action = str_arg(args, "action", false)?;
+    let source = str_arg(args, "source", false)?;
+    let source = (!source.is_empty()).then_some(source.as_str());
+    let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
+    match action.as_str() {
+        "" | "list" => {
+            let query = str_arg(args, "query", false)?;
+            Ok(crate::skills::list_result(if query.is_empty() { None } else { Some(query.as_str()) }))
+        }
+        "get" => {
+            let name = str_arg(args, "name", true)?;
+            let result = crate::skills::get_result(&name, source);
+            if let Some(found) = result.get("name").and_then(Value::as_str) {
+                crate::skill_match::record_use(&cwd, found);
+            }
+            Ok(result)
+        }
+        "match" => Ok(crate::skill_match::match_result(&str_arg(args, "task", true)?, &cwd)),
+        _ => Err(ToolFailure::Params("action must be match, get or list".to_string())),
+    }
+}
+
 pub(crate) fn tool_inbox(
     args: &Map<String, Value>,
     identity: &Map<String, Value>,
@@ -1527,6 +1573,7 @@ fn call_handler(
         "everett_learn" => tool_learn(args),
         "everett_core" => tool_core(args),
         "everett_card" => tool_card(args, identity),
+        "everett_skill" => tool_skill(args),
         "everett_whoami" => tool_whoami(identity),
         "everett_inbox" => tool_inbox(args, identity),
         "everett_sent" => tool_sent(args, identity),
@@ -1748,6 +1795,54 @@ fn tool_result(data: Map<String, Value>, is_error: bool) -> Map<String, Value> {
     out
 }
 
+/// Every discovered skill as an MCP prompt (best source wins per name).
+fn prompt_list() -> Vec<Value> {
+    crate::skills::prompts()
+        .into_iter()
+        .take(512)
+        .map(|(name, skill)| {
+            json!({
+                "name": name,
+                "description": skill.description,
+                "arguments": [{
+                    "name": "input",
+                    "description": "Optional extra instructions or context for this skill.",
+                    "required": false,
+                }],
+            })
+        })
+        .collect()
+}
+
+fn prompt_get(params: &Map<String, Value>) -> std::result::Result<Value, String> {
+    let name = params.get("name").and_then(|v| v.as_str()).unwrap_or("");
+    let Some(skill) = crate::skills::prompt_skill(name) else {
+        return Err(format!(
+            "unknown prompt: {}",
+            if name.is_empty() { Value::Null.to_string() } else { name.to_string() }
+        ));
+    };
+    crate::skill_match::record_use(&std::env::current_dir().unwrap_or_default(), &skill.name);
+    let mut text = crate::skills::body(&skill);
+    if let Some(input) = params
+        .get("arguments")
+        .and_then(|a| a.get("input"))
+        .and_then(|v| v.as_str())
+    {
+        let input = input.trim();
+        if !input.is_empty() {
+            if !text.is_empty() {
+                text.push_str("\n\n");
+            }
+            text.push_str(input);
+        }
+    }
+    Ok(json!({
+        "description": skill.description,
+        "messages": [{"role": "user", "content": {"type": "text", "text": text}}],
+    }))
+}
+
 fn error(msg_id: &Value, code: i64, message: &str) -> Value {
     json!({"jsonrpc": "2.0", "id": msg_id, "error": {"code": code, "message": message}})
 }
@@ -1806,7 +1901,7 @@ pub fn handle(message: &Value) -> Option<Value> {
             let mut f = Map::new();
             f.insert("version".into(), json!(version));
             log("initialize", f);
-            let mut capabilities = json!({"tools": {"listChanged": false}});
+            let mut capabilities = json!({"tools": {"listChanged": false}, "prompts": {"listChanged": false}});
             if std::env::var("EVERETT_GATEWAY_EXACT_IDS").as_deref() == Ok("1") {
                 capabilities["experimental"] = json!({
                     "everettExactDestinationIds": {"enforced": true},
@@ -1823,11 +1918,22 @@ pub fn handle(message: &Value) -> Option<Value> {
                     "protocolVersion": version,
                     "capabilities": capabilities,
                     "serverInfo": {"name": "everett", "version": env!("CARGO_PKG_VERSION")},
-                    "instructions": INSTRUCTIONS,
+                    "instructions": instructions(),
                 }),
             ))
         }
         "ping" => Some(result(&msg_id, json!({}))),
+        "prompts/list" => match verify_native_account() {
+            Ok(_) => Some(result(&msg_id, json!({"prompts": prompt_list()}))),
+            Err(e) => Some(error(&msg_id, INTERNAL_ERROR, &e.message)),
+        },
+        "prompts/get" => match verify_native_account() {
+            Ok(_) => match prompt_get(params) {
+                Ok(v) => Some(result(&msg_id, v)),
+                Err(m) => Some(error(&msg_id, INVALID_PARAMS, &m)),
+            },
+            Err(e) => Some(error(&msg_id, INTERNAL_ERROR, &e.message)),
+        },
         "tools/list" => Some(result(&msg_id, json!({"tools": tools()}))),
         crate::gateway::WORKER_METHOD if crate::gateway::scoped_worker_enabled() => {
             match crate::gateway::call_scoped_worker(params) {
