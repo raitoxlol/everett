@@ -327,9 +327,17 @@ pub fn find(name: &str, source: Option<&str>) -> Vec<Skill> {
     let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
     let mut matches: Vec<Skill> = scan(&cwd)
         .into_iter()
-        .filter(|s| {
-            (s.name == name || s.name.eq_ignore_ascii_case(name))
-                && source.is_none_or(|src| s.source == src || s.copies.iter().any(|(copy, _)| copy == src))
+        .filter(|s| s.name == name || s.name.eq_ignore_ascii_case(name))
+        .filter_map(|mut s| match source {
+            Some(src) if s.source != src => {
+                // An identical copy from the asked source: answer with that copy's own folder.
+                let (_, path) = s.copies.iter().find(|(copy, _)| copy == src)?.clone();
+                s.dir = path.parent()?.to_path_buf();
+                s.path = path;
+                s.source = src.to_string();
+                Some(s)
+            }
+            _ => Some(s),
         })
         .collect();
     matches.sort_by(|a, b| {
