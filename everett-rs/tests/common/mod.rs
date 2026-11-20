@@ -27,6 +27,7 @@ impl Fixture {
         let mut cmd = Command::new(env!("CARGO_BIN_EXE_everett"));
         cmd.args(args)
             .env("EVERETT_HOME", self.home())
+            .env_remove("DEVIN_HOME")
             .env_remove("PI_CODING_AGENT_DIR")
             .env_remove("HERMES_HOME")
             .env_remove("T3CODE_HOME")
@@ -50,6 +51,7 @@ impl Fixture {
         let mut cmd = Command::new(env!("CARGO_BIN_EXE_everett"));
         cmd.args(args)
             .env("EVERETT_HOME", self.home())
+            .env_remove("DEVIN_HOME")
             .env_remove("PI_CODING_AGENT_DIR")
             .env_remove("HERMES_HOME")
             .env_remove("T3CODE_HOME")
@@ -339,6 +341,7 @@ const CALLER_IDENTITY_UNSET: &[&str] = &[
 ];
 
 const SANDBOX_UNSET: &[&str] = &[
+    "DEVIN_HOME",
     "PI_CODING_AGENT_DIR",
     "HERMES_HOME",
     "T3CODE_HOME",
