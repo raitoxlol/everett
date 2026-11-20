@@ -4,6 +4,11 @@ instructions for one. It condenses the rules from the [MCP tools reference](/mcp
 
 ## Before you act
 
+Native stdio MCP tool calls require the owner to run `everett login` in the same
+Everett profile. Tool discovery alone is not verification: call `everett_ls` and
+accept an empty returned list as success. If an account is required, ask the owner
+to sign in and retry. Even `everett_whoami` requires account verification.
+
 1. **Check that the tools exist.** You should see tools named `everett_ls`, `everett_send`,
    `everett_inbox`, `everett_learn`, `everett_core`, and others. If none are listed, ask the owner to
    run `everett doctor` and restart your client.
@@ -33,8 +38,9 @@ confidence, so you can tell the user, for example, "jev picked [claude] ~/src/ap
 - Sessions older than 72 hours need the same larger `hours` value on listing, routing, and sending.
 
 **Pick the right mode.** The default `ping` is immediate and fails rather than silently queueing.
-Use `mode: "inbox"` for T3 Code threads, external agents, attached sessions without a wake path,
-and remote devices.
+Owner-local `ping` and `auto` nudge T3 Code threads through the T3 CLI.
+Use `mode: "inbox"` to queue for pickup. For T3 Code this skips the T3 CLI nudge.
+For registered external agents, a matching owner webhook can start a routine after enqueue.
 
 **Read receipts honestly.** `pinged: true` means dispatch, not that the target read or finished
 anything. `queued`, `picked_up`, and `replied` are separate observations; none proves the task

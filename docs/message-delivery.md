@@ -133,6 +133,20 @@ retry. Invalid or unsupported targets are rejected before an inbox item is creat
 
 ## Local send receipts
 
+Recover a lost local request ID with `everett sent [--to EXACT_RECIPIENT_ID] [--json]`
+or `everett_sent(to=...)`: both return up to 50 recent requests for the current sender,
+newest first. Use `everett status MESSAGE_ID` / `everett_status` before retrying.
+If T3 dispatch fails after Everett writes the inbox request, JSON CLI output and MCP
+tool errors include the retained `message_id` for recovery.
+For a still-queued T3 request, `everett retry MESSAGE_ID` / `everett_retry` reuses that
+request rather than creating another inbox item. Everett reuses confirmed dispatch receipts.
+If dispatch is unconfirmed, follow the error's recovery instructions. Some failures direct you
+to check the original thread first. For retryable failures, retry the same request if it is
+still queued.
+CLI ping output distinguishes `PINGED` from `PENDING` and prints the follow-up status command.
+`send --mode inbox --wait S` can return a retained correlated reply even if another
+inbox reader already consumed it.
+
 An explicit local inbox send reports `wake: false`. Until a reader marks the
 message id in the recipient's `.done` file, it reports `queued: true` and
 `delivered: false`. If pickup is observed before the send returns, those flags
@@ -155,6 +169,9 @@ reply. Status queries do not rewrite local receipts or establish task success.
 `everett_inbox(peek=true)` leaves messages unread. A normal `everett_inbox` call
 or an accepting hook marks the returned message ids consumed so they do not
 appear again. Records remain available for `reply_to` lookup until expiry.
+Normal inbox reads claim messages under the inbox lock before returning them, and
+hooks persist pickup acknowledgement before returning work. If acknowledgement fails,
+the hook does not return that work. Peek remains non-consuming.
 
 Dashboard consumers can use the [versioned delivery and agent status fields](dashboard-status.md).
 

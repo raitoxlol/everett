@@ -24,7 +24,8 @@ See also [Grok Bot 0.77 reachability](docs/grok-bot.md#grok-bot-077-reachability
 ## Quickstart
 
 Everett is one native binary for macOS and Linux. Have at least one harness CLI on your PATH.
-Local sessions, routing, inboxes, hooks, MCP, and SSH peers work without an Everett account.
+Local CLI sessions, routing, inboxes, hooks, MCP registration, and SSH peers need no account.
+Calling Everett MCP tools requires `everett login` in the same Everett profile.
 The hosted relay is `https://relay.raitox.tech`. Account identity stays
 `https://everett.raitox.tech`. Hosted enrollment follows the deployed service's
 account policy. The repository's public deployment profile enables separate
@@ -54,10 +55,14 @@ Those commands can include agents that onboarding has not detected; they are not
 exact preview of its selected changes.
 
 Onboarding detects installed CLIs even before their first session. It backs up and registers
-hooks and MCP for detected Claude Code, Codex, OMP, and Grok installations. Restart those clients,
-then run `everett ls`. Doctor checks the registered launchers and lists your exact next steps.
-For Pi and Devin run `everett install-hooks --pi --apply` / `everett install-hooks --devin --apply`
-so their MCP calls bind to the right session; Hermes needs one config entry (`everett install-mcp --hermes`).
+hooks and MCP for detected Claude Code, Codex, OMP, and Grok installations. It also installs
+the Pi extension and registers Devin MCP when those clients are detected. Run
+`everett install-hooks --devin --apply` to bind Devin MCP calls to their sessions.
+For Hermes, follow the wizard to install and enable the [Hermes plugin](plugins/everett-hermes/README.md),
+or use the manual entry printed by `everett install-mcp --hermes` as an alternative.
+Restart configured clients and run `everett ls`. Doctor checks registered launchers and lists next steps.
+Run `everett login`, restart each MCP client, and ask it to call `everett_ls`. A returned list,
+even empty, verifies the tool.
 See [MCP caller identity](docs/mcp-identity.md).
 No router key or model call is needed for this setup. Codex may ask you to enable/trust its hooks.
 
@@ -79,9 +84,12 @@ wizard was applied, not that an agent has loaded its tools. Cancellation or an a
 first-run setup pending. Later bare runs show help. Run `everett onboard` to repeat setup. Explicit
 commands and noninteractive bare runs do not prompt.
 
-The terminal flow is welcome, choose local setup or account sign-in, choose agents, per-agent setup guides,
-review/apply, then a copyable instruction prompt. With a configured hosted Cloudflare issuer, the
-CLI opens the approval page locally, prints a URL and code usable on another device, waits for
+The welcome says "Local setup needs no Everett account. Sign in to use Everett MCP tools."
+Its primary action is "Choose setup path"; the next screen is "Choose how to connect".
+Press `l` to continue locally. When the wizard offers sign-in, Enter starts device approval.
+The wizard then guides you through agent selection, per-agent setup, review and apply, and a
+copyable instruction prompt. For sign-in, the CLI opens the approval page locally, prints a
+URL and code usable on another device, waits for
 approval, saves its private credential, and verifies its identity with the server before continuing.
 SSH sessions keep the URL/code path. Fresh interactive setup defaults to
 `https://relay.raitox.tech` for the network endpoint, with account identity
@@ -110,6 +118,7 @@ copied. Results, guides and the prompt scroll with `j` and `k`.
 `q`, Escape or Ctrl-C cancels before apply; completed account approval is retained. `d` on welcome
 opens the optional explanation, with Overview, Local, Cloud and VM tabs on keys `1`-`4`; the chooser
 uses `1`-`3`. A usable terminal starts at 54 columns and 14 rows. Smaller terminals ask you to resize.
+The large balloon layout needs 76 columns and 22 rows; the compact balloon appears from 60 columns.
 Without a usable terminal, Everett uses plain prompts. While entering a key, Escape or Ctrl-C cancels.
 
 The welcome has an animated balloon and multiple colors. Set `EVERETT_NO_ANIM=1` to disable motion
@@ -118,6 +127,10 @@ sessions in a disposable home, build the debug binary and run `sh scripts/demo-o
 
 [Captured terminal journey](docs/assets/onboarding/onboarding-motion.gif) uses actual PTY cells
 from synthetic sessions, rendered with Menlo on a dark canvas. It is not a Termius screenshot.
+This historical capture predates the current welcome and account wording. The binary
+`onboarding-motion.gif` and `onboarding-summary.png` under `docs/assets/onboarding/`
+need recapture: the summary now directs users to sign in if needed and call `everett_ls`,
+not just list tools. The text above describes the current flow.
 
 `--yes` explicitly applies defaults without prompting:
 
@@ -186,6 +199,8 @@ A Rust local-data service would still be required; a static website cannot read 
 device's session stores.
 
 This is example output (paths and ids are shortened):
+CLI ages in `everett ls` and `everett inbox` use minutes below one hour, hours
+below 48 hours, and days from 48 hours onward (for example, `2d`).
 
 ```text
 $ everett ls
@@ -210,6 +225,12 @@ Done. MAX_RETRIES is now 5 and the backoff test covers the cap.
 | Command | What it does |
 |---|---|
 | `everett control read --session ID [--messages N]` | Reads recent messages from a local session by ID or unambiguous prefix. Uses its T3 thread when mapped, otherwise its supported harness transcript. |
+| `everett gateway --config FILE [--transport stdio\|http] [--port 8788]` | Runs the owner-bound gateway; see [gateway setup](docs/gateway.md). |
+| `everett gateway-permissions --file FILE [--all\|--allow TOOL,...\|--deny-all]` | Inspects or updates an owner connection's tool grant. |
+| `everett external add / list / remove` | Manages registered external inboxes; see [gateway setup](docs/gateway.md). |
+| `everett tunnel watch --env-file FILE` | Maintains the configured Secure MCP Tunnel; see [ChatGPT setup](docs/chatgpt.md). |
+| `everett identity diagnose [--json]` | Explains account and session identity provenance with read-only account verification. |
+| `everett relay diagnose` | Prints redacted local relay diagnostics without online account verification. |
 | `everett control read THREAD [--messages N]` | Reads recent T3 thread messages as JSON for an owner-local caller. Defaults to 10 messages and clamps the count to 1–50. |
 | `everett control threads [--project P]` | Lists T3 Code threads as JSON through the local T3 CLI. Accepts an optional project filter and requires an owner-local caller. |
 | `everett ls [--json] [--all] [--harness H]` | Recent sessions from every harness, one line each. `--all` includes scripted runs. |
@@ -232,6 +253,7 @@ Done. MAX_RETRIES is now 5 and the backoff test covers the cap.
 | `everett send "<text>" [--dry-run] [--timeout S] [--router …]` | Routes and pings immediately. Idle local sessions run headless; verified local Claude background sessions receive a native inbox nudge. Unsupported transports fail without queue fallback. `NEW` and `ASK` send nothing unless explicitly resolved. See [Live delivery](#live-delivery). |
 | `everett send … [--mode ping\|auto\|resume\|inbox] [--wait S]` | Default `ping` dispatches immediately or fails. Explicit `inbox` is legacy queue delivery for hooks, polling, or remote transports. `auto` and `resume` retain compatibility behavior. `--wait S` applies to explicit inbox delivery. |
 | `everett status MESSAGE_ID [--json]` | Check a local request you sent. The original message ID shows pickup and any reply, even after the inbox has been read. |
+| `everett sent [--to ID] [--json]` | Recover up to 50 recent local request receipts for the current sender, newest first. `--to` filters by exact recipient session ID. |
 | `everett retry MESSAGE_ID [--json]` | Nudge the original T3 thread for a still-queued ping you sent. Reuses the inbox request and message ID. Check pickup with `everett status MESSAGE_ID`. |
 | `everett send --to <full-Claude-session-UUID> --wake [--wait S] "<request>"` | Queues the request, then explicitly wakes an existing local Claude Code background session through a PTY and waits for a reply linked to that inbox message. Requires an interactive local terminal and Claude Code 2.1.285 or newer. The sender cannot request this native wake through `auto`, MCP, gateway, remote, or T3 Code sends. A separately enabled receiver policy can wake Claude after a relay import. |
 | `everett reply <message-id> "<text>"` | Answers an Everett message; the reply goes to the sender's inbox. |
@@ -240,14 +262,14 @@ Done. MAX_RETRIES is now 5 and the backoff test covers the cap.
 | `everett event done\|blocked\|needs-input\|info "<msg>" [--project P]` | Records what this session is doing (see [Events](#events)). |
 | `everett events [--since 24h] [--session S] [--json] [--check]` | Recent events across sessions. `--check` also runs the blocked-too-long escalation. |
 | `everett subscribe <session\|project> [--as S] [--remove]` | Delivers another session's (or a project's) events to your inbox. |
-| `everett send --to <id-prefix\|name> "<text>"` | Skips routing and delivers to one session. The target is an exact id, a unique id prefix, an exact title (case-insensitive), the card's name (`Atlas: …` → `atlas`), or the project folder name. If more than one session matches, Everett lists them and sends nothing. |
+| `everett send --to <id-prefix\|name> "<text>"` | Skips routing and delivers to one session. The target is an exact session ID or T3 thread ID, a unique session ID prefix, an exact title (case-insensitive), the card's name (`Atlas: …` → `atlas`), or the project name (repository name for T3/Claude worktrees, otherwise the working folder's name). A lone card named only after its project does not hide other sessions in that project. If more than one session matches at a lookup step, Everett lists them and sends nothing. |
 | `everett send --spawn [--dir D] [--harness H] "<text>"` | When routing says `NEW` with confidence ≥ 0.6, starts a new headless session and prints its reply and new session id. The directory defaults to the folder of the best-matching session, else the current one. |
 | `everett cards` | Card coverage per harness: agent-written, automatic, missing. |
 | `everett skills [QUERY] [--match TASK] [--get NAME] [--source S] [--shortlist] [--json]` | The skill hub over every harness's `SKILL.md` playbooks. `--match` prints the one skill that fits a task (exit 1 when none does); `--get` prints a named skill from the best source that has it; `--shortlist` shows what sessions in this project are told up front; a bare query lists. |
 | `everett onboard [--yes] [--span-days N] [--no-backfill] [--no-mcp]` | Human setup TUI (welcome, account approval, agents, guides, review/apply and instruction prompt; optional settings under Advanced); `--yes` runs it non-interactively for scripts. |
-| `everett install-hooks [--claude] [--codex] [--omp] [--grok] [--apply]` | Prints the hook registrations. `--apply` backs up the file, then merges idempotently. |
-| `everett mcp` | Runs the stdio MCP server (harnesses start it; see below). |
-| `everett install-mcp [--claude] [--codex] [--omp] [--grok] [--devin] [--apply]` | Prints or registers the MCP server for each harness. |
+| `everett install-hooks [--claude] [--codex] [--omp] [--grok] [--pi] [--devin] [--apply]` | Prints the hook registrations. `--apply` backs up the file, then merges idempotently. |
+| `everett mcp [--harness H]` | Runs the stdio MCP server (harnesses start it; see below). Tool calls require `everett login`. |
+| `everett install-mcp [--claude] [--codex] [--omp] [--grok] [--devin] [--pi] [--hermes] [--repair] [--apply]` | Prints or registers MCP. Pi uses its extension; Hermes prints a manual config entry. `--repair --apply` refreshes stale registrations. |
 | `everett doctor` | Installed CLIs, stores, hooks, live stdio/MCP registration checks, cards, router, and account diagnostics; SSH revocation remains explicit. |
 | `everett learn "<fact>" [--project P] [--scope global\|project]` | Queues a fact for shared core. Add `--ttl-seconds N` (1 to 31536000) to keep it only in local memory search until expiry. Secrets are rejected. |
 | `everett trunk merge [--llm claude\|codex\|none] [--dry-run]` | Distills the inbox into the shared core. |
@@ -261,6 +283,10 @@ Done. MAX_RETRIES is now 5 and the backoff test covers the cap.
 | `everett devices revoke <device-id>` | Permanently revokes self or a same-owner device as admin, and removes matching local peer configuration and pins. SSH authorizations must be revoked separately. |
 
 Global option: `--hours N` sets the look-back window (default 72).
+It also applies to `control read --session`; increase it for older sessions.
+MCP `everett_control` resolves session IDs within a fixed 168-hour window.
+Transcript reads stream JSONL histories and return a bounded tail. Devin ATIF JSON
+transcripts support recent user/assistant reads; Devin SQLite sessions do not yet support reads.
 
 ### How delivery works
 
@@ -283,7 +309,8 @@ matching session with source `t3code` (`[t3code]` in `ls`) and uses the thread t
 Active projections with a real provider ID also supply sessions when the local provider
 transcript is absent. Current v2 and legacy stores are supported; see the
 [T3 discovery and polling guide](docs/t3code.md).
-T3 sends require explicit `--mode inbox` (MCP `mode: "inbox"`). Automatic sends fail without queueing.
+Owner-local T3 `ping` and `auto` send a fixed inbox nudge through `t3 thread send`.
+Explicit `--mode inbox` (MCP `mode: "inbox"`) queues without that nudge.
 Hooks can inject a queued message only if T3's provider runtime
 actually loads and runs them; queuing alone does not prove pickup. Otherwise the receiving
 thread must have `EVERETT_SESSION_ID=<underlying-provider-session-id>` in that thread's MCP
@@ -415,7 +442,7 @@ inbox consumption or task completion.
 See [agent support and wake](docs/agent-support.md) and the
 [delivery policy and explicit queue exceptions](docs/message-delivery.md).
 
-1. **Which path.** `send --mode ping` is the default in CLI and MCP. Native Claude dispatch requires a full UUID, supported version, and verified background state. Attached OMP 18.12.2 sessions accept local `ping`/`auto` through the running Everett extension when a fresh per-session capability proves support. The receipt reports `transport: "omp-extension"` and `extension_pending`; pickup and reply remain unconfirmed. T3, external agents, attached sessions without a supported wake transport, and remote transports require explicit legacy `--mode inbox`. `auto` and `resume` are compatibility options, not defaults. Remote provenance never permits a local provider wake or resume. See the [OMP behavior and trust boundary](docs/message-delivery.md#attached-omp-sessions).
+1. **Which path.** `send --mode ping` is the default in CLI and MCP. Native Claude dispatch requires a full UUID, supported version, and verified background state. Attached OMP 18.12.2 sessions accept local `ping`/`auto` through the running Everett extension when a fresh per-session capability proves support. The receipt reports `transport: "omp-extension"` and `extension_pending`; pickup and reply remain unconfirmed. T3 pings nudge the owning thread through `t3 thread send`; confirmed dispatch is not pickup. External agents, attached sessions without a supported wake transport, and remote transports require explicit legacy `--mode inbox`. `auto` and `resume` are compatibility options, not defaults. Remote provenance never permits a local provider wake or resume. See the [OMP behavior and trust boundary](docs/message-delivery.md#attached-omp-sessions).
 2. **Explicit Claude wake.** `send --to <full-session-UUID> --wake` is a separate local CLI opt-in. Everett verifies the Claude version and exact background-session state, queues the original request, then attaches to that same session in a PTY with a fixed nudge to read and answer the queued inbox item. It reports the native prompt receipt separately from a real Everett reply. `--wake` rejects prefixes, routed destinations, remote sessions, T3 Code, relay-derived callers, and non-Claude sessions. The request remains recorded if the attach or reply wait fails, but Claude may already have read it. A timeout does not mean the request is still pending. MCP, gateway, and ordinary `auto` sends cannot request wake.
 3. **Inbox.** `~/.everett/inbox/<session-id>.jsonl`, one message per line: `id`, `from` (the sender's session id, or `human` from a terminal), `from_harness`, `from_card`, `text`, `ts`, `reply_to`, `hops`, `kind` (`message`, `reply`, or `event`). Delivered ids go to `<session-id>.done`. Undelivered messages expire after 7 days.
 4. **Injection.** The hook adds at most 5 messages (2,000 characters each, 6,000 in total) as context, marked as coming from Everett with the sender's session and card, and marks exactly those delivered. The rest arrive at the next hook. The hook reads local files only, takes about 40 ms, and prints nothing on any error.
@@ -453,8 +480,14 @@ Everett knows what each session is doing, not just what it was about.
 
 Everett has two routers with the same output:
 
-- **local** (default without a key): BM25 lexical scoring of the request against each session's card, title, first and last request, and project folder name, weighted by recency. It needs no network. A clear lead gives `SESSION`, a tie gives `ASK`, and no overlap gives `NEW`.
+- **local** (default without a key): BM25 lexical scoring of the request against each session's card, title, first and last request, and project name, weighted by recency. It needs no network. A clear lead gives `SESSION`, a tie gives `ASK`, and no overlap gives `NEW`.
 - **jev** (default when a key is set): the [Jev](https://typesafe.ai) System One model makes a typed choice among the sessions. A confidence below 0.6 gives `ASK`.
+
+Session project names use the repository behind T3 and Claude worktrees, not the
+worktree folder's name; other working folders use their own name. Home directories
+and Codex app chat folders are not projects. The local router boosts a project when
+the request contains its name's words consecutively and in order, ignoring case
+and punctuation: `web-mesh` matches `web mesh`, not `mesh web`.
 
 The Jev key is read from, in order: `TYPESAFE_API_KEY`, `typesafe_api_key` in `~/.everett/config.toml`, then `TYPESAFE_API_KEY` in `~/.hermes/.env`. Force a router with `--router local|jev`, or set `router = "local"` in the config.
 
@@ -464,6 +497,9 @@ A card is a note of 50 words or fewer, kept at `~/.everett/cards/<session-id>.md
 
 - **Agent cards**: the SessionStart hook tells each new session where its card lives and asks the agent to write it in its first working reply.
 - **Automatic cards**: when the agent has not written one, the Stop hook writes a deterministic fallback from the transcript (no LLM, no network). Automatic cards start with `<!-- everett:auto -->`, and hooks never overwrite an agent-written card.
+
+Automatic card project labels use the repository name for T3 and Claude worktrees,
+rather than the worktree folder's name, and the working folder's name otherwise.
 
 Hooks stay silent for `everett send` resumes (`EVERETT_SEND=1`) and for scripted Claude runs.
 
@@ -531,7 +567,15 @@ Linux requires systemd and a reachable user manager. If activation fails, Everet
 
 ## For agents: MCP
 
-Everett is mostly used by agents. `everett mcp` is a stdio MCP server (JSON-RPC 2.0, protocol versions 2025-06-18, 2025-03-26, and 2024-11-05) written with the standard library only, so every MCP-capable harness gets Everett as native tools:
+Run `everett login` in the client's Everett profile before calling tools. Registration and
+`tools/list` can succeed while signed out; verify by calling `everett_ls` after restarting
+the client. Even `everett_whoami` and `everett_agent_relay(action="diagnose")` require
+account verification. For offline diagnostics, use terminal `everett relay diagnose`.
+
+Hermes Agent users can install the [Hermes-supported plugin](plugins/everett-hermes/README.md)
+instead of manually adding an MCP entry. It uses the installed binary and the same account check.
+
+Everett is mostly used by agents. `everett mcp` is a native Rust stdio MCP server (JSON-RPC 2.0, protocol versions 2025-06-18, 2025-03-26, and 2024-11-05), so MCP-capable harnesses get Everett as native tools:
 
 **Jev first.** Call `everett_send` with just `text`; do not call `everett_ls` and hand-pick a target session. Without `to`, Everett routes the request itself (Jev when a key is configured, else the local matcher) before delivering it, and the response reports the decision -- router, chosen session, confidence -- so you can tell the user e.g. "jev picked \[claude\] ~/src/api". Pass `to` only when the user named a specific session or you are replying to one; it skips routing. On an ambiguous `ASK` decision nothing is sent -- the response carries `candidates` (close sessions) to disambiguate, then send again with `to`. `everett_ls` is for a quick overview of what sessions are doing, not for picking a send target.
 
@@ -551,7 +595,7 @@ Everett is mostly used by agents. `everett mcp` is a stdio MCP server (JSON-RPC 
 | `everett_retry` | `message_id` | Local stdio MCP only. Nudge the original T3 thread for a still-queued ping from your session using the existing inbox request. |
 | `everett_event` | `kind`, `message`, `project?` | Records done / blocked / needs-input / info for your session. |
 | `everett_subscribe` | `target`, `unsubscribe?` | Follows a session's or project's events in your inbox. |
-| `everett_control` | `action`, `session?`, `thread?`, `text?`, `harness?`, `project?`, `wait?`, `messages?` | Owner-local control. `threads`, `start`, `send`, `wake` and `read` drive T3 Code threads through the `t3` CLI. `start` also opens headless Claude, Codex, OMP, Pi, Hermes, Grok or Devin sessions, `send`/`wake` ping other sessions through `everett_send`, and `read` returns the latest messages of any harness transcript. `stop` reports per harness why Everett can't stop it. Remote-derived callers are refused. |
+| `everett_control` | `action`, `session?`, `thread?`, `text?`, `harness?`, `project?`, `cwd?`, `title?`, `provider?`, `model?`, `worktree?`, `branch?`, `wait?`, `messages?`, `timeout?` | Owner-local control. `threads`, `start`, `send`, `wake` and `read` drive T3 Code threads through the `t3` CLI. `start` also opens headless Claude, Codex, OMP, Pi, Hermes, Grok or Devin sessions. T3 `provider` requires `model`. `send`/`wake` ping other sessions through `everett_send`; `read` returns supported transcript messages (Devin ATIF, not SQLite). `stop` explains why Everett cannot stop a harness. Remote-derived callers are refused. |
 | `everett_agent_relay` | `action`, `id?`, `name?`, `fingerprint?` | Verified identity, registration, directory/pins and scoped revocation controls. |
 | `everett_agent_send` | `agent`, `session`, `harness`, `text`, `idempotency_key` | Device-side encrypted send to an explicit named agent. No sender-requested wake or implicit routing; receiver policies are separate. |
 | `everett_agent_status` | `message_id` | Sender-only status from signed delivery/pickup/reply observations. |
@@ -633,6 +677,15 @@ session keeps its own binding and inbox. Everett verifies the account on each to
 call, so running MCP processes pick up sign-in, sign-out and revocation on their
 next call. Local terminal commands such as `everett ls` work offline. Hosted gateway
 clients use their configured gateway authentication.
+
+Every native `tools/call` verifies the saved Cloudflare credential online before dispatch;
+there are no tool exemptions. Initialization, `ping`, and `tools/list` do not verify it.
+`EVERETT_GATEWAY_*` settings do not exempt ordinary `tools/call`: the gateway uses a
+separate scoped-worker request path with its own owner/grant authorization.
+
+The optional [private mesh console](web-mesh/README.md) is separate from the local
+dashboard. It is read-only, disabled by default, and needs an owner-approved, expiring
+Cloudflare read grant; GitHub console sign-in alone does not approve access.
 
 `everett login` uses Cloudflare's native
 device approval protocol (not RFC 8628). Approve the named device at the printed
