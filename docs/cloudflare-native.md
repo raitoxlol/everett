@@ -2,11 +2,13 @@
 
 The native adapter uses the configured Cloudflare identity issuer, an optional
 relay base URL, and a custom device approval protocol. Interactive setup offers
-account-free local agents or explicit sign-in through `https://relay.raitox.tech`.
+account-free local registration or explicit sign-in through `https://relay.raitox.tech`.
 Account identity stays `https://everett.raitox.tech`. Existing custom issuer
 configuration is preserved and still used as the connect URL when `base_url` is unset.
 The public service accepts GitHub accounts into separate relay namespaces. For local
-agents without an account, use the [account-free setup](auth.md#set-up-local-agents-without-an-account).
+registration without an account, use [local setup](auth.md#register-local-agents-without-an-account).
+Local CLI commands and SSH peers stay account-free; Everett MCP tool calls require
+`everett login` and online account verification on every call.
 
 The [2.1.0 release notes](https://github.com/raitoxlol/everett/releases/tag/v2.1.0)
 record physical public Mac/NUC delivery, real idle Claude wake/reply, second-account
@@ -15,8 +17,9 @@ Hostile browser request replay remains covered by synthetic-provider runtime tes
 
 ## Approve and connect each computer
 
-Run `everett` normally on each new computer and choose sign-in for hosted delivery; no separate login
-command is required. For a custom deployment, set `EVERETT_AUTH_PROVIDER=cloudflare`
+On each new computer, choose sign-in during first-run `everett` setup or run
+`everett login` explicitly. Local-only setup does not authorize MCP tools.
+For a custom deployment, set `EVERETT_AUTH_PROVIDER=cloudflare`
 and `EVERETT_AUTH_ISSUER` to that deployment's identity origin, optionally with
 `EVERETT_AUTH_BASE_URL` / `[auth] base_url` when the relay hostname differs, or the
 equivalent `[auth]` provider and issuer settings. GitHub approval always continues on

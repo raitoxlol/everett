@@ -35,8 +35,12 @@ one session; it is not project-wide truth. See [Session cards and hooks](/sessio
 | `NEW` | No session matches | Nothing, unless `--spawn` |
 | `ASK` | Several sessions are close | Nothing; returns `candidates` |
 
-The **local** router uses BM25 over cards, titles, requests, and folder names, weighted by recency,
-with no network. The **Jev** router is used when a Typesafe key is configured. See [Routing](/routing/).
+The **local** router uses BM25 over cards, titles, requests, and project names, weighted by recency,
+with no network. T3 and Claude worktree sessions use their repository name, not the
+worktree folder's name; other working folders use their own name. Home directories
+and Codex app chat folders are not projects. Project-name boosts match consecutive
+words in order, ignoring case and punctuation (`web-mesh` matches `web mesh`, not
+`mesh web`). The **Jev** router is used when a Typesafe key is configured. See [Routing](/routing/).
 
 ## Send, ping, and inbox
 
@@ -91,10 +95,14 @@ Every delivery carries `EVERETT_HOPS`. With `hop_limit = "on"`, sends past three
 
 A **peer** is another computer. Two transports exist, both inbox-only:
 
-- **SSH peers** need no account: pair once with confirmed host and device fingerprints. See [SSH peers](/cross-device/).
+- **Local CLI setup and SSH peers** need no account: pair SSH peers once with confirmed host and device fingerprints. See [SSH peers](/cross-device/).
 - The **Cloudflare relay** uses a signed-in account; devices on the same owner account trust each
   other's signed key bundles automatically. Messages are end-to-end encrypted (X25519, HKDF-SHA256,
   ChaCha20-Poly1305, Ed25519). See [Cloudflare relay](/cloudflare-relay/) and the [threat model](/relay-threat-model/).
+
+**Native MCP tools** require `everett login` in the client's Everett profile and online
+verification on each call, even for local work. Registration and discovery alone do
+not authorize tool calls.
 
 Remote sends require `--mode inbox`. Remote provenance never permits a local wake or resume
 (except an owner's opt-in receiver policy).

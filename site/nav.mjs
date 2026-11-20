@@ -25,7 +25,7 @@ export const groups = [
         summary: 'What Everett is, which harnesses it supports, and how the pieces fit together.',
         readWhen: 'You are new to Everett or need the one-page mental model.' },
       { slug: 'quickstart', title: 'Quickstart', file: 'README.md', sections: ['Quickstart'], exclude: ['Setup options'],
-        summary: 'Install the native binary, register hooks and MCP, and verify with doctor.',
+        summary: 'Install the binary, register hooks and MCP, sign in for tools, and verify in your client.',
         readWhen: 'You are installing or upgrading Everett on a Mac or Linux machine.' },
       { slug: 'onboarding', title: 'Onboarding wizard', file: 'README.md', sections: ['Setup options'],
         summary: 'The interactive setup flow, its keys, non-interactive flags, and optional Jev routing.',
@@ -36,6 +36,9 @@ export const groups = [
       { slug: 'dashboard', title: 'Local dashboard', file: 'README.md', sections: ['Demo'],
         summary: 'The read-only loopback dashboard and example CLI output.',
         readWhen: 'You want to see every session at a glance in a browser.' },
+      { slug: 'mesh-console', title: 'Private mesh console', file: 'web-mesh/README.md',
+        summary: 'Opt-in read-only console with an owner-approved, expiring Cloudflare read grant.',
+        readWhen: 'You want a private hosted view of devices, queue counts, and receipts.' },
     ],
   },
   {

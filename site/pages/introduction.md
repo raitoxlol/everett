@@ -4,8 +4,9 @@ request to the session it continues, delivers messages between sessions, and giv
 session the same shared memory. You drive it from the `everett` CLI; agents drive it through
 `everett mcp`.
 
-It is one native binary for macOS and Linux. Local sessions, routing, inboxes, hooks, MCP, and
-SSH peers work without an Everett account.
+It is one native binary for macOS and Linux. Local CLI sessions, routing, inboxes, hooks,
+MCP registration, and SSH peers need no account. Everett MCP tool calls require
+`everett login` in the same profile and verify the account online on every call.
 
 ## Works with
 
