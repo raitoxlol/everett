@@ -775,15 +775,25 @@ pub fn deliver_output(raw: &str, harness: &str) -> String {
     if is_grok && event == "UserPromptSubmit" {
         return String::new();
     }
-    if !crate::inbox::path(session_id).map(|p| p.exists()).unwrap_or(false) {
-        return String::new();
+    let mut parts = Vec::new();
+    if crate::inbox::path(session_id).map(|p| p.exists()).unwrap_or(false) {
+        parts.push(crate::inbox::take(session_id));
     }
-    let text = crate::inbox::take(session_id);
-    if text.is_empty() {
+    if let (true, Some(prompt)) = (event == "UserPromptSubmit", map.get("prompt").and_then(Value::as_str)) {
+        let cwd = map
+            .get("cwd")
+            .and_then(Value::as_str)
+            .map(PathBuf::from)
+            .or_else(|| std::env::current_dir().ok())
+            .unwrap_or_default();
+        parts.extend(crate::skill_match::hook_context(session_id, prompt, &cwd));
+    }
+    parts.retain(|part| !part.is_empty());
+    if parts.is_empty() {
         return String::new();
     }
     serde_json::to_string(&json!({
-        "hookSpecificOutput": {"hookEventName": event, "additionalContext": text}
+        "hookSpecificOutput": {"hookEventName": event, "additionalContext": parts.join("\n\n")}
     }))
     .unwrap_or_default()
 }
