@@ -17,6 +17,8 @@ type Metadata = Omit<Envelope, 'ciphertext' | 'signature' | 'ephemeralKey' | 'no
 };
 type EnrollmentResult = { ok: true; value: { owner: string; deviceId: string } } | { ok: false; error: string; status: number };
 const empty = z.strictObject({});
+// Matches the local inbox ID grammar used by peer::target for both address components.
+const addressPart = identifier.max(128).refine(value => value !== '.' && value !== '..');
 const deviceIdArgs = z.strictObject({ deviceId: identifier });
 const stateRank: Record<MessageState, number> = { queued: 0, expired: 0, delivered: 1, claimed: 2, replied: 3 };
 const watcherSchema = principalSchema.pick({ agentId: true, expiresAt: true }).extend({ fingerprint: z.string().regex(/^[0-9a-f]{64}$/) });
@@ -250,11 +252,15 @@ export class OwnerRelay extends DurableObject {
       case 'exposeSession': {
         this.#activeDevice(p.agentId);
         const a = z.strictObject({ session: identifier, harness: identifier, card: z.string().max(640), remove: z.boolean().optional() }).parse(args);
+        const old = this.#row<{ harness: string }>('SELECT harness FROM session_cards WHERE agent_id=? AND session=?', p.agentId, a.session);
+        // Older CLI clients send "unknown" for an unqualified removal by the owning device.
+        if (old && old.harness !== a.harness && !(a.remove && a.harness === 'unknown')) throw new RelayError('session_harness_conflict', 409);
         if (a.remove) { this.ctx.storage.sql.exec('DELETE FROM session_cards WHERE agent_id=? AND session=?', p.agentId, a.session); return null; }
-        const old = this.#row('SELECT seq FROM session_cards WHERE agent_id=? AND session=?', p.agentId, a.session);
+        addressPart.parse(a.session);
+        addressPart.parse(a.harness);
         const count = this.#row<{ n: number }>('SELECT COUNT(*) AS n FROM session_cards WHERE agent_id=?', p.agentId)!.n;
         if (!old && count >= 32) throw new RelayError('session_limit', 409);
-        this.ctx.storage.sql.exec('INSERT INTO session_cards(agent_id,session,harness,card,updated_at) VALUES(?,?,?,?,?) ON CONFLICT(agent_id,session) DO UPDATE SET harness=excluded.harness,card=excluded.card,updated_at=excluded.updated_at', p.agentId, a.session, a.harness, a.card, now);
+        this.ctx.storage.sql.exec('INSERT INTO session_cards(agent_id,session,harness,card,updated_at) VALUES(?,?,?,?,?) ON CONFLICT(agent_id,session) DO UPDATE SET card=excluded.card,updated_at=excluded.updated_at', p.agentId, a.session, a.harness, a.card, now);
         return null;
       }
       case 'sessionDirectory': {
@@ -263,6 +269,7 @@ export class OwnerRelay extends DurableObject {
         const rows = this.ctx.storage.sql.exec<{ seq: number; agent_id: string; session: string; harness: string; card: string; updated_at: number }>('SELECT * FROM session_cards WHERE seq>? ORDER BY seq LIMIT 33', Number(cursor ?? 0)).toArray();
         const sessions = [];
         for (const row of rows.slice(0, 32)) {
+          if (!addressPart.safeParse(row.session).success || !addressPart.safeParse(row.harness).success) continue;
           try { this.#activeDevice(row.agent_id); }
           catch (error) { if (error instanceof RelayError) continue; throw error; }
           const credential = this.#row<Credential>('SELECT * FROM credentials WHERE agent_id=?', row.agent_id)!;
