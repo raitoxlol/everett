@@ -35,3 +35,31 @@ T3 Code annotates sessions driven by local harnesses. OpenAI dots, Grok Bot and 
 hosted clients with separate gateway or relay setup. This audit covers the seven local clients.
 
 Run `python3 plugins/everett-hermes/tests/smoke.py --upstream --everett-binary /path/to/everett --hermes-executable /path/to/hermes` to repeat the GitHub install and first tool calls. Omit `--upstream` to exercise the local checkout.
+
+### Local inbox handoffs
+
+The target in each exchange was a full session ID. The target consumed the request, replied
+to its message ID, and the original sender checked the reply and pickup status. The
+following results cover queue delivery with explicit pickup. They do not establish that
+a dormant session can be woken or that a production model will independently choose the tools.
+
+| Client | Discovery and caller | Skill read | Exact-target send, pickup and correlated reply/status |
+| --- | --- | --- | --- |
+| Claude Code | Native MCP registration and Claude caller ID | Native MCP | Both directions with a Codex thread. Claude print used a scripted loopback model and native tool grants. |
+| Codex | Native app-server listed two persisted threads and identified each from its own request metadata | Native MCP | Thread-to-thread over app-server, including filtered reply pickup and sender status. No model required. |
+| OMP | Native MCP routes and session-start hook binding | Native eval tool | Both directions with a Codex thread through OMP eval and a scripted loopback model. |
+| Pi | Native extension and session-bound bridge | Native codemode tool | Both directions with a Codex thread through Pi codemode and a scripted loopback model. |
+| Hermes Agent | Native plugin discovery and real oneshot row. Shared gateway MCP has no per-call session ID. | Native Hermes skill registry | Both directions with a real Codex thread using a native Hermes oneshot terminal and a scripted loopback model. The CLI read Hermes's per-turn session ID. See the bundled skill for the commands. |
+| Grok CLI | Native MCP doctor. Caller identity tested with a fixture Grok session variable. | Fixture Grok skill | Both directions through stdio MCP and a fixture Devin peer. Native model turn requires Grok sign-in. |
+| Devin CLI | Native MCP list. Onboarding installs its caller-binding hooks. Hook binding and store discovery tested with fixtures. | Fixture Devin skill | Both directions through stdio MCP and a fixture Grok peer. Native model turn requires Devin sign-in. |
+
+To repeat the native exchanges, use two disposable sessions in one isolated home.
+Materialize a Codex thread with a user message before listing it. In each client, read
+the test skill, check the detected caller, and copy the peer's full ID from the list.
+On the Hermes side, follow the terminal commands in the bundled `everett-hermes` skill.
+For the MCP clients, send with `everett_send(to, text, mode="inbox")`, pick up with `everett_inbox` in
+the target, then call `everett_send(reply_to, text)` there. On the sender, filter
+`everett_inbox` by `reply_to` and call `everett_status(message_id)`. Check the
+reply author, original ID, `picked_up: true` and `state: replied`. Reverse the roles.
+The credential-independent Grok/Devin regression runs with
+`cargo test --locked --test release_journey grok_and_devin_fixture_handoff` in `everett-rs`.

@@ -344,7 +344,12 @@ def _make_install_source(root: Path) -> str:
 
 def _clean_environment(home: Path, hermes_home: Path, temp: Path,
                        hermes: Path, everett: Path, issuer_url: str) -> dict[str, str]:
-    path_parts = [str(hermes.parent), str(everett.parent), os.environ.get("PATH", os.defpath)]
+    # The manifest starts "everett" by name. Pin that name to the requested
+    # artifact even when Hermes has a different Everett installed beside it.
+    bin_dir = temp / "fixture-bin"
+    bin_dir.mkdir()
+    (bin_dir / "everett").symlink_to(everett)
+    path_parts = [str(bin_dir), str(hermes.parent), os.environ.get("PATH", os.defpath)]
     environment = {
         "PATH": os.pathsep.join(path_parts),
         "HOME": str(home),
@@ -595,7 +600,7 @@ def _require_hermes_sessions(text: str, expected_session_id: str) -> tuple[list[
 def _create_clean_profile(temp: Path, hermes: Path, everett: Path, issuer_url: str) -> tuple[Path, Path, dict[str, str]]:
     home = temp / "home"
     home.mkdir()
-    hermes_home = home / ".hermes"
+    hermes_home = temp / "hermes-profile"
     hermes_home.mkdir()
     env = _clean_environment(home, hermes_home, temp, hermes, everett, issuer_url)
     _run(hermes, ["pm", "install"], env, hermes.parent, timeout=300)
@@ -740,8 +745,9 @@ def _assert_client_results(state: ModelState, expected_session_id: str, hermes_h
     caller_id = caller.get("id") if isinstance(caller, dict) else None
     if not isinstance(caller_id, str):
         caller_id = whoami.get("session_id")
-    listed_ids = {session["id"] for session in sessions}
-    return len(sessions), isinstance(caller_id, str) and caller_id in listed_ids
+    if caller_id and caller_id != session_id:
+        raise SmokeFailure("Everett identified a different Hermes session as the caller")
+    return len(sessions), caller_id == session_id
 
 
 def _resolve_executable(value: str, label: str) -> Path:
@@ -818,9 +824,9 @@ def main() -> int:
             print("Loopback fixture: whoami account verified; everett_ls returned sessions")
             print(f"Hermes sessions listed: {session_count}")
             if identity_bound:
-                print("Hermes caller identity: bound session id also appeared in the list")
+                print("Hermes caller identity: bound ID matches the calling chat and its state.db row")
             else:
-                print("Hermes caller identity: not bound to a listed session; no identity was supplied by the smoke")
+                print("Hermes caller identity: unbound for this chat; the smoke supplied no caller ID")
         finally:
             _cleanup_profile(
                 hermes, env, home, installed,

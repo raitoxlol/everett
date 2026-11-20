@@ -235,13 +235,22 @@ fn devin_doctor_reports_missing_ready_stale_without_hooks() {
 }
 
 #[test]
-fn devin_onboarding_discovers_config_only_and_installs_mcp_not_hooks() {
+fn devin_onboarding_discovers_config_only_and_installs_mcp_and_bindings() {
     let fx = fixture();
     write_config(&fx, "{}");
+    use std::os::unix::fs::PermissionsExt;
+    let settings = config_path(&fx).with_file_name("config.json");
+    std::fs::write(&settings, "{}").unwrap();
+    std::fs::set_permissions(&settings, std::fs::Permissions::from_mode(0o600)).unwrap();
     let out = run(&fx, &["onboard", "--yes", "--no-backfill"]);
     success(&out);
     let text = fx.stdout(&out);
-    assert!(text.contains("Hooks:\n  (none)\nMCP:\n  devin:"), "{text}");
+    assert!(text.contains("MCP:\n  devin:"), "{text}");
+    assert_eq!(std::fs::metadata(&settings).unwrap().permissions().mode() & 0o777, 0o600);
+    let hooks: Value = serde_json::from_slice(&std::fs::read(settings).unwrap()).unwrap();
+    for event in ["SessionStart", "UserPromptSubmit"] {
+        assert!(hooks["hooks"][event].to_string().contains("devin_bind"));
+    }
     assert!(config(&fx)["mcpServers"]["everett"].is_object());
     assert!(!fx.home().join("session-data").exists());
 }
