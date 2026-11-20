@@ -7,7 +7,7 @@
  {"root": "stack/skills", "name": "unslop", "description": "Remove filler, hedging, and machine-sounding phrasing from prose."},
  {"root": "stack/skills", "name": "stuck", "description": "Use when the same approach has failed twice. Step back, list assumptions, and pick a different angle."},
  {"root": "stack/skills", "name": "blast-radius", "description": "Find what a change could break elsewhere in the system before it ships."},
- {"root": "stack/skills", "name": "speak-clearly", "description": "Rewrite a message so a busy reader gets the point in the first sentence."},
+ {"root": "stack/skills", "name": "speak-clearly", "description": "Rewrite a message so a busy reader gets the point in the first sentence.", "body": "SHARED speak-clearly body"},
  {"root": "stack/skills", "name": "full-send", "description": "Trigger this if the user says 'full send'. Finish the work end to end and merge.", "body": "SHARED full-send body"},
  {"root": ".codex/skills", "name": "full-send", "description": "Trigger this if the user says 'full send'. Finish the work end to end and merge.", "body": "SHARED full-send body"},
  {"root": ".codex/skills", "name": "full-stop", "description": "Trigger this if the user says 'full stop'. Do the same work but stop before merging."},
@@ -32,5 +32,6 @@
  {"root": ".local/share/devin/cli/plugins_cache/cache/a/c/skills", "name": "app-designer", "description": "Design phone apps with deliberate type, colour, and spacing."},
  {"root": ".hermes/hermes-agent/optional-skills/office", "name": "spreadsheet-pro", "description": "Spreadsheet xlsx csv editing: columns, formulas, charts, budget spreadsheet work."},
  {"root": ".hermes/hermes-agent/optional-skills/chat", "name": "group-chat", "description": "Mention users and query members in group chats."},
- {"root": ".agents/skills", "name": "desktop-config", "description": "Required for end-user customization of the Linux desktop, window manager, or system config. Use when editing files under the config folder. Triggers: window rules, animations, keybindings, monitors, gaps, borders, blur, opacity, bar, widgets, terminal config, themes, fonts, background, night light, idle, lock screen, screen recording, workspace settings, display config, and appearance changes."}
+ {"root": ".agents/skills", "name": "desktop-config", "description": "Required for end-user customization of the Linux desktop, window manager, or system config. Use when editing files under the config folder. Triggers: window rules, animations, keybindings, monitors, gaps, borders, blur, opacity, bar, widgets, terminal config, themes, fonts, background, night light, idle, lock screen, screen recording, workspace settings, display config, and appearance changes."},
+ {"root": ".claude/skills", "name": "speak-clearly", "description": "Rewrite a message so a busy reader gets the point in the first sentence.", "body": "SHARED speak-clearly body"}
 ]

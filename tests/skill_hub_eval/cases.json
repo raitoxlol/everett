@@ -40,5 +40,9 @@
  {"kind": "shortlist", "matched": ["extract the tables from this pdf", "extract the tables from this pdf", "extract the tables from this pdf"], "include": ["verify-app"], "exclude": ["pdf"]},
  {"kind": "hook", "prompt": "/hill-climb", "expect": null, "mode": "none"},
  {"kind": "hook", "prompt": "open a pull request for this branch", "expect": null, "mode": "none", "harness": "codex"},
- {"kind": "hook", "prompt": "open a pull request for this branch", "expect": "file-pr", "mode": "hint"}
+ {"kind": "hook", "prompt": "open a pull request for this branch", "expect": "file-pr", "mode": "hint"},
+ {"kind": "hook", "prompt": "/speak-clearly", "expect": null, "mode": "none"},
+ {"kind": "hook", "prompt": "/speak-clearly", "expect": "speak-clearly", "mode": "full", "harness": "codex"},
+ {"kind": "hook", "prompt": "/review", "expect": null, "mode": "none", "harness": "codex"},
+ {"kind": "hook", "prompt": "/review", "expect": "review", "mode": "full"}
 ]
