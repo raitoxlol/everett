@@ -250,6 +250,86 @@ pub fn cmd_cards(args: &Args) -> i32 {
     0
 }
 
+fn cwd() -> PathBuf {
+    std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."))
+}
+
+/// `everett skills --match TASK`: the one skill that fits, exit 1 when none does.
+pub fn cmd_skill_match(task: &str, json: bool) -> i32 {
+    let result = crate::skill_match::match_result(task, &cwd());
+    if json {
+        println!("{}", Value::Object(result));
+        return 0;
+    }
+    match result["skill"]["content"].as_str() {
+        Some(content) => {
+            println!("{}", content.trim_end());
+            0
+        }
+        None => {
+            eprintln!("everett: no skill fits");
+            1
+        }
+    }
+}
+
+/// `everett skills --shortlist`: what every session in this project is told up front.
+pub fn cmd_skill_shortlist(json: bool) -> i32 {
+    let cwd = cwd();
+    if json {
+        let rows: Vec<Value> = crate::skill_match::shortlist(&cwd).iter().map(|s| Value::Object(crate::skills::to_dict(s))).collect();
+        println!("{}", Value::Array(rows));
+    } else {
+        println!("{}", crate::skill_match::shortlist_text(&cwd));
+    }
+    0
+}
+
+/// `everett skills`: the CLI face of the MCP skill hub.
+pub fn cmd_skills(query: Option<&str>, get: Option<&str>, source: Option<&str>, json: bool) -> i32 {
+    if let Some(name) = get {
+        let matches = crate::skills::find(name, source);
+        let Some(skill) = matches.first() else {
+            eprintln!("everett: no skill named \"{name}\"");
+            return 1;
+        };
+        if matches.len() > 1 {
+            let others: Vec<&str> = matches[1..].iter().map(|s| s.source.as_str()).collect();
+            eprintln!("everett: using {} (also in {}; pass --source to pick)", skill.source, others.join(", "));
+        }
+        crate::skill_match::record_use(&cwd(), &skill.name);
+        println!("{}", crate::skills::body(skill).trim_end());
+        return 0;
+    }
+    let skills = crate::skills::search(query);
+    if json {
+        let rows: Vec<Value> = skills.iter().map(|s| Value::Object(crate::skills::to_dict(s))).collect();
+        println!("{}", serde_json::to_string_pretty(&rows).unwrap_or_default());
+        return 0;
+    }
+    if skills.is_empty() {
+        println!("no skills");
+        return 0;
+    }
+    let name_w = skills.iter().map(|s| s.name.chars().count()).max().unwrap_or(0).min(28);
+    let src_w = skills.iter().map(|s| s.source.chars().count()).max().unwrap_or(0);
+    for s in &skills {
+        let mut name = s.name.clone();
+        if name.chars().count() > name_w {
+            name = format!("{}…", name.chars().take(name_w.saturating_sub(1)).collect::<String>());
+        }
+        println!(
+            "{:<nw$}  {:<sw$}  {}",
+            name,
+            s.source,
+            s.description.lines().next().unwrap_or(""),
+            nw = name_w,
+            sw = src_w
+        );
+    }
+    0
+}
+
 fn session_label(session: &Session) -> String {
     let work = if !session.card.is_empty() {
         session.card.clone()

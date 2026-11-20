@@ -70,6 +70,13 @@ fn cursor_key(provider: &str) -> Option<(&'static str, &'static str)> {
     }
 }
 
+/// ACP registry agents share one driver; the provider instance names the agent.
+/// Only agents whose native ID is the session ID of an Everett adapter are mapped.
+fn acp_harness(driver: &str, payload: &Value) -> Option<(&'static str, &'static str)> {
+    let instance = payload.get("providerInstanceId").and_then(Value::as_str);
+    (driver == "acpRegistry" && instance == Some("devin")).then_some(("devin", ""))
+}
+
 struct Thread {
     id: String,
     session: Session,
@@ -201,10 +208,10 @@ fn read(con: &Connection, path: &Path) -> rusqlite::Result<Projection> {
         else {
             continue;
         };
-        let Some((harness, key)) = cursor_key(&provider) else {
+        let data = serde_json::from_str::<Value>(&cursor).unwrap_or(Value::Null);
+        let Some((harness, key)) = cursor_key(&provider).or_else(|| acp_harness(&provider, &data)) else {
             continue;
         };
-        let data = serde_json::from_str::<Value>(&cursor).unwrap_or(Value::Null);
         let sid = if v2 {
             let Some(reference) = data.get("nativeThreadRef") else {
                 continue;

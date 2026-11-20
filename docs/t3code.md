@@ -9,7 +9,8 @@ The v2 reader follows [T3 commit 43f8a8d](https://github.com/pingdotgg/t3code/tr
 specifically migrations 005 and 055/Foundation and the `orchestrationV2.ts`
 contracts. It follows the application's active provider thread to
 `nativeThreadRef.nativeId`, using the provider **driver**, not the configured
-provider instance, to select Codex, Claude, or Grok. Other drivers are not supported.
+provider instance, to select Codex, Claude, or Grok. Devin threads use the ACP registry
+driver with provider instance `devin`. Other drivers are not supported.
 Legacy cursors use Codex `threadId`, Claude `resume`, or Grok `sessionId`.
 
 ## Discovery

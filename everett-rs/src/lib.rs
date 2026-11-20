@@ -37,6 +37,8 @@ pub mod relay;
 pub mod route;
 pub mod send;
 pub mod session;
+pub mod skill_match;
+pub mod skills;
 mod storage;
 mod nudge;
 pub mod t3_wake;
