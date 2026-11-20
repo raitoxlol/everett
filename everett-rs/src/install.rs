@@ -74,7 +74,7 @@ pub fn settings_path(harness: &str) -> PathBuf {
 }
 
 pub fn pi_extension_path() -> PathBuf {
-    home().join(".pi").join("agent").join("extensions").join("everett.ts")
+    crate::adapters::pi::agent_dir().join("extensions").join("everett.ts")
 }
 
 pub fn pi_extension_source() -> String {
@@ -456,6 +456,7 @@ fn mcp_json_entry(harness: &str) -> Map<String, Value> {
 
 pub fn mcp_path(harness: &str) -> PathBuf {
     match harness {
+        "pi" => pi_extension_path(),
         "claude" => home().join(".claude.json"),
         "codex" => home().join(".codex").join("config.toml"),
         "grok" => home().join(".grok").join("config.toml"),

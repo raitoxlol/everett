@@ -51,7 +51,7 @@ pub(crate) fn source_rank(source: &str) -> u8 {
         "agents" => 2,
         "claude" => 3,
         "codex" => 4,
-        "devin" => 5,
+        "devin" | "pi" | "omp" | "grok" => 5,
         "claude-plugins" => 6,
         "devin-plugins" => 7,
         _ => 8,
@@ -75,11 +75,20 @@ fn home_dir() -> PathBuf {
 /// (root, source label) pairs scanned recursively for SKILL.md files.
 fn roots(cwd: &Path) -> Vec<(PathBuf, String)> {
     let home = home_dir();
-    let mut out = Vec::new();
+    let hermes_home = std::env::var("HERMES_HOME").ok()
+        .filter(|dir| !dir.is_empty())
+        .map(|dir| crate::paths::expanduser(&dir))
+        .unwrap_or_else(|| home.join(".hermes"));
+    let mut out = vec![
+        (crate::adapters::pi::agent_dir().join("skills"), "pi".to_string()),
+        (hermes_home.join("skills"), "hermes".to_string()),
+    ];
     for (rel, source) in [
         (".claude/skills", "claude"),
         (".codex/skills", "codex"),
         (".agents/skills", "agents"),
+        (".omp/agent/skills", "omp"),
+        (".grok/skills", "grok"),
         (".config/devin/skills", "devin"),
         (".devin/skills", "devin"),
         (".claude/plugins", "claude-plugins"),

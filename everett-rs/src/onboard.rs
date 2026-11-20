@@ -11,7 +11,7 @@ pub const ALL_HOURS: f64 = 24.0 * 365.0 * 5.0;
 
 /// Harnesses whose hooks live in a settings file Everett can toggle event-by-event.
 pub const HOOK_HARNESSES: &[&str] = &["claude", "codex", "grok"];
-pub const MCP_HARNESSES: &[&str] = &["claude", "codex", "omp", "grok", "devin"];
+pub const MCP_HARNESSES: &[&str] = &["claude", "codex", "omp", "pi", "grok", "devin"];
 /// `hooks_common::auto_card` only knows how to build a fallback card for these harnesses.
 pub const BACKFILL_HARNESSES: &[&str] = &["claude", "codex", "grok"];
 
@@ -27,10 +27,18 @@ pub fn event_label(event: &str) -> &str {
 }
 
 pub const WELCOME_LINES: &[&str] = &[
-    "Everett lists recent Claude Code, Codex, OMP, Pi, Hermes, and Grok sessions on this machine.",
+    "Everett lists recent Claude Code, Codex, OMP, Pi, Hermes Agent, Grok CLI, and Devin CLI sessions on this machine.",
     "Local setup needs no Everett account. Sign in to use Everett MCP tools.",
     "It lets those sessions hand work to each other instead of you copy-pasting between them.",
     "It shares merged memory through supported hooks, or agents can read it with everett_core.",
+];
+
+pub const HERMES_PLUGIN_GUIDE: &[&str] = &[
+    "With everett on PATH, install the Hermes plugin and bundled skill:",
+    "hermes plugins install raitoxlol/everett#plugins/everett-hermes --no-enable",
+    "hermes plugins enable everett-hermes",
+    "Restart Hermes and ask it to call everett_ls. If signed out, run everett login.",
+    "An existing manual Everett registration can expose duplicate tools.",
 ];
 
 pub const JEV_LINES: &[&str] = &[
@@ -374,6 +382,9 @@ pub fn summary_lines(cfg: &OnboardConfig, result: &ApplyResult) -> Vec<String> {
     } else {
         lines.extend(result.mcp_lines.iter().map(|l| format!("  {}", l)));
     }
+    if cfg.detected.iter().any(|(h, _)| h == "hermes") {
+        lines.extend(HERMES_PLUGIN_GUIDE.iter().map(|line| line.to_string()));
+    }
     lines.push(format!("Smarter routing: {}", result.jev_line));
     lines.push(format!("Nightly merge: {}", result.trunk_schedule_line));
     if cfg.backfill_enabled {
@@ -441,6 +452,8 @@ pub fn setup_warnings(cfg: &OnboardConfig, result: &ApplyResult) -> Vec<String> 
             "No supported harness was found ({}). Nothing was configured; install one and rerun `everett onboard --yes`.",
             crate::harness::NATIVE.join(", ")
         ));
+    } else if !hooks_on && !mcp_on && cfg.detected.iter().all(|(h, _)| h == "hermes") {
+        warnings.push("Set up the Hermes plugin with the commands below to enable Everett tools.".to_string());
     } else if !hooks_on && !mcp_on {
         warnings.push(
             "No hooks or MCP registrations were selected, so no agent can reach Everett yet. \
@@ -541,7 +554,7 @@ fn run_plain(args: &crate::cli::Args) -> Result<i32, QuitOnboarding> {
         cfg.backfill_enabled = false;
     }
     if args.no_mcp {
-        cfg.mcp = cfg.mcp.iter().map(|(h, _)| (h.clone(), false)).collect();
+        cfg.mcp.clear();
     }
 
     if cfg.detected.is_empty() {

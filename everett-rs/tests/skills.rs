@@ -70,6 +70,43 @@ fn cli_lists_and_gets_skills() {
     assert_eq!(out.status.code(), Some(1));
 }
 
+#[test]
+fn reads_native_agent_skill_folders() {
+    let fx = fixture();
+    for (source, folder) in [("pi", ".pi/agent/skills"), ("omp", ".omp/agent/skills"), ("hermes", ".hermes/skills"), ("grok", ".grok/skills")] {
+        plant(&fx, &format!("{folder}/hill-climb"), HILL_CLIMB);
+        let out = fx.run(&["skills", "--get", "hill-climb", "--source", source]);
+        assert!(out.status.success() && fx.stdout(&out).contains("Keep wins"), "{source}");
+    }
+}
+
+#[test]
+fn pi_profile_drives_onboarding_and_skill_lookup() {
+    let fx = fixture();
+    let env = [("PI_CODING_AGENT_DIR", "~/custom-pi")];
+    std::fs::create_dir_all(fx.home().join("custom-pi/sessions")).unwrap();
+    plant(&fx, "custom-pi/skills/hill-climb", HILL_CLIMB);
+    let skipped = fx.run_stdin(&["onboard", "--no-mcp", "--no-backfill"], &"\n".repeat(12), &env);
+    assert!(skipped.status.success() && fx.stdout(&skipped).contains("Apply these changes now?"));
+    assert!(!fx.home().join("custom-pi/extensions/everett.ts").exists());
+    let setup = fx.run_stdin(&["onboard", "--yes", "--no-backfill"], "", &env);
+    assert!(setup.status.success());
+    assert!(fx.home().join("custom-pi/extensions/everett.ts").is_file());
+    assert!(!fx.home().join(".pi").exists());
+    let skill = fx.run_stdin(&["skills", "--get", "hill-climb", "--source", "pi"], "", &env);
+    assert!(skill.status.success() && fx.stdout(&skill).contains("Keep wins"));
+}
+
+#[test]
+fn reads_active_hermes_profile_skills() {
+    let fx = fixture();
+    plant(&fx, "hermes-profile/skills/hill-climb", HILL_CLIMB);
+    let profile = fx.home().join("hermes-profile");
+    let out = fx.run_stdin(&["skills", "--get", "hill-climb", "--source", "hermes"], "",
+        &[("HERMES_HOME", profile.to_str().unwrap())]);
+    assert!(out.status.success() && fx.stdout(&out).contains("Keep wins"));
+}
+
 /// The scored cases the skill hub was built against: fetch by task, the
 /// shortlist, hook delivery, duplicate collapsing and the owned-folder rule.
 #[test]
