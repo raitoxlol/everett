@@ -55,12 +55,14 @@ Those commands can include agents that onboarding has not detected; they are not
 exact preview of its selected changes.
 
 Onboarding detects installed CLIs even before their first session. It backs up and registers
-hooks and MCP for detected Claude Code, Codex, OMP, and Grok installations. Restart those clients,
-then run `everett ls`. Doctor checks the registered launchers and lists your exact next steps.
-Doctor does not prove a client loaded its tools. Run `everett login`, restart each MCP client,
-and ask it to call `everett_ls`; a returned list, even empty, verifies the tool.
-For Pi and Devin run `everett install-hooks --pi --apply` / `everett install-hooks --devin --apply`
-so their MCP calls bind to the right session; Hermes needs one config entry (`everett install-mcp --hermes`).
+hooks and MCP for detected Claude Code, Codex, OMP, and Grok installations. It also installs
+the Pi extension and registers Devin MCP when those clients are detected. Run
+`everett install-hooks --devin --apply` to bind Devin MCP calls to their sessions.
+For Hermes, follow the wizard to install and enable the [Hermes plugin](plugins/everett-hermes/README.md),
+or use the manual entry printed by `everett install-mcp --hermes` as an alternative.
+Restart configured clients and run `everett ls`. Doctor checks registered launchers and lists next steps.
+Run `everett login`, restart each MCP client, and ask it to call `everett_ls`. A returned list,
+even empty, verifies the tool.
 See [MCP caller identity](docs/mcp-identity.md).
 No router key or model call is needed for this setup. Codex may ask you to enable/trust its hooks.
 
@@ -84,9 +86,10 @@ commands and noninteractive bare runs do not prompt.
 
 The welcome says "Local setup needs no Everett account. Sign in to use Everett MCP tools."
 Its primary action is "Choose setup path"; the next screen is "Choose how to connect".
-Without a configured issuer, Enter or `l` continues locally. The terminal flow then chooses agents, per-agent setup guides,
-review/apply, then a copyable instruction prompt. With a configured hosted Cloudflare issuer, the
-CLI opens the approval page locally, prints a URL and code usable on another device, waits for
+Press `l` to continue locally. When the wizard offers sign-in, Enter starts device approval.
+The wizard then guides you through agent selection, per-agent setup, review and apply, and a
+copyable instruction prompt. For sign-in, the CLI opens the approval page locally, prints a
+URL and code usable on another device, waits for
 approval, saves its private credential, and verifies its identity with the server before continuing.
 SSH sessions keep the URL/code path. Fresh interactive setup defaults to
 `https://relay.raitox.tech` for the network endpoint, with account identity
