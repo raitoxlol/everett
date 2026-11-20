@@ -3,6 +3,7 @@
 ## Unreleased
 
 - Add the skill hub: `everett skills`, the `everett_skill` MCP tool, and MCP prompts expose every harness's `SKILL.md` playbooks to any client. Extra roots come from `EVERETT_SKILL_DIRS` or `[skills] dirs` in `~/.everett/config.toml`.
+- The skill hub hands over one skill instead of a catalog: `everett_skill` `match` and `everett skills --match` pick the skill that fits a task, MCP instructions name a short per-project list, and the Claude Code and Codex prompt hooks add a skill the user names or suggest one that fits. Only skill folders the user keeps are suggested unasked.
 - Recognize Devin threads started from T3 Code as `[t3code]` sessions with their T3 thread ID.
 
 ## 2.3.2 — maintenance candidate

@@ -70,6 +70,21 @@ fn cli_lists_and_gets_skills() {
     assert_eq!(out.status.code(), Some(1));
 }
 
+/// The scored cases the skill hub was built against: fetch by task, the
+/// shortlist, hook delivery, duplicate collapsing and the owned-folder rule.
+#[test]
+fn skill_hub_eval_passes() {
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap();
+    let out = std::process::Command::new("python3")
+        .arg(root.join("tests/skill_hub_eval/run.py"))
+        .arg(root.join("tests/skill_hub_eval/cases.json"))
+        .env("EVERETT_EVAL_BINARY", env!("CARGO_BIN_EXE_everett"))
+        .output()
+        .unwrap();
+    let report = String::from_utf8_lossy(&out.stdout);
+    assert!(report.trim_end().ends_with("failed=0"), "{report}{}", String::from_utf8_lossy(&out.stderr));
+}
+
 #[test]
 fn config_dirs_add_roots_and_name_matches_rank_first() {
     let fx = fixture();
