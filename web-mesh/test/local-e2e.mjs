@@ -48,7 +48,7 @@ try {
  const start=await owner('/auth/github?return_to=/enroll'),github=new URL(start.headers.get('Location'));
  assert.equal((await owner('/auth/callback/github?'+new URLSearchParams({state:github.searchParams.get('state'),code:'synthetic-local-only'}))).status,303);
  const a=await register(await enroll('Mac local E2E'),31),b=await register(await enroll('NUC local E2E'),33);
- await native(a.token,'exposeSession',{session:'local-e2e-session',harness:'h'.repeat(160),card:'LOCAL-PRIVATE-CARD'});
+ await native(a.token,'exposeSession',{session:'local-e2e-session',harness:'h'.repeat(128),card:'LOCAL-PRIVATE-CARD'});
  const credentialFile=join(privateDir,'credential.json'),output=join(privateDir,'console.env');
  await writeFile(credentialFile,JSON.stringify({...a,issuer,owner:a.device.owner,expires_at:Date.now()+3600000}),{mode:0o600});
  async function requestGrant(path) {
@@ -80,7 +80,7 @@ try {
  config.ENABLED='true';config.CONSOLE_SECRET='synthetic-local-console-secret-only-20261119';config.PORT='18870';const consoleProcess=await launch('web-mesh/dev.mjs',[],config);
  const login=await fetch(consoleOrigin+'/api/login',{...form({secret:config.CONSOLE_SECRET}),headers:{'Content-Type':'application/x-www-form-urlencoded',Origin:consoleOrigin}});assert.equal(login.status,204);const sessionCookie=login.headers.get('Set-Cookie').split(';')[0];
  const dashboardRead=()=>fetch(consoleOrigin+'/api/mesh',{headers:{Cookie:sessionCookie}});
- const first=await dashboardRead();assert.equal(first.status,200);const view=await first.json();assert.equal(view.receipts[0].messageId,e.messageId);assert.equal(view.sessions[0].harness,'h'.repeat(160));const text=JSON.stringify(view);for(const hidden of ['LOCAL-PRIVATE-CARD','LOCAL-E2E-CONTENT-PRIVATE',e.ciphertext,a.token,config.MESH_TOKEN])assert.ok(!text.includes(hidden));
+ const first=await dashboardRead();assert.equal(first.status,200);const view=await first.json();assert.equal(view.receipts[0].messageId,e.messageId);assert.equal(view.sessions[0].harness,'h'.repeat(128));const text=JSON.stringify(view);for(const hidden of ['LOCAL-PRIVATE-CARD','LOCAL-E2E-CONTENT-PRIVATE',e.ciphertext,a.token,config.MESH_TOKEN])assert.ok(!text.includes(hidden));
  const unexpectedQuery = await fetch(consoleOrigin+'/api/mesh?path=mesh',{headers:{Cookie:sessionCookie}});
  assert.equal(unexpectedQuery.status,400);
  const wrongHostStatus = await new Promise((resolve,reject) => {
