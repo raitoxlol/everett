@@ -35,8 +35,12 @@ one session; it is not project-wide truth. See [Session cards and hooks](/sessio
 | `NEW` | No session matches | Nothing, unless `--spawn` |
 | `ASK` | Several sessions are close | Nothing; returns `candidates` |
 
-The **local** router uses BM25 over cards, titles, requests, and folder names, weighted by recency,
-with no network. The **Jev** router is used when a Typesafe key is configured. See [Routing](/routing/).
+The **local** router uses BM25 over cards, titles, requests, and project names, weighted by recency,
+with no network. T3 and Claude worktree sessions use their repository name, not the
+worktree folder's name; other working folders use their own name. Home directories
+and Codex app chat folders are not projects. Project-name boosts match consecutive
+words in order, ignoring case and punctuation (`web-mesh` matches `web mesh`, not
+`mesh web`). The **Jev** router is used when a Typesafe key is configured. See [Routing](/routing/).
 
 ## Send, ping, and inbox
 
