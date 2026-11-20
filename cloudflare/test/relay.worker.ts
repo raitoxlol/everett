@@ -207,6 +207,37 @@ describe('authenticated author/session directory', () => {
     await call(b.p, 'exposeSession', { ...card, remove: true });
     expect((await call(a.p, 'sessionDirectory')).sessions).toEqual([]);
   });
+  it('keeps a published session bound to its harness until explicitly withdrawn', async () => {
+    const a = await agent(org());
+    const card = { session: 'shared-id', harness: 'hermes', card: 'original' };
+    await call(a.p, 'exposeSession', card);
+    const collision = { ...card, harness: 'codex' };
+    await expect(call(a.p, 'exposeSession', collision)).rejects.toThrow('session_harness_conflict');
+    await expect(call(a.p, 'exposeSession', { ...collision, remove: true })).rejects.toThrow('session_harness_conflict');
+    expect((await call(a.p, 'sessionDirectory')).sessions).toEqual([expect.objectContaining(card)]);
+    // Existing CLI clients use "unknown" when --remove has no --harness.
+    await call(a.p, 'exposeSession', { ...card, harness: 'unknown', remove: true });
+    await call(a.p, 'exposeSession', collision);
+    expect((await call(a.p, 'sessionDirectory')).sessions).toEqual([expect.objectContaining(collision)]);
+  });
+
+  it('only advertises harness and session components accepted by the recipient parser', async () => {
+    const a = await agent(org());
+    const card = { session: 'x'.repeat(128), harness: 'hermes', card: '' };
+    for (const field of ['harness', 'session']) {
+      for (const value of ['.', '..', 'x'.repeat(129)]) {
+        await expect(call(a.p, 'exposeSession', { ...card, [field]: value })).rejects.toThrow('invalid_request');
+      }
+    }
+    await runInDurableObject(a.stub, (_, state) => {
+      state.storage.sql.exec('INSERT INTO session_cards(agent_id,session,harness,card,updated_at) VALUES(?,?,?,?,?)',
+        a.p.agentId, 'legacy', '..', 'old exposure', 1);
+    });
+    await call(a.p, 'exposeSession', card);
+    expect((await call(a.p, 'sessionDirectory')).sessions.map((row: {target: string}) => row.target))
+      .toEqual([`id:${a.p.agentId}/hermes/${card.session}`]);
+  });
+
   it('paginates bounded cards and filters revoked authors and callers', async () => {
     const space = org(), a = await agent(space), b = await agent(space, 'bob', 'member', 3);
     for (let i = 0; i < 32; i++) await call(b.p, 'exposeSession', { session: `s-${i}`, harness: 'codex', card: '' });

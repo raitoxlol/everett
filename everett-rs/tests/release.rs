@@ -151,3 +151,32 @@ fn doctor_on_empty_home_reports_router_and_vault() {
     let text = fx.stdout(&out);
     assert!(text.contains("router: local") && text.contains("vault: not configured"), "{text}");
 }
+
+#[test]
+fn ask_returns_exact_ids_for_indistinguishable_cards() {
+    let _h = lib_home();
+    let twins = [
+        session("recipient-east", "/w/shared", "billing export", "", NOW),
+        session("recipient-west", "/w/shared", "billing export", "", NOW),
+    ];
+    for input in ["billing export", "the and of"] {
+        let result = local_route(input, &twins, Some(NOW), None);
+        assert_eq!(result["decision"], "ASK");
+        let rows = result["candidates"].as_array().unwrap();
+        assert_eq!(rows.len(), twins.len());
+        for twin in &twins {
+            assert_eq!(rows.iter().filter(|row| row.as_str().unwrap().contains(&twin.id)).count(), 1,
+                       "missing or repeated session {} in {rows:?}", twin.id);
+        }
+    }
+}
+
+#[test]
+fn duplicate_exact_ids_require_disambiguation() {
+    let _h = lib_home();
+    let first = session("shared-id", "/w/one", "billing", "", NOW);
+    let mut second = first.clone();
+    second.harness = "codex".into();
+    let result = everett::registry::find("shared-id", &[first, second]);
+    assert!(result.is_err(), "an exact ID shared by two harnesses cannot select either inbox");
+}
