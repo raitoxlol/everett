@@ -266,6 +266,8 @@ export class HostedAuth extends DurableObject<HostedAuthEnv> {
       CREATE TABLE IF NOT EXISTS token_families(id TEXT PRIMARY KEY,agent_id TEXT NOT NULL,name TEXT NOT NULL,client_id TEXT NOT NULL,resource TEXT NOT NULL,expires_at INTEGER NOT NULL,revoked INTEGER NOT NULL);
       CREATE TABLE IF NOT EXISTS oauth_tokens(token_hash TEXT PRIMARY KEY,kind TEXT NOT NULL,family_id TEXT NOT NULL,expires_at INTEGER NOT NULL,used INTEGER NOT NULL);
       CREATE INDEX IF NOT EXISTS oauth_family ON oauth_tokens(family_id);
+      CREATE INDEX IF NOT EXISTS oauth_tokens_expiry ON oauth_tokens(expires_at);
+      CREATE INDEX IF NOT EXISTS owner_sessions_expiry ON owner_sessions(expires_at);
       CREATE TABLE IF NOT EXISTS auth_rates(scope TEXT PRIMARY KEY,window INTEGER NOT NULL,count INTEGER NOT NULL);
       CREATE TABLE IF NOT EXISTS meta(key TEXT PRIMARY KEY,value TEXT NOT NULL);
     `);
