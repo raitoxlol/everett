@@ -1,9 +1,13 @@
-use chrono::{DateTime, Local, NaiveDateTime, TimeZone, Utc};
+use chrono::{DateTime, Local, NaiveDate, NaiveDateTime, TimeZone, Utc};
 
 /// `datetime.fromtimestamp(ts, utc).isoformat()` — microseconds only when non-zero.
 pub fn iso_from_epoch(ts: f64) -> String {
-    let secs = ts.floor() as i64;
-    let micros = ((ts - secs as f64) * 1e6).round() as u32;
+    let mut secs = ts.floor() as i64;
+    let mut micros = ((ts - secs as f64) * 1e6).round() as u32;
+    if micros == 1_000_000 {
+        secs += 1;
+        micros = 0;
+    }
     let Some(dt) = Utc.timestamp_opt(secs, micros * 1000).single() else {
         return String::new();
     };
@@ -20,25 +24,23 @@ pub fn epoch_from_iso(s: &str) -> Option<f64> {
     if let Ok(dt) = DateTime::parse_from_rfc3339(s) {
         return Some(dt.timestamp() as f64 + dt.timestamp_subsec_nanos() as f64 / 1e9);
     }
-    for fmt in [
+    let naive = [
         "%Y-%m-%dT%H:%M:%S%.f",
         "%Y-%m-%d %H:%M:%S%.f",
         "%Y-%m-%dT%H:%M:%S",
         "%Y-%m-%d %H:%M:%S",
-        "%Y-%m-%d",
-    ] {
-        if let Ok(ndt) = NaiveDateTime::parse_from_str(s, fmt) {
-            // Python's datetime.fromisoformat().timestamp() reads naive stamps
-            // as local time; match it (not UTC).
-            let ts = Local
-                .from_local_datetime(&ndt)
-                .single()
-                .map(|dt| dt.timestamp())
-                .unwrap_or_else(|| ndt.and_utc().timestamp());
-            return Some(ts as f64);
-        }
-    }
-    None
+    ]
+    .iter()
+    .find_map(|fmt| NaiveDateTime::parse_from_str(s, fmt).ok())
+    .or_else(|| NaiveDate::parse_from_str(s, "%Y-%m-%d").ok()?.and_hms_opt(0, 0, 0))?;
+    // Python's datetime.fromisoformat().timestamp() reads naive stamps
+    // as local time; match it (not UTC).
+    let ts = Local
+        .from_local_datetime(&naive)
+        .single()
+        .map(|dt| dt.timestamp())
+        .unwrap_or_else(|| naive.and_utc().timestamp());
+    Some(ts as f64)
 }
 
 /// `_epoch` from devin.py: numbers >1e12 are milliseconds; strings parse as ISO or float.
