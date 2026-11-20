@@ -231,15 +231,19 @@ fn native_to(skill: &Skill, harness: &str) -> bool {
         "codex" => &[".codex", ".agents"],
         _ => &[],
     };
-    skill.path.components().any(|part| folders.iter().any(|folder| part.as_os_str() == *folder))
+    std::iter::once(&skill.path)
+        .chain(&skill.copies)
+        .any(|path| path.components().any(|part| folders.iter().any(|folder| part.as_os_str() == *folder)))
 }
 
 /// What a prompt hook adds for this prompt: the full skill when the user
 /// named one, one line when a skill merely fits, nothing otherwise. A fit
-/// is suggested once per session. Skills the harness loads itself are left
-/// to it, so nothing lands in context twice.
+/// is suggested once per session. A skill the harness loads itself, under
+/// that name or as a linked copy, is left to it, so nothing lands twice.
 pub fn hook_context(session_id: &str, harness: &str, prompt: &str, cwd: &Path) -> Option<String> {
-    let all: Vec<Skill> = skills::scan(cwd).into_iter().filter(|s| !native_to(s, harness)).collect();
+    let mut all = skills::scan(cwd);
+    let native: HashSet<String> = all.iter().filter(|s| native_to(s, harness)).map(|s| s.name.clone()).collect();
+    all.retain(|s| !native.contains(&s.name));
     if let Some(skill) = named(prompt, &all) {
         record_use(cwd, &skill.name);
         return Some(format!(

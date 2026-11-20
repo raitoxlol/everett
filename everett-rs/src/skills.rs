@@ -39,6 +39,8 @@ pub struct Skill {
     pub dir: PathBuf,
     /// Hash of the instructions, so identical copies collapse to one.
     digest: u64,
+    /// Where the identical copies that collapsed into this one live.
+    pub copies: Vec<PathBuf>,
 }
 
 /// Lower rank wins when several sources provide the same skill name.
@@ -217,6 +219,7 @@ fn load_skill(path: &Path, source: &str) -> Option<Skill> {
             strip_frontmatter(&text).hash(&mut hasher);
             hasher.finish()
         },
+        copies: Vec::new(),
     })
 }
 
@@ -282,9 +285,14 @@ fn scan_uncached(cwd: &Path) -> Vec<Skill> {
             .then(a.path.cmp(&b.path))
     });
     // The same skill installed for several harnesses is one skill; the best source keeps it.
-    let mut copies = HashSet::new();
-    skills.retain(|s| copies.insert((s.name.clone(), s.digest)));
-    skills
+    let mut kept: Vec<Skill> = Vec::new();
+    for skill in skills {
+        match kept.iter_mut().rev().take_while(|k| k.name == skill.name).find(|k| k.digest == skill.digest) {
+            Some(original) => original.copies.push(skill.path),
+            None => kept.push(skill),
+        }
+    }
+    kept
 }
 
 struct CacheEntry {
