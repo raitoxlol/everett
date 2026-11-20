@@ -97,7 +97,7 @@ fn config_dirs_add_roots_and_name_matches_rank_first() {
 }
 
 #[test]
-fn cli_disambiguates_shared_names_by_source() {
+fn cli_prefers_the_best_source_and_accepts_an_explicit_one() {
     let fx = fixture();
     plant(
         &fx,
@@ -111,9 +111,9 @@ fn cli_disambiguates_shared_names_by_source() {
     );
 
     let out = fx.run(&["skills", "--get", "dup"]);
-    assert_eq!(out.status.code(), Some(2));
-    let err = String::from_utf8_lossy(&out.stderr);
-    assert!(err.contains("claude") && err.contains("codex"), "{err}");
+    assert_eq!(out.status.code(), Some(0));
+    assert!(fx.stdout(&out).contains("claude body"));
+    assert!(String::from_utf8_lossy(&out.stderr).contains("also in codex"));
 
     let out = fx.run(&["skills", "--get", "dup", "--source", "codex"]);
     assert_eq!(out.status.code(), Some(0));
