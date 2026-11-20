@@ -464,7 +464,7 @@ fn normalize(text: &str, answer: &Map<String, Value>, options: &HashMap<String, 
     base.insert("decision".into(), json!("ASK"));
     base.insert(
         "suggested".into(),
-        options.get(choice).map(|s| json!(describe(s))).unwrap_or(Value::Null),
+        options.get(choice).map(|s| json!(describe_candidate(s))).unwrap_or(Value::Null),
     );
     base.insert("candidates".into(), json!(candidates));
     Ok(base)
