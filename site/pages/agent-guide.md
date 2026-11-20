@@ -102,7 +102,7 @@ been read: check status before retrying.
 | Your card | `everett_card` |
 | Status events | `everett_event`, `everett_subscribe` |
 | Shared memory | `everett_learn`, `everett_core` |
-| Skills from any harness | `everett_skill`, or the matching MCP prompt |
+| A playbook for the task at hand | `everett_skill` with `action: "match"`; `get` when the user names one |
 | Track sent requests | `everett_sent`, `everett_status`, `everett_retry` |
 | Drive T3 threads or other harnesses | `everett_control` |
 | Other devices | `everett_agent_relay`, `everett_agent_send`, `everett_agent_status` |

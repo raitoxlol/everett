@@ -223,8 +223,8 @@ fn load_skill(path: &Path, source: &str) -> Option<Skill> {
     })
 }
 
-/// Walk `root` for SKILL.md files. `visited` dedupes canonical dirs so
-/// symlinked skill roots cannot loop or double-count.
+/// Walk `root` for SKILL.md files. `visited` holds canonical dirs so
+/// symlinks cannot loop.
 fn walk(
     root: &Path,
     source: &str,
@@ -270,14 +270,11 @@ fn walk(
 
 fn scan_uncached(cwd: &Path) -> Vec<Skill> {
     let mut skills = Vec::new();
-    let mut seen = HashSet::new();
     let mut budget = MAX_ENTRIES;
-    let mut visited = HashSet::new();
     for (root, source) in roots(cwd) {
-        walk(&root, &source, &mut visited, &mut skills, &mut budget);
+        // Per root, so a skill linked into several harness folders is seen in each.
+        walk(&root, &source, &mut HashSet::new(), &mut skills, &mut budget);
     }
-    // One entry per canonical SKILL.md; name collisions across sources stay.
-    skills.retain(|s| seen.insert(fs::canonicalize(&s.path).unwrap_or_else(|_| s.path.clone())));
     skills.sort_by(|a, b| {
         a.name
             .cmp(&b.name)
