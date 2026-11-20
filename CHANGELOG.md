@@ -14,7 +14,7 @@
 - Add a Hermes-supported portable plugin and repair Pi tool registration, session working directories, cancellation and reconnection (#220, #217).
 - Add owner MCP tool grants and CLI management, isolate remote conversation inboxes, and require private inbox handles in strict hosted mode (#210, #213, #219).
 - Restore opt-in authenticated MCP Events, advertise them to MCP 2.0 clients, and support exact event-message pickup for ChatGPT Dots (#169, #207, #208).
-- Add local request status, retained reply lookup, sent-request recovery and recipient filters in CLI/MCP. Retain recovery IDs on failed T3 sends and reuse confirmed dispatches on retry (#174, #177, #178, #179, #190, #193, #196, #198, #199, #200, #202, #205).
+- Add local request status, retained reply lookup, sent-request recovery and recipient filters in CLI/MCP. Return the retained request ID when T3 dispatch fails after writing the inbox item, and reuse confirmed dispatches on retry (#174, #177, #178, #179, #190, #193, #196, #198, #199, #200, #202, #205).
 - List and address exact T3 thread IDs, discover managed runtimes and honor `T3CODE_HOME`; add CLI thread listing and recent transcript reads, including Devin ATIF. Honor the CLI look-back window and stream long JSONL histories (#180, #181, #183, #184, #194, #195, #197, #201, #203, #212).
 - Add delivery evidence and verified T3 model selection; distinguish pending pings from confirmed dispatch and show follow-up commands (#176, #215).
 - Add learned-fact expiry and CLI search with JSON scope/expiry metadata (#189, #191, #192).

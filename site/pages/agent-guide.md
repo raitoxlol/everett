@@ -39,8 +39,8 @@ confidence, so you can tell the user, for example, "jev picked [claude] ~/src/ap
 
 **Pick the right mode.** The default `ping` is immediate and fails rather than silently queueing.
 Owner-local `ping` and `auto` nudge T3 Code threads through the T3 CLI.
-Use `mode: "inbox"` to queue without nudging, including for external agents,
-attached sessions without a wake path, and remote devices.
+Use `mode: "inbox"` to queue for pickup. For T3 Code this skips the T3 CLI nudge.
+For registered external agents, a matching owner webhook can start a routine after enqueue.
 
 **Read receipts honestly.** `pinged: true` means dispatch, not that the target read or finished
 anything. `queued`, `picked_up`, and `replied` are separate observations; none proves the task
