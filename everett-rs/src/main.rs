@@ -152,6 +152,12 @@ enum Cmd {
         /// only skills from this source (claude, codex, agents, devin, hermes, claude-plugins, devin-plugins, project, extra)
         #[arg(long)]
         source: Option<String>,
+        /// print the one skill that fits this task, or nothing
+        #[arg(long = "match", value_name = "TASK")]
+        task: Option<String>,
+        /// list the few skills named up front in this project
+        #[arg(long)]
+        shortlist: bool,
         /// filter the list by name or description
         query: Option<String>,
         #[arg(long)]
@@ -904,7 +910,9 @@ fn main() {
             a.regen_hours = hours;
             cli::cmd_cards(&a)
         }
-        Cmd::Skills { query, get, source, json } => cli::cmd_skills(query.as_deref(), get.as_deref(), source.as_deref(), json),
+        Cmd::Skills { task: Some(task), json, .. } => cli::cmd_skill_match(&task, json),
+        Cmd::Skills { shortlist: true, json, .. } => cli::cmd_skill_shortlist(json),
+        Cmd::Skills { query, get, source, json, .. } => cli::cmd_skills(query.as_deref(), get.as_deref(), source.as_deref(), json),
         Cmd::Dashboard { port, no_open } => everett::dashboard::serve(a.hours, port, no_open),
         Cmd::Route { text, json, router } => {
             a.text = Some(text);

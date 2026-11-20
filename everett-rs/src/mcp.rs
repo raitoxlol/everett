@@ -166,9 +166,10 @@ pub fn tools() -> &'static Vec<Value> {
             }),
             json!({
                 "name": "everett_skill",
-                "description": "The skill hub: list and read the SKILL.md playbooks installed for every harness on this machine (Claude Code, Codex, .agents, Devin plugins, project skills). action=list with an optional query discovers skills; action=get with name loads one -- pass source when the name exists in several harnesses. When the user invokes a skill by name (/hill-climb, /full-send) or asks to use a skill, call this and follow the returned instructions.",
+                "description": "The skill hub: list and read the SKILL.md playbooks installed for every harness on this machine (Claude Code, Codex, .agents, Devin plugins, project skills). action=match with task returns the one skill that fits what you are doing, or null -- prefer it to listing. action=get with name loads a skill the user named (/hill-climb, \"use the X skill\"); pass source to pick another harness's version. action=list with an optional query browses. Follow the returned instructions.",
                 "inputSchema": {"type": "object", "properties": {
-                    "action": {"type": "string", "enum": ["list", "get"], "default": "list"},
+                    "action": {"type": "string", "enum": ["match", "get", "list"], "default": "list"},
+                    "task": s("What you are trying to do, for action=match."),
                     "query": s("Filter list results by name or description."),
                     "name": s("Skill name for action=get."),
                     "source": s("Optional source for get: claude, codex, agents, devin, hermes, claude-plugins, devin-plugins, project, extra."),
@@ -1107,6 +1108,7 @@ fn tool_skill(args: &Map<String, Value>) -> std::result::Result<Map<String, Valu
     let action = str_arg(args, "action", false)?;
     let source = str_arg(args, "source", false)?;
     let source = (!source.is_empty()).then_some(source.as_str());
+    let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
     match action.as_str() {
         "" | "list" => {
             let query = str_arg(args, "query", false)?;
@@ -1114,9 +1116,14 @@ fn tool_skill(args: &Map<String, Value>) -> std::result::Result<Map<String, Valu
         }
         "get" => {
             let name = str_arg(args, "name", true)?;
-            Ok(crate::skills::get_result(&name, source))
+            let result = crate::skills::get_result(&name, source);
+            if let Some(found) = result.get("name").and_then(Value::as_str) {
+                crate::skill_match::record_use(&cwd, found);
+            }
+            Ok(result)
         }
-        _ => Err(ToolFailure::Params("action must be list or get".to_string())),
+        "match" => Ok(crate::skill_match::match_result(&str_arg(args, "task", true)?, &cwd)),
+        _ => Err(ToolFailure::Params("action must be match, get or list".to_string())),
     }
 }
 
