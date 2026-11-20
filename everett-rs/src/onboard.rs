@@ -2,7 +2,7 @@
 
 use std::collections::HashMap;
 use std::io::Write;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use crate::session::home;
 
@@ -48,9 +48,17 @@ pub const JEV_LINES: &[&str] = &[
 
 struct QuitOnboarding;
 
+pub(crate) fn completion_dir() -> PathBuf {
+    home().join(".everett")
+}
+
+pub(crate) fn completion_marker_path() -> PathBuf {
+    completion_dir().join("onboarding-complete")
+}
+
 /// Records that the wizard was applied, not that an agent has loaded its tools.
 pub fn completed() -> bool {
-    std::fs::read(home().join(".everett/onboarding-complete"))
+    std::fs::read(completion_marker_path())
         .map(|bytes| bytes == b"completed\n")
         .unwrap_or(false)
 }
@@ -64,16 +72,16 @@ pub fn first_run_needed() -> bool {
 
 fn record_completion() -> std::io::Result<()> {
     use std::io::Write;
-    let dir = home().join(".everett");
+    let dir = completion_dir();
     std::fs::create_dir_all(&dir)?;
     let mut file = tempfile::NamedTempFile::new_in(&dir)?;
     file.write_all(b"completed\n")?;
-    file.persist(dir.join("onboarding-complete"))
+    file.persist(completion_marker_path())
         .map_err(|e| e.error)?;
     Ok(())
 }
 
-fn finish() -> i32 {
+pub(crate) fn finish() -> i32 {
     match record_completion() {
         Ok(()) => 0,
         Err(e) => {
