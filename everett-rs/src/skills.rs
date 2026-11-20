@@ -104,10 +104,12 @@ fn roots(cwd: &Path) -> Vec<(PathBuf, String)> {
         }
     }
     // Project-local skill dirs on the cwd's ancestor chain (repo root included).
+    // Compared resolved: the cwd is, and a home behind a symlink would never match.
+    let real_home = fs::canonicalize(&home).unwrap_or_else(|_| home.clone());
     let mut dir = Some(cwd);
     for _ in 0..8 {
         let Some(d) = dir else { break };
-        if d == home.as_path() {
+        if d == home.as_path() || fs::canonicalize(d).is_ok_and(|real| real == real_home) {
             break;
         }
         for sub in [
