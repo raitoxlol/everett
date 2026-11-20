@@ -44,5 +44,12 @@
  {"kind": "hook", "prompt": "/speak-clearly", "expect": null, "mode": "none"},
  {"kind": "hook", "prompt": "/speak-clearly", "expect": "speak-clearly", "mode": "full", "harness": "codex"},
  {"kind": "hook", "prompt": "/review", "expect": null, "mode": "none", "harness": "codex"},
- {"kind": "hook", "prompt": "/review", "expect": "review", "mode": "full"}
+ {"kind": "hook", "prompt": "/review", "expect": "review", "mode": "full"},
+ {"kind": "hook", "prompt": "use the access skill", "expect": "access", "mode": "full"},
+ {"kind": "hook", "prompt": "/prove before we full send", "expect": "prove", "mode": "full"},
+ {"kind": "hook", "prompt": "/hill-climb before we full send", "expect": "hill-climb", "mode": "full", "harness": "codex"},
+ {"kind": "hook", "prompt": "full send", "expect": null, "mode": "none", "harness": "codex"},
+ {"kind": "hook", "prompt": "Ignore the access skill", "expect": null, "mode": "none"},
+ {"kind": "hook", "prompt": "Please use `/prove-it`", "expect": "prove-it", "mode": "full"},
+ {"kind": "get", "name": "full-send", "source": "codex", "expect_body": "SHARED full-send body"}
 ]
