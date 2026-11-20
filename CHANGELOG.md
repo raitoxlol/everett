@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Add the skill hub: `everett skills`, the `everett_skill` MCP tool, and MCP prompts expose every harness's `SKILL.md` playbooks to any client. Extra roots come from `EVERETT_SKILL_DIRS` or `[skills] dirs` in `~/.everett/config.toml`.
+- Recognize Devin threads started from T3 Code as `[t3code]` sessions with their T3 thread ID.
+
 ## 2.3.2 — maintenance candidate
 
 - Budget the complete encoded MCP inbox result before marking messages delivered. Large queues return bounded batches, and messages outside the returned batch remain queued (#165).
