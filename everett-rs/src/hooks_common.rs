@@ -786,7 +786,7 @@ pub fn deliver_output(raw: &str, harness: &str) -> String {
             .map(PathBuf::from)
             .or_else(|| std::env::current_dir().ok())
             .unwrap_or_default();
-        parts.extend(crate::skill_match::hook_context(session_id, prompt, &cwd));
+        parts.extend(crate::skill_match::hook_context(session_id, harness, prompt, &cwd));
     }
     parts.retain(|part| !part.is_empty());
     if parts.is_empty() {

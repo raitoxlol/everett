@@ -224,11 +224,22 @@ pub fn shortlist_text(cwd: &Path) -> String {
     text
 }
 
+/// Whether `harness` loads this skill itself, going by the folder it lives in.
+fn native_to(skill: &Skill, harness: &str) -> bool {
+    let folders: &[&str] = match harness {
+        "claude" => &[".claude"],
+        "codex" => &[".codex", ".agents"],
+        _ => &[],
+    };
+    skill.path.components().any(|part| folders.iter().any(|folder| part.as_os_str() == *folder))
+}
+
 /// What a prompt hook adds for this prompt: the full skill when the user
 /// named one, one line when a skill merely fits, nothing otherwise. A fit
-/// is suggested once per session.
-pub fn hook_context(session_id: &str, prompt: &str, cwd: &Path) -> Option<String> {
-    let all = skills::scan(cwd);
+/// is suggested once per session. Skills the harness loads itself are left
+/// to it, so nothing lands in context twice.
+pub fn hook_context(session_id: &str, harness: &str, prompt: &str, cwd: &Path) -> Option<String> {
+    let all: Vec<Skill> = skills::scan(cwd).into_iter().filter(|s| !native_to(s, harness)).collect();
     if let Some(skill) = named(prompt, &all) {
         record_use(cwd, &skill.name);
         return Some(format!(
