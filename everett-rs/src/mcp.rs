@@ -1822,6 +1822,7 @@ fn prompt_get(params: &Map<String, Value>) -> std::result::Result<Value, String>
             if name.is_empty() { Value::Null.to_string() } else { name.to_string() }
         ));
     };
+    crate::skill_match::record_use(&std::env::current_dir().unwrap_or_default(), &skill.name);
     let mut text = crate::skills::body(&skill);
     if let Some(input) = params
         .get("arguments")

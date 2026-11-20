@@ -62,31 +62,34 @@ fn clipped(text: &str) -> &str {
     }
 }
 
-/// The skill the user asked for by name: `/name` or "use the name skill" for
-/// any skill; for owned folders also the name alone, or a multi-word name
-/// said in passing ("full send").
+/// The skill the user asked for by name. `/name` or "use the name skill"
+/// asks for any skill and wins; for owned folders the name alone, or a
+/// multi-word name said in passing ("full send"), also counts.
 pub fn named(text: &str, all: &[Skill]) -> Option<Skill> {
     let text = clipped(text);
     let lowered = text.to_lowercase();
+    let slashed: Vec<&str> = lowered
+        .split_whitespace()
+        .map(|token| token.trim_matches(|c: char| !c.is_alphanumeric() && c != '/'))
+        .collect();
     let said = words(text);
-    let mut best: Option<(usize, &Skill)> = None;
+    // (explicit, name length): an explicit request beats a passing mention, then the longer name.
+    let mut best: Option<((bool, usize), &Skill)> = None;
     for skill in all {
         let parts = words(&skill.name);
         if parts.is_empty() {
             continue;
         }
-        let slash = format!("/{}", skill.name.to_lowercase());
-        let explicit = lowered
-            .split_whitespace()
-            .any(|token| token.trim_end_matches(|c: char| !c.is_alphanumeric()) == slash)
-            || said
-                .windows(parts.len() + 1)
-                .any(|w| w[..parts.len()] == parts[..] && w[parts.len()] == "skill");
+        let asked: Vec<&str> = ["use", "the"].into_iter().chain(parts.iter().map(String::as_str)).chain(["skill"]).collect();
+        let explicit = slashed.contains(&format!("/{}", skill.name.to_lowercase()).as_str())
+            || said.windows(asked.len()).any(|w| w == asked)
+            || said.windows(asked.len() - 1).any(|w| w[0] == "use" && w[1..] == asked[2..]);
         let in_passing = skills::owned(&skill.source)
             && (said == parts || (parts.len() > 1 && said.windows(parts.len()).any(|w| w == &parts[..])));
+        let rank = (explicit, parts.len());
         // `all` is sorted best source first, so a strict comparison keeps it.
-        if (explicit || in_passing) && best.is_none_or(|(len, _)| parts.len() > len) {
-            best = Some((parts.len(), skill));
+        if (explicit || in_passing) && best.is_none_or(|(held, _)| rank > held) {
+            best = Some((rank, skill));
         }
     }
     best.map(|(_, skill)| skill.clone())
@@ -166,16 +169,18 @@ fn usage() -> HashMap<String, HashMap<String, u64>> {
         .unwrap_or_default()
 }
 
-/// Count a skill as used in this project. Best effort: a lost count only
-/// changes shortlist order.
+/// Count a skill as used in this project. A failed write only changes shortlist order.
 pub fn record_use(cwd: &Path, name: &str) {
+    let dir = state_dir();
+    if fs::create_dir_all(&dir).is_err() {
+        return;
+    }
+    let Ok(_lock) = crate::storage::lock(&dir.join("usage.lock")) else {
+        return;
+    };
     let mut all = usage();
     *all.entry(project_key(cwd)).or_default().entry(name.to_string()).or_default() += 1;
-    let dir = state_dir();
-    let staged = dir.join(format!("usage.{}.tmp", std::process::id()));
-    if fs::create_dir_all(&dir).is_ok() && fs::write(&staged, serde_json::to_vec(&all).unwrap_or_default()).is_ok() {
-        let _ = fs::rename(&staged, dir.join("usage.json"));
-    }
+    let _ = crate::storage::save(&dir.join("usage.json"), &serde_json::to_vec(&all).unwrap_or_default());
 }
 
 /// The few skills worth naming up front in this project: the ones used here
@@ -222,27 +227,32 @@ pub fn shortlist_text(cwd: &Path) -> String {
     text
 }
 
-/// Whether `harness` loads this skill itself, going by the folder it lives in.
+/// Whether `harness` loads this skill itself, going by the skill folder it
+/// lives in. Plugin marketplaces are not counted: they hold skills that were
+/// never installed.
 fn native_to(skill: &Skill, harness: &str) -> bool {
-    let folders: &[&str] = match harness {
+    let homes: &[&str] = match harness {
         "claude" => &[".claude"],
         "codex" => &[".codex", ".agents"],
         _ => &[],
     };
-    std::iter::once(&skill.path)
-        .chain(&skill.copies)
-        .any(|path| path.components().any(|part| folders.iter().any(|folder| part.as_os_str() == *folder)))
+    std::iter::once(&skill.path).chain(skill.copies.iter().map(|(_, path)| path)).any(|path| {
+        let parts: Vec<_> = path.components().map(|part| part.as_os_str()).collect();
+        parts.windows(2).any(|pair| homes.iter().any(|home| pair[0] == *home) && pair[1] == "skills")
+    })
 }
 
 /// What a prompt hook adds for this prompt: the full skill when the user
-/// named one, one line when a skill merely fits, nothing otherwise. A fit
-/// is suggested once per session. A skill the harness loads itself, under
-/// that name or as a linked copy, is left to it, so nothing lands twice.
+/// named one, one line when a skill merely fits, nothing otherwise. Each
+/// skill is suggested once per session. A skill the harness loads itself,
+/// under that name or as a linked copy, is left to it, so nothing lands twice.
 pub fn hook_context(session_id: &str, harness: &str, prompt: &str, cwd: &Path) -> Option<String> {
-    let mut all = skills::scan(cwd);
-    let native: HashSet<String> = all.iter().filter(|s| native_to(s, harness)).map(|s| s.name.clone()).collect();
-    all.retain(|s| !native.contains(&s.name));
+    let all = skills::scan(cwd);
+    let native = |skill: &Skill| all.iter().any(|s| s.name == skill.name && native_to(s, harness));
     if let Some(skill) = named(prompt, &all) {
+        if native(&skill) {
+            return None;
+        }
         record_use(cwd, &skill.name);
         return Some(format!(
             "The user asked for the `{}` skill. Follow these instructions (skill folder: {}):\n\n{}",
@@ -251,7 +261,7 @@ pub fn hook_context(session_id: &str, harness: &str, prompt: &str, cwd: &Path) -
             skills::payload(&skill)["content"].as_str().unwrap_or_default()
         ));
     }
-    let skill = suggest(prompt, &all)?;
+    let skill = suggest(prompt, &all).filter(|skill| !native(skill))?;
     let hinted = state_dir().join("hinted").join(session_id);
     let before = fs::read_to_string(&hinted).unwrap_or_default();
     if before.lines().any(|name| name == skill.name) {

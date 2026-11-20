@@ -39,8 +39,8 @@ pub struct Skill {
     pub dir: PathBuf,
     /// Hash of the instructions, so identical copies collapse to one.
     digest: u64,
-    /// Where the identical copies that collapsed into this one live.
-    pub copies: Vec<PathBuf>,
+    /// The identical copies that collapsed into this one: (source, SKILL.md path).
+    pub copies: Vec<(String, PathBuf)>,
 }
 
 /// Lower rank wins when several sources provide the same skill name.
@@ -285,7 +285,7 @@ fn scan_uncached(cwd: &Path) -> Vec<Skill> {
     let mut kept: Vec<Skill> = Vec::new();
     for skill in skills {
         match kept.iter_mut().rev().take_while(|k| k.name == skill.name).find(|k| k.digest == skill.digest) {
-            Some(original) => original.copies.push(skill.path),
+            Some(original) => original.copies.push((skill.source, skill.path)),
             None => kept.push(skill),
         }
     }
@@ -329,7 +329,7 @@ pub fn find(name: &str, source: Option<&str>) -> Vec<Skill> {
         .into_iter()
         .filter(|s| {
             (s.name == name || s.name.eq_ignore_ascii_case(name))
-                && source.is_none_or(|src| s.source == src)
+                && source.is_none_or(|src| s.source == src || s.copies.iter().any(|(copy, _)| copy == src))
         })
         .collect();
     matches.sort_by(|a, b| {
