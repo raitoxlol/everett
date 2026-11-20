@@ -12,10 +12,17 @@ use crate::skills::{self, Skill};
 /// Skills listed in the MCP instructions of every session.
 const SHORTLIST_MAX: usize = 8;
 const SHORTLIST_DESCRIPTION: usize = 70;
-/// A suggestion needs this many distinct request terms in the skill, and
-/// this share of the request, so small talk and long pastes stay quiet.
+/// A suggestion needs this many distinct request terms in the skill, carrying
+/// this share of the request's weight, so small talk and long pastes stay quiet.
 const MIN_HITS: usize = 2;
-const MIN_COVERAGE: f64 = 0.3;
+const MIN_SHARE: f64 = 0.45;
+/// Function words that say nothing about which skill fits.
+const FILLER: &[&str] = &[
+    "about", "after", "all", "also", "any", "been", "but", "can", "could", "did", "do", "does", "else", "get",
+    "had", "has", "have", "if", "into", "its", "just", "let", "like", "me", "might", "my", "need", "no", "not",
+    "now", "other", "out", "please", "should", "so", "some", "than", "that", "then", "there", "these", "they",
+    "want", "was", "what", "when", "where", "which", "who", "why", "will", "would", "you", "your",
+];
 /// Only the start of a long prompt is read for a skill.
 const MAX_REQUEST: usize = 2000;
 
@@ -29,16 +36,23 @@ fn words(text: &str) -> Vec<String> {
 
 /// Crude suffix stripping: "crashing", "crashed" and "crashes" all meet at "crash".
 fn stem(word: &str) -> String {
-    let long_enough = |rest: &&str| rest.chars().count() >= 3;
-    let base = ["ing", "ed", "s"]
-        .iter()
-        .find_map(|suffix| word.strip_suffix(suffix).filter(long_enough))
-        .unwrap_or(word);
-    base.strip_suffix('e').filter(long_enough).unwrap_or(base).to_string()
+    let mut base = word;
+    for suffixes in [&["s"][..], &["ing", "ed"], &["e"]] {
+        if let Some(rest) = suffixes.iter().find_map(|suffix| base.strip_suffix(suffix)) {
+            if rest.chars().count() >= 3 {
+                base = rest;
+            }
+        }
+    }
+    base.to_string()
 }
 
 fn terms(text: &str) -> Vec<String> {
-    crate::route::tokens(text).iter().map(|t| stem(t)).collect()
+    crate::route::tokens(text)
+        .iter()
+        .filter(|t| !FILLER.contains(&t.as_str()))
+        .map(|t| stem(t))
+        .collect()
 }
 
 fn clipped(text: &str) -> &str {
@@ -81,37 +95,36 @@ pub fn named(text: &str, all: &[Skill]) -> Option<Skill> {
 }
 
 /// The owned skill that best fits the request, or none when nothing clearly does.
+///
+/// Each request term weighs as much as it is rare among the skills, and a term
+/// no skill knows weighs the most. A skill fits when its terms carry enough of
+/// the request's weight, so two common words in a long description are not a fit. A term from the
+/// skill's name counts twice.
 pub fn suggest(text: &str, all: &[Skill]) -> Option<Skill> {
-    let query: Vec<String> = {
-        let unique: HashSet<String> = terms(clipped(text)).into_iter().collect();
-        unique.into_iter().collect()
-    };
-    if query.len() < MIN_HITS {
-        return None;
-    }
+    let query: HashSet<String> = terms(clipped(text)).into_iter().collect();
     let mut names = HashSet::new();
-    let docs: Vec<(&Skill, Vec<String>)> = all
+    let docs: Vec<(&Skill, HashSet<String>, Vec<String>)> = all
         .iter()
         .filter(|s| skills::owned(&s.source) && names.insert(s.name.as_str()))
-        .map(|s| (s, terms(&format!("{} {} {}", s.name, s.name, s.description))))
+        .map(|s| (s, terms(&format!("{} {}", s.name, s.description)).into_iter().collect(), terms(&s.name)))
         .collect();
-    if docs.is_empty() {
-        return None;
+    let mut df: HashMap<&str, usize> = HashMap::new();
+    for term in docs.iter().flat_map(|(_, doc, _)| doc) {
+        *df.entry(term).or_default() += 1;
     }
-    let mut df: HashMap<String, usize> = HashMap::new();
-    for (_, doc) in &docs {
-        for term in doc.iter().collect::<HashSet<_>>() {
-            *df.entry(term.clone()).or_default() += 1;
-        }
-    }
-    let average = docs.iter().map(|(_, d)| d.len()).sum::<usize>() as f64 / docs.len() as f64;
+    let weight = |term: &String| {
+        let seen = df.get(term.as_str()).copied().unwrap_or(0) as f64;
+        (1.0 + (docs.len() as f64 - seen + 0.5) / (seen + 0.5)).ln()
+    };
+    let total: f64 = query.iter().map(weight).sum();
     docs.iter()
-        .filter(|(_, doc)| {
-            let hits = query.iter().filter(|t| doc.contains(t)).count();
-            hits >= MIN_HITS && hits as f64 / query.len() as f64 >= MIN_COVERAGE
+        .filter_map(|(skill, doc, name)| {
+            let hits: Vec<&String> = query.iter().filter(|t| doc.contains(*t)).collect();
+            let carried: f64 = hits.iter().map(|t| weight(t) * if name.contains(t) { 2.0 } else { 1.0 }).sum();
+            (hits.len() >= MIN_HITS && carried / total >= MIN_SHARE).then_some((carried, *skill))
         })
-        .map(|(skill, doc)| (crate::route::bm25(&query, doc, &df, docs.len(), average), *skill))
-        .max_by(|a, b| a.0.total_cmp(&b.0))
+        // Equal fits go to the better source, as `get` would.
+        .max_by(|a, b| a.0.total_cmp(&b.0).then(skills::source_rank(&b.1.source).cmp(&skills::source_rank(&a.1.source))))
         .map(|(_, skill)| skill.clone())
 }
 
@@ -125,7 +138,10 @@ pub fn match_result(task: &str, cwd: &Path) -> Map<String, Value> {
     let Some(skill) = found else {
         return Map::from_iter([("skill".into(), Value::Null)]);
     };
-    record_use(cwd, &skill.name);
+    // A guess that happened to fit is not use; counting it would promote wrong guesses.
+    if how == "named" {
+        record_use(cwd, &skill.name);
+    }
     Map::from_iter([
         ("skill".into(), Value::Object(skills::payload(&skill))),
         ("matched".into(), json!(how)),

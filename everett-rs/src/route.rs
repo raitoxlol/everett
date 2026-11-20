@@ -265,7 +265,7 @@ fn document(session: &Session) -> String {
     format!("{} {} {} {}", session.card, headline, session.last_user, project)
 }
 
-pub(crate) fn bm25(
+fn bm25(
     query: &[String],
     doc: &[String],
     df: &HashMap<String, usize>,
