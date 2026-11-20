@@ -33,9 +33,10 @@ const INSTRUCTIONS: &str =
      it before sending. Answer messages you receive with everett_send(reply_to=...). Use everett_learn to push \
      durable facts that every session should know into the shared core, and everett_core to read it. Keep your own \
      card current with everett_card so others can route to you, and report done / blocked / needs-input with \
-     everett_event. everett_skill is the skill hub: it lists and returns the SKILL.md playbooks installed for \
-     every harness on this machine, and each one is also a prompt. When the user names a skill -- /hill-climb, \
-     /full-send, or \"use the X skill\" -- fetch it with everett_skill get and follow the returned instructions.";
+     everett_event. everett_skill is the skill hub over the SKILL.md playbooks installed for every harness on this machine. \
+     When the user names a skill -- /hill-climb, /full-send, or \"use the X skill\" -- load it with \
+     everett_skill get and follow it. When a task could use a playbook, call everett_skill match with the task; \
+     it returns the one skill that fits, or none.";
 
 fn s(desc: &str) -> Value {
     json!({"type": "string", "description": desc})
@@ -1104,6 +1105,15 @@ pub(crate) fn tool_card(
     Ok(out)
 }
 
+/// The fixed guidance plus the few skills worth naming in this project.
+fn instructions() -> String {
+    let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
+    match crate::skill_match::shortlist_text(&cwd) {
+        shortlist if shortlist.is_empty() => INSTRUCTIONS.to_string(),
+        shortlist => format!("{INSTRUCTIONS}\n\n{shortlist}"),
+    }
+}
+
 fn tool_skill(args: &Map<String, Value>) -> std::result::Result<Map<String, Value>, ToolFailure> {
     let action = str_arg(args, "action", false)?;
     let source = str_arg(args, "source", false)?;
@@ -1907,7 +1917,7 @@ pub fn handle(message: &Value) -> Option<Value> {
                     "protocolVersion": version,
                     "capabilities": capabilities,
                     "serverInfo": {"name": "everett", "version": env!("CARGO_PKG_VERSION")},
-                    "instructions": INSTRUCTIONS,
+                    "instructions": instructions(),
                 }),
             ))
         }
