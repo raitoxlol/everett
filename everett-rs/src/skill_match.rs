@@ -62,9 +62,9 @@ fn clipped(text: &str) -> &str {
     }
 }
 
-/// The skill the user asked for by name: `/name`, "use the name skill", the
-/// name alone, or a multi-word name said in passing ("full send"). Passing
-/// mentions only count for owned folders.
+/// The skill the user asked for by name: `/name` or "use the name skill" for
+/// any skill; for owned folders also the name alone, or a multi-word name
+/// said in passing ("full send").
 pub fn named(text: &str, all: &[Skill]) -> Option<Skill> {
     let text = clipped(text);
     let lowered = text.to_lowercase();
@@ -76,16 +76,14 @@ pub fn named(text: &str, all: &[Skill]) -> Option<Skill> {
             continue;
         }
         let slash = format!("/{}", skill.name.to_lowercase());
-        let explicit = said == parts
-            || lowered
-                .split_whitespace()
-                .any(|token| token.trim_end_matches(|c: char| !c.is_alphanumeric()) == slash)
+        let explicit = lowered
+            .split_whitespace()
+            .any(|token| token.trim_end_matches(|c: char| !c.is_alphanumeric()) == slash)
             || said
                 .windows(parts.len() + 1)
                 .any(|w| w[..parts.len()] == parts[..] && w[parts.len()] == "skill");
-        let in_passing = parts.len() > 1
-            && skills::owned(&skill.source)
-            && said.windows(parts.len()).any(|w| w == &parts[..]);
+        let in_passing = skills::owned(&skill.source)
+            && (said == parts || (parts.len() > 1 && said.windows(parts.len()).any(|w| w == &parts[..])));
         // `all` is sorted best source first, so a strict comparison keeps it.
         if (explicit || in_passing) && best.is_none_or(|(len, _)| parts.len() > len) {
             best = Some((parts.len(), skill));
