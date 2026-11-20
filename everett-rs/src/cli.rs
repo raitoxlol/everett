@@ -255,6 +255,41 @@ pub fn cmd_cards(args: &Args) -> i32 {
     0
 }
 
+fn cwd() -> PathBuf {
+    std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."))
+}
+
+/// `everett skills --match TASK`: the one skill that fits, exit 1 when none does.
+pub fn cmd_skill_match(task: &str, json: bool) -> i32 {
+    let result = crate::skill_match::match_result(task, &cwd());
+    if json {
+        println!("{}", Value::Object(result));
+        return 0;
+    }
+    match result["skill"]["content"].as_str() {
+        Some(content) => {
+            println!("{}", content.trim_end());
+            0
+        }
+        None => {
+            eprintln!("everett: no skill fits");
+            1
+        }
+    }
+}
+
+/// `everett skills --shortlist`: what every session in this project is told up front.
+pub fn cmd_skill_shortlist(json: bool) -> i32 {
+    let cwd = cwd();
+    if json {
+        let rows: Vec<Value> = crate::skill_match::shortlist(&cwd).iter().map(|s| Value::Object(crate::skills::to_dict(s))).collect();
+        println!("{}", Value::Array(rows));
+    } else {
+        println!("{}", crate::skill_match::shortlist_text(&cwd));
+    }
+    0
+}
+
 /// `everett skills`: the CLI face of the MCP skill hub.
 pub fn cmd_skills(query: Option<&str>, get: Option<&str>, source: Option<&str>, json: bool) -> i32 {
     if let Some(name) = get {
@@ -267,6 +302,7 @@ pub fn cmd_skills(query: Option<&str>, get: Option<&str>, source: Option<&str>, 
             let others: Vec<&str> = matches[1..].iter().map(|s| s.source.as_str()).collect();
             eprintln!("everett: using {} (also in {}; pass --source to pick)", skill.source, others.join(", "));
         }
+        crate::skill_match::record_use(&cwd(), &skill.name);
         println!("{}", crate::skills::body(skill).trim_end());
         return 0;
     }
