@@ -38,8 +38,9 @@ confidence, so you can tell the user, for example, "jev picked [claude] ~/src/ap
 - Sessions older than 72 hours need the same larger `hours` value on listing, routing, and sending.
 
 **Pick the right mode.** The default `ping` is immediate and fails rather than silently queueing.
-Use `mode: "inbox"` for T3 Code threads, external agents, attached sessions without a wake path,
-and remote devices.
+Owner-local `ping` and `auto` nudge T3 Code threads through the T3 CLI.
+Use `mode: "inbox"` to queue without nudging, including for external agents,
+attached sessions without a wake path, and remote devices.
 
 **Read receipts honestly.** `pinged: true` means dispatch, not that the target read or finished
 anything. `queued`, `picked_up`, and `replied` are separate observations; none proves the task

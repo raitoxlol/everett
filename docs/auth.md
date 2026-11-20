@@ -20,12 +20,12 @@ It skips browser approval and older session cards. To inspect registration examp
 `everett install-hooks` and `everett install-mcp` without `--apply`. These commands do not
 change files, but can show agents that onboarding has not detected.
 
-Onboarding does not cover every listed harness. `everett install-hooks --pi --apply`
-installs the Pi extension, which exposes Everett tools through Pi's `registerTool` API
-and binds the MCP bridge to each session.
-`everett install-hooks --devin --apply` adds Devin's session-binding hooks. For Hermes,
-add the `mcp_servers` block printed by `everett install-mcp --hermes` to
-`~/.hermes/config.yaml` yourself.
+Default onboarding installs the Pi extension and registers Devin MCP when detected.
+The Pi extension exposes Everett tools through Pi's `registerTool` API and binds the MCP bridge
+to each session. Run `everett install-hooks --devin --apply` to add Devin's session-binding hooks.
+For Hermes, follow the wizard to install and enable the [Hermes plugin](../plugins/everett-hermes/README.md),
+or add the `mcp_servers` block printed by `everett install-mcp --hermes` to `~/.hermes/config.yaml`.
+Choose one Hermes setup to avoid duplicate tool registrations.
 Restart the configured agents and run `everett ls`. An empty list means no sessions were
 found in the look-back window. Before using MCP tools, run `everett login` in this profile.
 Restart each MCP client and ask it to call `everett_ls`; a returned list, even empty,
@@ -36,8 +36,8 @@ If a tool reports that an account is required, run `everett login` and retry.
 
 The wizard welcomes you with "Local setup needs no Everett account. Sign in to use
 Everett MCP tools." Choose "Choose setup path", then "Choose how to connect".
-Without a configured issuer, Enter or `l` continues locally; local registration does
-not sign you in or authorize tool calls.
+Press `l` to continue with local registration. When the wizard offers sign-in, Enter starts
+device approval. Run `everett login` before calling MCP tools if you chose local registration.
 
 Initialization, `ping`, and `tools/list` remain available without account verification.
 No native tool is exempt, including `everett_whoami` and relay `diagnose` through MCP.

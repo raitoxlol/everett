@@ -136,7 +136,8 @@ retry. Invalid or unsupported targets are rejected before an inbox item is creat
 Recover a lost local request ID with `everett sent [--to EXACT_RECIPIENT_ID] [--json]`
 or `everett_sent(to=...)`: both return up to 50 recent requests for the current sender,
 newest first. Use `everett status MESSAGE_ID` / `everett_status` before retrying.
-Failed JSON T3 sends and MCP tool errors retain the original `message_id` for recovery.
+If T3 dispatch fails after Everett writes the inbox request, JSON CLI output and MCP
+tool errors include the retained `message_id` for recovery.
 For a still-queued T3 request, `everett retry MESSAGE_ID` / `everett_retry` reuses that
 request rather than creating another inbox item. Confirmed dispatch receipts are reused;
 an unconfirmed dispatch requires checking the original thread before further dispatch.
