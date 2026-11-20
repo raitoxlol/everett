@@ -155,6 +155,8 @@ fn state_dir() -> PathBuf {
 
 /// Usage is counted per project: the nearest git root, else the directory itself.
 fn project_key(cwd: &Path) -> String {
+    let resolved = fs::canonicalize(cwd);
+    let cwd = resolved.as_deref().unwrap_or(cwd);
     cwd.ancestors()
         .find(|dir| dir.join(".git").exists())
         .unwrap_or(cwd)
