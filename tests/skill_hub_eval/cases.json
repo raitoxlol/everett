@@ -51,5 +51,6 @@
  {"kind": "hook", "prompt": "full send", "expect": null, "mode": "none", "harness": "codex"},
  {"kind": "hook", "prompt": "Ignore the access skill", "expect": null, "mode": "none"},
  {"kind": "hook", "prompt": "Please use `/prove-it`", "expect": "prove-it", "mode": "full"},
- {"kind": "get", "name": "full-send", "source": "codex", "expect_body": "SHARED full-send body"}
+ {"kind": "get", "name": "full-send", "source": "codex", "expect_body": "SHARED full-send body"},
+ {"kind": "hook", "prompt": "Inspect ./access before you change the config", "expect": null, "mode": "none"}
 ]
