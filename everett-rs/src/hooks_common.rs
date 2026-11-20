@@ -170,7 +170,7 @@ fn markdown_lines(text: &str) -> Vec<(String, bool, bool)> {
     static URL: OnceLock<Regex> = OnceLock::new();
     let url = URL.get_or_init(|| Regex::new(r"https?://\S+").unwrap());
     static TAG: OnceLock<Regex> = OnceLock::new();
-    let tag = TAG.get_or_init(|| Regex::new(r"<[^>]{1,200}>").unwrap());
+    let tag = TAG.get_or_init(|| Regex::new(r"<[A-Za-z/!?][^>]{0,199}>").unwrap());
     static QUOTE: OnceLock<Regex> = OnceLock::new();
     let quote = QUOTE.get_or_init(|| Regex::new(r"^\s*>+\s?").unwrap());
     static BULLET: OnceLock<Regex> = OnceLock::new();
@@ -222,7 +222,7 @@ fn markdown_lines(text: &str) -> Vec<(String, bool, bool)> {
         let line = ref_link.replace_all(&line, "$1");
         let line = angle_url.replace_all(&line, " ");
         let line = url.replace_all(&line, " ");
-        let line = tag.replace_all(&line, " ");
+        let line = crate::session::strip_tags(tag, &line);
         let line = heading_re().replace_all(&line, "");
         let line = quote.replace_all(&line, "");
         let line = bullet.replace_all(&line, "");
@@ -348,15 +348,9 @@ fn project_name(cwd: &str) -> String {
     if is_generic {
         return "Project".to_string();
     }
-    let name = path
-        .unwrap()
-        .file_name()
-        .map(|n| n.to_string_lossy().to_string())
-        .unwrap_or_default();
-    let name = name.trim();
-    if name.is_empty() {
+    let Some(name) = crate::session::project(&path.unwrap().to_string_lossy()) else {
         return "Project".to_string();
-    }
+    };
     let mut chars = name.chars();
     format!("{}{}", chars.next().unwrap().to_uppercase(), chars.as_str())
 }
