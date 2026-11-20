@@ -37,21 +37,29 @@ pub struct Skill {
     pub path: PathBuf,
     /// The skill's directory (siblings of SKILL.md live here).
     pub dir: PathBuf,
+    /// Hash of the instructions, so identical copies collapse to one.
+    digest: u64,
 }
 
 /// Lower rank wins when several sources provide the same skill name.
 fn source_rank(source: &str) -> u8 {
     match source {
         "project" => 0,
-        "agents" => 1,
-        "claude" => 2,
-        "codex" => 3,
-        "devin" => 4,
-        "claude-plugins" => 5,
-        "devin-plugins" => 6,
-        "hermes" => 7,
+        "extra" => 1,
+        "agents" => 2,
+        "claude" => 3,
+        "codex" => 4,
+        "devin" => 5,
+        "claude-plugins" => 6,
+        "devin-plugins" => 7,
         _ => 8,
     }
+}
+
+/// Skill folders the user keeps themselves. Only these are suggested or
+/// shortlisted unasked; plugin caches and bundled catalogs need the skill named.
+pub fn owned(source: &str) -> bool {
+    source_rank(source) <= 5
 }
 
 fn home_dir() -> PathBuf {
@@ -203,6 +211,12 @@ fn load_skill(path: &Path, source: &str) -> Option<Skill> {
         source: source.to_string(),
         path: path.to_path_buf(),
         dir,
+        digest: {
+            use std::hash::{Hash, Hasher};
+            let mut hasher = std::collections::hash_map::DefaultHasher::new();
+            strip_frontmatter(&text).hash(&mut hasher);
+            hasher.finish()
+        },
     })
 }
 
@@ -267,6 +281,9 @@ fn scan_uncached(cwd: &Path) -> Vec<Skill> {
             .then(source_rank(&a.source).cmp(&source_rank(&b.source)))
             .then(a.path.cmp(&b.path))
     });
+    // The same skill installed for several harnesses is one skill; the best source keeps it.
+    let mut copies = HashSet::new();
+    skills.retain(|s| copies.insert((s.name.clone(), s.digest)));
     skills
 }
 
@@ -318,25 +335,18 @@ pub fn find(name: &str, source: Option<&str>) -> Vec<Skill> {
     matches
 }
 
+fn strip_frontmatter(text: &str) -> String {
+    let mut lines = text.lines();
+    if lines.next().map(str::trim) != Some("---") {
+        return text.to_string();
+    }
+    let rest: Vec<&str> = lines.skip_while(|line| line.trim() != "---").skip(1).collect();
+    rest.join("\n").trim().to_string()
+}
+
 /// SKILL.md text minus the YAML frontmatter block (for prompt bodies).
 pub fn body(skill: &Skill) -> String {
-    let text = fs::read_to_string(&skill.path).unwrap_or_default();
-    let mut lines = text.lines();
-    if lines.next().map(str::trim) == Some("---") {
-        let mut rest = Vec::new();
-        let mut in_fm = true;
-        for line in lines {
-            if in_fm && line.trim() == "---" {
-                in_fm = false;
-                continue;
-            }
-            if !in_fm {
-                rest.push(line);
-            }
-        }
-        return rest.join("\n").trim().to_string();
-    }
-    text
+    strip_frontmatter(&fs::read_to_string(&skill.path).unwrap_or_default())
 }
 
 /// Sibling files inside the skill directory, for the agent to read on demand.
@@ -418,31 +428,28 @@ pub fn list_result(query: Option<&str>) -> Map<String, Value> {
     ])
 }
 
-/// Returns the skill payload, or a `candidates` map when the name is ambiguous.
+/// The skill payload from the best source that has it. Other sources with a
+/// different version are named in `also_in` for a `source`-qualified retry.
 pub fn get_result(name: &str, source: Option<&str>) -> Map<String, Value> {
     let matches = find(name, source);
-    match matches.len() {
-        0 => Map::from_iter([(
-            "error".into(),
-            json!(format!("no skill named \"{}\"", name)),
-        )]),
-        1 => {
-            let skill = &matches[0];
-            let mut m = to_dict(skill);
-            m.insert("dir".into(), json!(skill.dir.to_string_lossy()));
-            m.insert("files".into(), json!(files(skill)));
-            m.insert("content".into(), json!(truncated(&body(skill))));
-            m
-        }
-        _ => {
-            let candidates: Vec<Value> =
-                matches.iter().map(|s| Value::Object(to_dict(s))).collect();
-            Map::from_iter([(
-                "candidates".into(),
-                json!({"matches": candidates, "note": "several sources provide this skill; re-call with source set to one of them"}),
-            )])
-        }
+    let Some(skill) = matches.first() else {
+        return Map::from_iter([("error".into(), json!(format!("no skill named \"{}\"", name)))]);
+    };
+    let mut m = payload(skill);
+    if matches.len() > 1 {
+        let others: Vec<&str> = matches[1..].iter().map(|s| s.source.as_str()).collect();
+        m.insert("also_in".into(), json!(others));
     }
+    m
+}
+
+/// A skill with its instructions and sibling files.
+pub fn payload(skill: &Skill) -> Map<String, Value> {
+    let mut m = to_dict(skill);
+    m.insert("dir".into(), json!(skill.dir.to_string_lossy()));
+    m.insert("files".into(), json!(files(skill)));
+    m.insert("content".into(), json!(truncated(&body(skill))));
+    m
 }
 
 /// MCP prompt name: [A-Za-z0-9_-], lowercased, collisions resolved by scan order.

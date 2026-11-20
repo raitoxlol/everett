@@ -259,28 +259,16 @@ pub fn cmd_cards(args: &Args) -> i32 {
 pub fn cmd_skills(query: Option<&str>, get: Option<&str>, source: Option<&str>, json: bool) -> i32 {
     if let Some(name) = get {
         let matches = crate::skills::find(name, source);
-        match matches.len() {
-            0 => {
-                eprintln!("everett: no skill named \"{name}\"");
-                return 1;
-            }
-            1 => {
-                let body = crate::skills::body(&matches[0]);
-                print!("{body}");
-                if !body.ends_with('\n') {
-                    println!();
-                }
-                return 0;
-            }
-            _ => {
-                eprintln!("everett: \"{name}\" exists in several sources:");
-                for s in &matches {
-                    eprintln!("  {}  ({})", s.source, s.path.display());
-                }
-                eprintln!("pass --source to pick one");
-                return 2;
-            }
+        let Some(skill) = matches.first() else {
+            eprintln!("everett: no skill named \"{name}\"");
+            return 1;
+        };
+        if matches.len() > 1 {
+            let others: Vec<&str> = matches[1..].iter().map(|s| s.source.as_str()).collect();
+            eprintln!("everett: using {} (also in {}; pass --source to pick)", skill.source, others.join(", "));
         }
+        println!("{}", crate::skills::body(skill).trim_end());
+        return 0;
     }
     let skills = crate::skills::search(query);
     if json {
