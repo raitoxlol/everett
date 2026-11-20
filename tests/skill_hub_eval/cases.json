@@ -16,9 +16,9 @@
  {"kind": "mcp_match", "task": "find the root cause of this failure", "expect": "debug"},
  {"kind": "hook", "prompt": "full send", "expect": "full-send", "mode": "full"},
  {"kind": "hook", "prompt": "/prove", "expect": "prove", "mode": "full"},
- {"kind": "hook", "prompt": "use the hill-climb skill to make the tests faster", "expect": "hill-climb", "mode": "full"},
+ {"kind": "hook", "prompt": "use the hill-climb skill to make the tests faster", "expect": "hill-climb", "mode": "full", "harness": "codex"},
  {"kind": "hook", "prompt": "ok do it. Full stop.", "expect": "full-stop", "mode": "full"},
- {"kind": "hook", "prompt": "/prove-it", "expect": "prove-it", "mode": "full"},
+ {"kind": "hook", "prompt": "/prove-it", "expect": "prove-it", "mode": "full", "harness": "codex"},
  {"kind": "hook", "prompt": "can you review this diff for bugs", "expect": "review", "mode": "hint"},
  {"kind": "hook", "prompt": "find the root cause of this failing test", "expect": "debug", "mode": "hint"},
  {"kind": "hook", "prompt": "how do I get direct evidence that a change works", "expect": "prove", "mode": "hint"},
@@ -37,5 +37,8 @@
  {"kind": "match", "task": "i want a system for the hub that does not exist anywhere else, it should save context and be fast", "expect": null},
  {"kind": "match", "task": "why is my window manager keybinding not working", "expect": "desktop-config"},
  {"kind": "match", "task": "can you check the logs and tell me what happened", "expect": null},
- {"kind": "shortlist", "matched": ["extract the tables from this pdf", "extract the tables from this pdf", "extract the tables from this pdf"], "include": ["verify-app"], "exclude": ["pdf"]}
+ {"kind": "shortlist", "matched": ["extract the tables from this pdf", "extract the tables from this pdf", "extract the tables from this pdf"], "include": ["verify-app"], "exclude": ["pdf"]},
+ {"kind": "hook", "prompt": "/hill-climb", "expect": null, "mode": "none"},
+ {"kind": "hook", "prompt": "open a pull request for this branch", "expect": null, "mode": "none", "harness": "codex"},
+ {"kind": "hook", "prompt": "open a pull request for this branch", "expect": "file-pr", "mode": "hint"}
 ]

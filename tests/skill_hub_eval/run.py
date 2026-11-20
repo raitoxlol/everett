@@ -58,9 +58,9 @@ def skill_body(name):
     return max((body_of(s) for s in SKILLS if s["name"] == name), key=len)
 
 
-def hook(home, prompt, event="UserPromptSubmit", session="eval-session"):
+def hook(home, prompt, event="UserPromptSubmit", harness="claude", session="eval-session"):
     payload = {"session_id": session, "hook_event_name": event, "prompt": prompt, "cwd": str(home / "proj")}
-    out = run(home, ["hook", "claude_inbox"], json.dumps(payload)).stdout.strip()
+    out = run(home, ["hook", f"{harness}_inbox"], json.dumps(payload)).stdout.strip()
     if not out:
         return ""
     return json.loads(out)["hookSpecificOutput"]["additionalContext"]
@@ -137,8 +137,8 @@ def check(case, home):
         return check_match(case, result["structuredContent"], json.dumps(result["structuredContent"]))
     if kind == "hook":
         for earlier in case.get("after", []):
-            hook(home, earlier)
-        text = hook(home, case["prompt"], case.get("event", "UserPromptSubmit"))
+            hook(home, earlier, harness=case.get("harness", "claude"))
+        text = hook(home, case["prompt"], case.get("event", "UserPromptSubmit"), case.get("harness", "claude"))
         mode, want = case["mode"], case["expect"]
         if mode == "none":
             return None if not text else f"expected silence, got {text[:80]!r}"
