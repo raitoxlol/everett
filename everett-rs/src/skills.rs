@@ -331,11 +331,8 @@ pub fn find(name: &str, source: Option<&str>) -> Vec<Skill> {
         .filter_map(|mut s| match source {
             Some(src) if s.source != src => {
                 // An identical copy from the asked source: answer with that copy's own folder.
-                let (_, path) = s.copies.iter().find(|(copy, _)| copy == src)?.clone();
-                s.dir = path.parent()?.to_path_buf();
-                s.path = path;
-                s.source = src.to_string();
-                Some(s)
+                let (_, path) = s.copies.iter().find(|(copy, _)| copy == src)?;
+                load_skill(path, src)
             }
             _ => Some(s),
         })

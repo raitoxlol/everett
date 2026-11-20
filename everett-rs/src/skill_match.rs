@@ -70,7 +70,7 @@ pub fn named(text: &str, all: &[Skill]) -> Option<Skill> {
     let lowered = text.to_lowercase();
     let slashed: Vec<&str> = lowered
         .split_whitespace()
-        .map(|token| token.trim_start_matches(['`', '"', '\'', '(']).trim_end_matches(|c: char| !c.is_alphanumeric()))
+        .map(|token| token.trim_start_matches(['`', '"', '\'', '(', '“', '‘']).trim_end_matches(|c: char| !c.is_alphanumeric() && c != '/'))
         .collect();
     let said = words(text);
     // (explicit, name length): an explicit request beats a passing mention, then the longer name.
