@@ -1124,6 +1124,10 @@ fn screen_connections(
         ]);
         guides.push((format!("{} / setup guide", agent.name()), lines));
     }
+    if cfg.detected.iter().any(|(h, _)| h == "hermes") {
+        let lines = onboard::HERMES_PLUGIN_GUIDE.iter().map(|line| line.to_string()).collect();
+        guides.push(("Hermes Agent / setup guide".to_string(), lines));
+    }
     guides.extend(remote.iter().map(|choice| {
         (
             format!("{} / {}", choice.name(), choice.status()),
@@ -1234,7 +1238,9 @@ fn draw_agents(
                         agent.name(),
                         agent.sessions,
                         plural,
-                        if agent.total() == 0 {
+                        if agent.harness == "hermes" {
+                            " / plugin (d)"
+                        } else if agent.total() == 0 {
                             " / discovery only"
                         } else {
                             ""
@@ -1250,7 +1256,9 @@ fn draw_agents(
                             "    {} session{}{}",
                             agent.sessions,
                             plural,
-                            if agent.total() == 0 {
+                            if agent.harness == "hermes" {
+                                " / plugin (d)"
+                            } else if agent.total() == 0 {
                                 " / discovery only"
                             } else {
                                 ""
@@ -1280,6 +1288,7 @@ fn draw_agents(
     let agent = &agents[state.selected().unwrap_or(0)];
     let selected = agent.selected(cfg);
     let (status, status_style) = match (selected, agent.total()) {
+        (_, 0) if agent.harness == "hermes" => ("Press d for Hermes plugin setup.", p.cyan),
         (_, 0) => ("Discovery only. No settings will be changed.", p.amber),
         (0, _) => (
             "Skipped. Existing settings will be left as they are.",
@@ -1307,6 +1316,7 @@ fn draw_agents(
         let x = panel.x + 2;
         put(f, panel.y + 2, x, agent.name(), p.cyan);
         let state_label = match (selected, agent.total()) {
+            (_, 0) if agent.harness == "hermes" => "HERMES PLUGIN",
             (_, 0) => "DISCOVERY ONLY",
             (0, _) => "SKIPPED",
             (n, total) if n < total => "CUSTOM",
@@ -1316,7 +1326,9 @@ fn draw_agents(
         let mut features = Vec::new();
         if selected == 0 {
             features.push(Line::from(Span::styled(
-                if agent.total() == 0 {
+                if agent.harness == "hermes" {
+                    "Press d for plugin installation and the first tool call."
+                } else if agent.total() == 0 {
                     "Sessions stay discoverable. Configure tools manually."
                 } else {
                     "Existing settings stay as they are. Sessions remain discoverable."
@@ -1412,6 +1424,11 @@ fn screen_agent_details(
     cfg: &mut OnboardConfig,
     agent: &AgentChoice,
 ) -> TResult<()> {
+    if agent.harness == "hermes" {
+        let lines = onboard::HERMES_PLUGIN_GUIDE.iter().map(|line| line.to_string()).collect::<Vec<_>>();
+        pause(t, p, 3, "Hermes Agent plugin", &lines, true, None)?;
+        return Ok(());
+    }
     let mut items = Vec::new();
     let path = if agent.harness == "omp" {
         crate::install::omp_extension_path()
@@ -2098,6 +2115,8 @@ fn screen_summary(
                     format!("If signed out: everett login.\nRestart {}.\nAsk it to call `everett_ls`.", agent.name())
                 } else if let Some(choice) = remote.first() {
                     format!("Press d for {} setup steps.", choice.name())
+                } else if cfg.detected.iter().any(|(h, _)| h == "hermes") {
+                    "Enable the Hermes plugin, restart Hermes, and ask it to call everett_ls. Press d for setup commands.".to_string()
                 } else {
                     "Run: everett ls".to_string()
                 };

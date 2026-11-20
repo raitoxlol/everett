@@ -70,7 +70,11 @@ class SmokeFixtureTests(unittest.TestCase):
         self.assertEqual(arguments["calls"][0]["arguments"], {"harness": "hermes", "all": True})
 
     def test_auxiliary_model_request_has_no_smoke_marker(self):
-        self.assertIsNone(smoke._marker({"messages": [{"role": "user", "content": "create a title"}]}))
+        prompt = smoke.SIGNED_OUT + ": check identity"
+        chat = {"messages": [{"role": "user", "content": prompt}]}
+        self.assertIsNone(smoke._marker(chat))
+        self.assertEqual(smoke._marker({**chat, "tools": [{"function": {"name": smoke.TOOL_SEARCH}}]}), smoke.SIGNED_OUT)
+        self.assertIsNone(smoke._marker({"messages": [{"role": "user", "content": "Create a title for: " + prompt}]}))
 
     def test_cleanup_stops_servers_when_hermes_teardown_times_out(self):
         events = []

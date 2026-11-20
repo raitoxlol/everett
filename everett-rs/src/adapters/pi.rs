@@ -1,4 +1,4 @@
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use serde_json::{Map, Value};
 
@@ -72,6 +72,13 @@ pub fn scan_root(root: &Path, harness: &str, since_hours: f64) -> Vec<Session> {
     out
 }
 
+pub fn agent_dir() -> PathBuf {
+    std::env::var("PI_CODING_AGENT_DIR").ok()
+        .filter(|dir| !dir.is_empty())
+        .map(|dir| paths::expanduser(&dir))
+        .unwrap_or_else(|| home().join(".pi/agent"))
+}
+
 pub fn scan(since_hours: f64) -> Vec<Session> {
-    scan_root(&home().join(".pi").join("agent").join("sessions"), "pi", since_hours)
+    scan_root(&agent_dir().join("sessions"), "pi", since_hours)
 }

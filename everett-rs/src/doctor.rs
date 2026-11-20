@@ -19,6 +19,14 @@ pub fn stores() -> &'static [(&'static str, &'static str)] {
     ]
 }
 
+fn store_path(harness: &str, relative: &str) -> std::path::PathBuf {
+    if harness == "pi" {
+        crate::adapters::pi::agent_dir().join("sessions")
+    } else {
+        home().join(relative)
+    }
+}
+
 fn which(name: &str) -> Option<String> {
     crate::proc::which(name, &std::env::var("PATH").unwrap_or_default())
 }
@@ -29,7 +37,7 @@ pub fn detected_harnesses() -> Vec<String> {
         .filter(|(h, _)| *h != "t3code")
         .filter(|(h, rel)| {
             which(h).is_some()
-                || home().join(rel).exists()
+                || store_path(h, rel).exists()
                 || (*h == "devin" && devin_adapter::data_dirs().iter().any(|d| d.is_dir()))
                 || (*h == "devin" && crate::install::mcp_path(h).exists())
         })
@@ -198,7 +206,7 @@ pub fn run(hours: f64) -> i32 {
         } else if *harness == "t3code" {
             crate::adapters::t3code::db_path()
         } else {
-            home().join(rel)
+            store_path(harness, rel)
         };
         let found = path.exists();
         let cli = if *harness != "t3code" { which(harness) } else { None };

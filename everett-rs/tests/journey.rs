@@ -687,7 +687,7 @@ fn onboard_tui_compact_summary_shows_priority_next_steps() {
 
 #[cfg(unix)]
 #[test]
-fn onboard_tui_agents_empty_and_discovery_only() {
+fn onboard_tui_agents_empty_and_hermes_plugin_guide() {
     let fx = fixture();
     let mut p = spawn_tui(&fx);
     p.see("Welcome to Everett");
@@ -706,13 +706,21 @@ fn onboard_tui_agents_empty_and_discovery_only() {
     p.send("\r");
     p.see("Choose how to connect");
     p.send("\r");
-    p.see("discovery only");
+    p.see("plugin (d)");
     p.see("Enter ↵   Continue without integrations");
     p.send(" d");
-    p.see("No automatic changes enabled for this agent.");
-    p.send("bq");
-    p.see("Setup stopped. Applied changes, if any, are kept.");
-    assert!(!fx.home().join(".everett/onboarding-complete").exists());
+    p.see("Hermes Agent plugin");
+    p.see("hermes plugins install");
+    p.send("b\r");
+    p.see("Hermes Agent / setup guide");
+    p.see("hermes plugins install");
+    p.send("\r");
+    p.see("Review your setup");
+    p.send("a");
+    p.see("Enable the Hermes plugin");
+    p.send("q");
+    p.exited();
+    assert!(!fx.home().join(".hermes/config.yaml").exists());
 }
 
 #[cfg(unix)]
@@ -899,7 +907,7 @@ fn onboard_tui_animation_and_multiple_colors_reach_the_terminal() {
     p.see("Enter ↵   Continue with 1 agent");
     record(&mut p, 10);
     p.send("j");
-    p.see("DISCOVERY ONLY");
+    p.see("HERMES PLUGIN");
     record(&mut p, 10);
     p.send("2");
     p.see("OpenAI Dots / setup needed");
@@ -913,6 +921,8 @@ fn onboard_tui_animation_and_multiple_colors_reach_the_terminal() {
     p.send("\r");
     p.see("Claude Code / setup guide");
     record(&mut p, 10);
+    p.send("\r");
+    p.see("Hermes Agent / setup guide");
     p.send("\r");
     p.see("OpenAI Dots / setup needed");
     record(&mut p, 10);
