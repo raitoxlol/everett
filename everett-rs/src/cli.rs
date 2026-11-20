@@ -104,12 +104,7 @@ pub struct Args {
 }
 
 fn ago(ts: f64) -> String {
-    let d = (crate::session::now() - ts) as i64;
-    if d < 3600 {
-        format!("{}m", d / 60)
-    } else {
-        format!("{}h", d / 3600)
-    }
+    crate::events::age(crate::session::now() - ts)
 }
 
 fn width() -> usize {
