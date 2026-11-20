@@ -436,14 +436,20 @@ enum Cmd {
     },
     /// check stores, hooks, cards, and router
     Doctor,
-    /// friendly first-time setup (--yes for scripts)
+    /// friendly first-time setup; handoff choices require terminal confirmation
     Onboard {
+        /// apply validated choices from a website setup guide
+        #[arg(long, value_name = "TOKEN", allow_hyphen_values = true)]
+        handoff: Option<String>,
+        /// inspect a handoff without writing files (requires --handoff)
+        #[arg(long)]
+        handoff_preview: bool,
         /// non-interactive: apply the defaults without prompting
         #[arg(long)]
         yes: bool,
         /// backfill span in days, 1-30 (default 3)
-        #[arg(long, default_value_t = 3)]
-        span_days: i64,
+        #[arg(long)]
+        span_days: Option<i64>,
         /// skip generating backfill cards
         #[arg(long)]
         no_backfill: bool,
@@ -1162,6 +1168,8 @@ fn main() {
         }
         Cmd::Doctor => cli::cmd_doctor(&a),
         Cmd::Onboard {
+            handoff,
+            handoff_preview,
             yes,
             span_days,
             no_backfill,
@@ -1169,8 +1177,11 @@ fn main() {
             jev_key_env,
             schedule_merge,
         } => {
+            a.onboard_handoff = handoff;
+            a.onboard_handoff_preview = handoff_preview;
             a.onboard_yes = yes;
-            a.span_days = span_days;
+            a.span_days = span_days.unwrap_or(3);
+            a.onboard_span_days_explicit = span_days.is_some();
             a.no_backfill = no_backfill;
             a.no_mcp = no_mcp;
             a.jev_key_env = jev_key_env;
