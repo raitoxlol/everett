@@ -243,6 +243,7 @@ Done. MAX_RETRIES is now 5 and the backoff test covers the cap.
 | `everett send --to <id-prefix\|name> "<text>"` | Skips routing and delivers to one session. The target is an exact id, a unique id prefix, an exact title (case-insensitive), the card's name (`Atlas: …` → `atlas`), or the project folder name. If more than one session matches, Everett lists them and sends nothing. |
 | `everett send --spawn [--dir D] [--harness H] "<text>"` | When routing says `NEW` with confidence ≥ 0.6, starts a new headless session and prints its reply and new session id. The directory defaults to the folder of the best-matching session, else the current one. |
 | `everett cards` | Card coverage per harness: agent-written, automatic, missing. |
+| `everett skills [QUERY] [--get NAME] [--source S] [--json]` | Lists the SKILL.md playbooks installed for every harness on this machine (the skill hub). `--get` prints one skill's instructions; `--source` disambiguates names that exist in several harnesses. |
 | `everett onboard [--yes] [--span-days N] [--no-backfill] [--no-mcp]` | Human setup TUI (welcome, account approval, agents, guides, review/apply and instruction prompt; optional settings under Advanced); `--yes` runs it non-interactively for scripts. |
 | `everett install-hooks [--claude] [--codex] [--omp] [--grok] [--apply]` | Prints the hook registrations. `--apply` backs up the file, then merges idempotently. |
 | `everett mcp` | Runs the stdio MCP server (harnesses start it; see below). |
@@ -542,6 +543,7 @@ Everett is mostly used by agents. `everett mcp` is a stdio MCP server (JSON-RPC 
 | `everett_learn` | `fact`, `project?`, `scope?`, `ttl_seconds?` | Stores a secret-filtered fact. Durable facts queue for shared core; temporary facts stay in local search until expiry. |
 | `everett_core` | `action?`, `project?`, `query?`, `limit?`, `fact?`, `replacement?`, `scope?` | Reads the latest core by default. Local `search` ranks original learnings beyond the core cap. `forget` and `correct` update exact facts in active, pending, and searchable memory. |
 | `everett_card` | `what`, `state`, `next` | Writes the calling session's card. |
+| `everett_skill` | `action?`, `query?`, `name?`, `source?` | The skill hub. `list` (default) discovers skills across every harness's skill directories; `get` returns a skill's instructions, sibling files, and path. Use it when the user invokes a skill by name (`/hill-climb`, `/full-send`) — harnesses without native slash commands still get the playbook. Every skill is also exposed as an MCP prompt (`prompts/list`, `prompts/get`) for clients that support them. |
 | `everett_whoami` | none | The caller's session id, harness, hop count, and how they were detected. |
 | `everett_inbox` | `peek?`, `message_id?`, `reply_to?` | Read and mark matching messages in your local inbox. Use `reply_to` to read only pending replies to an original request ID. |
 | `everett_sent` | `to` (optional) | Local stdio MCP only. Recover recent request IDs for the current sender, newest first. Filter by exact recipient ID with `to`. |
@@ -562,6 +564,8 @@ is labeled untrusted. Existing Jev routing, SSH, OMP, and Pi integration is unch
 Listing, routing and sending default to a 72-hour window. Pass the same larger `hours` value
 to these MCP tools when continuing an older session. Resume/spawn children have closed stdin;
 the MCP connection remains available for the client's protocol messages.
+
+**Skill hub.** `everett_skill` and the MCP prompts surface federate every `SKILL.md` on the machine into one namespace, so a client that cannot load another harness's skills natively (T3 Code, hosted agents) can still pull them: list with `everett_skill`, or invoke the matching prompt. Scanned roots: `~/.claude/skills`, `~/.codex/skills`, `~/.agents/skills`, `~/.config/devin/skills`, `~/.devin/skills`, `~/.claude/plugins`, the Devin CLI `plugins_cache`, `~/.hermes/hermes-agent/optional-skills`, extra roots from `EVERETT_SKILL_DIRS` or `[skills] dirs = "~/a:~/b"` in `~/.everett/config.toml`, and `.claude|.codex|.agents|.devin/skills` + `skills/` in the server cwd's ancestor directories (project skills). Skills are labeled by `source`; a name found in several harnesses returns `candidates` — re-call `get` with `source` to pick one. Prompt names are sanitized to `[a-z0-9_-]` and deduped best-source-first; `prompts/get` accepts an optional `input` argument appended to the skill body.
 
 Register it:
 

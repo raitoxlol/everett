@@ -255,6 +255,62 @@ pub fn cmd_cards(args: &Args) -> i32 {
     0
 }
 
+/// `everett skills`: the CLI face of the MCP skill hub.
+pub fn cmd_skills(query: Option<&str>, get: Option<&str>, source: Option<&str>, json: bool) -> i32 {
+    if let Some(name) = get {
+        let matches = crate::skills::find(name, source);
+        match matches.len() {
+            0 => {
+                eprintln!("everett: no skill named \"{name}\"");
+                return 1;
+            }
+            1 => {
+                let body = crate::skills::body(&matches[0]);
+                print!("{body}");
+                if !body.ends_with('\n') {
+                    println!();
+                }
+                return 0;
+            }
+            _ => {
+                eprintln!("everett: \"{name}\" exists in several sources:");
+                for s in &matches {
+                    eprintln!("  {}  ({})", s.source, s.path.display());
+                }
+                eprintln!("pass --source to pick one");
+                return 2;
+            }
+        }
+    }
+    let skills = crate::skills::search(query);
+    if json {
+        let rows: Vec<Value> = skills.iter().map(|s| Value::Object(crate::skills::to_dict(s))).collect();
+        println!("{}", serde_json::to_string_pretty(&rows).unwrap_or_default());
+        return 0;
+    }
+    if skills.is_empty() {
+        println!("no skills");
+        return 0;
+    }
+    let name_w = skills.iter().map(|s| s.name.chars().count()).max().unwrap_or(0).min(28);
+    let src_w = skills.iter().map(|s| s.source.chars().count()).max().unwrap_or(0);
+    for s in &skills {
+        let mut name = s.name.clone();
+        if name.chars().count() > name_w {
+            name = format!("{}…", name.chars().take(name_w.saturating_sub(1)).collect::<String>());
+        }
+        println!(
+            "{:<nw$}  {:<sw$}  {}",
+            name,
+            s.source,
+            s.description.lines().next().unwrap_or(""),
+            nw = name_w,
+            sw = src_w
+        );
+    }
+    0
+}
+
 fn session_label(session: &Session) -> String {
     let work = if !session.card.is_empty() {
         session.card.clone()
