@@ -139,8 +139,10 @@ newest first. Use `everett status MESSAGE_ID` / `everett_status` before retrying
 If T3 dispatch fails after Everett writes the inbox request, JSON CLI output and MCP
 tool errors include the retained `message_id` for recovery.
 For a still-queued T3 request, `everett retry MESSAGE_ID` / `everett_retry` reuses that
-request rather than creating another inbox item. Confirmed dispatch receipts are reused;
-an unconfirmed dispatch requires checking the original thread before further dispatch.
+request rather than creating another inbox item. Everett reuses confirmed dispatch receipts.
+If dispatch is unconfirmed, follow the error's recovery instructions. Some failures direct you
+to check the original thread first. For retryable failures, retry the same request if it is
+still queued.
 CLI ping output distinguishes `PINGED` from `PENDING` and prints the follow-up status command.
 `send --mode inbox --wait S` can return a retained correlated reply even if another
 inbox reader already consumed it.
