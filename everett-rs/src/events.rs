@@ -255,7 +255,12 @@ pub fn resolve_target(target: &str) -> String {
     if let Some(rest) = target.strip_prefix("project:") {
         return format!("project:{}", slug(rest));
     }
-    match crate::registry::find(target, &crate::registry::scan(72.0 * 7.0, true, None, "")) {
+    let sessions = crate::registry::scan(72.0 * 7.0, true, None, "");
+    // Subscriptions match the event's session ID across harnesses.
+    if sessions.iter().any(|session| session.id == target) {
+        return target.to_string();
+    }
+    match crate::registry::find(target, &sessions) {
         Ok(s) => s.id,
         Err(_) => format!("project:{}", slug(target)),
     }
