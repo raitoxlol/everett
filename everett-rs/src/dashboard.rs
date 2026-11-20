@@ -314,7 +314,7 @@ pub fn render_with_authors(sessions: &[Session], authors: &[crate::messaging::Au
       <div class="attention"><strong>{attention}</strong><span>need attention</span></div>
       <div><strong>{cards}</strong><span>with Everett cards</span></div>
     </section>
-    <section class="workspace" id="authors" aria-label="Authenticated authors"><div class="workspace-head"><div><h2>Exposed author cards</h2><p>Authenticated account peers · no manual pairing · <code>everett relay authors</code></p></div></div><p>{directory_note}</p><div class="author-cards">{authored}</div></section>
+    <section class="workspace" id="authors" aria-label="Authenticated authors"><div class="workspace-head"><div><h2>Exposed author cards</h2><p>Authenticated account peers · no manual pairing · <code>everett relay authors</code></p></div></div><p class="directory-note">{directory_note}</p><div class="author-cards">{authored}</div></section>
     <section class="workspace" id="sessions">
       <div class="workspace-head">
         <div><h2>Session manifest</h2><p id="visible-count" aria-live="polite">{} shown</p></div>
