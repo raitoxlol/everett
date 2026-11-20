@@ -108,7 +108,13 @@ pub fn find(target: &str, sessions: &[Session]) -> Result<Session> {
     if target.is_empty() {
         return Err(EverettError::new(2, "--to needs a session id prefix or name."));
     }
-    if let Some(s) = sessions.iter().find(|s| s.id == target) {
+    let mut exact = sessions.iter().filter(|s| s.id == target);
+    if let Some(s) = exact.next() {
+        if exact.next().is_some() {
+            return Err(EverettError::new(2, format!(
+                "Session ID {target:?} matches multiple sessions and cannot identify a unique recipient."
+            )));
+        }
         return Ok(s.clone());
     }
     let aliases: Vec<_> = sessions.iter().filter(|s| s.t3_thread_id.as_deref() == Some(target)).collect();
