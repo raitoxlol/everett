@@ -16,12 +16,12 @@
  {"root": ".codex/skills", "name": "modernize", "description": "Bring an old pull request up to date. Use when asked to rebase a PR."},
  {"root": ".codex/skills", "name": "review", "description": "Review notes that only apply inside Codex."},
  {"root": ".claude/skills", "name": "hill-climb", "description": "Reach any goal a command can score in small steps, keeping wins and undoing losses."},
- {"root": ".claude/skills", "name": "xlsx", "description": "Create, read, or edit spreadsheet files such as .xlsx and .csv: add columns, fix formulas, build charts."},
+ {"root": ".claude/skills", "name": "xlsx", "description": "Use this skill any time a spreadsheet file is the primary input or output. This means any task where the user wants to open, read, edit, or fix an existing .xlsx or .csv file, like adding columns, computing formulas, or charting; create a new spreadsheet from other data; or convert between formats. Trigger when the user references a spreadsheet by name, even casually, and wants something done to it. Do not use it when the result is a document, a script, or a database."},
  {"root": ".claude/skills", "name": "pdf", "description": "Extract text and tables from PDF files, fill forms, and merge or split documents."},
  {"root": ".claude/skills", "name": "improve", "description": "Survey a codebase as an advisor and produce prioritized improvement plans for other agents to carry out."},
  {"root": ".claude/skills", "name": "council", "description": "Convene several models to judge a decision or design independently."},
  {"root": ".agents/skills", "name": "diagnose-crash", "description": "Diagnose why a program crashed from a core dump. Covers segfault, SIGSEGV, abort, and backtraces."},
- {"root": ".agents/skills", "name": "gui-automation", "description": "Drive a desktop or web interface: click buttons, fill fields, take screenshots."},
+ {"root": ".agents/skills", "name": "gui-automation", "description": "Use when you need to visually interact with an interface: test buttons, fill forms, verify layouts on web pages, automate user flows, take screenshots, or perform end-to-end checks on any application. Works on containers, local machines, and sandboxes."},
  {"root": ".agents/skills", "name": "taste-skill", "description": "Build company websites and landing pages that do not look templated or generic."},
  {"root": "proj/.agents/skills", "name": "verify-app", "description": "Verify this project's release build end to end using isolated stores."},
  {"root": ".claude/plugins/market/chat/skills", "name": "access", "description": "Manage channel access: approve pairings, edit allowlists, set policy."},
@@ -31,5 +31,6 @@
  {"root": ".local/share/devin/cli/plugins_cache/cache/a/b/skills", "name": "deslop", "description": "Remove generated code slop and clean up code style."},
  {"root": ".local/share/devin/cli/plugins_cache/cache/a/c/skills", "name": "app-designer", "description": "Design phone apps with deliberate type, colour, and spacing."},
  {"root": ".hermes/hermes-agent/optional-skills/office", "name": "spreadsheet-pro", "description": "Spreadsheet xlsx csv editing: columns, formulas, charts, budget spreadsheet work."},
- {"root": ".hermes/hermes-agent/optional-skills/chat", "name": "group-chat", "description": "Mention users and query members in group chats."}
+ {"root": ".hermes/hermes-agent/optional-skills/chat", "name": "group-chat", "description": "Mention users and query members in group chats."},
+ {"root": ".agents/skills", "name": "desktop-config", "description": "Required for end-user customization of the Linux desktop, window manager, or system config. Use when editing files under the config folder. Triggers: window rules, animations, keybindings, monitors, gaps, borders, blur, opacity, bar, widgets, terminal config, themes, fonts, background, night light, idle, lock screen, screen recording, workspace settings, display config, and appearance changes."}
 ]

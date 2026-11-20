@@ -169,6 +169,8 @@ def check(case, home):
     if kind == "shortlist":
         for name in case.get("used", []):
             run(home, ["skills", "--get", name])
+        for task in case.get("matched", []):
+            run(home, ["skills", "--match", task, "--json"])
         raw, names = shortlist(home, case.get("cwd", "proj"))
         missing = [n for n in case["include"] if n not in names]
         banned = [n for n in case["exclude"] if n in names]

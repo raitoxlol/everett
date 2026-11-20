@@ -33,5 +33,10 @@
  {"kind": "shortlist", "include": ["verify-app", "prove"], "exclude": ["prove-it", "access", "spreadsheet-pro", "deploy-prod"]},
  {"kind": "shortlist", "used": ["xlsx", "xlsx", "xlsx"], "include": ["xlsx", "verify-app"], "exclude": ["prove-it"]},
  {"kind": "shortlist", "used": ["xlsx", "xlsx", "xlsx"], "cwd": "other", "include": [], "exclude": ["xlsx", "verify-app"]},
- {"kind": "instructions", "include": ["verify-app"], "exclude": ["prove-it", "access"]}
+ {"kind": "instructions", "include": ["verify-app"], "exclude": ["prove-it", "access"]},
+ {"kind": "match", "task": "i want a system for the hub that does not exist anywhere else, it should save context and be fast", "expect": null},
+ {"kind": "match", "task": "why is my window manager keybinding not working", "expect": "desktop-config"},
+ {"kind": "match", "task": "add a button to the settings page", "expect": null},
+ {"kind": "match", "task": "can you check the logs and tell me what happened", "expect": null},
+ {"kind": "shortlist", "matched": ["extract the tables from this pdf", "extract the tables from this pdf", "extract the tables from this pdf"], "include": ["verify-app"], "exclude": ["pdf"]}
 ]
