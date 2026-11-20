@@ -196,6 +196,8 @@ A Rust local-data service would still be required; a static website cannot read 
 device's session stores.
 
 This is example output (paths and ids are shortened):
+CLI ages in `everett ls` and `everett inbox` use minutes below one hour, hours
+below 48 hours, and days from 48 hours onward (for example, `2d`).
 
 ```text
 $ everett ls
@@ -257,7 +259,7 @@ Done. MAX_RETRIES is now 5 and the backoff test covers the cap.
 | `everett event done\|blocked\|needs-input\|info "<msg>" [--project P]` | Records what this session is doing (see [Events](#events)). |
 | `everett events [--since 24h] [--session S] [--json] [--check]` | Recent events across sessions. `--check` also runs the blocked-too-long escalation. |
 | `everett subscribe <session\|project> [--as S] [--remove]` | Delivers another session's (or a project's) events to your inbox. |
-| `everett send --to <id-prefix\|name> "<text>"` | Skips routing and delivers to one session. The target is an exact id, a unique id prefix, an exact title (case-insensitive), the card's name (`Atlas: …` → `atlas`), or the project folder name. If more than one session matches, Everett lists them and sends nothing. |
+| `everett send --to <id-prefix\|name> "<text>"` | Skips routing and delivers to one session. The target is an exact id, a unique id prefix, an exact title (case-insensitive), the card's name (`Atlas: …` → `atlas`), or the project name (repository name for T3/Claude worktrees, otherwise the working folder's name). A lone card named only after its project does not hide other sessions in that project. If more than one session matches at a lookup step, Everett lists them and sends nothing. |
 | `everett send --spawn [--dir D] [--harness H] "<text>"` | When routing says `NEW` with confidence ≥ 0.6, starts a new headless session and prints its reply and new session id. The directory defaults to the folder of the best-matching session, else the current one. |
 | `everett cards` | Card coverage per harness: agent-written, automatic, missing. |
 | `everett skills [QUERY] [--match TASK] [--get NAME] [--source S] [--shortlist] [--json]` | The skill hub over every harness's `SKILL.md` playbooks. `--match` prints the one skill that fits a task (exit 1 when none does); `--get` prints a named skill from the best source that has it; `--shortlist` shows what sessions in this project are told up front; a bare query lists. |
@@ -475,8 +477,14 @@ Everett knows what each session is doing, not just what it was about.
 
 Everett has two routers with the same output:
 
-- **local** (default without a key): BM25 lexical scoring of the request against each session's card, title, first and last request, and project folder name, weighted by recency. It needs no network. A clear lead gives `SESSION`, a tie gives `ASK`, and no overlap gives `NEW`.
+- **local** (default without a key): BM25 lexical scoring of the request against each session's card, title, first and last request, and project name, weighted by recency. It needs no network. A clear lead gives `SESSION`, a tie gives `ASK`, and no overlap gives `NEW`.
 - **jev** (default when a key is set): the [Jev](https://typesafe.ai) System One model makes a typed choice among the sessions. A confidence below 0.6 gives `ASK`.
+
+Session project names use the repository behind T3 and Claude worktrees, not the
+worktree folder's name; other working folders use their own name. Home directories
+and Codex app chat folders are not projects. The local router boosts a project when
+the request contains its name's words consecutively and in order, ignoring case
+and punctuation: `web-mesh` matches `web mesh`, not `mesh web`.
 
 The Jev key is read from, in order: `TYPESAFE_API_KEY`, `typesafe_api_key` in `~/.everett/config.toml`, then `TYPESAFE_API_KEY` in `~/.hermes/.env`. Force a router with `--router local|jev`, or set `router = "local"` in the config.
 
@@ -486,6 +494,9 @@ A card is a note of 50 words or fewer, kept at `~/.everett/cards/<session-id>.md
 
 - **Agent cards**: the SessionStart hook tells each new session where its card lives and asks the agent to write it in its first working reply.
 - **Automatic cards**: when the agent has not written one, the Stop hook writes a deterministic fallback from the transcript (no LLM, no network). Automatic cards start with `<!-- everett:auto -->`, and hooks never overwrite an agent-written card.
+
+Automatic card project labels use the repository name for T3 and Claude worktrees,
+rather than the worktree folder's name, and the working folder's name otherwise.
 
 Hooks stay silent for `everett send` resumes (`EVERETT_SEND=1`) and for scripted Claude runs.
 
