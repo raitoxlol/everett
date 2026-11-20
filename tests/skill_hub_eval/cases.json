@@ -31,6 +31,7 @@
  {"kind": "get", "name": "prove-it", "expect_body": "BODY prove-it"},
  {"kind": "list_once", "name": "full-send"},
  {"kind": "shortlist", "include": ["verify-app", "prove"], "exclude": ["prove-it", "access", "spreadsheet-pro", "deploy-prod"]},
+ {"kind": "shortlist", "hook_prompts": ["/file-pr"], "include": ["file-pr"], "exclude": []},
  {"kind": "shortlist", "used": ["xlsx", "xlsx", "xlsx"], "include": ["xlsx", "verify-app"], "exclude": ["prove-it"]},
  {"kind": "shortlist", "used": ["xlsx", "xlsx", "xlsx"], "cwd": "other", "include": [], "exclude": ["xlsx", "verify-app"]},
  {"kind": "instructions", "include": ["verify-app"], "exclude": ["prove-it", "access"]},
