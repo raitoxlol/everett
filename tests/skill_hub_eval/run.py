@@ -66,7 +66,37 @@ def hook(home, prompt, event="UserPromptSubmit", session="eval-session"):
     return json.loads(out)["hookSpecificOutput"]["additionalContext"]
 
 
+def account(home):
+    """Local MCP tool calls need a signed-in profile; stand in for the issuer."""
+    import http.server
+    import threading
+
+    class Whoami(http.server.BaseHTTPRequestHandler):
+        def do_GET(self):
+            body = b'{"result":{"owner":"fixture-owner","deviceId":"fixture-agent","role":"member"}}'
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        do_POST = do_GET
+
+        def log_message(self, *args):
+            pass
+
+    server = http.server.HTTPServer(("127.0.0.1", 0), Whoami)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    path = home / ".everett/cloudflare-auth.json"
+    path.write_text(json.dumps({
+        "issuer": f"http://127.0.0.1:{server.server_port}", "owner": "fixture-owner", "agent_id": "fixture-agent",
+        "device_name": "Fixture", "token": "evt_" + "a" * 64, "expires_at": 2**64 - 1}))
+    path.chmod(0o600)
+
+
 def mcp(home, requests, cwd="proj"):
+    if requests:
+        account(home)
     lines = [{"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {
         "protocolVersion": "2025-06-18", "capabilities": {}, "clientInfo": {"name": "eval", "version": "1"}}},
         {"jsonrpc": "2.0", "method": "notifications/initialized"}]
