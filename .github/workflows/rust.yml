@@ -101,6 +101,8 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write
+      id-token: write
+      attestations: write
     steps:
       - uses: actions/checkout@v7
       - uses: actions/download-artifact@v7
@@ -109,10 +111,49 @@ jobs:
           merge-multiple: true
       - name: Render the Homebrew formula
         run: scripts/render_formula.sh "${GITHUB_REF_NAME#v}" dist > dist/everett.rb
+      - name: Sign release asset provenance
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-path: dist/*
       - name: Publish binaries to the GitHub release
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1 ||
-            gh release create "$GITHUB_REF_NAME" --verify-tag --title "Everett ${GITHUB_REF_NAME#v}" --notes-file RELEASE_NOTES.md
-          gh release upload "$GITHUB_REF_NAME" dist/* --clobber
+          gh release create "$GITHUB_REF_NAME" dist/* --verify-tag --title "Everett ${GITHUB_REF_NAME#v}" --notes-file RELEASE_NOTES.md
+
+  verify-public:
+    needs: release
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v7
+      - name: Install from the public tag and exercise the downloaded binary
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          case "$RUNNER_OS" in
+            Linux) target=x86_64-unknown-linux-musl ;;
+            macOS) target=aarch64-apple-darwin ;;
+          esac
+          archive="everett-$target.tar.gz"
+          base="https://github.com/$GITHUB_REPOSITORY/releases/download/$GITHUB_REF_NAME"
+          cd "$RUNNER_TEMP"
+          curl -fsSLO --retry 3 "$base/$archive"
+          gh attestation verify "$archive" --repo "$GITHUB_REPOSITORY" --source-digest "$GITHUB_SHA"
+          curl -fsSLO --retry 3 "$base/$archive.sha256"
+          shasum -a 256 -c "$archive.sha256"
+          curl -fsSL --retry 3 "https://raw.githubusercontent.com/$GITHUB_REPOSITORY/$GITHUB_REF_NAME/install.sh" -o install.sh
+          EVERETT_VERSION="$GITHUB_REF_NAME" EVERETT_INSTALL_DIR="$RUNNER_TEMP/bin" sh install.sh
+          tar -xzf "$archive"
+          export EVERETT_VERIFY_BINARY="$RUNNER_TEMP/bin/everett"
+          cmp "$EVERETT_VERIFY_BINARY" "everett-$target/everett"
+          "$EVERETT_VERIFY_BINARY" --version | tee version.txt
+          grep -Fx "everett ${GITHUB_REF_NAME#v}" version.txt
+          grep -Fx "revision: $GITHUB_SHA" version.txt
+          grep -Fx "dirty: false" version.txt
+          cd "$GITHUB_WORKSPACE/everett-rs"
+          cargo test --locked --test release_journey
