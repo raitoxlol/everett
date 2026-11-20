@@ -328,7 +328,7 @@ pub fn find(name: &str, source: Option<&str>) -> Vec<Skill> {
     let mut matches: Vec<Skill> = scan(&cwd)
         .into_iter()
         .filter(|s| s.name == name || s.name.eq_ignore_ascii_case(name))
-        .filter_map(|mut s| match source {
+        .filter_map(|s| match source {
             Some(src) if s.source != src => {
                 // An identical copy from the asked source: answer with that copy's own folder.
                 let (_, path) = s.copies.iter().find(|(copy, _)| copy == src)?;
