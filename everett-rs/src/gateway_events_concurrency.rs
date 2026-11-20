@@ -1,10 +1,12 @@
 use super::*;
 use std::io::Write;
 use std::sync::{
-    atomic::{AtomicBool, Ordering},
+    atomic::{AtomicBool, AtomicUsize, Ordering},
     mpsc,
 };
 struct Gate {
+    status: u16,
+    deliveries: AtomicUsize,
     block: AtomicBool,
     started: mpsc::Sender<()>,
     release: Mutex<mpsc::Receiver<()>>,
@@ -21,11 +23,14 @@ impl Webhook for Gate {
             self.release.lock().unwrap().recv().unwrap();
         }
         let value: Value = serde_json::from_slice(body).unwrap();
+        if value["type"] != "verification" {
+            self.deliveries.fetch_add(1, Ordering::SeqCst);
+        }
         Ok((
             if value["type"] == "verification" {
                 200
             } else {
-                410
+                self.status
             },
             serde_json::to_vec(&json!({"challenge":value["challenge"]})).unwrap(),
         ))
@@ -48,6 +53,8 @@ fn slow_verification_and_delivery_do_not_lock_unrelated_operations() {
         let (started, ready) = mpsc::channel();
         let (release, wait) = mpsc::channel();
         let gate = Arc::new(Gate {
+            status: 410,
+            deliveries: AtomicUsize::new(0),
             block: AtomicBool::new(false),
             started,
             release: Mutex::new(wait),
@@ -116,6 +123,8 @@ fn verification_rechecks_refresh_unsubscribe_capacity_and_expiry() {
         let (started, ready) = mpsc::channel();
         let (release, wait) = mpsc::channel();
         let gate = Arc::new(Gate {
+            status: 410,
+            deliveries: AtomicUsize::new(0),
             block: AtomicBool::new(true),
             started,
             release: Mutex::new(wait),
@@ -172,6 +181,8 @@ fn late_delivery_cannot_mutate_refreshed_subscription() {
     let (started, ready) = mpsc::channel();
     let (release, wait) = mpsc::channel();
     let gate = Arc::new(Gate {
+        status: 410,
+        deliveries: AtomicUsize::new(0),
         block: AtomicBool::new(false),
         started,
         release: Mutex::new(wait),
@@ -223,7 +234,7 @@ fn sqlite_writer_wait_cannot_extend_verified_deadline() {
     let path = home.path().join("events.sqlite");
     let (started, ready) = mpsc::channel();
     let (release, wait) = mpsc::channel();
-    let gate = Arc::new(Gate { block: AtomicBool::new(true), started, release: Mutex::new(wait) });
+    let gate = Arc::new(Gate { status: 410, deliveries: AtomicUsize::new(0), block: AtomicBool::new(true), started, release: Mutex::new(wait) });
     let events = Events::with_db(Connection::open(&path).unwrap(), home.path().into(), gate).unwrap();
     let slow = events.clone();
     let deadline = now() + 400;
@@ -236,4 +247,119 @@ fn sqlite_writer_wait_cannot_extend_verified_deadline() {
     tx.commit().unwrap();
     assert_eq!(thread.join().unwrap().unwrap_err().reason, "token_expired");
     assert_eq!(events.db.lock().unwrap().query_row("SELECT count(*) FROM subscriptions", [], |r| r.get::<_,i64>(0)).unwrap(), 0);
+}
+
+#[test]
+fn acknowledged_event_is_not_replayed_after_subscription_refresh() {
+    let home = tempfile::tempdir().unwrap();
+    let (started, ready) = mpsc::channel();
+    let (release, wait) = mpsc::channel();
+    let gate = Arc::new(Gate {
+        status: 204,
+        deliveries: AtomicUsize::new(0),
+        block: AtomicBool::new(false),
+        started,
+        release: Mutex::new(wait),
+    });
+    let events = Events::with_db(Connection::open_in_memory().unwrap(), home.path().into(), gate.clone()).unwrap();
+    events.subscribe(&p(), &args()).unwrap();
+    let inbox = home.path().join(".everett/inbox");
+    fs::create_dir_all(&inbox).unwrap();
+    writeln!(File::create(inbox.join("dot-a.jsonl")).unwrap(),
+        "{}", json!({"id":"fresh","to":"dot-a","ts":now() as f64 / 1000.0})).unwrap();
+    let lease = events.leases().unwrap().remove(0);
+    gate.block.store(true, Ordering::SeqCst);
+    let slow = events.clone();
+    let callback = std::thread::spawn(move || slow.deliver(&lease));
+    ready.recv_timeout(Duration::from_secs(2)).unwrap();
+    let mut refreshed = p();
+    refreshed.token = Some("refreshed".into());
+    let result = events.subscribe(&refreshed, &args());
+    release.send(()).unwrap();
+    callback.join().unwrap().unwrap();
+    result.unwrap();
+
+    events.db.lock().unwrap().execute("UPDATE deliveries SET next=0", []).unwrap();
+    events.deliver(&events.leases().unwrap()[0]).unwrap();
+    assert_eq!(gate.deliveries.load(Ordering::SeqCst), 1);
+    let done: bool = events.db.lock().unwrap().query_row("SELECT done FROM deliveries", [], |row| row.get(0)).unwrap();
+    assert!(done);
+}
+
+#[test]
+fn webhook_waits_for_the_delivery_claim_to_commit() {
+    let home = tempfile::tempdir().unwrap();
+    let (started, _) = mpsc::channel();
+    let (_, wait) = mpsc::channel();
+    let gate = Arc::new(Gate {
+        status: 204,
+        deliveries: AtomicUsize::new(0),
+        block: AtomicBool::new(false),
+        started,
+        release: Mutex::new(wait),
+    });
+    let events = Events::with_db(Connection::open_in_memory().unwrap(), home.path().into(), gate.clone()).unwrap();
+    events.subscribe(&p(), &args()).unwrap();
+    let inbox = home.path().join(".everett/inbox");
+    fs::create_dir_all(&inbox).unwrap();
+    writeln!(File::create(inbox.join("dot-a.jsonl")).unwrap(),
+        "{}", json!({"id":"fresh","to":"dot-a","ts":now() as f64 / 1000.0})).unwrap();
+    events.db.lock().unwrap().execute_batch(
+        "CREATE TABLE claim_parents(id TEXT PRIMARY KEY);
+         CREATE TABLE claim_checks(id TEXT REFERENCES claim_parents(id) DEFERRABLE INITIALLY DEFERRED);
+         CREATE TRIGGER reject_claim AFTER UPDATE OF claim ON deliveries BEGIN
+           INSERT INTO claim_checks VALUES (NEW.claim);
+         END;",
+    ).unwrap();
+
+    let lease = events.leases().unwrap().remove(0);
+    let delivery = events.deliver(&lease);
+    assert_eq!(gate.deliveries.load(Ordering::SeqCst), 0);
+    assert_eq!(delivery.unwrap_err().reason, "event storage unavailable");
+
+    events.db.lock().unwrap().execute_batch("DROP TRIGGER reject_claim").unwrap();
+    events.deliver(&lease).unwrap();
+    assert_eq!(gate.deliveries.load(Ordering::SeqCst), 1);
+}
+
+#[test]
+fn acknowledged_event_is_not_replayed_after_a_busy_receipt_write() {
+    let home = tempfile::tempdir().unwrap();
+    let path = home.path().join("events.sqlite");
+    let (started, ready) = mpsc::channel();
+    let (release, wait) = mpsc::channel();
+    let gate = Arc::new(Gate {
+        status: 204,
+        deliveries: AtomicUsize::new(0),
+        block: AtomicBool::new(false),
+        started,
+        release: Mutex::new(wait),
+    });
+    let events = Events::with_db(Connection::open(&path).unwrap(), home.path().into(), gate.clone()).unwrap();
+    events.db.lock().unwrap().busy_timeout(Duration::ZERO).unwrap();
+    events.subscribe(&p(), &args()).unwrap();
+    let inbox = home.path().join(".everett/inbox");
+    fs::create_dir_all(&inbox).unwrap();
+    writeln!(File::create(inbox.join("dot-a.jsonl")).unwrap(),
+        "{}", json!({"id":"fresh","to":"dot-a","ts":now() as f64 / 1000.0})).unwrap();
+    let lease = events.leases().unwrap().remove(0);
+    gate.block.store(true, Ordering::SeqCst);
+    let slow = events.clone();
+    let callback = std::thread::spawn(move || slow.deliver(&lease));
+    ready.recv_timeout(Duration::from_secs(2)).unwrap();
+    let mut refreshed = p();
+    refreshed.token = Some("refreshed".into());
+    events.subscribe(&refreshed, &args()).unwrap();
+
+    let mut writer = Connection::open(path).unwrap();
+    let tx = writer.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate).unwrap();
+    tx.execute("UPDATE deliveries SET next=0", []).unwrap();
+    release.send(()).unwrap();
+    assert_eq!(callback.join().unwrap().unwrap_err().reason, "event storage unavailable");
+    tx.commit().unwrap();
+
+    events.deliver(&events.leases().unwrap()[0]).unwrap();
+    assert_eq!(gate.deliveries.load(Ordering::SeqCst), 1);
+    let done: bool = events.db.lock().unwrap().query_row("SELECT done FROM deliveries", [], |row| row.get(0)).unwrap();
+    assert!(done);
 }

@@ -26,8 +26,15 @@ const MAX_SUBSCRIPTIONS: i64 = 64;
 pub(super) struct Events {
     db: Arc<Mutex<Connection>>,
     pending: Arc<Mutex<std::collections::HashMap<String, String>>>,
+    acknowledgments: Arc<Mutex<Vec<Acknowledgment>>>,
     home: PathBuf,
     transport: Arc<dyn Webhook>,
+}
+
+struct Acknowledgment {
+    subscription: String,
+    message: String,
+    claim: String,
 }
 
 struct Verification {
@@ -267,24 +274,32 @@ impl Events {
             .map_err(|_| "cannot initialize event database".into())
     }
     fn with_db(
-        db: Connection,
+        mut db: Connection,
         home: PathBuf,
         transport: Arc<dyn Webhook>,
     ) -> Result<Self, Failure> {
         db.busy_timeout(Duration::from_secs(2))
             .map_err(|_| storage())?;
         db.execute_batch("PRAGMA foreign_keys=ON; CREATE TABLE IF NOT EXISTS subscriptions(id TEXT PRIMARY KEY,owner TEXT NOT NULL,agent TEXT NOT NULL,token TEXT,url TEXT NOT NULL,secret TEXT NOT NULL,previous TEXT,rotation_until INTEGER NOT NULL,created INTEGER NOT NULL,expires INTEGER NOT NULL,verified INTEGER NOT NULL,blocked TEXT NOT NULL DEFAULT ''); CREATE TABLE IF NOT EXISTS deliveries(subscription TEXT REFERENCES subscriptions(id) ON DELETE CASCADE,message TEXT,event TEXT NOT NULL,body TEXT NOT NULL,attempts INTEGER NOT NULL DEFAULT 0,next INTEGER NOT NULL DEFAULT 0,done INTEGER NOT NULL DEFAULT 0,PRIMARY KEY(subscription,message));").map_err(|_| storage())?;
-        let migrated: bool = db.query_row("SELECT EXISTS(SELECT 1 FROM pragma_table_info('subscriptions') WHERE name='revision')", [], |r| r.get(0)).map_err(|_| storage())?;
-        if !migrated {
-            db.execute(
-                "ALTER TABLE subscriptions ADD COLUMN revision TEXT NOT NULL DEFAULT ''",
-                [],
-            )
+        let migration = db.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
             .map_err(|_| storage())?;
+        for (table, column, alter) in [
+            ("subscriptions", "revision", "ALTER TABLE subscriptions ADD COLUMN revision TEXT NOT NULL DEFAULT ''"),
+            ("deliveries", "claim", "ALTER TABLE deliveries ADD COLUMN claim TEXT NOT NULL DEFAULT ''"),
+        ] {
+            let exists: bool = migration.query_row(
+                "SELECT EXISTS(SELECT 1 FROM pragma_table_info(?) WHERE name=?)",
+                params![table, column], |row| row.get(0),
+            ).map_err(|_| storage())?;
+            if !exists {
+                migration.execute(alter, []).map_err(|_| storage())?;
+            }
         }
+        migration.commit().map_err(|_| storage())?;
         Ok(Self {
             pending: Arc::new(Mutex::new(std::collections::HashMap::new())),
             db: Arc::new(Mutex::new(db)),
+            acknowledgments: Arc::new(Mutex::new(Vec::new())),
             home,
             transport,
         })
@@ -469,6 +484,7 @@ impl Events {
     }
     pub fn leases(&self) -> Result<Vec<Lease>, Failure> {
         let db = self.db.lock().map_err(|_| storage())?;
+        self.flush_acknowledgments(&db, None)?;
         db.execute("DELETE FROM subscriptions WHERE expires<=?", [now()])
             .map_err(|_| storage())?;
         let mut s = db
@@ -503,8 +519,27 @@ impl Events {
             }
         }
     }
+    fn flush_acknowledgments(
+        &self,
+        db: &Connection,
+        accepted: Option<Acknowledgment>,
+    ) -> Result<(), Failure> {
+        let mut receipts = self.acknowledgments.lock().map_err(|_| storage())?;
+        receipts.extend(accepted);
+        while let Some(receipt) = receipts.last() {
+            // Refresh keeps the row. A replacement or newer claim invalidates this receipt.
+            db.execute(
+                "UPDATE deliveries SET done=1, attempts=attempts+1
+                 WHERE subscription=?1 AND message=?2 AND claim=?3 AND done=0",
+                params![receipt.subscription, receipt.message, receipt.claim],
+            ).map_err(|_| storage())?;
+            receipts.pop();
+        }
+        Ok(())
+    }
     pub fn deliver(&self, lease: &Lease) -> Result<(), Failure> {
         let mut db = self.db.lock().map_err(|_| storage())?;
+        self.flush_acknowledgments(&db, None)?;
         let record:Option<(String,String,Option<String>,i64,i64,String)>=db.query_row("SELECT url,secret,previous,rotation_until,created,revision FROM subscriptions WHERE id=? AND owner=? AND expires>? AND token IS ? AND blocked=''",params![lease.id,lease.principal.owner,now(),lease.principal.token],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?,r.get(5)?))).optional().map_err(|_|storage())?;
         let Some((url, key, previous, rotation, created, revision)) = record else {
             return Ok(());
@@ -584,24 +619,19 @@ impl Events {
         }
         tx.commit().map_err(|_| storage())?;
         let rows = {
-            let mut s=db.prepare("SELECT message,event,body,attempts FROM deliveries WHERE subscription=? AND done=0 AND next<=? LIMIT 1").map_err(|_|storage())?;
+            let mut s=db.prepare("SELECT message,event,body FROM deliveries WHERE subscription=? AND done=0 AND next<=? LIMIT 1").map_err(|_|storage())?;
             let rows = s
                 .query_map(params![lease.id, now()], |r| {
                     Ok((
                         r.get::<_, String>(0)?,
                         r.get::<_, String>(1)?,
                         r.get::<_, String>(2)?,
-                        r.get::<_, i64>(3)?,
                     ))
                 })
                 .map_err(|_| storage())?;
             rows.collect::<Result<Vec<_>, _>>().map_err(|_| storage())?
         };
-        for (mid, event, body, attempts) in rows {
-            let active:bool=db.query_row("SELECT EXISTS(SELECT 1 FROM subscriptions WHERE id=? AND expires>? AND blocked='')",params![lease.id,now()],|r|r.get(0)).map_err(|_|storage())?;
-            if !active {
-                return Ok(());
-            }
+        for (mid, event, body) in rows {
             let signed = headers(
                 &lease.id,
                 &event,
@@ -609,11 +639,25 @@ impl Events {
                 &key,
                 previous.as_deref().filter(|_| rotation > now()),
             )?;
-            db.execute(
-                "UPDATE deliveries SET next=? WHERE subscription=? AND message=?",
-                params![now() + 30_000, lease.id, mid],
-            )
-            .map_err(|_| storage())?;
+            let claim = uuid::Uuid::new_v4().to_string();
+            let at = now();
+            let attempts: i64 = {
+                let mut statement = db.prepare(
+                    "UPDATE deliveries SET next=?1, claim=?2
+                     WHERE subscription=?3 AND message=?4 AND done=0 AND next<=?5
+                     AND EXISTS (SELECT 1 FROM subscriptions WHERE id=?3 AND revision=?6 AND token IS ?7 AND expires>?5 AND blocked='')
+                     RETURNING attempts",
+                ).map_err(|_| storage())?;
+                let mut rows = statement.query(params![at + 30_000, claim, lease.id, mid, at, revision, lease.principal.token])
+                    .map_err(|_| storage())?;
+                let Some(row) = rows.next().map_err(|_| storage())? else { return Ok(()); };
+                let attempts = row.get(0).map_err(|_| storage())?;
+                // SQLite can still fail to commit after returning the updated row.
+                if rows.next().map_err(|_| storage())?.is_some() {
+                    return Err(storage());
+                }
+                attempts
+            };
             drop(db);
             let status = self
                 .transport
@@ -621,20 +665,32 @@ impl Events {
                 .map(|r| r.0)
                 .unwrap_or(0);
             db = self.db.lock().map_err(|_| storage())?;
-            let unchanged: bool = db.query_row("SELECT EXISTS(SELECT 1 FROM subscriptions WHERE id=? AND revision=? AND token IS ? AND expires>? AND blocked='')",params![lease.id,revision,lease.principal.token,now()],|r|r.get(0)).map_err(|_| storage())?;
-            if !unchanged {
-                return Ok(());
+            if (200..300).contains(&status) {
+                self.flush_acknowledgments(&db, Some(Acknowledgment {
+                    subscription: lease.id.clone(),
+                    message: mid,
+                    claim,
+                }))?;
+                continue;
             }
+            let at = now();
             if status == 410 {
-                db.execute("DELETE FROM subscriptions WHERE id=?", [&lease.id])
-                    .map_err(|_| storage())?;
+                db.execute(
+                    "DELETE FROM subscriptions WHERE id=?1 AND revision=?2 AND token IS ?3 AND expires>?4 AND blocked=''
+                     AND EXISTS (SELECT 1 FROM deliveries WHERE subscription=?1 AND message=?5 AND claim=?6 AND done=0)",
+                    params![lease.id, revision, lease.principal.token, at, mid, claim],
+                ).map_err(|_| storage())?;
                 break;
             }
-            let done = (200..300).contains(&status)
-                || status == 413
+            let done = status == 413
                 || (400..500).contains(&status) && status != 408 && status != 429
                 || attempts >= 7;
-            db.execute("UPDATE deliveries SET done=?,attempts=attempts+1,next=? WHERE subscription=? AND message=?",params![done,now()+1000*(1i64<<attempts.min(8)),lease.id,mid]).map_err(|_|storage())?;
+            db.execute(
+                "UPDATE deliveries SET done=?1, attempts=attempts+1, next=?2
+                 WHERE subscription=?3 AND message=?4 AND claim=?5 AND done=0
+                 AND EXISTS (SELECT 1 FROM subscriptions WHERE id=?3 AND revision=?6 AND token IS ?7 AND expires>?8 AND blocked='')",
+                params![done, at + 1000 * (1i64 << attempts.min(8)), lease.id, mid, claim, revision, lease.principal.token, at],
+            ).map_err(|_| storage())?;
         }
         Ok(())
     }
