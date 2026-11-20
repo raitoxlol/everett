@@ -6,7 +6,6 @@ Each case runs the built everett binary in a fresh fixture home.
 """
 import json
 import os
-import shutil
 import subprocess
 import sys
 import tempfile
@@ -25,10 +24,11 @@ def body_of(skill):
     return skill.get("body") or f"BODY {skill['name']} {skill['root']}"
 
 
-def make_home():
+def make_home(root):
     """A fixture home reached through a symlink, as macOS temp folders are."""
-    real = Path(tempfile.mkdtemp(prefix="skill-eval-"))
-    home = real.with_name(real.name + "-home")
+    real = root / "real"
+    real.mkdir()
+    home = root / "home"
     home.symlink_to(real)
     for skill in SKILLS:
         folder = home / skill["root"] / skill["name"]
@@ -121,7 +121,7 @@ def check_match(case, payload, raw):
     if skill:
         if skill_body(got) not in skill.get("content", ""):
             return "no body"
-        if len(raw) > len(skill["content"]) + len(skill["path"]) + len(skill["dir"]) + OVERHEAD_BYTES:
+        if len(raw.encode()) > sum(len(skill[key].encode()) for key in ("content", "path", "dir")) + OVERHEAD_BYTES:
             return f"{len(raw)} bytes"
         if "skills" in payload:
             return "returned a list"
@@ -137,7 +137,7 @@ def check(case, home):
         reply = mcp(home, [{"method": "tools/call", "params": {
             "name": "everett_skill", "arguments": {"action": "match", "task": case["task"]}}}])[2]
         result = reply["result"]
-        return check_match(case, result["structuredContent"], json.dumps(result["structuredContent"]))
+        return check_match(case, result["structuredContent"], json.dumps(result["structuredContent"], ensure_ascii=False))
     if kind == "hook":
         for earlier in case.get("after", []):
             hook(home, earlier, harness=case.get("harness", "claude"))
@@ -170,6 +170,8 @@ def check(case, home):
         count = sum(row["name"] == case["name"] for row in rows)
         return None if count == 1 else f"listed {count} times"
     if kind == "shortlist":
+        for prompt in case.get("hook_prompts", []):
+            hook(home, prompt)
         for name in case.get("used", []):
             run(home, ["skills", "--get", name])
         for task in case.get("matched", []):
@@ -200,14 +202,12 @@ def main():
     cases = json.loads(Path(sys.argv[1]).read_text())
     failed = 0
     for index, case in enumerate(cases):
-        home = make_home()
-        try:
-            problem = check(case, home)
-        except Exception as error:  # a crash or malformed output is a failed case
-            problem = f"{type(error).__name__}: {str(error)[:120]}"
-        finally:
-            shutil.rmtree(home.resolve(), ignore_errors=True)
-            home.unlink(missing_ok=True)
+        with tempfile.TemporaryDirectory(prefix="skill-eval-") as root:
+            home = make_home(Path(root))
+            try:
+                problem = check(case, home)
+            except Exception as error:  # a crash or malformed output is a failed case
+                problem = f"{type(error).__name__}: {str(error)[:120]}"
         if problem:
             failed += 1
             label = case.get("task") or case.get("prompt") or case.get("name") or ""
