@@ -42,6 +42,8 @@ class PackageTests(unittest.TestCase):
                 "on_session_start",
                 "on_session_end",
                 "on_session_finalize",
+                "on_session_reset",
+                "on_session_delete",
                 "pre_llm_call",
                 "transform_tool_result",
                 "pre_verify",

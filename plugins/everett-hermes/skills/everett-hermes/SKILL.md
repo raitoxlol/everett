@@ -29,4 +29,4 @@ When a turn notice or `/everett inbox` reports unread Everett message IDs:
 
 ## Slash command
 
-Users can run `/everett status`, `/everett ls [hours]`, `/everett inbox`, `/everett core`, or `/everett help` directly in CLI, TUI, Desktop, or messaging chats.
+Users can run `/everett status`, `/everett ls [hours]`, `/everett inbox`, `/everett card`, `/everett sent`, `/everett core`, or `/everett help` directly in CLI, TUI, Desktop, or messaging chats.
