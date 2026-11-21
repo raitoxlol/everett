@@ -1,7 +1,7 @@
 use super::*;
 use std::io::Write;
 use std::sync::{
-    atomic::{AtomicBool, AtomicUsize, Ordering},
+    atomic::{AtomicBool, AtomicI64, AtomicUsize, Ordering},
     mpsc,
 };
 struct Gate {
@@ -136,12 +136,12 @@ fn verification_rechecks_refresh_unsubscribe_capacity_and_expiry() {
         )
         .unwrap();
         let slow = events.clone();
-        let deadline = if race == "expiry" {
-            Some(now() + 100)
-        } else {
-            None
-        };
-        let thread = std::thread::spawn(move || slow.subscribe_until(&p(), &args(), deadline));
+        let clock = Arc::new(AtomicI64::new(now()));
+        let deadline = (race == "expiry").then(|| clock.load(Ordering::SeqCst) + 100);
+        let test_clock = clock.clone();
+        let thread = std::thread::spawn(move || {
+            slow.subscribe_with_clock(&p(), &args(), deadline, || test_clock.load(Ordering::SeqCst))
+        });
         ready.recv_timeout(Duration::from_secs(2)).unwrap();
         match race {
             "refresh" => {
@@ -159,14 +159,14 @@ fn verification_rechecks_refresh_unsubscribe_capacity_and_expiry() {
                     events.subscribe(&p(), &a).unwrap();
                 }
             }
-            "expiry" => std::thread::sleep(Duration::from_millis(120)),
+            "expiry" => clock.store(deadline.unwrap(), Ordering::SeqCst),
             _ => unreachable!(),
         }
         release.send(()).unwrap();
-        assert!(
-            thread.join().unwrap().is_err(),
-            "stale verification accepted: {race}"
-        );
+        let error = thread.join().unwrap().expect_err("stale verification accepted");
+        if race == "expiry" {
+            assert_eq!(error.reason, "token_expired");
+        }
         let leases = events.leases().unwrap();
         match race {
             "refresh" => assert_eq!(leases[0].principal.token.as_deref(), Some("fresh")),

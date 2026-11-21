@@ -147,7 +147,6 @@ fn frontmatter(text: &str) -> (Option<String>, Option<String>) {
             break;
         }
         if let Some(key) = pending.take() {
-            // Continuation of a block scalar: indented lines belong to it.
             if line.starts_with(' ') || line.starts_with('\t') {
                 let value = line.trim();
                 if !value.is_empty() {
@@ -448,8 +447,7 @@ pub fn list_result(query: Option<&str>) -> Map<String, Value> {
 
 /// The skill payload from the best source that has it. Other sources with a
 /// different version are named in `also_in` for a `source`-qualified retry.
-pub fn get_result(name: &str, source: Option<&str>) -> Map<String, Value> {
-    let matches = find(name, source);
+pub(crate) fn get_result(name: &str, matches: &[Skill]) -> Map<String, Value> {
     let Some(skill) = matches.first() else {
         return Map::from_iter([("error".into(), json!(format!("no skill named \"{}\"", name)))]);
     };
@@ -461,12 +459,16 @@ pub fn get_result(name: &str, source: Option<&str>) -> Map<String, Value> {
     m
 }
 
+pub(crate) fn bounded_body(skill: &Skill) -> String {
+    truncated(&body(skill))
+}
+
 /// A skill with its instructions and sibling files.
 pub fn payload(skill: &Skill) -> Map<String, Value> {
     let mut m = to_dict(skill);
     m.insert("dir".into(), json!(skill.dir.to_string_lossy()));
     m.insert("files".into(), json!(files(skill)));
-    m.insert("content".into(), json!(truncated(&body(skill))));
+    m.insert("content".into(), json!(bounded_body(skill)));
     m
 }
 

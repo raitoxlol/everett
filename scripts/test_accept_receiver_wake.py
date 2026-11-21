@@ -22,9 +22,6 @@ SPEC.loader.exec_module(accept)
 
 
 class AcceptanceRunnerTests(unittest.TestCase):
-    def setUp(self):
-        accept.MANIFEST_OWNERS.clear()
-
     def test_sender_environment_clears_every_known_caller_binding(self):
         original = os.environ.copy()
         try:
@@ -71,15 +68,15 @@ class AcceptanceRunnerTests(unittest.TestCase):
             os.chmod(directory, 0o700)
             path = Path(directory) / "run.json"
             manifest = accept.RunManifest("run", 1.0, "preflight", "/mac", "/nuc", "mac-id", "nuc-id", "mac-fp", "nuc-fp", "session", "/cwd")
-            accept.save_manifest(path, manifest)
+            writer = accept.ManifestFile(path)
+            writer.save(manifest)
             first = path.stat()
             self.assertEqual(stat.S_IMODE(first.st_mode), 0o600)
             manifest.phase = "prepared"
-            accept.save_manifest(path, manifest)
+            writer.save(manifest)
             self.assertEqual(json.loads(path.read_text())["phase"], "prepared")
             with self.assertRaises(accept.AcceptanceError):
-                accept.MANIFEST_OWNERS.clear()
-                accept.save_manifest(path, manifest)
+                accept.ManifestFile(path).save(manifest)
 
     def test_policy_install_and_restore_preserve_original_bytes(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -233,13 +230,13 @@ class AcceptanceRunnerTests(unittest.TestCase):
             cleaned = []
             def preflight(run):
                 run.manifest = accept.RunManifest("run", 1.0, "preflight", "/mac", "/nuc", "mac", "nuc", "mac-fp", "nuc-fp", "session", "/cwd")
-                accept.save_manifest(manifest_path, run.manifest)
+                run.manifest_file.save(run.manifest)
             def interrupt(_run):
                 raise KeyboardInterrupt()
             def cleanup(run):
                 cleaned.append(True)
                 run.manifest.cleanup["attempted"] = True
-                accept.save_manifest(manifest_path, run.manifest)
+                run.manifest_file.save(run.manifest)
             argv = ["--nuc-ssh", "nucbox", "--mac-binary", sys.executable, "--nuc-binary", "/bin/true", "--nuc-claude-binary", "/home/nuc/.local/bin/claude", "--nuc-sha256", "0" * 64, "--source-commit", "a" * 40, "--mac-device-id", "mac", "--nuc-device-id", "nuc", "--mac-fingerprint", "mac-fp", "--nuc-fingerprint", "nuc-fp", "--session-id", "38cab978-79c0-4f42-9aee-5c30d8aa6e4c", "--denied-session-id", "89cab978-79c0-4f42-9aee-5c30d8aa6e4c", "--cwd", "/tmp", "--manifest", str(manifest_path)]
             stdout, stderr = StringIO(), StringIO()
             with mock.patch.object(accept.Acceptance, "preflight", preflight), mock.patch.object(accept.Acceptance, "prepare", interrupt), mock.patch.object(accept.Acceptance, "cleanup", cleanup), redirect_stdout(stdout), redirect_stderr(stderr):
@@ -262,7 +259,7 @@ class AcceptanceRunnerTests(unittest.TestCase):
             runner.manifest.policy_installed_identity = "1:2"
             runner.manifest.listeners.append({"host": "nuc", "pid": 12, "log": "/log"})
             runner.listeners.append(accept.Listener("nuc", 12, 1.0))
-            accept.save_manifest(manifest_path, runner.manifest)
+            runner.manifest_file.save(runner.manifest)
             runner.helper = mock.Mock(side_effect=[accept.AcceptanceError("stop unavailable"), "restored"])
             runner.cleanup()
             self.assertEqual(runner.manifest.cleanup["policy"], "restored")

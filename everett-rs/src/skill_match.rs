@@ -48,7 +48,7 @@ fn stem(word: &str) -> String {
 }
 
 fn terms(text: &str) -> Vec<String> {
-    crate::route::tokens(text)
+    crate::search_terms::tokens(text)
         .iter()
         .filter(|t| !FILLER.contains(&t.as_str()))
         .map(|t| stem(t))
@@ -129,20 +129,26 @@ pub fn suggest(text: &str, all: &[Skill]) -> Option<Skill> {
         .map(|(_, skill)| skill.clone())
 }
 
-/// `{"skill": <payload or null>}` for a task: one skill, never a list.
+enum Selection {
+    Named(Skill),
+    Suggested(Skill),
+}
+
+fn select(task: &str, all: &[Skill]) -> Option<Selection> {
+    named(task, all).map(Selection::Named).or_else(|| suggest(task, all).map(Selection::Suggested))
+}
+
+/// `{"skill": <payload or null>}` for a task.
 pub fn match_result(task: &str, cwd: &Path) -> Map<String, Value> {
     let all = skills::scan(cwd);
-    let (found, how) = match named(task, &all) {
-        Some(skill) => (Some(skill), "named"),
-        None => (suggest(task, &all), "suggested"),
+    let (skill, how) = match select(task, &all) {
+        Some(Selection::Named(skill)) => {
+            record_use(cwd, &skill.name);
+            (skill, "named")
+        }
+        Some(Selection::Suggested(skill)) => (skill, "suggested"),
+        None => return Map::from_iter([("skill".into(), Value::Null)]),
     };
-    let Some(skill) = found else {
-        return Map::from_iter([("skill".into(), Value::Null)]);
-    };
-    // A guess that happened to fit is not use; counting it would promote wrong guesses.
-    if how == "named" {
-        record_use(cwd, &skill.name);
-    }
     Map::from_iter([
         ("skill".into(), Value::Object(skills::payload(&skill))),
         ("matched".into(), json!(how)),
@@ -251,19 +257,22 @@ fn native_to(skill: &Skill, harness: &str) -> bool {
 pub fn hook_context(session_id: &str, harness: &str, prompt: &str, cwd: &Path) -> Option<String> {
     let all = skills::scan(cwd);
     let native = |skill: &Skill| all.iter().any(|s| s.name == skill.name && native_to(s, harness));
-    if let Some(skill) = named(prompt, &all) {
-        if native(&skill) {
-            return None;
+    let skill = match select(prompt, &all)? {
+        Selection::Named(skill) => {
+            if native(&skill) {
+                return None;
+            }
+            record_use(cwd, &skill.name);
+            return Some(format!(
+                "The user asked for the `{}` skill. Follow these instructions (skill folder: {}):\n\n{}",
+                skill.name,
+                skill.dir.display(),
+                skills::bounded_body(&skill),
+            ));
         }
-        record_use(cwd, &skill.name);
-        return Some(format!(
-            "The user asked for the `{}` skill. Follow these instructions (skill folder: {}):\n\n{}",
-            skill.name,
-            skill.dir.display(),
-            skills::payload(&skill)["content"].as_str().unwrap_or_default()
-        ));
-    }
-    let skill = suggest(prompt, &all).filter(|skill| !native(skill))?;
+        Selection::Suggested(skill) if !native(&skill) => skill,
+        Selection::Suggested(_) => return None,
+    };
     let hinted = state_dir().join("hinted").join(session_id);
     let before = fs::read_to_string(&hinted).unwrap_or_default();
     if before.lines().any(|name| name == skill.name) {

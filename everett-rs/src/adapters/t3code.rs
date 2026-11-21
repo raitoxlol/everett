@@ -314,28 +314,16 @@ pub(crate) fn has_thread(id: &str) -> crate::error::Result<bool> {
     lookup().map_err(|error| checked(error.to_string()))
 }
 
-/// Mark sessions T3 Code drives; its thread title is the fallback headline.
-pub fn annotate(sessions: &mut [Session], found: Option<&ThreadMap>) {
-    let owned;
-    let found = match found {
-        Some(f) => f,
-        None => {
-            owned = threads(&db_path());
-            &owned
-        }
-    };
-    if found.is_empty() {
-        return;
-    }
-    for s in sessions.iter_mut() {
-        let Some((_, title)) = found.get(&(s.harness.clone(), s.id.clone())) else {
-            continue;
-        };
-        s.source = SOURCE.to_string();
-        if s.title.is_empty() && !title.is_empty() {
-            s.title = clean(title, 120);
-        }
-    }
+/// The T3 thread that drives this provider session, if any.
+pub fn thread_id(session: &Session) -> Option<String> {
+    thread_id_in(session, &db_path())
+}
+
+pub(crate) fn thread_id_in(session: &Session, db_path: &Path) -> Option<String> {
+    threads(db_path)
+        .get(&(session.harness.clone(), session.id.clone()))
+        .map(|(thread, _)| thread.clone())
+        .filter(|t| !t.is_empty() && session.t3_thread_id.as_ref().is_none_or(|expected| expected == t))
 }
 
 pub fn overlay(sessions: &mut Vec<Session>, since_hours: f64, harness: &str) {
