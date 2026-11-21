@@ -77,6 +77,30 @@ fn wait_reply_times_out() {
 }
 
 #[test]
+fn wait_reply_with_zero_poll_still_sleeps_and_terminates() {
+    let _h = lib_home();
+    let tick = std::cell::Cell::new(0.0);
+    let naps = std::cell::RefCell::new(Vec::new());
+    // poll = 0 must not busy-spin on a zero sleep; each nap stays positive and
+    // within the remaining deadline, and the wait still times out.
+    let got = inbox::wait_reply_with(
+        "me",
+        "mnope",
+        0.05,
+        0.0,
+        || {
+            let t = tick.get();
+            tick.set(t + 0.01);
+            t
+        },
+        |d| naps.borrow_mut().push(d),
+    );
+    assert!(got.is_none());
+    assert!(!naps.borrow().is_empty());
+    assert!(naps.borrow().iter().all(|d| *d > 0.0 && *d <= 0.011), "{:?}", naps.borrow());
+}
+
+#[test]
 fn wait_receives_a_reply_that_the_inbox_already_consumed() {
     let _h = lib_home();
     let request = post("peer", "question", "me");
