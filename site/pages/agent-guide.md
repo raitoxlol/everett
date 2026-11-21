@@ -84,7 +84,10 @@ been read: check status before retrying.
 - `everett_core(action="search", query="…")` finds facts beyond the compact core.
 - `everett_core(action="forget" | "correct", fact="…", replacement="…")` fixes a wrong fact.
   Copy the whole fact exactly. `changed=false` means no match.
-- Pass `project` or `scope` to target project memory; the default is global.
+- `everett_learn(fact)` defaults to global memory. For project memory, set `scope="project"` or
+  pass a `project` name. If `scope="project"` is set without `project`, Everett infers it from
+  the working directory: it uses the enclosing Git repository's folder name, even from deeply
+  nested directories, or the current directory's name outside a Git repository.
 
 ## Hard rules
 

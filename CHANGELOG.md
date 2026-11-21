@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- Resolve inferred project-scoped memory to the enclosing Git repository from deeply nested directories; outside a repository, keep the current-directory-name fallback (#238).
+
 ## 2.4.0
 
 - Bind local handoffs to the active harness session (#231). Ambiguous route results and exposed cards include an address callers can use (#232).
