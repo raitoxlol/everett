@@ -664,8 +664,9 @@ pub fn wait_reply_with(
         if clock() >= deadline {
             return None;
         }
-        let left = (deadline - clock()).max(0.0);
-        sleep(if poll.min(left) > 0.0 { poll.min(left) } else { poll });
+        // A zero or negative poll would busy-spin (or panic in from_secs_f64);
+        // floor the nap at 1ms and never sleep past the deadline.
+        sleep(poll.min(deadline - clock()).max(0.001));
     }
 }
 
