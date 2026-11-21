@@ -127,8 +127,8 @@ export const groups = [
         summary: 'Wake Claude Code from an Everett inbox with a Stop hook or channel.',
         readWhen: 'You want an idle Claude Code session to pick up inbox messages.' },
       { slug: 'plugin-hermes', title: 'Hermes plugin', file: 'plugins/everett-hermes/README.md',
-        summary: 'Install the Everett plugin for Hermes Agent.',
-        readWhen: 'You use Hermes Agent.' },
+        summary: 'Native Hermes tools, inbox hooks, commands, and the portable MCP-only fallback.',
+        readWhen: 'You install Everett for Hermes Agent or need the Agent Plugins v1 compatibility path.' },
     ],
   },
   {

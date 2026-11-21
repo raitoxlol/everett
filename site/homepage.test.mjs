@@ -23,7 +23,7 @@ test("other agent cards keep their labels", () => {
     "claude-code": "Hooks + MCP",
     codex: "Hooks + MCP",
     omp: "Extension + MCP",
-    hermes: "Manual MCP entry",
+    hermes: "Native plugin · MCP-only fallback",
     "grok-cli": "Local CLI · not Grok Bot",
     "devin-cli": "Session hooks + MCP",
   };

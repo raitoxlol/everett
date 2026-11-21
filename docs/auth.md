@@ -23,9 +23,14 @@ change files, but can show agents that onboarding has not detected.
 Default onboarding installs the Pi extension and registers Devin MCP when detected.
 The Pi extension exposes Everett tools through Pi's `registerTool` API and binds the MCP bridge
 to each session. Run `everett install-hooks --devin --apply` to add Devin's session-binding hooks.
-For Hermes, follow the wizard to install and enable the [Hermes plugin](../plugins/everett-hermes/README.md),
-or add the `mcp_servers` block printed by `everett install-mcp --hermes` to `~/.hermes/config.yaml`.
-Choose one Hermes setup to avoid duplicate tool registrations.
+For Hermes, use the [native plugin](../plugins/everett-hermes/README.md): when Hermes is detected,
+onboarding prints its install and enable commands but does not run them. The separate
+`everett install-mcp --hermes` command prints a manual stdio entry; it does not edit
+`~/.hermes/config.yaml` or support `--apply`. The printed entry has no session-ID override, so
+process detection can bind one unambiguous interactive Hermes CLI session in its directory. An
+explicit `EVERETT_SESSION_ID` or `HERMES_SESSION_ID` in the MCP server's environment binds that one
+session instead; it does not provide the native plugin's per-session gateway binding. The manual
+entry also lacks native plugin hooks and commands. Choose one setup to avoid duplicate registrations.
 Restart the configured agents and run `everett ls`. An empty list means no sessions were
 found in the look-back window. Before using MCP tools, run `everett login` in this profile.
 Restart each MCP client and ask it to call `everett_ls`; a returned list, even empty,

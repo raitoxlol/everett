@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+### Added
+
+- Add the native Hermes plugin with per-session tools, inbox hooks, `/everett`, and opt-in local live wake (#247). Its portable Agent Plugins v1 fallback registers MCP only.
+
 ### Fixed
 
 - Treat session cards as fresh for 24 hours from their last modification, independent of session activity; stale cards no longer replace extracted session text (#241).
