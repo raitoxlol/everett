@@ -700,7 +700,7 @@ pub fn mcp_snippet(harness: &str) -> String {
             pi_extension_path().display()
         ),
         "hermes" => format!(
-            "# add under mcp_servers in ~/.hermes/config.yaml, then restart hermes:\nmcp_servers:\n  everett:\n    command: {}\n    args: [{}]\n# binds to the single interactive Hermes CLI session in the server's directory; gateway mode cannot be bound\n",
+            "# Recommended: install the native Hermes plugin (binds every CLI, TUI, Desktop, and gateway session):\n#   hermes plugins install raitoxlol/everett#plugins/everett-hermes --no-enable\n#   hermes plugins enable everett-hermes\n# Manual stdio MCP fallback (add under mcp_servers in ~/.hermes/config.yaml; do not combine with the plugin):\nmcp_servers:\n  everett:\n    command: {}\n    args: [{}]\n",
             serde_json::to_string(&command).unwrap(),
             mcp_args("hermes").iter().map(|a| serde_json::to_string(a).unwrap()).collect::<Vec<_>>().join(", ")
         ),
@@ -763,7 +763,7 @@ pub fn apply_mcp(harness: &str, repair: bool) -> std::result::Result<String, Str
         return apply("pi", None).map(|m| format!("{} (the extension exposes Everett tools through Pi)", m));
     }
     if harness == "hermes" {
-        return Err("Everett does not edit ~/.hermes/config.yaml; add the entry from `everett install-mcp --hermes`".into());
+        return Err("Install the native plugin with `hermes plugins install raitoxlol/everett#plugins/everett-hermes --no-enable && hermes plugins enable everett-hermes` (or use `everett install-mcp --hermes` for the manual YAML snippet).".into());
     }
     let path = mcp_path(harness);
     let data = mcp_config(harness)?;
@@ -840,4 +840,477 @@ pub fn apply_mcp(harness: &str, repair: bool) -> std::result::Result<String, Str
         path.display(),
         saved.map(|s| format!(" (backup {})", s.display())).unwrap_or_default()
     ))
+}
+
+#[derive(Debug, Clone, PartialEq)]
+enum YamlVal {
+    Map(Vec<(String, YamlVal)>),
+    Seq(Vec<YamlVal>),
+    Scalar(String),
+}
+
+impl YamlVal {
+    fn get(&self, key: &str) -> Option<&YamlVal> {
+        match self {
+            YamlVal::Map(entries) => entries.iter().rev().find(|(k, _)| k == key).map(|(_, v)| v),
+            _ => None,
+        }
+    }
+
+    fn as_scalar(&self) -> Option<&str> {
+        match self {
+            YamlVal::Scalar(s) => Some(s.as_str()),
+            _ => None,
+        }
+    }
+
+    fn seq_contains(&self, target: &str) -> bool {
+        match self {
+            YamlVal::Seq(items) => items.iter().any(|item| item.as_scalar() == Some(target)),
+            _ => false,
+        }
+    }
+}
+
+fn yaml_strip_comment(line: &str) -> &str {
+    let mut in_single = false;
+    let mut in_double = false;
+    let bytes = line.as_bytes();
+    for (i, &b) in bytes.iter().enumerate() {
+        match b {
+            b'\'' if !in_double => in_single = !in_single,
+            b'"' if !in_single => in_double = !in_double,
+            b'#' if !in_single && !in_double && (i == 0 || bytes[i - 1].is_ascii_whitespace()) => {
+                return &line[..i];
+            }
+            _ => {}
+        }
+    }
+    line
+}
+
+fn yaml_unquote(token: &str) -> String {
+    let t = token.trim();
+    if t.len() >= 2 && ((t.starts_with('"') && t.ends_with('"')) || (t.starts_with('\'') && t.ends_with('\''))) {
+        t[1..t.len() - 1].to_string()
+    } else {
+        t.to_string()
+    }
+}
+
+fn yaml_split_kv(text: &str) -> Option<(&str, &str)> {
+    let mut in_single = false;
+    let mut in_double = false;
+    let mut depth = 0usize;
+    let bytes = text.as_bytes();
+    for (i, &b) in bytes.iter().enumerate() {
+        match b {
+            b'\'' if !in_double => in_single = !in_single,
+            b'"' if !in_single => in_double = !in_double,
+            b'{' | b'[' if !in_single && !in_double => depth += 1,
+            b'}' | b']' if !in_single && !in_double => depth = depth.saturating_sub(1),
+            b':' if !in_single && !in_double && depth == 0 => {
+                let key_part = text[..i].trim();
+                let quoted_key = key_part.len() >= 2
+                    && ((key_part.starts_with('"') && key_part.ends_with('"'))
+                        || (key_part.starts_with('\'') && key_part.ends_with('\'')));
+                if quoted_key || i + 1 == bytes.len() || bytes[i + 1].is_ascii_whitespace() {
+                    return Some((&text[..i], text[i + 1..].trim()));
+                }
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
+fn yaml_split_flow_items(inner: &str) -> Vec<&str> {
+    let mut out = Vec::new();
+    let mut in_single = false;
+    let mut in_double = false;
+    let mut depth = 0usize;
+    let mut start = 0usize;
+    for (i, b) in inner.bytes().enumerate() {
+        match b {
+            b'\'' if !in_double => in_single = !in_single,
+            b'"' if !in_single => in_double = !in_double,
+            b'{' | b'[' if !in_single && !in_double => depth += 1,
+            b'}' | b']' if !in_single && !in_double => depth = depth.saturating_sub(1),
+            b',' if !in_single && !in_double && depth == 0 => {
+                let piece = inner[start..i].trim();
+                if !piece.is_empty() {
+                    out.push(piece);
+                }
+                start = i + 1;
+            }
+            _ => {}
+        }
+    }
+    let tail = inner[start..].trim();
+    if !tail.is_empty() {
+        out.push(tail);
+    }
+    out
+}
+
+fn yaml_parse_inline(raw: &str) -> YamlVal {
+    let s = raw.trim();
+    if let Some(inner) = s.strip_prefix('{').and_then(|v| v.strip_suffix('}')) {
+        let mut entries = Vec::new();
+        for item in yaml_split_flow_items(inner) {
+            if let Some((k, v)) = yaml_split_kv(item) {
+                entries.push((yaml_unquote(k), yaml_parse_inline(v)));
+            }
+        }
+        return YamlVal::Map(entries);
+    }
+    if let Some(inner) = s.strip_prefix('[').and_then(|v| v.strip_suffix(']')) {
+        return YamlVal::Seq(yaml_split_flow_items(inner).into_iter().map(yaml_parse_inline).collect());
+    }
+    YamlVal::Scalar(yaml_unquote(s))
+}
+
+fn yaml_parse_block(lines: &[(usize, &str)], idx: &mut usize, min_indent: usize) -> YamlVal {
+    if *idx >= lines.len() || lines[*idx].0 < min_indent {
+        return YamlVal::Scalar(String::new());
+    }
+    let base_indent = lines[*idx].0;
+    if lines[*idx].1.starts_with('-') && (lines[*idx].1.len() == 1 || lines[*idx].1.as_bytes()[1].is_ascii_whitespace()) {
+        let mut items = Vec::new();
+        while *idx < lines.len() && lines[*idx].0 == base_indent {
+            let body = lines[*idx].1;
+            let Some(rest) = body.strip_prefix('-') else { break };
+            if !rest.is_empty() && !rest.as_bytes()[0].is_ascii_whitespace() {
+                break;
+            }
+            let rest = rest.trim();
+            *idx += 1;
+            if rest.is_empty() {
+                items.push(yaml_parse_block(lines, idx, base_indent + 1));
+            } else {
+                items.push(yaml_parse_inline(rest));
+                while *idx < lines.len() && lines[*idx].0 > base_indent {
+                    *idx += 1;
+                }
+            }
+        }
+        return YamlVal::Seq(items);
+    }
+
+    let mut entries = Vec::new();
+    while *idx < lines.len() {
+        let (indent, body) = lines[*idx];
+        if indent < base_indent {
+            break;
+        }
+        if indent > base_indent {
+            *idx += 1;
+            continue;
+        }
+        let Some((k, v)) = yaml_split_kv(body) else {
+            *idx += 1;
+            continue;
+        };
+        let key = yaml_unquote(k);
+        *idx += 1;
+        let val = if !v.is_empty() {
+            yaml_parse_inline(v)
+        } else if *idx < lines.len()
+            && (lines[*idx].0 > base_indent
+                || (lines[*idx].0 == base_indent
+                    && lines[*idx].1.starts_with('-')
+                    && (lines[*idx].1.len() == 1 || lines[*idx].1.as_bytes()[1].is_ascii_whitespace())))
+        {
+            yaml_parse_block(lines, idx, base_indent)
+        } else {
+            YamlVal::Scalar(String::new())
+        };
+        entries.push((key, val));
+    }
+    YamlVal::Map(entries)
+}
+
+fn yaml_flow_depth_delta(text: &str) -> isize {
+    let mut in_single = false;
+    let mut in_double = false;
+    let mut delta = 0isize;
+    for b in text.bytes() {
+        match b {
+            b'\'' if !in_double => in_single = !in_single,
+            b'"' if !in_single => in_double = !in_double,
+            b'{' | b'[' if !in_single && !in_double => delta += 1,
+            b'}' | b']' if !in_single && !in_double => delta -= 1,
+            _ => {}
+        }
+    }
+    delta
+}
+
+fn yaml_is_block_scalar_header(val: &str) -> bool {
+    let mut chars = val.chars();
+    let Some(first) = chars.next() else { return false };
+    if first != '|' && first != '>' {
+        return false;
+    }
+    chars.all(|c| c == '-' || c == '+' || c.is_ascii_digit())
+}
+
+fn parse_hermes_yaml(yaml_text: &str) -> YamlVal {
+    let cleaned = yaml_text.strip_prefix('\u{feff}').unwrap_or(yaml_text);
+    // Join multiline flow collections while skipping block scalars (`|`/`>`) and wrapped plain scalars.
+    let mut logical: Vec<(usize, String)> = Vec::new();
+    let mut flow_depth = 0isize;
+    let mut skip_deeper_than: Option<usize> = None;
+    for raw in cleaned.lines() {
+        let raw_indent = raw.len() - raw.trim_start_matches(' ').len();
+        if let Some(parent_indent) = skip_deeper_than {
+            if raw.trim().is_empty() || raw_indent > parent_indent {
+                continue;
+            }
+            skip_deeper_than = None;
+        }
+        let stripped = yaml_strip_comment(raw).trim_end();
+        let trimmed = stripped.trim();
+        if trimmed.is_empty() || trimmed == "---" || trimmed == "..." {
+            continue;
+        }
+        let indent = stripped.len() - stripped.trim_start_matches(' ').len();
+        if flow_depth > 0 {
+            if let Some((_, prev)) = logical.last_mut() {
+                prev.push(' ');
+                prev.push_str(trimmed);
+            }
+            flow_depth = (flow_depth + yaml_flow_depth_delta(trimmed)).max(0);
+            continue;
+        }
+        logical.push((indent, trimmed.to_string()));
+        if let Some(rest) = trimmed
+            .strip_prefix('-')
+            .filter(|r| r.is_empty() || r.as_bytes()[0].is_ascii_whitespace())
+        {
+            let item = rest.trim();
+            if item.starts_with('{') || item.starts_with('[') {
+                flow_depth = yaml_flow_depth_delta(item).max(0);
+            } else if let Some((_, val)) = yaml_split_kv(item) {
+                if val.starts_with('{') || val.starts_with('[') {
+                    flow_depth = yaml_flow_depth_delta(val).max(0);
+                } else if yaml_is_block_scalar_header(val) {
+                    skip_deeper_than = Some(indent + 2);
+                }
+            } else if yaml_is_block_scalar_header(item) || !item.is_empty() {
+                skip_deeper_than = Some(indent);
+            }
+        } else if let Some((_, val)) = yaml_split_kv(trimmed) {
+            if val.starts_with('{') || val.starts_with('[') {
+                flow_depth = yaml_flow_depth_delta(val).max(0);
+            } else if yaml_is_block_scalar_header(val) || !val.is_empty() {
+                // Any deeper lines belong to this block/wrapped scalar, never a new YAML mapping or flow collection.
+                skip_deeper_than = Some(indent);
+            }
+        } else if indent == 0 && (trimmed.starts_with('{') || trimmed.starts_with('[')) {
+            flow_depth = yaml_flow_depth_delta(trimmed).max(0);
+        }
+    }
+    let lines: Vec<(usize, &str)> = logical.iter().map(|(i, s)| (*i, s.as_str())).collect();
+    let mut idx = 0;
+    yaml_parse_block(&lines, &mut idx, 0)
+}
+
+fn yaml_is_explicit_false(val: &YamlVal) -> bool {
+    matches!(
+        val.as_scalar().map(|s| s.trim().to_ascii_lowercase()).as_deref(),
+        Some("false" | "no" | "off" | "0")
+    )
+}
+
+fn hermes_yaml_flags(yaml_text: &str) -> (bool, bool, bool) {
+    let root = parse_hermes_yaml(yaml_text);
+    let plugins = root.get("plugins");
+    let enabled = plugins
+        .and_then(|p| p.get("enabled"))
+        .is_some_and(|list| list.seq_contains("everett-hermes"));
+    let disabled = plugins
+        .and_then(|p| p.get("disabled"))
+        .is_some_and(|list| list.seq_contains("everett-hermes"));
+    let manual_mcp = root
+        .get("mcp_servers")
+        .and_then(|servers| servers.get("everett"))
+        .is_some_and(|entry| !entry.get("enabled").is_some_and(yaml_is_explicit_false));
+    (enabled, disabled, manual_mcp)
+}
+
+fn expand_tilde_against(raw: &str, user_home: &std::path::Path) -> PathBuf {
+    if raw == "~" {
+        return user_home.to_path_buf();
+    }
+    if let Some(rest) = raw.strip_prefix("~/").or_else(|| raw.strip_prefix("~\\")) {
+        return user_home.join(rest);
+    }
+    PathBuf::from(raw)
+}
+
+pub fn hermes_active_home() -> PathBuf {
+    // Hermes resolves `~` and default `~/.hermes` against OS `$HOME`, not `EVERETT_HOME`.
+    let user_home = std::env::var("HOME")
+        .ok()
+        .filter(|dir| !dir.is_empty())
+        .map(PathBuf::from)
+        .unwrap_or_else(home);
+    let root = match std::env::var("HERMES_HOME") {
+        Ok(dir) if !dir.is_empty() => expand_tilde_against(&dir, &user_home),
+        _ => user_home.join(".hermes"),
+    };
+    if let Ok(raw) = fs::read_to_string(root.join("active_profile")) {
+        let name = raw.strip_prefix('\u{feff}').unwrap_or(&raw).trim();
+        if !name.is_empty()
+            && name != "default"
+            && name != "."
+            && name != ".."
+            && !name.contains('/')
+            && !name.contains('\\')
+        {
+            let named = root.join("profiles").join(name);
+            if named.is_dir() {
+                return named;
+            }
+        }
+    }
+    root
+}
+
+/// Inspect Hermes's active profile for the native `everett-hermes` plugin and any duplicate manual MCP entry.
+pub fn hermes_plugin_status() -> (Option<bool>, String, Option<&'static str>) {
+    let hermes_home = hermes_active_home();
+    let plugin_dir = hermes_home.join("plugins").join("everett-hermes");
+    let has_native = plugin_dir.join("plugin.yaml").is_file() || plugin_dir.join("plugin.yml").is_file();
+    let has_portable = plugin_dir.join("plugin.json").is_file();
+    let cfg_text = fs::read_to_string(hermes_home.join("config.yaml")).unwrap_or_default();
+    let (enabled, disabled, manual_mcp) = hermes_yaml_flags(&cfg_text);
+
+    if has_native {
+        if enabled && !disabled {
+            if manual_mcp {
+                (
+                    Some(false),
+                    "native plugin enabled (everett-hermes), but manual mcp_servers.everett in config.yaml causes duplicate tools; remove mcp_servers.everett".into(),
+                    None,
+                )
+            } else {
+                (Some(true), "native plugin installed and enabled (everett-hermes)".into(), None)
+            }
+        } else {
+            (
+                Some(false),
+                "native plugin installed but not enabled; run `hermes plugins enable everett-hermes`".into(),
+                Some("hermes plugins enable everett-hermes"),
+            )
+        }
+    } else if has_portable {
+        (
+            Some(false),
+            "older portable everett-hermes package installed; upgrade with `hermes plugins update everett-hermes`".into(),
+            Some("hermes plugins update everett-hermes"),
+        )
+    } else if manual_mcp {
+        (
+            None,
+            "manual mcp_servers.everett configured (single CLI only); install native plugin with `hermes plugins install raitoxlol/everett#plugins/everett-hermes --no-enable && hermes plugins enable everett-hermes`".into(),
+            None,
+        )
+    } else {
+        (
+            Some(false),
+            "everett-hermes plugin not installed; run `hermes plugins install raitoxlol/everett#plugins/everett-hermes --no-enable && hermes plugins enable everett-hermes`".into(),
+            Some("hermes plugins install raitoxlol/everett#plugins/everett-hermes --no-enable && hermes plugins enable everett-hermes"),
+        )
+    }
+}
+
+#[cfg(test)]
+mod hermes_yaml_tests {
+    use super::*;
+
+    #[test]
+    fn parses_flow_mappings_ignores_nested_enabled_and_honors_disabled_manual_mcp() {
+        assert_eq!(hermes_yaml_flags("plugins: {enabled: [everett-hermes]}\n"), (true, false, false));
+        assert_eq!(hermes_yaml_flags("plugins: {\"enabled\":[everett-hermes]}\n"), (true, false, false));
+        assert_eq!(
+            hermes_yaml_flags("plugins:\n  enabled: [\n    everett-hermes\n  ]\n"),
+            (true, false, false)
+        );
+        assert_eq!(
+            hermes_yaml_flags(
+                "plugins:\n  entries:\n    other:\n      enabled:\n        - everett-hermes\n"
+            ),
+            (false, false, false)
+        );
+        assert_eq!(
+            hermes_yaml_flags(
+                "plugins:\n  enabled:\n    - everett-hermes\nmcp_servers:\n  everett:\n    enabled: false\n    command: everett\n"
+            ),
+            (true, false, false)
+        );
+        assert_eq!(
+            hermes_yaml_flags(
+                "plugins:\n  enabled: [everett-hermes]\nmcp_servers:\n  everett:\n    enabled: 0\n    command: everett\n"
+            ),
+            (true, false, false)
+        );
+        assert_eq!(
+            hermes_yaml_flags(
+                "note: literal [bracket before plugins\nplugins:\n  enabled:\n    - everett-hermes\n"
+            ),
+            (true, false, false)
+        );
+        assert_eq!(
+            hermes_yaml_flags(
+                "prompt: |\n  [block scalar starting with bracket\nplugins:\n  enabled:\n    - everett-hermes\n"
+            ),
+            (true, false, false)
+        );
+        assert_eq!(
+            hermes_yaml_flags(
+                "wrapped: first line\n  [continuation starting with bracket\nplugins:\n  enabled:\n    - everett-hermes\n"
+            ),
+            (true, false, false)
+        );
+        assert_eq!(
+            hermes_yaml_flags(
+                "examples:\n  - |\n    [choice]: [literal\nplugins:\n  enabled: [everett-hermes]\n"
+            ),
+            (true, false, false)
+        );
+        assert_eq!(
+            hermes_yaml_flags(
+                "plugins:\n  enabled: [everett-hermes]\nmcp_servers:\n  everett: {command: everett, enabled: true}\n"
+            ),
+            (true, false, true)
+        );
+    }
+
+    #[test]
+    fn resolves_saved_active_profile_under_user_home_even_when_everett_home_differs() {
+        if !crate::test_support::isolated("install::hermes_yaml_tests::resolves_saved_active_profile_under_user_home_even_when_everett_home_differs") {
+            return;
+        }
+        let user_tmp = tempfile::tempdir().unwrap();
+        let everett_tmp = tempfile::tempdir().unwrap();
+        std::env::set_var("HOME", user_tmp.path());
+        std::env::set_var("EVERETT_HOME", everett_tmp.path());
+        std::env::remove_var("HERMES_HOME");
+        let work = user_tmp.path().join(".hermes/profiles/work");
+        fs::create_dir_all(work.join("plugins/everett-hermes")).unwrap();
+        fs::write(user_tmp.path().join(".hermes/active_profile"), "work\n").unwrap();
+        fs::write(work.join("plugins/everett-hermes/plugin.yaml"), "name: everett-hermes\n").unwrap();
+        fs::write(work.join("config.yaml"), "plugins: {enabled: [everett-hermes]}\n").unwrap();
+
+        let (ok, detail, _) = hermes_plugin_status();
+        assert_eq!(ok, Some(true), "expected active_profile work under $HOME to report ok: {detail}");
+        assert!(detail.contains("native plugin"), "{detail}");
+
+        // Explicit tilde-prefixed HERMES_HOME also expands against OS $HOME and follows active_profile.
+        std::env::set_var("HERMES_HOME", "~/.hermes");
+        let (ok2, detail2, _) = hermes_plugin_status();
+        assert_eq!(ok2, Some(true), "expected ~/.hermes active_profile to report ok: {detail2}");
+    }
 }
