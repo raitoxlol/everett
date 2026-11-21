@@ -2013,6 +2013,60 @@ fn local_access_policy_enforces_cross_org_send_and_receive_rules() {
     import_inner(&bob, &envelope, &attestation, now, true).unwrap();
     assert_eq!(inbox::read("inbox-b").len(), 1);
 
+    // Turning off external sends also blocks cross-org replies and background reconcile retries.
+    crate::access::set_settings(None, Some("allowlist"), Some(false), None).unwrap();
+    let local_id = local_message_id(&envelope);
+    let reply_err =
+        crate::send::reply_as(&local_id, "blocked reply", Some("inbox-b"), Some("claude"))
+            .unwrap_err();
+    assert!(
+        reply_err.message.contains("disabled by local access policy"),
+        "{}",
+        reply_err.message
+    );
+    assert!(crate::paths::glob(&root().join("outgoing"), "*.json").is_empty());
+
+    // Simulate a pre-existing unposted cross-org outgoing record: reconcile must not post it while external sends are off.
+    let pending_reply_pin = Paired {
+        device: alice.device.clone(),
+        deployment: deployment().unwrap(),
+        grant_id: Some(grant_id.into()),
+    };
+    let reply_payload = Payload::Inbox {
+        session: "inbox-a".into(),
+        harness: "codex".into(),
+        text: "queued earlier".into(),
+        from: "inbox-b".into(),
+        from_harness: "claude".into(),
+        from_card: String::new(),
+        reply_to: envelope.message_id.clone(),
+        hops: 2,
+        external_untrusted: true,
+    };
+    let (reply_path, _) = prepare_for(
+        address,
+        pending_reply_pin,
+        true,
+        "reconcile-blocked-key",
+        &reply_payload,
+        &bob,
+        Some(Parent {
+            owner: envelope.owner.clone(),
+            message_id: envelope.message_id.clone(),
+        }),
+    )
+    .unwrap();
+    let mut client = TestClient::fake(vec![]);
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    rt.block_on(reconcile(&mut client, &bob, &mut RejectedCache::new()))
+        .unwrap();
+    let still_unposted: Outgoing = read(&reply_path).unwrap();
+    assert!(!still_unposted.posted);
+
+    crate::access::set_settings(None, Some("allowlist"), Some(true), None).unwrap();
     crate::access::deny_sender(None, owner_a, None, Some("stop")).unwrap();
     let envelope2 = cross_org_envelope(&alice, &bob, "inbox-b", grant_id);
     assert!(import_inner(&bob, &envelope2, &attestation, now, true).is_err());
