@@ -3,11 +3,20 @@ import { sha256 } from '@noble/hashes/sha256';
 import { z } from 'zod';
 
 export const DEVICE_LABEL_LIMIT = 2048;
-export const operations = ['whoami', 'register', 'device', 'devices', 'exposeSession', 'sessionDirectory', 'credentials', 'memberships', 'revokeAgent', 'revokeMember', 'rotate', 'enqueue', 'pending', 'accept', 'observe', 'status'] as const;
+export const CROSS_OWNER_MAX_HOPS = 3;
+export const operations = [
+  'whoami', 'register', 'device', 'devices', 'exposeSession', 'sessionDirectory',
+  'registerInbox', 'grantInbox', 'revokeInboxGrant', 'resolveInbox',
+  'credentials', 'memberships', 'revokeAgent', 'revokeMember', 'rotate',
+  'enqueue', 'pending', 'accept', 'observe', 'status',
+] as const;
 export type Operation = typeof operations[number];
 export type RelayResult = { ok: true; value: unknown } | { ok: false; error: string; status: number };
 
 export const identifier = z.string().regex(/^[A-Za-z0-9_.-]{1,160}$/);
+export const inboxAddress = z.string()
+  .regex(/^[a-z0-9](?:[a-z0-9._-]{0,62}[a-z0-9])?@[a-z0-9](?:[a-z0-9._-]{0,62}[a-z0-9])?$/)
+  .refine(value => !value.includes('..'));
 const hex = (bytes: number) => z.string().regex(new RegExp(`^[0-9a-f]{${bytes * 2}}$`));
 const safeInteger = z.number().int().safe();
 export const identitySchema = z.strictObject({
