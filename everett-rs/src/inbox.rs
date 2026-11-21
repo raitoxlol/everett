@@ -87,8 +87,10 @@ fn open_lock(target: &Path) -> Result<fs::File> {
         .create(true)
         .write(true)
         .truncate(true)
+        .mode(0o600)
         .open(lock_path(target))
         .map_err(|e| EverettError::new(2, format!("cannot lock {}: {}", target.display(), e)))?;
+    let _ = file.set_permissions(std::os::unix::fs::PermissionsExt::from_mode(0o600));
     Ok(file)
 }
 
@@ -928,6 +930,14 @@ pub fn render(messages: &[Map<String, Value>], at: Option<f64>) -> (String, Vec<
     (format!("{}\n{}{}", header, parts.join("\n"), tail), ids)
 }
 
+fn rewrite_compacted_file(target: &Path, body: &str) -> std::io::Result<()> {
+    // NamedTempFile creates a fresh file with mode 0600 before any data is written.
+    let mut temp = tempfile::NamedTempFile::new_in(inbox_dir())?;
+    temp.write_all(body.as_bytes())?;
+    temp.persist(target)?;
+    Ok(())
+}
+
 /// Shrink this session's files under its lock: drop expired records only —
 /// delivered records stay so reply_to lookups still resolve — prune .done to
 /// ids still on disk, and reap stale live records.
@@ -951,8 +961,7 @@ fn compact(session_id: &str) {
             .filter_map(|m| serde_json::to_string(&Value::Object(m.clone())).ok())
             .map(|s| s + "\n")
             .collect();
-        let tmp = target.with_extension("jsonl.tmp");
-        if fs::write(&tmp, &body).and_then(|_| fs::rename(&tmp, &target)).is_err() {
+        if rewrite_compacted_file(&target, &body).is_err() {
             return;
         }
         let _ = t3_dispatch::forget_retired_dispatches(session_id, &keep_ids, &target);
@@ -960,9 +969,8 @@ fn compact(session_id: &str) {
     let live_done: Vec<String> = done.iter().filter(|id| keep_ids.contains(id.as_str())).cloned().collect();
     if live_done.len() != done.len() {
         let done_target = done_path(session_id);
-        let tmp = done_target.with_extension("done.tmp");
         let body: String = live_done.iter().map(|i| format!("{i}\n")).collect();
-        if fs::write(&tmp, body).and_then(|_| fs::rename(&tmp, &done_target)).is_ok() {
+        if rewrite_compacted_file(&done_target, &body).is_ok() {
             let mut times = pickup_times(session_id);
             times.retain(|id, _| keep_ids.contains(id.as_str()));
             if pickup_times_path(session_id).exists() {
@@ -1082,16 +1090,9 @@ pub fn record_hops(session_id: &str, hops: i64) {
     current.insert("hops".into(), json!(prev.max(hops)));
     current.insert("hops_ts".into(), json!(now()));
     if let Some(parent) = target.parent() {
-        let _ = fs::create_dir_all(parent);
+        let _ = crate::storage::private_dir(parent);
     }
-    let tmp = target.with_file_name(format!(
-        ".{}.{}.tmp",
-        target.file_name().unwrap_or_default().to_string_lossy(),
-        std::process::id()
-    ));
-    if fs::write(&tmp, serde_json::to_string(&Value::Object(current)).unwrap()).is_ok() {
-        let _ = fs::rename(&tmp, &target);
-    }
+    let _ = crate::storage::save(&target, serde_json::to_string(&Value::Object(current)).unwrap().as_bytes());
 }
 
 const SHELLS: &[&str] = &["sh", "bash", "zsh", "dash", "fish", "-sh", "-bash", "-zsh"];
@@ -1157,13 +1158,8 @@ fn write_live(session_id: &str, harness: &str, state: &str, rebind: bool) {
         pid = caller_pid;
     }
     if let Some(parent) = target.parent() {
-        let _ = fs::create_dir_all(parent);
+        let _ = crate::storage::private_dir(parent);
     }
-    let tmp = target.with_file_name(format!(
-        ".{}.{}.tmp",
-        target.file_name().unwrap_or_default().to_string_lossy(),
-        std::process::id()
-    ));
     let mut body = current;
     body.insert("pid".into(), json!(pid));
     body.insert("harness".into(), json!(harness));
@@ -1172,9 +1168,7 @@ fn write_live(session_id: &str, harness: &str, state: &str, rebind: bool) {
     if harness == "omp" {
         body.insert("process_identity".into(), json!(crate::proc::process_identity(pid)));
     }
-    if fs::write(&tmp, serde_json::to_string(&Value::Object(body)).unwrap()).is_ok() {
-        let _ = fs::rename(&tmp, &target);
-    }
+    let _ = crate::storage::save(&target, serde_json::to_string(&Value::Object(body)).unwrap().as_bytes());
     // Never hold two session locks while dropping another binding.
     drop(guard);
     if claimed {

@@ -6,6 +6,7 @@
   "scripts": {
     "build": "node build.mjs",
     "check": "node build.mjs --strict",
+    "test": "node --test homepage.test.mjs",
     "serve": "node serve.mjs"
   },
   "dependencies": {

@@ -10,6 +10,7 @@
 - Show sub-minute event ages in seconds, preserve fractional seconds when parsing ISO timestamps, format duration and timeout values to six significant digits, and keep every row in the generated `Trunk.md` session table on one line (#241).
 - Return one JSON-RPC error object for invalid empty batches, retain complete session-history records at the head-window boundary, and preserve Unicode question-based `needs-input` classification (#241).
 - Decode property-list-escaped Trunk schedule paths before staleness checks and keep subprocess deadlines effective while input is supplied (#241).
+- Resolve inferred project-scoped memory to the enclosing Git repository from deeply nested directories; outside a repository, keep the current-directory-name fallback (#238).
 - Fix regeneration of Grok CLI AUTO cards from their session transcripts (#240).
 - Fix docs-site search results so heading links target the rendered section anchors (#240).
 

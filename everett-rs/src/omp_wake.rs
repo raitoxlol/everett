@@ -65,12 +65,7 @@ fn heartbeat_after_read(session_id: &str, after_read: impl FnOnce()) -> Option<V
     }
     let command = crate::nudge::NudgeCommand::resolve().ok()?;
     live.insert("ts".into(), json!(crate::session::now()));
-    let temporary = path.with_extension(format!("{}.tmp", std::process::id()));
-    fs::write(&temporary, serde_json::to_vec(&live).ok()?).ok()?;
-    if fs::rename(&temporary, path).is_err() {
-        let _ = fs::remove_file(temporary);
-        return None;
-    }
+    crate::storage::save(&path, &serde_json::to_vec(&live).ok()?).ok()?;
     Some(json!({"pid":pid, "process_identity":identity, "executable":command.executable,
         "everett_home":command.everett_home, "auth_provider":command.auth_provider,
         "command_prefix":command.prefix()}))
