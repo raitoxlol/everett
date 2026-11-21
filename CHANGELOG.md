@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+### Added
+
+- Add private cross-account `LOCAL@SCOPE` inboxes with grants scoped to one sender owner/device and one recipient device/session; encrypt message bodies end-to-end and support grant revocation (#244).
+
 ### Fixed
 
 - Treat session cards as fresh for 24 hours from their last modification, independent of session activity; stale cards no longer replace extracted session text (#241).
