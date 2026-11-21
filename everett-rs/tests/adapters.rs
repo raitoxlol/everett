@@ -232,6 +232,30 @@ fn card_wins_over_title_and_stale_card_is_ignored() {
 }
 
 #[test]
+fn card_older_than_a_day_is_ignored_even_on_an_idle_session() {
+    let fx = fixture();
+    let transcript = plant(&fx, "claude.jsonl", ".claude/projects/app/claude.jsonl");
+    let card = fx.write(".everett/cards/c-1.md", "# Login fix\nFixing auth redirect; next: tests.\n");
+    // Both the transcript and the card are a month old, but only two hours apart:
+    // the session did not outlive the card, yet the card itself is stale.
+    let old = std::time::SystemTime::now() - std::time::Duration::from_secs(30 * 24 * 3600);
+    let older = std::time::SystemTime::now() - std::time::Duration::from_secs(30 * 24 * 3600 + 2 * 3600);
+    for (path, mtime) in [(&transcript, old), (&card, older)] {
+        std::fs::File::options()
+            .write(true)
+            .open(path)
+            .unwrap()
+            .set_modified(mtime)
+            .unwrap();
+    }
+    let out = fx.run(&["ls", "--json", "--hours", "2000"]);
+    assert_eq!(out.status.code(), Some(0), "{}", fx.stdout(&out));
+    let list: Vec<serde_json::Value> = serde_json::from_str(&fx.stdout(&out)).unwrap();
+    let listed = session(&list, "c-1");
+    assert_eq!(listed["card"], "");
+}
+
+#[test]
 fn auto_card_is_tagged_auto() {
     let fx = fixture();
     plant(&fx, "claude.jsonl", ".claude/projects/app/claude.jsonl");
