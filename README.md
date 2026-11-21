@@ -264,7 +264,7 @@ Done. MAX_RETRIES is now 5 and the backoff test covers the cap.
 | `everett subscribe <session\|project> [--as S] [--remove]` | Delivers another session's (or a project's) events to your inbox. |
 | `everett send --to <id-prefix\|name> "<text>"` | Skips routing and delivers to one session. The target is an exact session ID or T3 thread ID, a unique session ID prefix, an exact title (case-insensitive), the card's name (`Atlas: …` → `atlas`), or the project name (repository name for T3/Claude worktrees, otherwise the working folder's name). A lone card named only after its project does not hide other sessions in that project. If more than one session matches at a lookup step, Everett lists them and sends nothing. |
 | `everett send --spawn [--dir D] [--harness H] "<text>"` | When routing says `NEW` with confidence ≥ 0.6, starts a new headless session and prints its reply and new session id. The directory defaults to the folder of the best-matching session, else the current one. |
-| `everett cards` | Card coverage per harness: agent-written, automatic, missing. |
+| `everett cards [--regenerate-auto] [--dry-run] [--hours N]` | Card coverage per harness; optionally refresh existing automatic cards. |
 | `everett skills [QUERY] [--match TASK] [--get NAME] [--source S] [--shortlist] [--json]` | The skill hub over every harness's `SKILL.md` playbooks. `--match` prints the one skill that fits a task (exit 1 when none does); `--get` prints a named skill from the best source that has it; `--shortlist` shows what sessions in this project are told up front; a bare query lists. |
 | `everett onboard [--yes] [--span-days N] [--no-backfill] [--no-mcp]` | Human setup TUI (welcome, account approval, agents, guides, review/apply and instruction prompt; optional settings under Advanced); `--yes` runs it non-interactively for scripts. |
 | `everett install-hooks [--claude] [--codex] [--omp] [--grok] [--pi] [--devin] [--apply]` | Prints the hook registrations. `--apply` backs up the file, then merges idempotently. |
@@ -284,6 +284,7 @@ Done. MAX_RETRIES is now 5 and the backoff test covers the cap.
 
 Global option: `--hours N` sets the look-back window (default 72).
 It also applies to `control read --session`; increase it for older sessions.
+Preview automatic-card regeneration for the last week with `everett cards --regenerate-auto --dry-run --hours 168`; omit `--dry-run` to write updates. Regeneration updates only existing AUTO-marked cards for supported Claude Code, Codex, and Grok CLI sessions, not agent-written or missing cards.
 MCP `everett_control` resolves session IDs within a fixed 168-hour window.
 Transcript reads stream JSONL histories and return a bounded tail. Devin ATIF JSON
 transcripts support recent user/assistant reads; Devin SQLite sessions do not yet support reads.
