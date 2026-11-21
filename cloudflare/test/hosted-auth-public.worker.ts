@@ -407,3 +407,50 @@ describe('Public enrollment: shared-cap isolation', () => {
     expect((await whoami(body.token!)).owner).toBe(body.owner);
   });
 });
+
+it('deferred cleanup permits fresh public device login with a backlog', async () => {
+  const auth = env.AUTH_STATE!.get(env.AUTH_STATE!.idFromName(issuer));
+  await runInDurableObject(auth, (_, state) => {
+    for (let i = 0; i < 100; i++) {
+      state.storage.sql.exec("INSERT INTO device_requests(poll_hash,user_code,name,state,event_id,expires_at,last_poll) VALUES(?,?,?,'pending',?,0,0)", `backlog${i}`, `backlog${i}`, 'fixture', `backlog${i}`);
+    }
+    for (let i = 0; i < 1200; i++) {
+      state.storage.sql.exec("INSERT INTO oauth_tokens VALUES(?,'access','fixture',0,0)", `backlog${i}`);
+    }
+  });
+  const remaining = () => runInDurableObject(auth, (_, state) =>
+    state.storage.sql.exec<{ n: number }>("SELECT count(*) n FROM oauth_tokens WHERE expires_at=0").one().n);
+  for (let i = 0; i < 20; i++) {
+    expect((await fetchWorker('/.well-known/oauth-authorization-server')).status).toBe(200);
+  }
+  expect(await remaining()).toBe(1200);
+  const device = await begin();
+  expect(await remaining()).toBe(944);
+  const browser = await loginAs(ALICE);
+  expect((await approve(browser, device.user_code)).status).toBe(303);
+  const result = await poll(device.device_code);
+  expect(result.body.state).toBe('approved');
+  expect((await whoami(result.body.token!)).deviceId).toBe(result.body.agent_id);
+  expect(await remaining()).toBe(0);
+});
+
+it('expiry sweeps read index entries, not live rows', async () => {
+  const auth = env.AUTH_STATE!.get(env.AUTH_STATE!.idFromName(issuer));
+  const reads = await runInDurableObject(auth, (_, state) => {
+    const sql = state.storage.sql, now = Date.now(), live = now + 600000;
+    for (let i = 0; i < 64; i++) {
+      sql.exec('INSERT INTO gh_states VALUES(?,?,?,?)', `live${i}`, 'b', '/', live);
+      sql.exec("INSERT INTO device_requests(poll_hash,user_code,name,state,event_id,expires_at,last_poll) VALUES(?,?,?,'pending',?,?,0)", `live${i}`, `live${i}`, 'fixture', `live${i}`, live);
+      sql.exec("INSERT INTO auth_codes VALUES(?,?,?,?,?,?,?,?,0)", `live${i}`, `live${i}`, 'a', 'c', 'r', 'res', 'ch', live);
+    }
+    let total = 0;
+    for (const table of ['gh_states', 'device_requests', 'auth_codes']) {
+      const cursor = sql.exec(`DELETE FROM ${table} WHERE rowid IN(SELECT rowid FROM ${table} WHERE expires_at<=? LIMIT 128)`, now);
+      cursor.toArray();
+      total += cursor.rowsRead;
+    }
+    return total;
+  });
+  // Without expires_at indexes each sweep scans all 64 live rows (192 total).
+  expect(reads).toBeLessThanOrEqual(6);
+});
