@@ -1,64 +1,91 @@
 # Everett for Hermes Agent
 
-This Hermes-supported portable Agent Plugins v1 package connects Hermes to Everett's existing
-local stdio MCP server and bundles a short skill. It uses the `plugin.json` and `mcp.json`
-format; it does not install another Everett runtime.
+Native Hermes Agent plugin (`plugin.yaml` + Python) for [Everett](https://github.com/raitoxlol/everett).
+
+It connects Hermes to your local Everett runtime with per-session caller identity across CLI, TUI, Desktop, and shared messaging gateways. It also keeps a portable `plugin.json` + `mcp.json` fallback for non-Hermes Agent Plugins v1 hosts (Hermes always loads `plugin.yaml` first).
+
+## What it adds
+
+- **Per-session bound Everett tools** (`everett` toolset): discovers every tool from `everett mcp --harness hermes` and runs a bounded per-`(session_id, cwd)` stdio pool so shared gateways bind each conversation to its real Hermes session ID without fabricating identity.
+- **Prompt-cache-safe shared core**: registers a bounded `everett` system prompt section frozen once per new session, injecting card guidance and Everett's compact shared core without mutating the cached prompt mid-conversation.
+- **Automatic inbox pickup**: checks a session's Everett inbox with a zero-subprocess `stat` fast path, streams validated `O_NOFOLLOW` + `0600` files directly with per-record bounds, and surfaces only validated message IDs in `pre_llm_call`, `transform_tool_result` (preserving JSON object structure), and `pre_verify`. Raw sender text never enters hook nudges.
+- **Session lifecycle and fallback cards**: binds per-session liveness on `on_session_start` without clobbering sibling Hermes sessions in the same gateway process, keeps live wake active across idle gaps after `on_session_end`, releases liveness and closes cached MCP processes on `on_session_finalize`, and atomically creates an `<!-- everett:auto -->` fallback card only when no card exists.
+- **Native `/everett` slash command**: `/everett status`, `/everett ls [hours]`, `/everett inbox`, `/everett core`, and `/everett help` across CLI, TUI, Desktop, and gateway chats.
+- **Opt-in live inbox wake**: when `live_wake: true` is enabled, a lightweight background watcher nudges active sessions via `ctx.inject_message` with validated local message IDs only (remote/relay traffic stays passive).
+- **Host-isolation ready**: runs cleanly under both `plugins.isolation: in_process` and `plugins.isolation: host`.
 
 ## Requirements
 
-- Everett is already installed, and `everett` is on the `PATH` visible to the Hermes process.
-- Run `everett login` in the same local Everett profile before using the tools. The existing
-  account check remains in force.
-- This package has no ChatGPT or separate ChatGPT-plugin dependency.
-- Use a Hermes Agent release with Agent Plugins v1 support. The package's plugin-manager
-  installation, MCP discovery, and tool-call path were exercised against Hermes Agent commit
-  `fe8b920cae09`.
+- Everett 2.4+ installed with `everett` on the `PATH` visible to Hermes (or configured via `binary`).
+- Run `everett login` once in the same local Everett profile to enable Everett MCP tools.
+- Hermes Agent `>=0.20` with native plugin support.
 
 ## Install
 
-For a local Everett Git checkout, use its absolute `file://` URL and the plugin subdirectory:
-
-```sh
-hermes plugins install "file:///absolute/path/to/everett#plugins/everett-hermes" --no-enable
-hermes plugins enable everett-hermes
-```
-
-The local `file://` source must be a Git checkout containing committed package files. Repository-ref
-installs use repository content fetched by Hermes; make sure the package files are included.
-To install from the repository:
+From GitHub:
 
 ```sh
 hermes plugins install raitoxlol/everett#plugins/everett-hermes --no-enable
 hermes plugins enable everett-hermes
 ```
 
-Start a new Hermes session (or restart the Hermes gateway) after enabling. Remove the package
-with `hermes plugins remove everett-hermes`.
-
-## Tools and identity
-
-The MCP server is named `everett_hermes` and exposes Everett's MCP tool set. For a read-only check,
-use `everett_ls` and `everett_whoami`; Hermes exposes them as
-`mcp__everett_hermes__everett_ls` and `mcp__everett_hermes__everett_whoami` through its
-`tool_search` / `tool_describe` / `tool_call` flow. `everett_ls` is an overview, not a way to
-select a handoff target.
-
-The plugin deliberately passes no session identity. Everett binds only identity it detects from
-the actual host; a shared or gateway-managed Hermes process may not identify one unique caller, in
-which case `everett_whoami` reports that limitation rather than fabricating a session ID.
-
-Hermes `config.yaml` MCP entries with the same server name override the package's entry. This
-package uses `everett_hermes` to avoid replacing an existing `everett` registration. If both
-servers are configured under different names, both connect and expose duplicate Everett tools;
-remove the old manual registration if you want only this plugin.
-
-## Runtime smoke
-
-The opt-in `tests/smoke.py` exercises the Hermes client with loopback-only model and account
-fixtures. It runs `hermes pm install` in the isolated profile and requires a matching Hermes
-`oneshot` session read from `state.db` in read-only mode.
+From a local Everett Git checkout:
 
 ```sh
-source /path/to/hermes-agent/activate
-python3 plugins/everett-hermes/tests/smoke.py --everett-binary /path/to/everett --hermes-executable /path/to/hermes
+hermes plugins install "file:///absolute/path/to/everett#plugins/everett-hermes" --no-enable
+hermes plugins enable everett-hermes
+```
+
+Restart Hermes (or the Hermes gateway) after enabling. Remove it with `hermes plugins remove everett-hermes`.
+
+If you previously added a manual `mcp_servers.everett` entry in `~/.hermes/config.yaml`, remove it so Hermes does not expose duplicate Everett tools.
+
+## Settings
+
+Configure optional settings under `plugins.entries.everett-hermes.settings` in `~/.hermes/config.yaml`:
+
+```yaml
+plugins:
+  entries:
+    everett-hermes:
+      # Required by Hermes only if you want live_wake to trigger gateway chat turns:
+      allow_gateway_injection: false
+      settings:
+        binary: ""              # Optional absolute path to `everett`
+        inject_core: true       # Freeze Everett core + card note into new session prompts
+        inbox_hooks: true       # Surface unread validated message IDs on turn/tool/verify hooks
+        auto_cards: true        # Write fallback <!-- everett:auto --> cards on session end
+        live_wake: false        # Opt-in background watcher using ctx.inject_message
+        wake_poll_seconds: 5.0  # Poll interval for live_wake (1.0-60.0s)
+        max_cached_clients: 16  # Max per-session MCP subprocesses kept warm (1-64)
+```
+
+## Security model
+
+- **No fabricated identity**: native tool calls require a valid Hermes session ID and never fall back to process-based heuristics. Foreign harness env vars (`CLAUDE_SESSION_ID`, `CODEX_THREAD_ID`, etc.) are stripped from child processes.
+- **Account gate preserved**: Everett's own `everett login` check stays enforced on every MCP call.
+- **Untrusted inbox isolation**: inbox hooks and live wake traverse owned, non-group/world-writable ancestor directories and read only user-owned, private (`0600`) regular files via `O_NOFOLLOW` with per-record bounds, validate session and message IDs against strict ASCII patterns, exclude relay and named-peer records from live wake, and emit only constant-template notices containing IDs—never raw sender text.
+- **No recursion**: when Everett spawns Hermes with `EVERETT_SEND` set, prompt injection, inbox hooks, auto-cards, and live wake stay silent.
+
+## Verify
+
+Validate the plugin with Hermes:
+
+```sh
+hermes plugins doctor plugins/everett-hermes --ci
+hermes plugins validate plugins/everett-hermes
+```
+
+Run the unit and integration test suite:
+
+```sh
+python3 -m unittest discover -s plugins/everett-hermes/tests -v
+```
+
+Run the opt-in end-to-end smoke test against real `everett` and `hermes` executables (using isolated temp homes and loopback model/auth fixtures):
+
+```sh
+python3 plugins/everett-hermes/tests/smoke.py \
+  --everett-binary /path/to/everett \
+  --hermes-executable /path/to/hermes
 ```

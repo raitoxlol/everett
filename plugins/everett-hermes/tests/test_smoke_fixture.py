@@ -69,6 +69,15 @@ class SmokeFixtureTests(unittest.TestCase):
         self.assertEqual(name, smoke.TOOL_CALL)
         self.assertEqual(arguments["calls"][0]["arguments"], {"harness": "hermes", "all": True})
 
+    def test_direct_native_tools_bypass_tool_search_when_exposed_directly(self):
+        available = {smoke.WHOAMI, smoke.LIST}
+        self.assertEqual(smoke._next_call(smoke.SIGNED_IN, [], available=available), (smoke.WHOAMI, {}))
+        after_whoami = [{"role": "assistant", "tool_calls": [{"function": {"name": smoke.WHOAMI, "arguments": "{}"}}]}]
+        self.assertEqual(
+            smoke._next_call(smoke.SIGNED_IN, after_whoami, available=available),
+            (smoke.LIST, {"harness": "hermes", "all": True}),
+        )
+
     def test_auxiliary_model_request_has_no_smoke_marker(self):
         prompt = smoke.SIGNED_OUT + ": check identity"
         chat = {"messages": [{"role": "user", "content": prompt}]}

@@ -52,6 +52,11 @@ jobs:
         env:
           EVERETT_VERIFY_BINARY: ${{ github.workspace }}/everett-rs/target/release/everett
         run: python3 -m unittest discover -s plugins/everett-local/tests -v
+      - name: Verify the native Hermes plugin against the release binary
+        working-directory: .
+        env:
+          EVERETT_VERIFY_BINARY: ${{ github.workspace }}/everett-rs/target/release/everett
+        run: python3 -m unittest discover -s plugins/everett-hermes/tests -v
       - name: Exercise the release binary over isolated stores
         env:
           EVERETT_VERIFY_BINARY: ${{ github.workspace }}/everett-rs/target/release/everett

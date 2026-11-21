@@ -1126,6 +1126,58 @@ pub fn bind_live(session_id: &str, harness: &str) {
     }
 }
 
+/// Bind or refresh one session in a multi-session host process (such as a Hermes gateway
+/// or TUI) without dropping sibling sessions hosted under the same PID.
+pub fn bind_live_session(session_id: &str, harness: &str) {
+    if !valid_id(session_id) {
+        return;
+    }
+    let caller_pid = harness_pid();
+    let Ok(_guard) = lock_live(session_id) else { return };
+    let target = live_path(session_id);
+    if let Some(parent) = target.parent() {
+        let _ = crate::storage::private_dir(parent);
+    }
+    let mut body: Map<String, Value> = fs::read_to_string(&target)
+        .ok()
+        .and_then(|t| serde_json::from_str::<Value>(&t).ok())
+        .and_then(|v| v.as_object().cloned())
+        .unwrap_or_default();
+    body.insert("pid".into(), json!(caller_pid));
+    body.insert("harness".into(), json!(harness));
+    body.insert("state".into(), json!("turn"));
+    body.insert("ts".into(), json!(now()));
+    let _ = crate::storage::save(&target, serde_json::to_string(&Value::Object(body)).unwrap().as_bytes());
+}
+
+/// Release one session's live record owned by this multi-session host process (or a dead PID),
+/// leaving sibling sessions untouched and preserving unexpired hop memory for forwarding limits.
+pub fn release_live_session(session_id: &str, harness: &str) {
+    if !valid_id(session_id) {
+        return;
+    }
+    let caller_pid = harness_pid();
+    let Ok(_guard) = lock_live(session_id) else { return };
+    let target = live_path(session_id);
+    let Ok(text) = fs::read_to_string(&target) else { return };
+    let Ok(Value::Object(body)) = serde_json::from_str::<Value>(&text) else { return };
+    let owner_harness = body.get("harness").and_then(Value::as_str).unwrap_or("");
+    let owner_pid = body.get("pid").and_then(Value::as_i64).unwrap_or(0) as i32;
+    if owner_harness != harness || (owner_pid != caller_pid && owner_pid > 0 && pid_alive(owner_pid)) {
+        return;
+    }
+    let hops = body.get("hops").and_then(Value::as_i64).unwrap_or(0);
+    let hops_ts = body.get("hops_ts").and_then(Value::as_f64).unwrap_or(0.0);
+    if hops > 0 && now() - hops_ts <= HOP_MEMORY_SECONDS {
+        let mut retained = Map::new();
+        retained.insert("hops".into(), json!(hops));
+        retained.insert("hops_ts".into(), json!(hops_ts));
+        let _ = crate::storage::save(&target, serde_json::to_string(&Value::Object(retained)).unwrap().as_bytes());
+    } else {
+        let _ = fs::remove_file(&target);
+    }
+}
+
 fn write_live(session_id: &str, harness: &str, state: &str, rebind: bool) {
     let caller_pid = harness_pid();
     // Lock order: caller PID, then one session at a time. Keep the PID guard through
