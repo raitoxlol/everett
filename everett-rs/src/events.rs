@@ -673,7 +673,13 @@ pub fn classify(message: &str) -> Option<(String, String)> {
         .unwrap_or_default();
     if !question.is_empty() {
         let trimmed = question.trim_end();
-        let start = trimmed.rfind('?').map(|i| i.saturating_sub(1)).unwrap_or(0);
+        // Start one character (not one byte) before the last '?', so a
+        // multi-byte character there cannot split the slice.
+        let start = trimmed
+            .rfind('?')
+            .and_then(|i| trimmed[..i].char_indices().next_back())
+            .map(|(i, _)| i)
+            .unwrap_or(0);
         let s = sentence(&question, start);
         let out: String = s.chars().take(MAX_TEXT).collect();
         return Some((
