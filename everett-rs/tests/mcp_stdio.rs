@@ -189,6 +189,22 @@ fn listing_can_include_automation_sessions() {
 }
 
 #[test]
+fn send_tool_schema_bounds_wait_and_timeout() {
+    let fx = home_with_claude_session();
+    let mut s = Server::start(&fx, &[]);
+    let tools = s.request("tools/list", None)["result"]["tools"].clone();
+    let send = tools
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|t| t["name"] == "everett_send")
+        .expect("everett_send advertised");
+    let props = &send["inputSchema"]["properties"];
+    assert_eq!(props["timeout"]["maximum"], json!(1800));
+    assert_eq!(props["wait"]["maximum"], json!(1800));
+}
+
+#[test]
 fn round_trip_over_pipes() {
     let fx = home_with_claude_session();
     let mut s = Server::start(&fx, &[]);

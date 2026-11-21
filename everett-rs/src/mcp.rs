@@ -82,9 +82,9 @@ pub fn tools() -> &'static Vec<Value> {
                     "spawn": {"type": "boolean", "description": "Allow starting a NEW session when routing says NEW.", "default": false},
                     "dir": s("Working directory for a spawned session."),
                     "harness": {"type": "string", "enum": crate::harness::SPAWNABLE, "description": "Harness for a spawned session."},
-                    "timeout": {"type": "number", "description": "Seconds to wait for the reply (default 300).", "minimum": 1},
+                    "timeout": {"type": "number", "description": "Seconds to wait for the reply (default 300).", "minimum": 1, "maximum": 1800},
                     "mode": {"type": "string", "enum": crate::send::MODES, "description": "ping (default): immediate headless delivery, a verified local Claude native nudge, or a T3 thread inbox nudge. An unavailable transport is an error, never silent queue fallback. inbox is explicit legacy queue delivery; auto selects ping for T3 threads; resume is a compatibility mode."},
-                    "wait": {"type": "number", "minimum": 0, "description": "Explicit inbox mode: seconds to wait for a reply (default 0). Does not ping or wake the target."},
+                    "wait": {"type": "number", "minimum": 0, "maximum": 1800, "description": "Explicit inbox mode: seconds to wait for a reply (default 0). Does not ping or wake the target."},
                     "reply_to": s("Answer this Everett message id; the reply goes to its sender."),
                 }, "required": ["text"], "additionalProperties": false},
             }),
@@ -637,6 +637,9 @@ pub(crate) fn tool_send(
             "\"timeout\" must be a positive number".to_string(),
         ));
     }
+    // The stdio server answers one request at a time; an unbounded wait would
+    // stall every later call, so cap at the same bound everett_control uses.
+    let timeout = timeout.min(crate::control::MAX_WAIT);
     let (caller, caller_bound) = caller_session(args, identity)?;
     let caller_harness = identity.get("harness").and_then(Value::as_str);
     let mode = str_arg(args, "mode", false)?;
@@ -667,6 +670,7 @@ pub(crate) fn tool_send(
             "\"wait\" must be a non-negative number".to_string(),
         ));
     }
+    let wait = wait.min(crate::control::MAX_WAIT);
     let reply_to = str_arg(args, "reply_to", false)?;
     if exact_ids && (spawn_ok || mode != "inbox" || (to.is_empty() && reply_to.is_empty())) {
         return Err(err2(
