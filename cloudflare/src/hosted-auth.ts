@@ -353,8 +353,7 @@ export class HostedAuth extends DurableObject<HostedAuthEnv> {
   }
   /// Minute window of the last auth_rates sweep. In-memory only: an evicted
   /// object sweeps once on wake. Stale buckets are harmless because #rate
-  /// compares the window, so sweeping more than once per window only costs
-  /// a full scan (auth_rates has no window index; one would double upsert writes).
+  /// compares the window, so one sweep per window is enough.
   #ratesSwept = -1;
   /// Expiry sweeps are bounded batches over expires_at indexes. Every read path
   /// re-checks expires_at itself, so retained expired rows never authorize.
