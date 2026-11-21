@@ -29,7 +29,6 @@ const version = (fs.readFileSync(path.join(ROOT, 'everett-rs/Cargo.toml'), 'utf8
 let commit = '';
 try { commit = execSync('git rev-parse --short HEAD', { cwd: ROOT, stdio: ['ignore', 'pipe', 'ignore'] }).toString().trim(); } catch {}
 
-// ---------------------------------------------------------------- helpers
 
 const esc = (s) => String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 const read = (rel) => fs.readFileSync(path.join(ROOT, rel), 'utf8');
@@ -55,23 +54,30 @@ function makeSlugger() {
 }
 
 const HEADING = /^(#{1,6})\s+(.*?)\s*#*\s*$/;
-const FENCE = /^\s*(```|~~~)/;
+const FENCE = /^(?: {0,3})(`{3,}|~{3,})(.*)$/;
 
-// [{i, level, text}] for headings outside fenced code.
-function scanHeadings(lines) {
-  const out = [];
+function* fencedLines(lines) {
   let fence = null;
-  lines.forEach((line, i) => {
-    const f = line.match(FENCE);
-    if (f) { if (!fence) fence = f[1]; else if (line.trim().startsWith(fence)) fence = null; return; }
-    if (fence) return;
-    const m = line.match(HEADING);
-    if (m) out.push({ i, level: m[1].length, text: m[2] });
-  });
-  return out;
+  for (const line of lines) {
+    const match = line.match(FENCE);
+    const opens = match && (match[1][0] !== '`' || !match[2].includes('`'));
+    const fenced = Boolean(fence || opens);
+    if (!fence && opens) fence = match[1];
+    else if (fence && match && match[1].startsWith(fence) && !match[2].trim()) fence = null;
+    yield { line, fenced };
+  }
 }
 
-// ---------------------------------------------------------------- sources
+function scanHeadings(lines) {
+  const out = [];
+  let i = 0;
+  for (const { line, fenced } of fencedLines(lines)) {
+    const heading = !fenced && line.match(HEADING);
+    if (heading) out.push({ i, level: heading[1].length, text: heading[2] });
+    i++;
+  }
+  return out;
+}
 
 const sourceCache = new Map();
 function source(file) {
@@ -137,7 +143,6 @@ function assemble(page) {
   return { lines, file: page.file, topAnchors };
 }
 
-// ---------------------------------------------------------------- page table
 
 const pages = [];
 groups.forEach((g) => g.pages.forEach((p, i) => pages.push({ ...p, group: g, pos: i + 1 })));
@@ -167,7 +172,6 @@ for (const p of pages) {
 for (const p of pages) if (p.file && !p.sections) fileToPage.set(p.file, p.slug);
 if (!fileToPage.has('README.md')) fileToPage.set('README.md', 'introduction');
 
-// ---------------------------------------------------------------- links
 
 const REPO_BLOB = `${site.repo}/blob/${site.branch}/`;
 const MEDIA_PREFIX = 'docs/assets/';
@@ -226,16 +230,14 @@ const LINK = /(!?\[(?:[^\[\]]|\[[^\]]*\])*\])\(\s*<?([^)\s>]+)>?(\s+"[^"]*")?\s*
 function rewriteLinks(text, file, page, fmt) {
   const out = [];
   let prose = [];
-  let fence = null;
   const flush = () => {
     if (!prose.length) return;
     out.push(prose.join('\n').replace(LINK, (_, label, url, title = '') => `${label}(${fmt(resolveLink(url, file, page))}${title})`));
     prose = [];
   };
-  for (const line of text.split('\n')) {
-    const f = line.match(FENCE);
-    if (fence || f) {
-      if (!fence) { flush(); fence = f[1]; } else if (f && line.trim().startsWith(fence)) fence = null;
+  for (const { line, fenced } of fencedLines(text.split('\n'))) {
+    if (fenced) {
+      flush();
       out.push(line);
     } else prose.push(line);
   }
@@ -255,11 +257,7 @@ const mdFmt = (r) => {
   return r.href;
 };
 
-// ---------------------------------------------------------------- markdown → HTML
 
-let slugger = makeSlugger();
-let toc = [];
-let h2Count = 0;
 
 const HL = {
   comment: (s) => `<span class="tok-c">${s}</span>`,
@@ -284,51 +282,67 @@ function highlight(code, lang) {
   return e;
 }
 
-const marked = new Marked({ gfm: true });
-marked.use({
-  renderer: {
-    heading({ tokens, depth, text }) {
-      const id = slugger(text);
-      const inner = this.parser.parseInline(tokens);
-      if (depth === 2 || depth === 3) toc.push({ depth, id, text: plain(text) });
-      const n = depth === 2 ? `<span class="n" aria-hidden="true">${String(++h2Count).padStart(2, '0')}</span>` : '';
-      const body = inner.includes('<a ') ? inner : `<a class="hl" href="#${esc(id)}">${inner}</a>`;
-      return `<h${depth} id="${esc(id)}">${n}${body}</h${depth}>\n`;
-    },
-    code({ text, lang }) {
-      const language = (lang || '').split(/\s/)[0];
-      const label = language ? `<span class="code-lang">${esc(language)}</span>` : '';
-      return `<div class="code">${label}<button class="cp" type="button" data-copy aria-label="Copy code">copy</button><pre><code>${highlight(text, language)}</code></pre></div>\n`;
-    },
-    table(token) {
-      return `<div class="table-wrap">${defaultTable.call(this, token)}</div>\n`;
-    },
-    html({ text }) { return esc(text); },
-    link({ href, title, tokens }) {
-      const inner = this.parser.parseInline(tokens);
-      const ext = /^https?:\/\//.test(href);
-      return `<a href="${esc(href)}"${title ? ` title="${esc(title)}"` : ''}${ext ? ' rel="noopener" class="ext"' : ''}>${inner}</a>`;
-    },
-    blockquote({ tokens }) {
-      const body = this.parser.parse(tokens);
-      return `<blockquote>${body}</blockquote>\n`;
-    },
-  },
-});
 const defaultTable = Renderer.prototype.table;
 
+const inlineRenderer = {
+  html({ text }) { return esc(text); },
+  link({ href, title, tokens }) {
+    const inner = this.parser.parseInline(tokens);
+    const ext = /^https?:\/\//.test(href);
+    return `<a href="${esc(href)}"${title ? ` title="${esc(title)}"` : ''}${ext ? ' rel="noopener" class="ext"' : ''}>${inner}</a>`;
+  },
+};
+
 function renderMarkdown(md) {
-  slugger = makeSlugger();
-  toc = [];
-  h2Count = 0;
-  const html = marked.parse(md);
-  return { html, toc: toc.slice() };
+  const slugger = makeSlugger();
+  const headings = new Map();
+  let h2Count = 0;
+  const marked = new Marked({ gfm: true });
+  marked.use({
+    renderer: {
+      heading(token) {
+        const { tokens, depth, text } = token;
+        const id = slugger(text);
+        const inner = this.parser.parseInline(tokens);
+        if (depth === 2 || depth === 3) headings.set(token, { depth, id, text: plain(text) });
+        const n = depth === 2 ? `<span class="n" aria-hidden="true">${String(++h2Count).padStart(2, '0')}</span>` : '';
+        const body = inner.includes('<a ') ? inner : `<a class="hl" href="#${esc(id)}">${inner}</a>`;
+        return `<h${depth} id="${esc(id)}">${n}${body}</h${depth}>\n`;
+      },
+      code({ text, lang }) {
+        const language = (lang || '').split(/\s/)[0];
+        const label = language ? `<span class="code-lang">${esc(language)}</span>` : '';
+        return `<div class="code">${label}<button class="cp" type="button" data-copy aria-label="Copy code">copy</button><pre><code>${highlight(text, language)}</code></pre></div>\n`;
+      },
+      table(token) {
+        return `<div class="table-wrap">${defaultTable.call(this, token)}</div>\n`;
+      },
+      ...inlineRenderer,
+      blockquote({ tokens }) {
+        const body = this.parser.parse(tokens);
+        return `<blockquote>${body}</blockquote>\n`;
+      },
+    },
+  });
+  const tokens = marked.lexer(md);
+  const html = marked.parser(tokens);
+  const sections = [{ id: '', head: '', text: [] }];
+  for (const token of tokens) {
+    const heading = headings.get(token);
+    if (heading) {
+      sections.push({ id: heading.id, head: heading.text, text: [] });
+    } else if (token.type !== 'code' || token.codeBlockStyle === 'indented') {
+      sections.at(-1).text.push(token.raw);
+    }
+  }
+  return { html, toc: [...headings.values()], sections };
 }
 
-// ---------------------------------------------------------------- templates
+const inlineMarkdown = new Marked({ gfm: true });
+inlineMarkdown.use({ renderer: inlineRenderer });
+
 // Design language: raitox.tech/everett (project.css, everett-setup.css).
 
-const allPagesFlat = pages;
 const readingMinutes = (md) => Math.max(1, Math.round(md.split(/\s+/).filter(Boolean).length / 220));
 const groupNo = (g) => String(groups.indexOf(g) + 1).padStart(2, '0');
 
@@ -398,9 +412,9 @@ ${body}
 function docPage(p) {
   const root = '../';
   const htmlMd = rewriteLinks(p.body.lines.map((l) => l.t).join('\n'), p.body.file, p, htmlFmt(root));
-  const { html, toc: pageToc } = renderMarkdown(htmlMd);
-  const prev = allPagesFlat[p.index - 1];
-  const next = allPagesFlat[p.index + 1];
+  const { html, toc: pageToc, sections } = renderMarkdown(htmlMd);
+  const prev = pages[p.index - 1];
+  const next = pages[p.index + 1];
   const sourceLabel = p.file ? `${p.file}${p.sections ? ` · ${p.sections.join(', ')}` : ''}` : `site/pages/${p.slug}.md`;
   const sourceUrl = `${REPO_BLOB}${p.file || `site/pages/${p.slug}.md`}`;
   const docNo = `${groupNo(p.group)}.${String(p.pos).padStart(2, '0')}`;
@@ -436,11 +450,11 @@ ${html}
   </main>${tocHtml}
 </div>
 <div class="scrim" data-close-nav hidden></div>`;
-  return { html: layout({ root, title: `${p.title} · Everett docs`, description: p.summary, current: p.slug, body, mdHref: `${root}${p.slug}.md` }), toc: pageToc, htmlMd };
+  return { html: layout({ root, title: `${p.title} · Everett docs`, description: p.summary, current: p.slug, body, mdHref: `${root}${p.slug}.md` }), sections };
 }
 
 function renderInline(md) {
-  return marked.parseInline(esc(md).replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"').replace(/&amp;/g, '&'));
+  return inlineMarkdown.parseInline(md);
 }
 
 function homePage() {
@@ -517,7 +531,6 @@ function homePage() {
   return layout({ root, title: 'Everett docs · many sessions, one mind', description: site.tagline, current: 'index', body, bodyClass: 'is-home', mdHref: `${root}index.md`, side: false });
 }
 
-// ---------------------------------------------------------------- build
 
 fs.rmSync(OUT, { recursive: true, force: true });
 fs.mkdirSync(OUT, { recursive: true });
@@ -530,7 +543,7 @@ const frontMatter = (o) => `---\n${Object.entries(o).filter(([, v]) => v).map(([
 const absUrl = (slug) => `${SITE_URL}/${pageUrl(slug)}`;
 
 for (const p of pages) {
-  const { html, toc: pageToc } = docPage(p);
+  const { html, sections } = docPage(p);
   write(`${p.slug}/index.html`, html);
 
   const md = rewriteLinks(p.body.lines.map((l) => l.t).join('\n'), p.body.file, p, mdFmt).replace(/\n{3,}/g, '\n\n').trim();
@@ -541,17 +554,8 @@ for (const p of pages) {
   write(`${p.slug}.md`, `${fm}# ${p.title}\n\n> ${p.summary}\n\n${md}\n`);
   llmsFull.push(`# ${p.title}\n\nURL: ${absUrl(p.slug)}\nSummary: ${p.summary}\nRead when: ${p.readWhen}\n\n${md.replace(/^(#{2,5}) /gm, '#$1 ')}\n`);
 
-  // Search entries: page plus each H2/H3 section with its text.
-  const sections = [{ id: '', head: '', text: [] }];
-  for (const l of p.body.lines) {
-    const m = l.t.match(/^(#{2,3})\s+(.*)$/);
-    if (m) sections.push({ id: null, head: plain(m[2]), text: [] }); else sections[sections.length - 1].text.push(l.t);
-  }
-  let k = 0;
   for (const s of sections) {
-    if (s.id === null) s.id = (pageToc.filter((t) => t.text === s.head)[0] || pageToc[k] || {}).id || '';
-    if (s.head) k++;
-    const text = plain(s.text.join(' ').replace(/```[\s\S]*?```/g, ' ').replace(/[|#>*-]+/g, ' ')).replace(/\s+/g, ' ').trim();
+    const text = plain(s.text.join('').replace(/```[\s\S]*?```/g, ' ').replace(/[|#>*-]+/g, ' ')).replace(/\s+/g, ' ').trim();
     search.push({ t: p.title, h: s.head, u: `${pageUrl(p.slug)}${s.id ? `#${s.id}` : ''}`, g: p.group.title, x: (s.head ? text : `${p.summary} ${text}`).slice(0, 600) });
   }
 }
@@ -589,7 +593,6 @@ if (SITE_URL) {
   write('robots.txt', `User-agent: *\nAllow: /\nSitemap: ${SITE_URL}/sitemap.xml\n`);
 }
 
-// ---------------------------------------------------------------- report
 
 const unique = [...new Set(problems)];
 console.log(`Built ${pages.length + 1} pages into ${path.relative(process.cwd(), OUT) || OUT} (v${version}${commit ? ` @ ${commit}` : ''}).`);

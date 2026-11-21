@@ -25,8 +25,8 @@ fn local_mcp_sender_can_follow_pickup_and_recover_a_consumed_reply() {
     let entry = &listed["requests"][0];
     let id = entry["message_id"].as_str().unwrap();
     assert_eq!(entry["message_id"], receipt["message_id"]);
-    assert_eq!(entry["to"], "worker");
-    assert_eq!(entry.as_object().unwrap().len(), 3);
+    let ts = entry["ts"].as_f64().expect("sent request timestamp");
+    assert_eq!(*entry, json!({"message_id": id, "to": "worker", "ts": ts}));
     assert_eq!(tool_json(&call(&worker, "everett_sent", json!({})))["requests"], json!([]));
     for (identity, args) in [([].as_slice(), json!({})), (worker.as_slice(), json!({"session_id":"sender"}))] {
         let denied = call(identity, "everett_sent", args);

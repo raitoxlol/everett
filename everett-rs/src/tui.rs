@@ -2251,7 +2251,7 @@ impl Drop for TermGuard {
 
 /// A cancelled wizard returns None. Applied results retain write failures for the caller.
 pub fn run(
-    args: &crate::cli::Args,
+    args: &crate::onboard::Options,
     mut cfg: OnboardConfig,
 ) -> Result<Option<onboard::ApplyResult>, std::io::Error> {
     use std::io::IsTerminal;

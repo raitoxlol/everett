@@ -7,7 +7,7 @@ use serde_json::{json, Map, Value};
 
 use crate::adapters::{external, grok as grok_adapter, hermes};
 use crate::error::{EverettError, Result};
-use crate::proc::{ps_commands, run_capture, shlex_join, which, RunOutput};
+use crate::proc::{ps_commands, run_capture, which, RunOutput};
 use crate::session::{file_mtime, now, Session};
 use crate::{cards, inbox, paths};
 use crate::execution::{child_env, HeadlessCommand};
@@ -138,10 +138,6 @@ pub fn wait_idle_with(
         }
         sleep(poll);
     }
-}
-
-pub fn format_command(command: &[String]) -> String {
-    shlex_join(command)
 }
 
 pub fn require_harness(harness: &str, env: Option<&HashMap<String, String>>) -> Result<()> {
@@ -373,27 +369,6 @@ fn new_session_id(harness: &str, cwd: &str, since: f64, output: &str) -> String 
     fresh.first().map(|s| s.id.clone()).unwrap_or_default()
 }
 
-/// Remember sessions Everett started, so ls/route show them although they ran headless.
-fn record_spawn(harness: &str, session_id: &str, cwd: &str, text: &str) {
-    let path = crate::session::home().join(".everett").join("spawned.jsonl");
-    if let Some(parent) = path.parent() {
-        let _ = std::fs::create_dir_all(parent);
-    }
-    if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(&path) {
-        use std::io::Write;
-        let text: String = text.chars().take(200).collect();
-        let line = serde_json::to_string(&json!({
-            "ts": now(),
-            "harness": harness,
-            "id": session_id,
-            "cwd": cwd,
-            "text": text,
-        }))
-        .unwrap();
-        let _ = f.write_all((line + "\n").as_bytes());
-    }
-}
-
 /// Start a NEW headless session in `cwd`, wait for its reply, return it with the new session id.
 pub fn spawn(
     harness: &str,
@@ -464,7 +439,7 @@ pub fn spawn_for(
         session_id = new_session_id(harness, cwd, started, &format!("{}{}", result.stdout, result.stderr));
     }
     if !session_id.is_empty() {
-        record_spawn(harness, &session_id, cwd, text);
+        crate::spawn_history::record(harness, &session_id, cwd, text);
     }
     Ok(SpawnResult {
         command,
@@ -541,7 +516,7 @@ pub fn delivery_mode_for(
 
 pub(crate) enum Delivery {
     Inbox,
-    Ping(Option<crate::t3_wake::Binding>),
+    Ping(Option<inbox::t3_dispatch::Binding>),
     Resume,
 }
 
@@ -638,15 +613,20 @@ impl From<EverettError> for PingFailure {
     }
 }
 
+pub(crate) fn validate_ping(text: &str, timeout: f64) -> Result<()> {
+    if text.trim().is_empty() || text.len() > crate::peer::BODY_CAP || !timeout.is_finite() || timeout <= 0.0 {
+        return Err(EverettError::new(2, "Ping requires non-empty text within 64 KiB and a positive finite timeout"));
+    }
+    Ok(())
+}
+
 pub(crate) fn ping_with_binding(
     session: &Session, text: &str, timeout: f64, caller: Option<&str>, caller_harness: Option<&str>,
-    binding: Option<&crate::t3_wake::Binding>,
+    binding: Option<&inbox::t3_dispatch::Binding>,
 ) -> std::result::Result<Map<String, Value>, PingFailure> {
     require_local_prompt(caller)?;
     refuse_self(session, caller)?;
-    if text.trim().is_empty() || text.len() > crate::peer::BODY_CAP || !timeout.is_finite() || timeout <= 0.0 {
-        return Err(EverettError::new(2, "Ping requires non-empty text within 64 KiB and a positive finite timeout").into());
-    }
+    validate_ping(text, timeout)?;
     let transport = ping_transport(session, None);
     if transport == PingTransport::T3 {
         let resolved;
@@ -826,7 +806,7 @@ struct InboxOptions<'a> {
     wait: f64,
     poll: f64,
     key: Option<&'a str>,
-    t3_binding: Option<&'a crate::t3_wake::Binding>,
+    t3_binding: Option<&'a inbox::t3_dispatch::Binding>,
 }
 
 fn send_inbox_with_options(
@@ -873,10 +853,7 @@ fn send_inbox_with_options(
     }
     let who = sender_info_as(caller, caller_harness);
     let sender = who.get("sender").and_then(|v| v.as_str()).unwrap_or(inbox::HUMAN);
-    let t3_ping = t3_binding.map(|binding| json!({
-        "thread_id": binding.thread, "harness": session.harness, "data_home": binding.data_home,
-    }));
-    let message = post_inbox_message(&session.id, text, &who, t3_ping)?;
+    let message = post_inbox_message(&session.id, text, &who, t3_binding)?;
     let webhook = if external::is_external(&session.harness) {
         match crate::receiver_webhook::after_local_queue(&session.id, &session.harness, &message) {
             Ok(value) => value,
@@ -932,7 +909,7 @@ fn post_inbox_message(
     to: &str,
     text: &str,
     who: &Map<String, Value>,
-    t3_ping: Option<Value>,
+    t3_ping: Option<&inbox::t3_dispatch::Binding>,
 ) -> Result<Map<String, Value>> {
     let sender = who.get("sender").and_then(|v| v.as_str()).unwrap_or(inbox::HUMAN);
     let hops = caller_hops_for(Some(sender));
@@ -944,7 +921,7 @@ fn post_inbox_message(
     }
     let mut metadata = inbox::relay_context(sender).as_ref().and_then(inbox::forward_provenance);
     if let Some(ping) = t3_ping {
-        metadata.get_or_insert_with(Map::new).insert("t3_ping".into(), ping);
+        ping.store(metadata.get_or_insert_with(Map::new));
     }
     inbox::post(
         to,

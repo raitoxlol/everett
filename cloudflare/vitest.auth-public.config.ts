@@ -2,7 +2,7 @@ import { cloudflareTest } from '@cloudflare/vitest-plugin';
 import { defineConfig } from 'vitest/config';
 
 export default defineConfig({
-  test: { include: ['test/hosted-auth-public.worker.ts'] },
+  test: { include: ['test/hosted-auth-public.worker.ts', 'test/mesh.worker.ts'] },
   plugins: [cloudflareTest({
     wrangler: { configPath: './wrangler.jsonc' },
     miniflare: { bindings: {

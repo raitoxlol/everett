@@ -1,3 +1,4 @@
+import { z } from 'zod';
 import type { OwnerRelay } from './owner-relay';
 import { RelayError } from './protocol';
 
@@ -22,10 +23,15 @@ export interface HostedConfig {
   clients: string[]; introspectionSecret: string;
 }
 const list = (raw?: string) => [...new Set((raw ?? '').split(',').map(v => v.trim()).filter(Boolean))];
+export const deviceName = z.string().trim().min(1).max(100).regex(/^[^\x00-\x1f\x7f]+$/);
+export const isHttpLoopback = (url: URL) =>
+  url.protocol === 'http:' && ['localhost', '127.0.0.1', '[::1]'].includes(url.hostname);
+export const isMeshPath = (path: string) => path.startsWith('/v1/mesh/');
+
 export function exactUrl(raw: string, loopback = false): string {
   let url: URL;
   try { url = new URL(raw); } catch { throw new RelayError('authentication_unconfigured', 503); }
-  const local = loopback && url.protocol === 'http:' && ['localhost', '127.0.0.1', '[::1]'].includes(url.hostname);
+  const local = loopback && isHttpLoopback(url);
   if ((!local && url.protocol !== 'https:') || url.username || url.password || url.hash || url.href !== raw || raw.length > 2048) throw new RelayError('authentication_unconfigured', 503);
   return raw;
 }
@@ -62,4 +68,4 @@ export function requirePublicHost(url: URL, c: HostedConfig): string {
 export function requireOAuth(c: HostedConfig) {
   if (!c.redirects.length || !c.resources.length || !c.clients.length || c.introspectionSecret.length < 32 || c.introspectionSecret.length > 1024) throw new RelayError('oauth_unconfigured', 503);
 }
-export const hostedAuthPaths = (path: string) => path === '/enroll' || path.startsWith('/enroll/') || path.startsWith('/auth/') || path.startsWith('/v2/auth/') || path.startsWith('/oauth/') || path === '/.well-known/oauth-authorization-server';
+export const hostedAuthPaths = (path: string) => isMeshPath(path) || path === '/enroll' || path.startsWith('/enroll/') || path.startsWith('/auth/') || path.startsWith('/v2/auth/') || path.startsWith('/oauth/') || path === '/.well-known/oauth-authorization-server';
