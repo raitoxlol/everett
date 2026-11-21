@@ -736,3 +736,67 @@ fn missing_device_bundle_has_an_actionable_error_without_echoing_server_secrets(
     assert!(!String::from_utf8_lossy(&unknown.stderr).contains(TOKEN));
     assert!(!String::from_utf8_lossy(&unknown.stdout).contains(TOKEN));
 }
+
+#[test]
+fn access_cli_manages_local_policy_and_syncs_relay_grants() {
+    let f = fixture();
+    let server = Server::new();
+    server.configure(&f);
+
+    let show = f.run(&["access", "--json"]);
+    assert!(show.status.success(), "{}", String::from_utf8_lossy(&show.stderr));
+    let initial: Value = serde_json::from_slice(&show.stdout).unwrap();
+    assert_eq!(initial["policy"]["mode"], "allowlist");
+    assert_eq!(initial["policy"]["allow_external_send"], true);
+    assert_eq!(initial["policy"]["max_hops"], 3);
+
+    let set = f.run(&[
+        "permissions",
+        "set",
+        "--mode",
+        "same-account",
+        "--external-send",
+        "off",
+        "--max-hops",
+        "2",
+        "--json",
+    ]);
+    assert!(set.status.success(), "{}", String::from_utf8_lossy(&set.stderr));
+    let updated: Value = serde_json::from_slice(&set.stdout).unwrap();
+    assert_eq!(updated["policy"]["mode"], "same-account");
+    assert_eq!(updated["policy"]["allow_external_send"], false);
+    assert_eq!(updated["policy"]["max_hops"], 2);
+
+    let allow = f.run(&[
+        "access",
+        "allow",
+        "--owner",
+        "other-owner",
+        "--device",
+        "other-agent",
+        "--address",
+        "claude@wmm.10462",
+        "--label",
+        "Alice",
+        "--sync",
+        "--json",
+    ]);
+    assert!(allow.status.success(), "{}", String::from_utf8_lossy(&allow.stderr));
+    let allowed: Value = serde_json::from_slice(&allow.stdout).unwrap();
+    assert_eq!(allowed["policy"]["allowed_senders"].as_array().unwrap().len(), 1);
+    assert_eq!(allowed["grant"]["grantId"], "grant-0123456789abcdef0123456789abcdef");
+    assert!(server.calls.lock().unwrap().iter().any(|p| p == "/v2/relay/grantInbox"));
+
+    let deny = f.run(&["access", "deny", "--owner", "other-owner", "--reason", "paused", "--json"]);
+    assert!(deny.status.success(), "{}", String::from_utf8_lossy(&deny.stderr));
+    let denied: Value = serde_json::from_slice(&deny.stdout).unwrap();
+    assert!(denied["policy"]["allowed_senders"].as_array().unwrap().is_empty());
+    assert_eq!(denied["policy"]["blocked_senders"].as_array().unwrap().len(), 1);
+
+    let reset = f.run(&["access", "reset", "--json"]);
+    assert!(reset.status.success(), "{}", String::from_utf8_lossy(&reset.stderr));
+    let clean: Value = serde_json::from_slice(&reset.stdout).unwrap();
+    assert_eq!(clean["policy"]["mode"], "allowlist");
+    assert_eq!(clean["policy"]["allow_external_send"], true);
+    assert!(clean["policy"]["blocked_senders"].as_array().unwrap().is_empty());
+}

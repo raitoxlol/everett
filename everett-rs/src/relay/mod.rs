@@ -753,6 +753,9 @@ pub fn send_address_as(
             &keys.device.device_id,
         )?;
         let cross_owner = resolved.owner != owner;
+        if cross_owner {
+            crate::access::check_outgoing_cross_org()?;
+        }
         let pin = Paired {
             device: resolved.device.clone(),
             deployment: deployment()?,
@@ -1515,6 +1518,15 @@ fn import_inner(
             hops,
             external_untrusted,
         } => {
+            if envelope.owner != keys.device.owner {
+                crate::access::check_incoming_cross_org(
+                    &envelope.owner,
+                    &envelope.from_device,
+                    attestation.inbox.as_ref().map(|inbox| inbox.address.as_str()),
+                    envelope.hop,
+                    !reply_to.is_empty(),
+                )?;
+            }
             if !reply_to.is_empty() {
                 let (_, out) = find_outgoing(&keys.device.owner, &reply_to)?;
                 if out.envelope.from_device != keys.device.device_id
