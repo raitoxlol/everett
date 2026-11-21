@@ -105,7 +105,7 @@ pub fn project_for(cwd: &str) -> String {
         return String::new();
     }
     let mut probe = path.as_path();
-    for _ in 0..12 {
+    loop {
         if probe.join(".git").exists() {
             return probe
                 .file_name()
