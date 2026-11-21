@@ -146,42 +146,10 @@ fn review(plan: Plan) -> String {
     lines.join("\n")
 }
 
-fn has_conflicting_options(args: &crate::cli::Args) -> bool {
-    args.onboard_yes
-        || args.no_mcp
-        || args.no_backfill
-        || args.jev_key_env.is_some()
-        || args.schedule_merge
-        || args.onboard_span_days_explicit
-}
-
 fn apply(plan: Plan) -> Vec<(&'static str, Result<String, String>)> {
     let mut results = Vec::new();
     if plan.hooks {
-        let harness = plan.agent.harness();
-        let result = match plan.agent {
-            Agent::Omp => crate::install::apply(harness, None),
-            _ => {
-                let events = crate::install::HOOKS
-                    .iter()
-                    .find(|(name, _)| *name == harness)
-                    .map(|(_, hooks)| {
-                        hooks
-                            .iter()
-                            .map(|(event, _, _)| (*event).to_string())
-                            .collect::<Vec<_>>()
-                    })
-                    .unwrap_or_default();
-                if events.is_empty() {
-                    Err(format!(
-                        "no Everett hooks are available for {}",
-                        plan.agent.label()
-                    ))
-                } else {
-                    crate::install::apply(harness, Some(&events))
-                }
-            }
-        };
+        let result = crate::install::apply(plan.agent.harness(), None);
         results.push(("hooks/extension", result));
     }
     if plan.mcp {
@@ -193,12 +161,12 @@ fn apply(plan: Plan) -> Vec<(&'static str, Result<String, String>)> {
     results
 }
 
-pub fn run(args: &crate::cli::Args) -> i32 {
-    let Some(token) = args.onboard_handoff.as_deref() else {
+pub fn run(token: Option<&str>, preview: bool, conflicting_options: bool) -> i32 {
+    let Some(token) = token else {
         eprintln!("everett onboard: --handoff-preview requires --handoff");
         return 2;
     };
-    if has_conflicting_options(args) {
+    if conflicting_options {
         eprintln!("everett onboard: --handoff cannot be combined with existing onboarding options");
         return 2;
     }
@@ -210,7 +178,7 @@ pub fn run(args: &crate::cli::Args) -> i32 {
         }
     };
     let summary = review(plan);
-    if args.onboard_handoff_preview {
+    if preview {
         println!("{summary}");
         println!("Preview only; no files were changed.");
         return 0;

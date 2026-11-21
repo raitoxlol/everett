@@ -42,6 +42,8 @@ pub mod session;
 pub mod skill_match;
 pub mod skills;
 mod storage;
+mod spawn_history;
+mod search_terms;
 mod nudge;
 pub mod t3_wake;
 pub mod timefmt;

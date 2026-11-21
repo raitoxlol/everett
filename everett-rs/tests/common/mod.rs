@@ -13,6 +13,15 @@ pub fn scrub_caller_identity(command: &mut Command) {
     }
 }
 
+/// Clear the harness home overrides (T3CODE_HOME, DEVIN_HOME, ...) a test's
+/// parent shell may carry, so a child pointed at a temp HOME cannot read the
+/// developer's real session stores.
+pub fn scrub_sandbox(command: &mut Command) {
+    for name in SANDBOX_UNSET {
+        command.env_remove(name);
+    }
+}
+
 pub struct Fixture {
     pub dir: tempfile::TempDir,
 }
@@ -24,6 +33,10 @@ impl Fixture {
 
     /// Run the everett binary with HOME+EVERETT_HOME pointed at the fixture.
     pub fn run(&self, args: &[&str]) -> Output {
+        self.command(args).output().unwrap()
+    }
+
+    fn command(&self, args: &[&str]) -> Command {
         let mut cmd = Command::new(env!("CARGO_BIN_EXE_everett"));
         cmd.args(args)
             .current_dir(self.home())
@@ -43,58 +56,22 @@ impl Fixture {
             .env_remove("EVERETT_SESSION_ID")
             .env_remove("EVERETT_SKILL_DIRS");
         scrub_caller_identity(&mut cmd);
-        cmd.output().unwrap()
+        cmd
     }
 
     /// Like run, but with the binary's working directory set.
     pub fn run_in(&self, cwd: &Path, args: &[&str]) -> Output {
-        let mut cmd = Command::new(env!("CARGO_BIN_EXE_everett"));
-        cmd.args(args)
-            .env("EVERETT_HOME", self.home())
-            .env_remove("DEVIN_HOME")
-            .env_remove("PI_CODING_AGENT_DIR")
-            .env_remove("HERMES_HOME")
-            .env_remove("T3CODE_HOME")
-            .env_remove("EVERETT_T3_BIN")
-            .env("HOME", self.home())
-            .env("EVERETT_NOTIFY", "none")
-            .env("PATH", HERMETIC_PATH)
-            .env_remove("TYPESAFE_API_KEY")
-            .env_remove("EVERETT_SEND")
-            .env("EVERETT_HOP_LIMIT", "on")
-            .env_remove("EVERETT_HOPS")
-            .env_remove("EVERETT_SESSION_ID")
-            .env_remove("EVERETT_SKILL_DIRS")
-            .current_dir(cwd);
-        scrub_caller_identity(&mut cmd);
-        cmd.output().unwrap()
+        self.command(args).current_dir(cwd).output().unwrap()
     }
 
     /// Same, with stdin attached and extra env.
     pub fn run_stdin(&self, args: &[&str], input: &str, extra_env: &[(&str, &str)]) -> Output {
         use std::io::Write;
-        let mut cmd = Command::new(env!("CARGO_BIN_EXE_everett"));
-        cmd.args(args)
-            .current_dir(self.home())
-            .env("EVERETT_HOME", self.home())
-            .env_remove("DEVIN_HOME")
-            .env_remove("PI_CODING_AGENT_DIR")
-            .env_remove("HERMES_HOME")
-            .env_remove("T3CODE_HOME")
-            .env_remove("EVERETT_T3_BIN")
-            .env("HOME", self.home())
-            .env("EVERETT_NOTIFY", "none")
-            .env("PATH", HERMETIC_PATH)
-            .env_remove("TYPESAFE_API_KEY")
-            .env_remove("EVERETT_SEND")
-            .env("EVERETT_HOP_LIMIT", "on")
-            .env_remove("EVERETT_HOPS")
-            .env_remove("EVERETT_SESSION_ID")
-            .env_remove("EVERETT_SKILL_DIRS")
+        let mut cmd = self.command(args);
+        cmd
             .stdin(std::process::Stdio::piped())
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::piped());
-        scrub_caller_identity(&mut cmd);
         for (k, v) in extra_env {
             cmd.env(k, v);
         }

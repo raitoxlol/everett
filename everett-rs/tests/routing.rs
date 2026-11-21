@@ -69,6 +69,12 @@ fn choose(option: &str, confidence: f64) -> Map<String, Value> {
     json!({"choice": option, "confidence": confidence}).as_object().unwrap().clone()
 }
 
+fn assert_worker_only(criteria: &Map<String, Value>) {
+    assert_eq!(criteria.len(), 3, "{criteria:?}");
+    assert!(criteria.contains_key("new") && criteria.contains_key("none"));
+    assert!(criteria["s0"].as_str().unwrap().contains("Atlas ingest pipeline"));
+}
+
 #[test]
 fn jev_only_sees_the_worker_as_a_candidate() {
     let seen = Rc::new(RefCell::new(Map::new()));
@@ -81,7 +87,7 @@ fn jev_only_sees_the_worker_as_a_candidate() {
     };
     let r = route_with(ASK, &[coordinator(), worker()], None, Some("k"), &jev, None).unwrap();
     assert_eq!((r["decision"].clone(), r["session"]["id"].clone()), (json!("SESSION"), json!("work-1")));
-    assert!(!seen.borrow().iter().any(|(k, v)| k != "new" && k != "none" && v.as_str().unwrap_or("").contains("coord-1")));
+    assert_worker_only(&seen.borrow());
 
     let s2 = seen.clone();
     let jev_none = move |_: &str, crit: &Map<String, Value>, _: &str| {
@@ -89,6 +95,5 @@ fn jev_only_sees_the_worker_as_a_candidate() {
         Ok(choose("none", 0.0))
     };
     route_with(ASK, &[coordinator(), worker(), caller()], None, Some("k"), &jev_none, Some("caller-1")).unwrap();
-    let offered: String = seen.borrow().values().map(|v| v.as_str().unwrap_or("").to_string()).collect();
-    assert!(!offered.contains("caller-1"));
+    assert_worker_only(&seen.borrow());
 }

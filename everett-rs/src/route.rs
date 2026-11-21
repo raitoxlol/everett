@@ -1,14 +1,13 @@
 use std::collections::{HashMap, HashSet};
-use std::sync::OnceLock;
 use std::time::Duration;
 
-use regex::Regex;
 use serde_json::{json, Map, Value};
 
 use crate::config;
 use crate::error::{EverettError, Result};
 use crate::proc::shlex_quote;
-use crate::session::{now, project, Session};
+use crate::search_terms::{tokens, words};
+use crate::session::{now, project_match_key, Session};
 
 pub const JEV_URL: &str = "https://api.typesafe.ai/v1/systemone";
 pub const JEV_MODEL: &str = "jev-1.13.0";
@@ -18,11 +17,6 @@ pub const INSTRUCTIONS: &str =
      Pick the one session whose ongoing work this instruction continues. \
      Choose \"new\" if it is clearly a new, separate task. \
      Choose \"none\" if it is ambiguous between sessions or too vague to place.";
-
-const STOP_WORDS: &[&str] = &[
-    "a", "an", "and", "are", "as", "at", "be", "by", "for", "from", "how", "i", "in", "is", "it",
-    "of", "on", "or", "our", "the", "this", "to", "we", "with",
-];
 
 pub fn verify_key(key: &str) -> bool {
     check_key(key).is_ok()
@@ -51,15 +45,9 @@ fn jev_reason(message: &str) -> &str {
     message.strip_prefix(JEV_ERROR_PREFIX).unwrap_or(message)
 }
 
-/// The session's project, casefolded — how a request names it. Worktrees count as their
-/// repository; the home directory and Codex chat folders are not projects.
-pub fn project_name(session: &Session) -> String {
-    project(&session.cwd).unwrap_or_default().to_lowercase()
-}
-
 /// True when the request spells out the session's project name, word for word and in order.
 fn names_project(request: &[String], session: &Session) -> bool {
-    let name = words(&project_name(session));
+    let name = words(&project_match_key(session));
     if name.is_empty() || (name.len() == 1 && tokens(&name[0]).is_empty()) {
         return false;
     }
@@ -94,7 +82,7 @@ pub fn is_coordinator(session: &Session) -> bool {
 
 pub fn describe(session: &Session) -> String {
     let project = {
-        let p = project_name(session);
+        let p = project_match_key(session);
         if p.is_empty() { "no-project".to_string() } else { p }
     };
     let role = if is_coordinator(session) { " role=coordinator" } else { "" };
@@ -251,24 +239,8 @@ pub fn call_jev(text: &str, crit: &Map<String, Value>, key: &str) -> Result<Map<
         })
 }
 
-fn token_re() -> &'static Regex {
-    static RE: OnceLock<Regex> = OnceLock::new();
-    RE.get_or_init(|| Regex::new(r"[^\W_]+").unwrap())
-}
-
-fn words(text: &str) -> Vec<String> {
-    token_re().find_iter(&text.to_lowercase()).map(|m| m.as_str().to_string()).collect()
-}
-
-pub fn tokens(text: &str) -> Vec<String> {
-    words(text)
-        .into_iter()
-        .filter(|t| !STOP_WORDS.contains(&t.as_str()) && (t.chars().count() > 1 || !t.is_ascii()))
-        .collect()
-}
-
 fn document(session: &Session) -> String {
-    let project = project_name(session);
+    let project = project_match_key(session);
     let headline = if !session.title.is_empty() { &session.title } else { &session.first_user };
     format!("{} {} {} {}", session.card, headline, session.last_user, project)
 }

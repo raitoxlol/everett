@@ -8,6 +8,7 @@ pub mod omp;
 pub mod pi;
 pub(crate) mod t3_cli;
 pub mod t3code;
+pub(crate) mod transcript;
 
 pub(crate) fn scan(name: &str, since_hours: f64) -> Vec<crate::session::Session> {
     use crate::harness::Native;

@@ -51,10 +51,11 @@ pub fn render(sessions: &[Session], at: Option<f64>) -> String {
         } else {
             session.first_user.chars().take(90).collect()
         };
-        let work = work.replace('|', "/");
-        let last: String = session.last_user.chars().take(90).collect::<String>().replace('|', "/");
+        let cell = |s: &str| s.replace('|', "/").replace("\r\n", " ").replace(['\n', '\r'], " ");
+        let work = cell(&work);
+        let last: String = cell(&session.last_user.chars().take(90).collect::<String>());
         let when = strftime_local("%m-%d %H:%M", session.last_active);
-        lines.push(format!("| {} | {} | `{}` | {} | {} | {} |", dot, session.harness, session.cwd.replace('|', "/"), work, last, when));
+        lines.push(format!("| {} | {} | `{}` | {} | {} | {} |", dot, session.harness, cell(&session.cwd), work, last, when));
     }
     lines.push(String::new());
     lines.push(String::new());
@@ -71,4 +72,24 @@ pub fn write(sessions: &[Session], path: Option<&Path>) -> Result<PathBuf> {
     }
     fs::write(&target, render(sessions, None)).map_err(|e| EverettError::new(2, e.to_string()))?;
     Ok(target)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::session::Session;
+
+    #[test]
+    fn render_flattens_newlines_and_pipes_in_table_cells() {
+        let mut s = Session::new("external", "x-1", "/w|dir", "", "", 0.0);
+        s.title = "one\ntwo\r\nthree".into();
+        s.last_user = "ask\nnext".into();
+        let out = render(&[s], Some(0.0));
+        assert!(out.contains("one two three"), "{out}");
+        assert!(out.contains("ask next"), "{out}");
+        assert!(out.contains("`/w/dir`"), "{out}");
+        // Every table row is a single line.
+        let rows: Vec<&str> = out.lines().filter(|l| l.starts_with("| ")).collect();
+        assert_eq!(rows.len(), 2, "{out}");
+    }
 }

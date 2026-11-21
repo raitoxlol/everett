@@ -837,8 +837,10 @@ fn main() {
                 && std::io::stdin().is_terminal()
                 && std::io::stdout().is_terminal()
             {
-                a.span_days = 3;
-                std::process::exit(cli::cmd_onboard(&a));
+                std::process::exit(everett::onboard::run(&everett::onboard::Options {
+                    span_days: 3,
+                    ..Default::default()
+                }));
             }
             command().print_long_help().unwrap_or_else(|e| {
                 eprintln!("everett: {e}");
@@ -1165,12 +1167,7 @@ fn main() {
             cli::cmd_install_hooks(&a)
         }
         Cmd::GatewayWorker => everett::gateway::run_internal_worker(),
-        Cmd::Mcp { harness } => {
-            if let Some(h) = harness {
-                everett::host::set_launch_harness(&h);
-            }
-            cli::cmd_mcp(&a)
-        }
+        Cmd::Mcp { harness } => everett::mcp::serve(harness.as_deref()),
         Cmd::Tunnel { action } => match action {
             TunnelCmd::Watch {
                 profile,
@@ -1270,37 +1267,17 @@ fn main() {
             open,
             force,
             json,
-        } => {
-            a.auth_provider = provider;
-            a.auth_issuer = issuer;
-            a.auth_base_url = base_url;
-            a.auth_cancel = cancel;
-            a.auth_no_wait = no_wait;
-            a.device = device;
-            a.open = open;
-            a.force = force;
-            a.json = json;
-            cli::cmd_login(&a)
-        }
+        } => cli::cmd_login(
+            provider.as_deref(),
+            &everett::cloudflare_auth::LoginOptions { issuer, base_url, cancel, no_wait, device, open, force },
+            json,
+        ),
         Cmd::Identity { action: IdentityCmd::Diagnose { gateway_config, credentials_stdin: _, json } } => {
             everett::gateway::diagnostics::run(gateway_config.as_deref(), json)
         }
-        Cmd::Whoami { json, provider } => {
-            a.auth_provider = provider;
-            a.json = json;
-            cli::cmd_whoami(&a)
-        }
-        Cmd::Logout {
-            provider,
-            json,
-            revoke_device,
-        } => {
-            a.json = json;
-            a.auth_provider = provider;
-            a.revoke_device = revoke_device;
-            cli::cmd_logout(&a)
-        }
-        Cmd::Doctor => cli::cmd_doctor(&a),
+        Cmd::Whoami { json, provider } => cli::cmd_whoami(provider.as_deref(), json),
+        Cmd::Logout { provider, json, revoke_device } => cli::cmd_logout(provider.as_deref(), revoke_device, json),
+        Cmd::Doctor => everett::doctor::run(a.hours),
         Cmd::Onboard {
             handoff,
             handoff_preview,
@@ -1311,18 +1288,17 @@ fn main() {
             jev_key_env,
             schedule_merge,
         } => {
-            a.onboard_handoff = handoff;
-            a.onboard_handoff_preview = handoff_preview;
-            a.onboard_yes = yes;
-            a.span_days = span_days.unwrap_or(3);
-            a.onboard_span_days_explicit = span_days.is_some();
-            a.no_backfill = no_backfill;
-            a.no_mcp = no_mcp;
-            a.jev_key_env = jev_key_env;
-            a.schedule_merge = schedule_merge;
-            cli::cmd_onboard(&a)
+            if handoff.is_some() || handoff_preview {
+                let conflicting_options =
+                    yes || span_days.is_some() || no_backfill || no_mcp || jev_key_env.is_some() || schedule_merge;
+                everett::onboard_handoff::run(handoff.as_deref(), handoff_preview, conflicting_options)
+            } else {
+                everett::onboard::run(&everett::onboard::Options {
+                    yes, span_days: span_days.unwrap_or(3), no_backfill, no_mcp, jev_key_env, schedule_merge,
+                })
+            }
         }
-        Cmd::Hook { stem, args } => cli::cmd_hook(&stem, &args),
+        Cmd::Hook { stem, args } => everett::hooks_common::hook_main(&stem, &args),
     };
     std::process::exit(code);
 }

@@ -1,34 +1,13 @@
 use std::collections::HashSet;
-use std::fs;
-
-
-use serde_json::Value;
-
 use crate::adapters::{external, t3code};
 use crate::error::{EverettError, Result};
 use crate::proc::ps_commands;
-use crate::session::{home, now, Session};
+use crate::session::{now, Session};
 use crate::{cards, events};
 
 pub const LIVE_WINDOW: f64 = 600.0;
 pub const CAP: usize = 40;
 pub const AUTO_PREFIXES: &[&str] = &["You are ", "Automation:"];
-
-/// Sessions Everett started headless: shown like interactive ones.
-pub fn spawned_ids() -> HashSet<String> {
-    let mut ids = HashSet::new();
-    let Ok(text) = fs::read_to_string(home().join(".everett").join("spawned.jsonl")) else {
-        return ids;
-    };
-    for line in text.lines() {
-        if let Ok(Value::Object(d)) = serde_json::from_str::<Value>(line) {
-            if let Some(id) = d.get("id").and_then(|v| v.as_str()) {
-                ids.insert(id.to_string());
-            }
-        }
-    }
-    ids
-}
 
 pub fn is_auto(s: &Session, spawned: &HashSet<String>) -> bool {
     if spawned.contains(&s.id) {
@@ -71,7 +50,7 @@ pub fn scan(since_hours: f64, include_auto: bool, limit: Option<usize>, harness:
         }
     }
     if !include_auto {
-        let spawned = spawned_ids();
+        let spawned = crate::spawn_history::ids();
         sessions.retain(|s| !is_auto(s, &spawned));
     }
     sessions.sort_by(|a, b| b.last_active.partial_cmp(&a.last_active).unwrap_or(std::cmp::Ordering::Equal));
@@ -87,7 +66,7 @@ pub fn scan(since_hours: f64, include_auto: bool, limit: Option<usize>, harness:
     }
     let ps = ps_commands();
     mark_running(&mut sessions, &ps, now());
-    cards::apply(&mut sessions, None);
+    cards::apply(&mut sessions);
     events::apply(&mut sessions);
     sessions
 }
@@ -126,7 +105,7 @@ pub fn find(target: &str, sessions: &[Session]) -> Result<Session> {
     let target_fold = target.to_lowercase();
     let mut named: Vec<&Session> = sessions.iter().filter(|s| name(s) == target_fold).collect();
     // A lone card that only repeats its own project name must not hide the project's other sessions.
-    if named.len() == 1 && crate::route::project_name(named[0]) == target_fold {
+    if named.len() == 1 && crate::session::project_match_key(named[0]) == target_fold {
         named.clear();
     }
     let passes: Vec<Vec<&Session>> = vec![
@@ -134,7 +113,7 @@ pub fn find(target: &str, sessions: &[Session]) -> Result<Session> {
         sessions.iter().filter(|s| s.id.starts_with(target)).collect(),
         sessions.iter().filter(|s| s.title.trim().to_lowercase() == target_fold).collect(),
         named,
-        sessions.iter().filter(|s| crate::route::project_name(s) == target_fold).collect(),
+        sessions.iter().filter(|s| crate::session::project_match_key(s) == target_fold).collect(),
     ];
     for hits in passes {
         if hits.len() == 1 {

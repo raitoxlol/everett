@@ -183,7 +183,7 @@ const REJECTED_CACHE_CAP: usize = 4096;
 
 /// Diagnostic duplicate suppression only. Replay protection is authoritative
 /// elsewhere, so rejected rows can be forgotten once the server can no longer
-/// return them (or when the bounded cache is full).
+/// return them.
 struct RejectedCache {
     entries: HashMap<String, i64>,
 }
@@ -1570,11 +1570,6 @@ fn import_inner(
             }
             let digest = format!("{:x}", Sha256::digest(envelope.signed_bytes()));
             let local_id = local_message_id(envelope);
-            let local_reply = if reply_to.is_empty() {
-                String::new()
-            } else {
-                reply_to.clone()
-            };
             if let Some(existing) = inbox::find(&local_id) {
                 if existing["relay_digest"] != digest {
                     return Err(bad("duplicate message id has different ciphertext"));
@@ -1598,7 +1593,7 @@ fn import_inner(
                     } else {
                         "reply"
                     },
-                    &local_reply,
+                    &reply_to,
                     hops,
                     &from_harness,
                     &from_card,
@@ -1759,11 +1754,7 @@ fn drain_receiver_wakes(keys: &Keys) -> Result<()> {
         {
             continue;
         }
-        if !policy.allow.iter().any(|rule| {
-            rule.session_id == imported.session_id
-                && rule.cwd == imported.cwd
-                && rule.allows_sender(&imported.sender_device_id)
-        }) {
+        if !receiver_job_allowed(&policy, imported) {
             continue;
         }
         if !receiver_inbox_pending(&job) {
@@ -1795,11 +1786,7 @@ fn drain_receiver_wakes(keys: &Keys) -> Result<()> {
             Ok(policy) if policy.enabled => policy,
             _ => continue,
         };
-        if !current_policy.allow.iter().any(|rule| {
-            rule.session_id == imported.session_id
-                && rule.cwd == imported.cwd
-                && rule.allows_sender(&imported.sender_device_id)
-        }) || trusted(&imported.sender_device_id, &imported.sender_owner, None).is_err()
+        if !receiver_job_allowed(&current_policy, imported) || trusted(&imported.sender_device_id, &imported.sender_owner, None).is_err()
             || keys.device.owner != owner
         {
             continue;
@@ -1835,6 +1822,14 @@ fn drain_receiver_wakes(keys: &Keys) -> Result<()> {
         }
     }
     Ok(())
+}
+
+fn receiver_job_allowed(policy: &crate::receiver_wake::Policy, imported: &crate::receiver_wake::Imported) -> bool {
+    policy.allow.iter().any(|rule| {
+        rule.session_id == imported.session_id
+            && rule.cwd == imported.cwd
+            && rule.allows_sender(&imported.sender_device_id)
+    })
 }
 
 fn receiver_inbox_pending(job: &crate::receiver_wake::Job) -> bool {

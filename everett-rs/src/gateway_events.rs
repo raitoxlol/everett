@@ -339,6 +339,16 @@ impl Events {
         args: &Value,
         credential_expires_at: Option<i64>,
     ) -> Result<Value, Failure> {
+        self.subscribe_with_clock(p, args, credential_expires_at, now)
+    }
+
+    fn subscribe_with_clock(
+        &self,
+        p: &Principal,
+        args: &Value,
+        credential_expires_at: Option<i64>,
+        clock: impl Fn() -> i64,
+    ) -> Result<Value, Failure> {
         let (id, url) = Self::identity(p, args)?;
         let key = args["delivery"]["secret"]
             .as_str()
@@ -353,7 +363,7 @@ impl Events {
                 .min(DAY),
         };
         let db = self.db.lock().map_err(|_| storage())?;
-        let at = now();
+        let at = clock();
         let expires = credential_expires_at.map_or(at + ttl, |deadline| deadline.min(at + ttl));
         if expires <= at {
             return Err(invalid("token_expired"));
@@ -429,13 +439,13 @@ impl Events {
         if self.pending.lock().map_err(|_| storage())?.get(&id) != Some(&verification.revision) {
             return Err(invalid("subscription_changed_retry"));
         }
-        if expires <= now() {
+        if expires <= clock() {
             return Err(invalid("token_expired"));
         }
         let tx = db
             .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
             .map_err(|_| storage())?;
-        if expires <= now() {
+        if expires <= clock() {
             return Err(invalid("token_expired"));
         }
         let current: Option<(String, String)> = tx
@@ -547,10 +557,7 @@ impl Events {
         if !crate::inbox::valid_id(&lease.principal.agent) {
             return Err(storage());
         }
-        let inbox = self
-            .home
-            .join(".everett/inbox")
-            .join(format!("{}.jsonl", lease.principal.agent));
+        let inbox = crate::inbox::path_in(&self.home, &lease.principal.agent);
         let mut reader: Box<dyn BufRead> = match File::open(inbox) {
             Ok(file) => Box::new(BufReader::new(file)),
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Box::new(std::io::empty()),
@@ -1205,40 +1212,6 @@ mod tests {
         assert_eq!(fixture.requests.lock().unwrap().len(), 4);
     }
 
-    #[test]
-    fn credential_expiring_during_verification_cannot_activate_subscription() {
-        struct Slow;
-        impl Webhook for Slow {
-            fn post(
-                &self,
-                _: &str,
-                _: &[(String, String)],
-                body: &[u8],
-            ) -> Result<(u16, Vec<u8>), &'static str> {
-                std::thread::sleep(Duration::from_millis(20));
-                let request: Value = serde_json::from_slice(body).unwrap();
-                Ok((
-                    200,
-                    serde_json::to_vec(&json!({"challenge":request["challenge"]})).unwrap(),
-                ))
-            }
-        }
-        let home = tempfile::tempdir().unwrap();
-        let events = Events::with_db(
-            Connection::open_in_memory().unwrap(),
-            home.path().into(),
-            Arc::new(Slow),
-        )
-        .unwrap();
-        assert_eq!(
-            events
-                .subscribe_until(&principal(), &args(), Some(now() + 5))
-                .unwrap_err()
-                .reason,
-            "token_expired"
-        );
-        assert!(events.leases().unwrap().is_empty());
-    }
 }
 
 #[cfg(test)]

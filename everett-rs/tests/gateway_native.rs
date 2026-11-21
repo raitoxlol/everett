@@ -623,7 +623,16 @@ fn native_start_uncertain_receipts_never_dispatch_twice() {
         assert_eq!(result["diagnostic"],code,"{mode}: {result}");
         std::fs::remove_file(c.home.join("native-start-mode")).unwrap();
         let restarted=c.spawn_http(c.oauth_command(&cfg));
-        assert_eq!(native_outcome(&native_call(restarted,'a',"everett_start",args)),result);
+        assert_eq!(native_outcome(&native_call(restarted,'a',"everett_start",args.clone())),result);
+        if mode == "rejected" {
+            let mut corrupt = result;
+            corrupt["diagnostic"] = json!({"invalid_receipt": null});
+            let journal = rusqlite::Connection::open(c.home.join(".everett/gateway-starts.sqlite")).unwrap();
+            journal.execute("UPDATE starts SET result=?1", [corrupt.to_string()]).unwrap();
+            let response = native_call(restarted, 'a', "everett_start", args);
+            denied(&response);
+            assert!(response["result"]["structuredContent"].is_null(), "{response}");
+        }
         assert_eq!(native_records(&c).len(),1,"{mode} must not be retried automatically");
     }
 }

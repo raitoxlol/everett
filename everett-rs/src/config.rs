@@ -21,6 +21,14 @@ fn alias(name: &str) -> &str {
     }
 }
 
+/// A `[section]` header, tolerating trailing comments (`[auth] # issuer`).
+fn section_header(line: &str) -> Option<String> {
+    let rest = line.strip_prefix('[')?;
+    let end = rest.find(']')?;
+    let name = rest[..end].trim().trim_matches(|c| c == '[' || c == ']').trim();
+    (!name.is_empty()).then(|| name.to_string())
+}
+
 fn parse(text: &str) -> HashMap<String, String> {
     let mut values = HashMap::new();
     let mut section = String::new();
@@ -29,8 +37,8 @@ fn parse(text: &str) -> HashMap<String, String> {
         if line.is_empty() || line.starts_with('#') {
             continue;
         }
-        if line.starts_with('[') && line.ends_with(']') {
-            section = line.trim_matches(|c| c == '[' || c == ']').trim().to_string();
+        if let Some(name) = section_header(line) {
+            section = name;
             continue;
         }
         let Some((key, value)) = line.split_once('=') else {
@@ -232,31 +240,83 @@ pub fn set_value(key: &str, value: &str) -> io::Result<PathBuf> {
         Err(e) => return Err(e),
     };
     let mut lines: Vec<String> = text.lines().map(|l| l.to_string()).collect();
-    let quoted = format!("{} = \"{}\"", key, toml_escape(value));
-    let mut in_section = false;
-    let mut replaced = false;
-    let mut insert_at = lines.len();
-    for (i, raw) in lines.iter_mut().enumerate() {
-        let stripped = raw.trim();
-        if stripped.starts_with('[') && stripped.ends_with(']') {
-            if !in_section {
-                insert_at = i;
+    // Dotted keys name a section (`auth.provider` lives under `[auth]`); a
+    // top-level `auth.provider = ...` line loses to the section in parse().
+    let (section, leaf) = match key.split_once('.') {
+        Some((s, l)) if !s.is_empty() && !l.is_empty() => (Some(s), l),
+        _ => (None, key),
+    };
+    let entry = format!("{} = \"{}\"", leaf, toml_escape(value));
+
+    // Bounds of the wanted section: just after its header to the next header.
+    let mut bounds = None;
+    if let Some(want) = section {
+        for (i, raw) in lines.iter().enumerate() {
+            if section_header(raw.trim()).as_deref() == Some(want) {
+                let start = i + 1;
+                let end = lines[start..]
+                    .iter()
+                    .position(|l| section_header(l.trim()).is_some())
+                    .map(|p| start + p)
+                    .unwrap_or(lines.len());
+                bounds = Some((start, end));
+                break;
             }
-            in_section = true;
-            continue;
-        }
-        if in_section {
-            continue;
-        }
-        let name = stripped.split('=').next().unwrap_or("").trim();
-        if name == key {
-            *raw = quoted.clone();
-            replaced = true;
-            break;
         }
     }
-    if !replaced {
-        lines.insert(insert_at, quoted);
+    let top_end = lines
+        .iter()
+        .position(|l| section_header(l.trim()).is_some())
+        .unwrap_or(lines.len());
+
+    let mut replaced = false;
+    match bounds {
+        Some((start, end)) => {
+            for raw in &mut lines[start..end] {
+                let name = raw.trim().split('=').next().unwrap_or("").trim();
+                if name == leaf {
+                    *raw = entry.clone();
+                    replaced = true;
+                    break;
+                }
+            }
+            if !replaced {
+                lines.insert(start, entry);
+            }
+        }
+        None if section.is_none() => {
+            for raw in &mut lines[..top_end] {
+                let name = raw.trim().split('=').next().unwrap_or("").trim();
+                if name == leaf {
+                    *raw = entry.clone();
+                    replaced = true;
+                    break;
+                }
+            }
+            if !replaced {
+                lines.insert(top_end, entry);
+            }
+        }
+        None => {
+            // No [section] yet: keep an existing legacy dotted top-level line,
+            // otherwise append a real section so strict TOML stays valid.
+            let dotted = format!("{} = \"{}\"", key, toml_escape(value));
+            for raw in &mut lines[..top_end] {
+                let name = raw.trim().split('=').next().unwrap_or("").trim();
+                if name == key {
+                    *raw = dotted;
+                    replaced = true;
+                    break;
+                }
+            }
+            if !replaced {
+                if lines.last().is_some_and(|l| !l.trim().is_empty()) {
+                    lines.push(String::new());
+                }
+                lines.push(format!("[{}]", section.unwrap()));
+                lines.push(entry);
+            }
+        }
     }
     let tmp = path.with_file_name(format!(
         ".{}.{}.tmp",
@@ -285,5 +345,61 @@ mod tests {
         let text = fs::read_to_string(config_path()).unwrap();
         assert!(text.contains(r#"vault = "a\"b\\c\nline""#), "{text}");
         assert_eq!(get("vault", None, ""), "a\"b\\c\nline");
+    }
+
+    #[test]
+    fn set_value_writes_into_existing_section() {
+        if !crate::test_support::isolated("config::tests::set_value_writes_into_existing_section") {
+            return;
+        }
+        let dir = tempfile::tempdir().unwrap();
+        std::env::set_var("EVERETT_HOME", dir.path());
+        fs::create_dir_all(config_path().parent().unwrap()).unwrap();
+        fs::write(config_path(), "[auth] # issuer\nprovider = \"other\"\n").unwrap();
+        set_value("auth.provider", "cloudflare").unwrap();
+        assert_eq!(get("auth.provider", None, ""), "cloudflare");
+        let text = fs::read_to_string(config_path()).unwrap();
+        assert!(text.contains("[auth] # issuer"), "{text}");
+        assert!(text.contains("provider = \"cloudflare\""), "{text}");
+    }
+
+    #[test]
+    fn set_value_appends_missing_section() {
+        if !crate::test_support::isolated("config::tests::set_value_appends_missing_section") {
+            return;
+        }
+        let dir = tempfile::tempdir().unwrap();
+        std::env::set_var("EVERETT_HOME", dir.path());
+        fs::create_dir_all(config_path().parent().unwrap()).unwrap();
+        fs::write(config_path(), "vault = \"v\"\n").unwrap();
+        set_value("auth.provider", "cloudflare").unwrap();
+        assert_eq!(get("auth.provider", None, ""), "cloudflare");
+        let text = fs::read_to_string(config_path()).unwrap();
+        assert!(text.contains("[auth]\nprovider = \"cloudflare\""), "{text}");
+        // Idempotent: a second write replaces inside the section, not a duplicate.
+        set_value("auth.provider", "cloudflare").unwrap();
+        let text = fs::read_to_string(config_path()).unwrap();
+        assert_eq!(text.matches("provider").count(), 1, "{text}");
+    }
+
+    #[test]
+    fn set_value_replaces_legacy_dotted_line() {
+        if !crate::test_support::isolated("config::tests::set_value_replaces_legacy_dotted_line") {
+            return;
+        }
+        let dir = tempfile::tempdir().unwrap();
+        std::env::set_var("EVERETT_HOME", dir.path());
+        fs::create_dir_all(config_path().parent().unwrap()).unwrap();
+        fs::write(config_path(), "auth.provider = \"old\"\n").unwrap();
+        set_value("auth.provider", "cloudflare").unwrap();
+        assert_eq!(get("auth.provider", None, ""), "cloudflare");
+        let text = fs::read_to_string(config_path()).unwrap();
+        assert!(!text.contains("[auth]"), "{text}");
+    }
+
+    #[test]
+    fn parse_reads_keys_under_commented_section_headers() {
+        let values = parse("[auth] # issuer\nprovider = \"cloudflare\"\n");
+        assert_eq!(values.get("auth.provider").map(String::as_str), Some("cloudflare"));
     }
 }
