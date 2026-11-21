@@ -87,8 +87,10 @@ fn open_lock(target: &Path) -> Result<fs::File> {
         .create(true)
         .write(true)
         .truncate(true)
+        .mode(0o600)
         .open(lock_path(target))
         .map_err(|e| EverettError::new(2, format!("cannot lock {}: {}", target.display(), e)))?;
+    let _ = file.set_permissions(std::os::unix::fs::PermissionsExt::from_mode(0o600));
     Ok(file)
 }
 
@@ -1082,16 +1084,9 @@ pub fn record_hops(session_id: &str, hops: i64) {
     current.insert("hops".into(), json!(prev.max(hops)));
     current.insert("hops_ts".into(), json!(now()));
     if let Some(parent) = target.parent() {
-        let _ = fs::create_dir_all(parent);
+        let _ = crate::storage::private_dir(parent);
     }
-    let tmp = target.with_file_name(format!(
-        ".{}.{}.tmp",
-        target.file_name().unwrap_or_default().to_string_lossy(),
-        std::process::id()
-    ));
-    if fs::write(&tmp, serde_json::to_string(&Value::Object(current)).unwrap()).is_ok() {
-        let _ = fs::rename(&tmp, &target);
-    }
+    let _ = crate::storage::save(&target, serde_json::to_string(&Value::Object(current)).unwrap().as_bytes());
 }
 
 const SHELLS: &[&str] = &["sh", "bash", "zsh", "dash", "fish", "-sh", "-bash", "-zsh"];
@@ -1157,13 +1152,8 @@ fn write_live(session_id: &str, harness: &str, state: &str, rebind: bool) {
         pid = caller_pid;
     }
     if let Some(parent) = target.parent() {
-        let _ = fs::create_dir_all(parent);
+        let _ = crate::storage::private_dir(parent);
     }
-    let tmp = target.with_file_name(format!(
-        ".{}.{}.tmp",
-        target.file_name().unwrap_or_default().to_string_lossy(),
-        std::process::id()
-    ));
     let mut body = current;
     body.insert("pid".into(), json!(pid));
     body.insert("harness".into(), json!(harness));
@@ -1172,9 +1162,7 @@ fn write_live(session_id: &str, harness: &str, state: &str, rebind: bool) {
     if harness == "omp" {
         body.insert("process_identity".into(), json!(crate::proc::process_identity(pid)));
     }
-    if fs::write(&tmp, serde_json::to_string(&Value::Object(body)).unwrap()).is_ok() {
-        let _ = fs::rename(&tmp, &target);
-    }
+    let _ = crate::storage::save(&target, serde_json::to_string(&Value::Object(body)).unwrap().as_bytes());
     // Never hold two session locks while dropping another binding.
     drop(guard);
     if claimed {
