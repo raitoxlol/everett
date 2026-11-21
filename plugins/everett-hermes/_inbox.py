@@ -186,8 +186,13 @@ def _is_remote_or_external(record: Mapping[str, Any]) -> bool:
     return False
 
 
-def _read_unread_entries(session_id: str, home: Path, *, local_only: bool) -> tuple[list[tuple[str, float | None]], bool]:
-    """Stream validated `.done` and `.jsonl` directly; return `(entries, capped)`."""
+def _read_unread_entries(
+    session_id: str,
+    home: Path,
+    *,
+    local_only: bool,
+) -> tuple[list[tuple[str, float | None]], bool, frozenset[str]]:
+    """Stream validated `.done` and `.jsonl` directly; return `(entries, capped, done_ids)`."""
     with ExitStack() as stack:
         home_fd = os.open(str(home), os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC)
         stack.callback(os.close, home_fd)
@@ -238,12 +243,12 @@ def _read_unread_entries(session_id: str, home: Path, *, local_only: bool) -> tu
                 capped = True
                 break
             unread.append((msg_id, ts))
-        return unread, capped
+        return unread, capped, frozenset(done_ids)
 
 
-def _live_ids(entries: Sequence[tuple[str, float | None]], now: float) -> list[str]:
+def _live_entries(entries: Sequence[tuple[str, float | None]], now: float) -> list[tuple[str, float | None]]:
     return [
-        msg_id
+        (msg_id, ts)
         for msg_id, ts in entries
         if ts is None or (now - ts) < INBOX_TTL_SECONDS
     ]
@@ -255,9 +260,58 @@ class InboxTracker:
     def __init__(self, *, max_seen_per_session: int = 2048):
         self._lock = threading.Lock()
         self._stamps: dict[tuple[str, bool], tuple[Any, ...]] = {}
-        self._cached_entries: dict[tuple[str, bool], tuple[list[tuple[str, float | None]], bool]] = {}
-        self._surfaced: dict[str, set[str]] = {}
+        self._cached_entries: dict[tuple[str, bool], tuple[list[tuple[str, float | None]], bool, frozenset[str]]] = {}
+        # Map msg_id -> record ts (or None) so expired claims are always pruned even on capped inboxes.
+        self._surfaced: dict[str, dict[str, float | None]] = {}
+        self._claim_seq: dict[str, int] = {}
         self._max_seen = max_seen_per_session
+
+    def _peek_with_cap(
+        self,
+        session_id: str,
+        *,
+        home: Path | None = None,
+        local_only: bool = False,
+    ) -> tuple[list[tuple[str, float | None]], bool, tuple[Any, ...] | None, bool, frozenset[str]]:
+        """Return `(live_entries, capped, stamp, complete, done_ids)`."""
+        if not valid_session_id(session_id):
+            return [], False, None, False, frozenset()
+        base = home or everett_home()
+        if base is None:
+            return [], False, None, False, frozenset()
+        stamp = inbox_fingerprint(session_id, base)
+        key = (session_id, local_only)
+        if stamp is None:
+            with self._lock:
+                self._stamps.pop(key, None)
+                self._cached_entries.pop(key, None)
+            # Only treat as complete empty on explicit ENOENT; PermissionError/EACCES must NOT clear claims.
+            try:
+                os.lstat(base / ".everett" / "inbox" / f"{session_id}.jsonl")
+                absent = False
+            except FileNotFoundError:
+                absent = True
+            except OSError:
+                absent = False
+            return [], False, None, absent, frozenset()
+        now = time.time()
+        with self._lock:
+            if self._stamps.get(key) == stamp:
+                cached_list, capped, done_ids = self._cached_entries.get(key, ([], False, frozenset()))
+                live = _live_entries(cached_list, now)
+                if not (capped and len(live) < len(cached_list)):
+                    return live, capped, stamp, True, done_ids
+        try:
+            entries, capped, done_ids = _read_unread_entries(session_id, base, local_only=local_only)
+        except (OSError, ValueError):
+            with self._lock:
+                self._stamps.pop(key, None)
+                self._cached_entries.pop(key, None)
+            return [], False, None, False, frozenset()
+        with self._lock:
+            self._stamps[key] = stamp
+            self._cached_entries[key] = (list(entries), capped, done_ids)
+        return _live_entries(entries, time.time()), capped, stamp, True, done_ids
 
     def peek_ids(
         self,
@@ -266,37 +320,29 @@ class InboxTracker:
         home: Path | None = None,
         local_only: bool = False,
     ) -> list[str]:
-        if not valid_session_id(session_id):
-            return []
-        base = home or everett_home()
-        if base is None:
-            return []
-        stamp = inbox_fingerprint(session_id, base)
-        key = (session_id, local_only)
-        if stamp is None:
-            with self._lock:
-                self._stamps.pop(key, None)
-                self._cached_entries.pop(key, None)
-            return []
-        now = time.time()
-        with self._lock:
-            if self._stamps.get(key) == stamp:
-                cached_list, capped = self._cached_entries.get(key, ([], False))
-                live = _live_ids(cached_list, now)
-                # If expiration trimmed entries from a capped scan, rescan to refill newer records.
-                if not (capped and len(live) < len(cached_list)):
-                    return live
-        try:
-            entries, capped = _read_unread_entries(session_id, base, local_only=local_only)
-        except (OSError, ValueError):
-            with self._lock:
-                self._stamps.pop(key, None)
-                self._cached_entries.pop(key, None)
-            return []
-        with self._lock:
-            self._stamps[key] = stamp
-            self._cached_entries[key] = (list(entries), capped)
-        return _live_ids(entries, time.time())
+        entries, _, _, _, _ = self._peek_with_cap(session_id, home=home, local_only=local_only)
+        return [mid for mid, _ in entries]
+
+    def _snapshot_is_current_locked(
+        self,
+        session_id: str,
+        local_only: bool,
+        *,
+        stamp: tuple[Any, ...] | None,
+        complete: bool,
+        seq_before: int,
+    ) -> bool:
+        if not complete:
+            return False
+        if self._claim_seq.get(session_id, 0) != seq_before:
+            return False
+        return self._stamps.get((session_id, local_only)) == stamp
+
+    @staticmethod
+    def _prune_expired_seen(seen: dict[str, float | None], now: float) -> None:
+        expired = [mid for mid, ts in seen.items() if ts is not None and (now - ts) >= INBOX_TTL_SECONDS]
+        for mid in expired:
+            seen.pop(mid, None)
 
     def unseen_ids(
         self,
@@ -307,23 +353,61 @@ class InboxTracker:
         limit: int = MAX_NUDGE_IDS,
     ) -> list[str]:
         """Return up to *limit* unread validated message IDs without marking them claimed."""
-        ids = self.peek_ids(session_id, home=home, local_only=local_only)
-        if not ids:
-            return []
         with self._lock:
-            seen = self._surfaced.get(session_id, set())
-            if len(seen) >= self._max_seen:
+            seq_before = self._claim_seq.get(session_id, 0)
+        entries, capped, stamp, complete, done_ids = self._peek_with_cap(session_id, home=home, local_only=local_only)
+        ids = [mid for mid, _ in entries]
+        now = time.time()
+        with self._lock:
+            current = self._snapshot_is_current_locked(
+                session_id,
+                local_only,
+                stamp=stamp,
+                complete=complete,
+                seq_before=seq_before,
+            )
+            seen = self._surfaced.get(session_id)
+            if seen is not None:
+                self._prune_expired_seen(seen, now)
+            if not ids:
+                if current and not capped:
+                    self._surfaced.pop(session_id, None)
                 return []
-            return [mid for mid in ids if mid not in seen][:limit]
+            if seen is not None and current:
+                if capped:
+                    for mid in done_ids:
+                        seen.pop(mid, None)
+                else:
+                    live_set = set(ids)
+                    for mid in [m for m in seen if m not in live_set]:
+                        seen.pop(mid, None)
+            seen_map = seen or {}
+            if len(seen_map) >= self._max_seen:
+                return []
+            return [mid for mid in ids if mid not in seen_map][:limit]
 
     def mark_claimed(self, session_id: str, message_ids: Sequence[str]) -> None:
         if not message_ids:
             return
+        now = time.time()
         with self._lock:
-            seen = self._surfaced.setdefault(session_id, set())
-            remaining = max(0, self._max_seen - len(seen))
-            if remaining:
-                seen.update(list(message_ids)[:remaining])
+            seen = self._surfaced.setdefault(session_id, {})
+            self._prune_expired_seen(seen, now)
+            ts_by_id: dict[str, float | None] = {}
+            for flag in (False, True):
+                cached_list = self._cached_entries.get((session_id, flag), ([], False, frozenset()))[0]
+                for mid, ts in cached_list:
+                    ts_by_id.setdefault(mid, ts)
+            added = False
+            for mid in message_ids:
+                if mid in seen:
+                    continue
+                if len(seen) >= self._max_seen:
+                    break
+                seen[mid] = ts_by_id.get(mid)
+                added = True
+            if added:
+                self._claim_seq[session_id] = self._claim_seq.get(session_id, 0) + 1
 
     def claim_new_ids(
         self,
@@ -334,20 +418,50 @@ class InboxTracker:
         limit: int = MAX_NUDGE_IDS,
     ) -> list[str]:
         """Return up to *limit* unread validated message IDs and mark them surfaced."""
-        ids = self.peek_ids(session_id, home=home, local_only=local_only)
-        if not ids:
-            return []
         with self._lock:
-            seen = self._surfaced.setdefault(session_id, set())
+            seq_before = self._claim_seq.get(session_id, 0)
+        entries, capped, stamp, complete, done_ids = self._peek_with_cap(session_id, home=home, local_only=local_only)
+        now = time.time()
+        with self._lock:
+            current = self._snapshot_is_current_locked(
+                session_id,
+                local_only,
+                stamp=stamp,
+                complete=complete,
+                seq_before=seq_before,
+            )
+            if not entries:
+                if current and not capped:
+                    self._surfaced.pop(session_id, None)
+                return []
+            seen = self._surfaced.setdefault(session_id, {})
+            self._prune_expired_seen(seen, now)
+            if current:
+                if capped:
+                    for mid in done_ids:
+                        seen.pop(mid, None)
+                else:
+                    live_set = {mid for mid, _ in entries}
+                    for mid in [m for m in seen if m not in live_set]:
+                        seen.pop(mid, None)
             if len(seen) >= self._max_seen:
                 return []
-            fresh = [mid for mid in ids if mid not in seen][:limit]
-            seen.update(fresh)
+            fresh: list[str] = []
+            for mid, ts in entries:
+                if mid in seen:
+                    continue
+                if len(seen) >= self._max_seen or len(fresh) >= limit:
+                    break
+                seen[mid] = ts
+                fresh.append(mid)
+            if fresh:
+                self._claim_seq[session_id] = self._claim_seq.get(session_id, 0) + 1
             return fresh
 
     def clear_session(self, session_id: str) -> None:
         with self._lock:
             self._surfaced.pop(session_id, None)
+            self._claim_seq.pop(session_id, None)
             for flag in (False, True):
                 self._stamps.pop((session_id, flag), None)
                 self._cached_entries.pop((session_id, flag), None)
