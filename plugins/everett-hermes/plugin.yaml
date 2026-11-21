@@ -1,0 +1,73 @@
+manifest_version: 2
+name: everett-hermes
+version: 0.2.0
+description: >-
+  Native Everett integration for Hermes Agent: per-session bound MCP tools across CLI,
+  TUI, Desktop, and gateway, prompt-cache-safe shared core context, automatic inbox
+  pickup, fallback session cards, /everett slash command, and opt-in live wake.
+author: Wright/raitoxlol
+license: MIT
+homepage: https://github.com/raitoxlol/everett
+kind: standalone
+requires_hermes: ">=0.20"
+tags:
+  - everett
+  - multi-agent
+  - orchestration
+  - memory
+  - inbox
+provides_tools:
+  - everett_ls
+  - everett_route
+  - everett_send
+  - everett_inbox
+  - everett_sent
+  - everett_status
+  - everett_retry
+  - everett_event
+  - everett_subscribe
+  - everett_learn
+  - everett_core
+  - everett_card
+  - everett_skill
+  - everett_whoami
+  - everett_control
+  - everett_agent_relay
+  - everett_agent_send
+  - everett_agent_status
+provides_hooks:
+  - on_session_start
+  - on_session_end
+  - on_session_finalize
+  - pre_llm_call
+  - transform_tool_result
+  - pre_verify
+config_schema:
+  binary:
+    type: str
+    default: ""
+    description: Optional absolute path to the everett executable (defaults to everett on PATH).
+  inject_core:
+    type: bool
+    default: true
+    description: Include Everett card guidance and shared core memory in the session-start system prompt section.
+  inbox_hooks:
+    type: bool
+    default: true
+    description: Surface validated unread Everett inbox message IDs on turn start, tool results, and pre-verify.
+  auto_cards:
+    type: bool
+    default: true
+    description: Write a fallback Everett session card on session end when no agent-written card exists.
+  live_wake:
+    type: bool
+    default: false
+    description: Opt-in background watcher that nudges active sessions via ctx.inject_message when local inbox messages arrive.
+  wake_poll_seconds:
+    type: float
+    default: 5.0
+    description: Polling interval in seconds for the opt-in live_wake watcher (clamped to 1.0-60.0).
+  max_cached_clients:
+    type: int
+    default: 16
+    description: Maximum number of per-session Everett MCP subprocesses kept warm in the pool (clamped to 1-64).
