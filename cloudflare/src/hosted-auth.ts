@@ -281,6 +281,10 @@ export class HostedAuth extends DurableObject<HostedAuthEnv> {
       CREATE INDEX IF NOT EXISTS oauth_family ON oauth_tokens(family_id);
       CREATE INDEX IF NOT EXISTS oauth_tokens_expiry ON oauth_tokens(expires_at);
       CREATE INDEX IF NOT EXISTS owner_sessions_expiry ON owner_sessions(expires_at);
+      CREATE INDEX IF NOT EXISTS gh_states_expiry ON gh_states(expires_at);
+      CREATE INDEX IF NOT EXISTS device_requests_expiry ON device_requests(expires_at);
+      CREATE INDEX IF NOT EXISTS auth_requests_expiry ON auth_requests(expires_at);
+      CREATE INDEX IF NOT EXISTS auth_codes_expiry ON auth_codes(expires_at);
       CREATE TABLE IF NOT EXISTS auth_rates(scope TEXT PRIMARY KEY,window INTEGER NOT NULL,count INTEGER NOT NULL);
       CREATE INDEX IF NOT EXISTS auth_rates_window ON auth_rates(window);
       CREATE TABLE IF NOT EXISTS meta(key TEXT PRIMARY KEY,value TEXT NOT NULL);
@@ -347,12 +351,23 @@ export class HostedAuth extends DurableObject<HostedAuthEnv> {
     if (count >= limit) throw new RelayError('rate_limit', 429);
     this.ctx.storage.sql.exec('INSERT INTO auth_rates VALUES(?,?,?) ON CONFLICT(scope) DO UPDATE SET window=excluded.window,count=excluded.count', scope, window, count + 1);
   }
+  /// Minute window of the last auth_rates sweep. In-memory only: an evicted
+  /// object sweeps once on wake. Stale buckets are harmless because #rate
+  /// compares the window, so sweeping more than once per window only costs
+  /// a full scan (auth_rates has no window index; one would double upsert writes).
+  #ratesSwept = -1;
+  /// Expiry sweeps are bounded batches over expires_at indexes. Every read path
+  /// re-checks expires_at itself, so retained expired rows never authorize.
   #cleanup() {
     const now = Date.now();
     for (const table of ['gh_states', 'owner_sessions', 'device_requests', 'auth_requests', 'auth_codes']) this.ctx.storage.sql.exec(`DELETE FROM ${table} WHERE rowid IN(SELECT rowid FROM ${table} WHERE expires_at<=? LIMIT 128)`, now);
     this.ctx.storage.sql.exec('DELETE FROM oauth_tokens WHERE rowid IN(SELECT rowid FROM oauth_tokens WHERE expires_at<=? LIMIT 256)', now);
     this.ctx.storage.sql.exec('DELETE FROM mesh_grants WHERE rowid IN (SELECT rowid FROM mesh_grants WHERE expires_at<=? LIMIT 128)', now - MESH_HISTORY_MS);
-    this.ctx.storage.sql.exec('DELETE FROM auth_rates WHERE window<?', Math.floor(now / MINUTE) - 2);
+    const window = Math.floor(now / MINUTE);
+    if (window !== this.#ratesSwept) {
+      this.ctx.storage.sql.exec('DELETE FROM auth_rates WHERE window<?', window - 2);
+      this.#ratesSwept = window;
+    }
   }
   #session(request: Request, c: HostedConfig): { row: Session; csrf: string; account: Account } | null {
     const raw = cookies(request)[cookieName(c, 'session')] ?? '', parts = raw.split('.');
@@ -397,7 +412,12 @@ export class HostedAuth extends DurableObject<HostedAuthEnv> {
       return await this.ctx.blockConcurrencyWhile(async () => {
         // Expected denials must not reject blockConcurrencyWhile and reset the DO.
         try {
-          this.#cleanup();
+          // Discovery and introspection are the hot, read-only paths (every MCP
+          // request introspects). They skip the sweep; introspection still checks
+          // token expiry, family, credential liveness and its rate bucket.
+          const discovery = request.method === 'GET' && url.pathname === '/.well-known/oauth-authorization-server';
+          const introspection = request.method === 'POST' && url.pathname === '/oauth/introspect';
+          if (!discovery && !introspection) this.#cleanup();
           return await this.#route(request, url, c, host);
         } catch (error) { return failure(error); }
       });
