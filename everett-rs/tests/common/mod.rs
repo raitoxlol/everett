@@ -46,6 +46,30 @@ impl Fixture {
         cmd.output().unwrap()
     }
 
+    /// Like run, but with the binary's working directory set.
+    pub fn run_in(&self, cwd: &Path, args: &[&str]) -> Output {
+        let mut cmd = Command::new(env!("CARGO_BIN_EXE_everett"));
+        cmd.args(args)
+            .env("EVERETT_HOME", self.home())
+            .env_remove("DEVIN_HOME")
+            .env_remove("PI_CODING_AGENT_DIR")
+            .env_remove("HERMES_HOME")
+            .env_remove("T3CODE_HOME")
+            .env_remove("EVERETT_T3_BIN")
+            .env("HOME", self.home())
+            .env("EVERETT_NOTIFY", "none")
+            .env("PATH", HERMETIC_PATH)
+            .env_remove("TYPESAFE_API_KEY")
+            .env_remove("EVERETT_SEND")
+            .env("EVERETT_HOP_LIMIT", "on")
+            .env_remove("EVERETT_HOPS")
+            .env_remove("EVERETT_SESSION_ID")
+            .env_remove("EVERETT_SKILL_DIRS")
+            .current_dir(cwd);
+        scrub_caller_identity(&mut cmd);
+        cmd.output().unwrap()
+    }
+
     /// Same, with stdin attached and extra env.
     pub fn run_stdin(&self, args: &[&str], input: &str, extra_env: &[(&str, &str)]) -> Output {
         use std::io::Write;
