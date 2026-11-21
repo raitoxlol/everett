@@ -1943,3 +1943,78 @@ fn cross_org_denied_sender_and_revoked_grant_are_rejected() {
     assert!(!reply_out.posted, "the denied reply stays an unposted retry record");
     assert!(reply_out.reply_pending.is_some());
 }
+
+#[test]
+fn local_access_policy_enforces_cross_org_send_and_receive_rules() {
+    if !crate::test_support::isolated(
+        "relay::tests::local_access_policy_enforces_cross_org_send_and_receive_rules",
+    ) {
+        return;
+    }
+    let _env = RECEIVER_ENV_LOCK.lock().unwrap();
+    let home_a = tempfile::tempdir().unwrap();
+    let home_b = tempfile::tempdir().unwrap();
+    let owner_a = r#"["https://issuer.example/","org","org-a"]"#;
+    let owner_b = r#"["https://issuer.example/","org","org-b"]"#;
+    let alice = Keys::new(owner_a.into(), "agent-a".into(), [1; 32], [2; 32]);
+    let bob = Keys::new(owner_b.into(), "agent-b".into(), [3; 32], [4; 32]);
+    let address = "claude@wmm.10462";
+    let grant_id = "grant-0123456789abcdef0123456789abcdef";
+
+    // Outbound cross-org send is blocked when local access disables external sends.
+    activate(home_a.path(), &alice, ([1; 32], [2; 32]), vec![]);
+    crate::access::set_settings(None, Some("allowlist"), Some(false), None).unwrap();
+    *NATIVE_SCRIPT.lock().unwrap() = vec![(
+        "relay:resolveInbox",
+        Ok(json!({"address":address,"owner":bob.device.owner,"device":bob.device,"harness":"claude","session":"inbox-b","grantId":grant_id})),
+    )]
+    .into();
+    let err = send_address_as(address, "hello", Some("blocked-out"), None, None).unwrap_err();
+    assert!(err.message.contains("disabled by local access policy"), "{}", err.message);
+
+    // Incoming cross-org receive respects mode, allowlist, and blocklist rules.
+    activate(home_b.path(), &bob, ([3; 32], [4; 32]), vec![]);
+    let envelope = cross_org_envelope(&alice, &bob, "inbox-b", grant_id);
+    let attestation = Attestation {
+        inbox: Some(InboxBinding {
+            address: address.into(),
+            harness: "claude".into(),
+            session: "inbox-b".into(),
+        }),
+        sender_device: Some(alice.device.clone()),
+    };
+    let now = milliseconds();
+
+    crate::access::set_settings(None, Some("same-account"), None, None).unwrap();
+    assert!(import_inner(&bob, &envelope, &attestation, now, true).is_err());
+    assert!(inbox::read("inbox-b").is_empty());
+
+    crate::access::set_settings(None, Some("allowlist"), None, None).unwrap();
+    crate::access::allow_sender(
+        None,
+        owner_a,
+        "agent-other",
+        Some(address),
+        None,
+        false,
+    )
+    .unwrap();
+    assert!(import_inner(&bob, &envelope, &attestation, now, true).is_err());
+
+    crate::access::allow_sender(
+        None,
+        owner_a,
+        &alice.device.device_id,
+        Some(address),
+        Some("Alice"),
+        false,
+    )
+    .unwrap();
+    import_inner(&bob, &envelope, &attestation, now, true).unwrap();
+    assert_eq!(inbox::read("inbox-b").len(), 1);
+
+    crate::access::deny_sender(None, owner_a, None, Some("stop")).unwrap();
+    let envelope2 = cross_org_envelope(&alice, &bob, "inbox-b", grant_id);
+    assert!(import_inner(&bob, &envelope2, &attestation, now, true).is_err());
+    assert_eq!(inbox::read("inbox-b").len(), 1);
+}

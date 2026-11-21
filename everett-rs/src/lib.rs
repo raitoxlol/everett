@@ -1,3 +1,4 @@
+pub mod access;
 pub mod build_info;
 pub mod adapters;
 pub mod auth;
