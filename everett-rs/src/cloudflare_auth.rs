@@ -980,10 +980,19 @@ impl Credential {
                 }
                 let detail = if matches!(
                     operation,
-                    "registerInbox" | "grantInbox" | "revokeInboxGrant" | "resolveInbox"
-                        | "threadCreate" | "threadShow" | "threadSend" | "threadRead"
+                    "registerInbox"
+                        | "grantInbox"
+                        | "revokeInboxGrant"
+                        | "resolveInbox"
+                        | "threadCreate"
+                        | "threadShow"
+                        | "threadSend"
+                        | "threadRead"
                 ) {
-                    body.get("error").and_then(Value::as_str).map(|code| format!(", {code}")).unwrap_or_default()
+                    body.get("error")
+                        .and_then(Value::as_str)
+                        .map(|code| format!(", {code}"))
+                        .unwrap_or_default()
                 } else {
                     String::new()
                 };
