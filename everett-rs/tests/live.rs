@@ -114,6 +114,23 @@ fn wait_receives_a_reply_that_the_inbox_already_consumed() {
 }
 
 #[test]
+fn live_record_writes_stay_owner_only() {
+    use std::os::unix::fs::PermissionsExt;
+    let _h = lib_home();
+    let record = inbox::live_path("s1");
+    let mode = |path: &std::path::Path| std::fs::metadata(path).unwrap().permissions().mode() & 0o777;
+
+    inbox::touch_live("s1", "claude", "");
+    assert_eq!(mode(&record), 0o600, "live record");
+    assert_eq!(mode(&record.with_extension("lock")), 0o600, "live record lock");
+    assert_eq!(mode(record.parent().unwrap()), 0o700, "live directory");
+    // Rewriting the record (hops update, state change) keeps it private.
+    inbox::record_hops("s1", 2);
+    inbox::touch_live("s1", "claude", "turn");
+    assert_eq!(mode(&record), 0o600, "live record after rewrite");
+}
+
+#[test]
 fn live_record_follows_the_harness_process() {
     let _h = lib_home();
     assert!(inbox::live("s1").is_none());
