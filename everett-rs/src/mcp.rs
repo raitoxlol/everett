@@ -2003,15 +2003,12 @@ pub fn serve(launch: Option<&str>) -> i32 {
         };
         if let Value::Array(batch) = &message {
             if batch.is_empty() {
+                // JSON-RPC 2.0 §6: an invalid batch gets one error object, not an array.
                 let _ = writeln!(
                     out,
                     "{}",
-                    serde_json::to_string(&json!([error(
-                        &Value::Null,
-                        INVALID_REQUEST,
-                        "Invalid Request"
-                    )]))
-                    .unwrap()
+                    serde_json::to_string(&error(&Value::Null, INVALID_REQUEST, "Invalid Request"))
+                        .unwrap()
                 );
                 let _ = out.flush();
                 continue;
