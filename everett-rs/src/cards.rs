@@ -83,12 +83,13 @@ pub fn is_auto_card(session_id: &str) -> bool {
 
 /// Prefer the session's own card over extracted text, unless the card went stale.
 pub fn apply(sessions: &mut [Session]) {
+    let now = crate::session::now();
     for s in sessions.iter_mut() {
         let Some(path) = card_path(&s.id) else { continue };
         let Some((body, mtime, source)) = read_card_full(&path) else {
             continue;
         };
-        if s.last_active - mtime > STALE_AFTER {
+        if now - mtime >= STALE_AFTER {
             continue;
         }
         s.card = clean(&body, 300);
