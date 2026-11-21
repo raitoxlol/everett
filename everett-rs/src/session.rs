@@ -365,7 +365,7 @@ mod tests {
         let rec0 = serde_json::to_string(&serde_json::json!({"type": "user", "i": 0})).unwrap();
         let mut bytes = format!("{rec0}\n").into_bytes();
         let pad = CHUNK - tagged.len() - bytes.len();
-        bytes.extend(std::iter::repeat(b' ').take(pad));
+        bytes.extend(std::iter::repeat_n(b' ', pad));
         bytes.extend_from_slice(tagged.as_bytes());
         assert_eq!(bytes.len(), CHUNK, "test setup: tagged record must end at the boundary");
         bytes.push(b'\n');
