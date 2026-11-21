@@ -98,6 +98,17 @@ enum Cmd {
         #[arg(long, default_value_t = 8788)]
         port: u16,
     },
+    /// inspect or edit local cross-org access and permission settings
+    #[command(alias = "permissions")]
+    Access {
+        /// custom access policy path (defaults to ~/.everett/access.json)
+        #[arg(long, global = true)]
+        config: Option<std::path::PathBuf>,
+        #[arg(long, global = true)]
+        json: bool,
+        #[command(subcommand)]
+        action: Option<AccessCmd>,
+    },
     /// inspect or edit the tool grant for an owner MCP connection
     GatewayPermissions {
         #[arg(long)]
@@ -645,6 +656,77 @@ enum RelayCmd {
     RevokeMember { subject: String },
     /// rotate both independent relay keys; requires the old signing key
     Rotate,
+    /// claim a LOCAL@SCOPE named inbox bound to an exact harness/session (or --remove it)
+    RegisterInbox {
+        address: String,
+        #[arg(long)]
+        harness: String,
+        #[arg(long)]
+        session: String,
+        #[arg(long)]
+        device: Option<String>,
+        #[arg(long)]
+        remove: bool,
+    },
+    /// allow one exact sender owner/device to resolve and send to a named inbox
+    GrantInbox {
+        address: String,
+        #[arg(long)]
+        sender_owner: String,
+        #[arg(long)]
+        sender_device: String,
+    },
+    /// permanently revoke a cross-org inbox grant by ID
+    RevokeInboxGrant { grant_id: String },
+    /// resolve a LOCAL@SCOPE inbox address to its verified recipient bundle
+    ResolveInbox { address: String },
+}
+
+#[derive(Subcommand)]
+enum AccessCmd {
+    /// show current local access and permission settings
+    Show,
+    /// update mode, outbound cross-org send, or max hop settings
+    Set {
+        #[arg(long, value_parser = ["deny", "same-account", "allowlist"])]
+        mode: Option<String>,
+        #[arg(long, value_parser = ["on", "off"])]
+        external_send: Option<String>,
+        #[arg(long)]
+        max_hops: Option<i64>,
+    },
+    /// add a verified sender to the local allowlist (and optionally sync a relay grant)
+    Allow {
+        #[arg(long)]
+        owner: String,
+        #[arg(long)]
+        device: String,
+        #[arg(long)]
+        address: Option<String>,
+        #[arg(long)]
+        label: Option<String>,
+        /// also push grant-inbox to the hosted relay (requires --address)
+        #[arg(long)]
+        sync: bool,
+    },
+    /// block a sender org or specific device locally
+    Deny {
+        #[arg(long)]
+        owner: String,
+        #[arg(long)]
+        device: Option<String>,
+        #[arg(long)]
+        reason: Option<String>,
+    },
+    /// remove a sender org or device from local allow/block lists
+    Remove {
+        #[arg(long)]
+        owner: String,
+        #[arg(long)]
+        device: Option<String>,
+    },
+    /// reset local access settings to safe defaults
+    Reset,
 }
 
 #[derive(Subcommand)]
@@ -821,6 +903,18 @@ fn main() {
                 serde_json::json!({"subject":subject}),
                 false,
             )),
+            Some(RelayCmd::RegisterInbox { address, harness, session, device, remove }) => peer_output(
+                everett::relay::register_inbox(&address, &harness, &session, device.as_deref(), remove)
+            ),
+            Some(RelayCmd::GrantInbox { address, sender_owner, sender_device }) => peer_output(
+                everett::relay::grant_inbox(&address, &sender_owner, &sender_device)
+            ),
+            Some(RelayCmd::RevokeInboxGrant { grant_id }) => peer_output(
+                everett::relay::revoke_inbox_grant(&grant_id)
+            ),
+            Some(RelayCmd::ResolveInbox { address }) => peer_output(
+                everett::relay::resolve_inbox(&address)
+            ),
         },
         Cmd::Peer { action } => match action {
             PeerCmd::AddRelay {
@@ -1103,6 +1197,46 @@ fn main() {
             transport,
             port,
         } => everett::gateway::run(&config, &transport, port),
+        Cmd::Access { config, json, action } => {
+            let outcome = match action.unwrap_or(AccessCmd::Show) {
+                AccessCmd::Show => everett::access::show(config.as_deref()).map(|(p, pol)| (p, pol, None)),
+                AccessCmd::Set { mode, external_send, max_hops } => {
+                    let ext = external_send.as_deref().map(|v| v == "on");
+                    everett::access::set_settings(config.as_deref(), mode.as_deref(), ext, max_hops)
+                        .map(|(p, pol)| (p, pol, None))
+                }
+                AccessCmd::Allow { owner, device, address, label, sync } => everett::access::allow_sender(
+                    config.as_deref(),
+                    &owner,
+                    &device,
+                    address.as_deref(),
+                    label.as_deref(),
+                    sync,
+                ),
+                AccessCmd::Deny { owner, device, reason } => everett::access::deny_sender(
+                    config.as_deref(),
+                    &owner,
+                    device.as_deref(),
+                    reason.as_deref(),
+                )
+                .map(|(p, pol)| (p, pol, None)),
+                AccessCmd::Remove { owner, device } => {
+                    everett::access::remove_sender(config.as_deref(), &owner, device.as_deref())
+                        .map(|(p, pol)| (p, pol, None))
+                }
+                AccessCmd::Reset => everett::access::reset(config.as_deref()).map(|(p, pol)| (p, pol, None)),
+            };
+            match outcome {
+                Ok((path, policy, grant)) => {
+                    println!("{}", everett::access::format_output(&path, &policy, grant.as_ref(), json));
+                    0
+                }
+                Err(error) => {
+                    eprintln!("everett: {error}");
+                    error.code
+                }
+            }
+        }
         Cmd::GatewayPermissions { file, all, allow, deny_all } =>
             everett::gateway::permissions::run(&file, all, allow, deny_all),
         Cmd::InstallMcp {

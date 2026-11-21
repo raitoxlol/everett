@@ -4,10 +4,12 @@ import { boundedText } from './http-body';
 import { namespace, operations, principalSchema, RelayError, type Operation, type RelayResult } from './protocol';
 import { OwnerRelay } from './owner-relay';
 import { HostedAuth } from './hosted-auth';
+import { AddressDirectory } from './address-directory';
 import { deviceName, hostedAuthPaths } from './hosted-config';
-export { OwnerRelay, HostedAuth };
+export { OwnerRelay, HostedAuth, AddressDirectory };
 export interface Env {
   OWNERS: DurableObjectNamespace<OwnerRelay>;
+  ADDRESSES?: DurableObjectNamespace<AddressDirectory>;
   AUTHENTICATOR?: Fetcher;
   AUTH_STATE?: DurableObjectNamespace<HostedAuth>;
   EVERETT_ISSUER?: string;

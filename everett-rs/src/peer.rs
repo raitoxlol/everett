@@ -962,6 +962,9 @@ pub fn send_as(
     caller: Option<&str>,
     caller_harness: Option<&str>,
 ) -> Result<Value> {
+    if crate::relay::inbox_address(value) {
+        return crate::relay::send_address_as(value, text, key, caller, caller_harness);
+    }
     let (name, harness, session) = target(value)?;
     if uses_cloudflare(name)? {
         return crate::relay::send_as(value, text, key, caller, caller_harness);
@@ -1020,6 +1023,9 @@ pub fn send_as(
 }
 
 pub fn status(name: &str, message_id: &str) -> Result<Value> {
+    if crate::relay::inbox_address(name) {
+        return crate::relay::status(name, message_id);
+    }
     if uses_cloudflare(name)? {
         return crate::relay::status(name, message_id);
     }

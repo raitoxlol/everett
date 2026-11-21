@@ -3,9 +3,14 @@ use crate::receiver_wake;
 use std::sync::Mutex;
 
 static NATIVE_DEVICES: Mutex<Vec<Device>> = Mutex::new(vec![]);
+static NATIVE_SCRIPT: Mutex<std::collections::VecDeque<(&'static str, std::result::Result<Value, &'static str>)>> =
+    Mutex::new(std::collections::VecDeque::new());
+static NATIVE_CALLS: Mutex<Vec<(String, Value)>> = Mutex::new(vec![]);
 
 fn configure(keys: &Keys, devices: Vec<Device>) {
     *NATIVE_DEVICES.lock().unwrap() = devices;
+    NATIVE_SCRIPT.lock().unwrap().clear();
+    NATIVE_CALLS.lock().unwrap().clear();
     crate::storage::private_dir(crate::cloudflare_auth::credential_path().parent().unwrap()).unwrap();
     write(&crate::cloudflare_auth::credential_path(), &json!({
         "issuer":"https://relay.example", "agent_id":keys.device.device_id,
@@ -347,6 +352,7 @@ fn per_agent_key_paths_and_exact_idempotent_ciphertext_retry() {
         session: "sender".into(),
         harness: "claude".into(),
         posted: false,
+        direct: None,
         posted_at: None,
         replied_at: None,
         relay_evidence: None,
@@ -385,7 +391,7 @@ fn denied_agent_or_grant_observation_drops_cached_staging_before_publication() {
         let path = dir.path().join("pending.json");
         write(&path, &e).unwrap();
         let err = EverettError::new(1, format!("Cloudflare relay denied: {reason}"));
-        assert!(finish_staged(&b, &path, &e, Err(err)).is_err());
+        assert!(finish_staged(&b, &path, &StagedFile::Bare(e.clone()), &e, &Attestation::default(), Err(err)).is_err());
         assert!(
             !path.exists(),
             "denial must remove the cached encrypted row"
@@ -393,7 +399,7 @@ fn denied_agent_or_grant_observation_drops_cached_staging_before_publication() {
     }
     let path = dir.path().join("uncertain.json");
     write(&path, &e).unwrap();
-    assert!(finish_staged(&b, &path, &e, Err(bad("Cloudflare mutation timed out"))).is_err());
+    assert!(finish_staged(&b, &path, &StagedFile::Bare(e.clone()), &e, &Attestation::default(), Err(bad("Cloudflare mutation timed out"))).is_err());
     assert!(path.exists(),"uncertain committed delivery retains encrypted durable recovery, never plaintext publication");
 }
 
@@ -581,11 +587,20 @@ impl TestClient {
 
     pub async fn call(&mut self, name: &str, value: Value) -> Result<Value> {
         if let Some(stored) = &self.native {
-            return Ok(match name {
-                "relay:whoami" => json!({"owner":stored.owner,"deviceId":stored.agent_id}),
-                "relay:device" => json!(NATIVE_DEVICES.lock().unwrap().iter().find(|d| value["deviceId"] == d.device_id)),
-                _ => panic!("unexpected native fixture request: {name}"),
-            });
+            if name == "relay:whoami" {
+                return Ok(json!({"owner":stored.owner,"deviceId":stored.agent_id}));
+            }
+            if name == "relay:device" {
+                return Ok(json!(NATIVE_DEVICES.lock().unwrap().iter().find(|d| value["deviceId"] == d.device_id)));
+            }
+            let (expected, result) = NATIVE_SCRIPT
+                .lock()
+                .unwrap()
+                .pop_front()
+                .unwrap_or_else(|| panic!("unexpected native fixture request: {name}"));
+            assert_eq!(name, expected);
+            NATIVE_CALLS.lock().unwrap().push((name.to_string(), value));
+            return result.map_err(|e| EverettError::new(1, e));
         }
         if let Some(callback) = self.before_response.take() {
             callback(name);
@@ -834,7 +849,7 @@ fn newly_posted_local_requests_keep_polling_active_without_reposting() {
             peer: "id:agent-b".into(),
             envelope: a.seal(&b.device, "posted-activity", &payload(1), milliseconds() - age, TTL, None, None).unwrap(),
             digest: "fixture".into(), session: "sender".into(), harness: "claude".into(),
-            posted: true, posted_at: None, replied_at: None, relay_evidence: None, state, reply_pending: None,
+            posted: true, direct: None, posted_at: None, replied_at: None, relay_evidence: None, state, reply_pending: None,
         };
         write(&path, &out).unwrap();
         let before = fs::read(&path).unwrap();
@@ -910,10 +925,10 @@ fn relay_transport_denied_row_does_not_block_allowed_and_own_revocation_stops() 
     ]);
     let rt = tokio::runtime::Runtime::new().unwrap();
     rt.block_on(async {
-        publish_staged(&mut client, &b, &denied_path, &denied_row)
+        publish_staged(&mut client, &b, &denied_path, &StagedFile::Bare(denied_row.clone()), &denied_row, &Attestation::default())
             .await
             .unwrap();
-        publish_staged(&mut client, &b, &allowed_path, &allowed_row)
+        publish_staged(&mut client, &b, &allowed_path, &StagedFile::Bare(allowed_row.clone()), &allowed_row, &Attestation::default())
             .await
             .unwrap();
     });
@@ -940,7 +955,7 @@ fn relay_transport_denied_row_does_not_block_allowed_and_own_revocation_stops() 
             ("relay:observe", Err("Cloudflare relay denied: revoked grant")),
             ("relay:whoami", own_response),
         ]);
-        let outcome = rt.block_on(publish_staged(&mut client, &b, &denied_path, &denied_row));
+        let outcome = rt.block_on(publish_staged(&mut client, &b, &denied_path, &StagedFile::Bare(denied_row.clone()), &denied_row, &Attestation::default()));
         assert_eq!(outcome.is_err(), terminal);
         assert!(
             denied_path.exists(),
@@ -952,7 +967,9 @@ fn relay_transport_denied_row_does_not_block_allowed_and_own_revocation_stops() 
         &mut transient,
         &b,
         &denied_path,
+        &StagedFile::Bare(denied_row.clone()),
         &denied_row,
+        &Attestation::default(),
     ))
     .unwrap();
     assert!(denied_path.exists());
@@ -965,12 +982,12 @@ fn relay_transport_denied_row_does_not_block_allowed_and_own_revocation_stops() 
     fs::create_dir(inbox::path("x-1").unwrap()).unwrap();
     let mut committed = TestClient::fake(vec![("relay:observe", Ok(json!({})))]);
     assert!(rt
-        .block_on(publish_staged(&mut committed, &b, &blocked_path, &blocked))
+        .block_on(publish_staged(&mut committed, &b, &blocked_path, &StagedFile::Bare(blocked.clone()), &blocked, &Attestation::default()))
         .is_err());
     assert!(blocked_path.exists());
     fs::remove_dir(inbox::path("x-1").unwrap()).unwrap();
     let mut retry = TestClient::fake(vec![("relay:observe", Ok(json!({})))]);
-    rt.block_on(publish_staged(&mut retry, &b, &blocked_path, &blocked))
+    rt.block_on(publish_staged(&mut retry, &b, &blocked_path, &StagedFile::Bare(blocked.clone()), &blocked, &Attestation::default()))
         .unwrap();
     assert!(!blocked_path.exists());
     // Claimed observations use the remote ID and remote sender owner, not the
@@ -1135,14 +1152,14 @@ fn signed_import_schedules_exact_receiver_job_and_fake_claude_attaches_once() {
         )
         .unwrap();
 
-    assert!(import_inner(&b, &envelope, now, true).is_err());
+    assert!(import_inner(&b, &envelope, &Attestation::default(), now, true).is_err());
     assert!(inbox::pending(session_id, None).is_empty());
     write(
         &policy_path,
         &json!({"version":1,"enabled":true,"allow":[{"session_id":session_id,"cwd":cwd,"sender_device_id":a.device.device_id}]}),
     )
     .unwrap();
-    import_inner(&b, &envelope, now, true).unwrap();
+    import_inner(&b, &envelope, &Attestation::default(), now, true).unwrap();
     let local_id = local_message_id(&envelope);
     let jobs = receiver_wake::pending(&root(), now).unwrap();
     assert_eq!(jobs.len(), 1);
@@ -1179,7 +1196,7 @@ fn signed_import_schedules_exact_receiver_job_and_fake_claude_attaches_once() {
         })
     );
     assert_eq!(attaches, 1);
-    import_inner(&b, &envelope, now, true).unwrap();
+    import_inner(&b, &envelope, &Attestation::default(), now, true).unwrap();
     assert!(receiver_wake::pending(&root(), now).unwrap().is_empty());
     assert_eq!(attaches, 1);
 }
@@ -1356,13 +1373,13 @@ fn imported_external_inbox_posts_one_webhook_without_the_message_text() {
         )
         .unwrap();
     let _capture = crate::receiver_webhook::testing_begin(200);
-    import_inner(&b, &envelope, now, true).unwrap();
+    import_inner(&b, &envelope, &Attestation::default(), now, true).unwrap();
     let posts = crate::receiver_webhook::testing_posts();
     assert_eq!(posts.len(), 1, "{}", posts.first().map(|post| post.body.as_str()).unwrap_or(""));
     assert_eq!(posts[0].bearer, "test-sender-key-0123456789");
     assert!(posts[0].body.contains("ext-grok-acceptance"));
     assert!(!posts[0].body.contains(phrase));
-    import_inner(&b, &envelope, now, true).unwrap();
+    import_inner(&b, &envelope, &Attestation::default(), now, true).unwrap();
     assert_eq!(crate::receiver_webhook::testing_posts().len(), 1);
     let external = a
         .seal(
@@ -1385,7 +1402,7 @@ fn imported_external_inbox_posts_one_webhook_without_the_message_text() {
             None,
         )
         .unwrap();
-    import_inner(&b, &external, now, true).unwrap();
+    import_inner(&b, &external, &Attestation::default(), now, true).unwrap();
     assert_eq!(crate::receiver_webhook::testing_posts().len(), 1);
 }
 #[test]
@@ -1492,4 +1509,566 @@ fn pinned_peer_is_accepted_across_configured_relay_aliases() {
         ),
         Ok(_) => panic!("explicit aliases must not keep the public pair"),
     }
+}
+
+#[test]
+fn inbox_address_matches_the_relay_wire_rule() {
+    for valid_address in ["claude@wmm.10462", "a@b", "x-y_z.1@z.9"] {
+        assert!(inbox_address(valid_address), "{valid_address}");
+    }
+    for invalid_address in [
+        "Claude@wmm.10462",
+        "claude",
+        "a@b@c",
+        "a..b@zone",
+        "a@z..one",
+        ".a@zone",
+        "a.@zone",
+        "-a@zone",
+        "a-@zone",
+        "a@zone.",
+        "a@-zone",
+        "@zone",
+        "a@",
+        &format!("{}@zone", "a".repeat(65)),
+        &format!("a@{}", "z".repeat(65)),
+    ] {
+        assert!(!inbox_address(invalid_address), "{invalid_address}");
+    }
+}
+
+#[test]
+fn legacy_bare_envelope_stage_files_still_load() {
+    let (a, b) = devices();
+    let envelope = a
+        .seal(&b.device, "legacy", &payload(1), 1000, TTL, None, None)
+        .unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("bare.json");
+    write(&path, &envelope).unwrap();
+    let (staged, recovered, attestation) = read_staged(&path).unwrap();
+    assert!(matches!(staged, StagedFile::Bare(_)));
+    assert_eq!(recovered, envelope);
+    assert!(attestation.inbox.is_none() && attestation.sender_device.is_none());
+    let staged_path = dir.path().join("staged.json");
+    let record = StagedFile::Row(Staged::new(&envelope, &Attestation {
+        inbox: Some(InboxBinding {
+            address: "claude@wmm.10462".into(),
+            harness: "claude".into(),
+            session: "inbox-b".into(),
+        }),
+        sender_device: Some(a.device.clone()),
+    }));
+    write(&staged_path, &record).unwrap();
+    let (staged, recovered, attestation) = read_staged(&staged_path).unwrap();
+    assert!(matches!(staged, StagedFile::Row(_)));
+    assert_eq!(recovered, envelope);
+    assert_eq!(attestation.inbox.unwrap().session, "inbox-b");
+    assert_eq!(attestation.sender_device.unwrap(), a.device);
+}
+
+fn cross_org_devices() -> (Keys, Keys) {
+    let alice_owner = json!(["https://issuer.example/", "org", "org-a"]).to_string();
+    let bob_owner = json!(["https://issuer.example/", "org", "org-b"]).to_string();
+    (
+        Keys::new(alice_owner, "agent-a".into(), [1; 32], [2; 32]),
+        Keys::new(bob_owner, "agent-b".into(), [3; 32], [4; 32]),
+    )
+}
+
+fn activate(home: &Path, keys: &Keys, seeds: ([u8; 32], [u8; 32]), devices: Vec<Device>) {
+    std::env::set_var("HOME", home);
+    std::env::set_var("EVERETT_HOME", home);
+    configure(keys, devices);
+    initialize().unwrap();
+    write(
+        &key_path(&keys.device.owner, &keys.device.device_id),
+        &PrivateKeys {
+            signing: hex::encode(seeds.0),
+            encryption: hex::encode(seeds.1),
+        },
+    )
+    .unwrap();
+}
+
+fn grant() -> String {
+    format!("grant-{}", "ab".repeat(16))
+}
+
+fn cross_org_envelope(sender: &Keys, recipient: &Keys, session: &str, grant_id: &str) -> Envelope {
+    sender
+        .seal(
+            &recipient.device,
+            "cross-org-request",
+            &Payload::Inbox {
+                session: session.into(),
+                harness: "claude".into(),
+                text: "synthetic cross-org message".into(),
+                from: "inbox-a".into(),
+                from_harness: "codex".into(),
+                from_card: String::new(),
+                reply_to: String::new(),
+                hops: 1,
+                external_untrusted: true,
+            },
+            milliseconds(),
+            TTL,
+            Some(grant_id.into()),
+            None,
+        )
+        .unwrap()
+}
+
+fn pending_page(rows: Vec<Value>, now: i64) -> Value {
+    json!({
+        "serverNow": now,
+        "envelopes": rows,
+        "isDone": true,
+        "continueCursor": "0",
+    })
+}
+
+#[test]
+fn cross_org_address_send_and_correlated_reply_between_two_accounts() {
+    if !crate::test_support::isolated("relay::tests::cross_org_address_send_and_correlated_reply_between_two_accounts") {
+        return;
+    }
+    let _env = RECEIVER_ENV_LOCK.lock().unwrap();
+    std::env::set_var("EVERETT_NOTIFY", "none");
+    std::env::set_var("EVERETT_AUTH_PROVIDER", "cloudflare");
+    let (alice, bob) = cross_org_devices();
+    let home_a = tempfile::tempdir().unwrap();
+    let home_b = tempfile::tempdir().unwrap();
+    let address = "claude@wmm.10462";
+    let grant_id = grant();
+    let rt = tokio::runtime::Runtime::new().unwrap();
+
+    // Alice resolves the named inbox and enqueues a cross-org root request.
+    activate(home_a.path(), &alice, ([1; 32], [2; 32]), vec![]);
+    *NATIVE_SCRIPT.lock().unwrap() = vec![
+        (
+            "relay:resolveInbox",
+            Ok(json!({"address":address,"owner":bob.device.owner,"device":bob.device,"harness":"claude","session":"inbox-b","grantId":grant_id})),
+        ),
+        ("relay:enqueue", Ok(json!({"state":"queued"}))),
+    ]
+    .into();
+    let sent = send_address_as(address, "Hello across orgs", Some("req-key"), Some("inbox-a"), Some("codex")).unwrap();
+    assert_eq!(sent["external"], true);
+    assert_eq!(sent["grant_id"], json!(grant_id));
+    assert_eq!(sent["inbox"], json!({"harness":"claude","session":"inbox-b"}));
+    let calls = NATIVE_CALLS.lock().unwrap().clone();
+    assert_eq!(calls.len(), 2);
+    assert_eq!(calls[0].0, "relay:resolveInbox");
+    let request_envelope: Envelope = serde_json::from_value(calls[1].1["envelope"].clone()).unwrap();
+    assert_eq!(request_envelope.owner, alice.device.owner);
+    assert_eq!(request_envelope.recipient_owner, bob.device.owner);
+    assert_eq!(request_envelope.grant_id.as_deref(), Some(grant_id.as_str()));
+    assert_eq!(request_envelope.hop, 1);
+    assert_eq!(request_envelope.parent, None);
+    assert_eq!(request_envelope.to_device, "agent-b");
+    match bob.open(&alice.device, &request_envelope, milliseconds()).unwrap() {
+        Payload::Inbox { session, harness, external_untrusted, hops, .. } => {
+            assert_eq!((session.as_str(), harness.as_str()), ("inbox-b", "claude"));
+            assert!(external_untrusted);
+            assert_eq!(hops, 1);
+        }
+        _ => panic!("request must be an inbox payload"),
+    }
+    drop(calls);
+
+    // Bob picks up the request with its server attestation and imports it.
+    activate(home_b.path(), &bob, ([3; 32], [4; 32]), vec![]);
+    let ingress = root().join("ingress");
+    crate::storage::private_dir(&ingress).unwrap();
+    let now = milliseconds();
+    let mut client = TestClient::fake(vec![
+        (
+            "relay:pending",
+            Ok(pending_page(
+                vec![json!({"envelope":request_envelope,"trust":"external-untrusted","inbox":{"address":address,"harness":"claude","session":"inbox-b"},"senderDevice":alice.device})],
+                now,
+            )),
+        ),
+        ("relay:observe", Ok(json!({}))),
+    ]);
+    let mut deferred = false;
+    rt.block_on(receive(&mut client, &bob, &ingress, &mut RejectedCache::new(), &mut deferred)).unwrap();
+    let messages = inbox::read("inbox-b");
+    assert_eq!(messages.len(), 1);
+    assert_eq!(messages[0]["external"], true);
+    assert_eq!(messages[0]["untrusted"], true);
+    assert_eq!(messages[0]["trust"], "external-untrusted");
+    assert_eq!(messages[0]["relay_grant_id"], json!(grant_id));
+    assert_eq!(messages[0]["relay_inbox_address"], address);
+    assert!(messages[0]["relay_sender_device"].is_object());
+    assert!(crate::paths::glob(&root().join("peers"), "*.json").is_empty(), "attested senders never create local pins");
+    assert!(receiver_wake::pending(&root(), now).unwrap().is_empty(), "cross-org imports never open receiver wake");
+
+    // Bob replies; the reply binds the attested sender bundle and the same grant.
+    let local_id = local_message_id(&request_envelope);
+    *NATIVE_SCRIPT.lock().unwrap() = vec![
+        ("relay:enqueue", Ok(json!({"state":"queued"}))),
+        ("relay:observe", Ok(json!({}))),
+    ]
+    .into();
+    let reply = crate::send::reply_as(&local_id, "Correlated reply from Bob", Some("inbox-b"), Some("claude")).unwrap();
+    assert_eq!(reply["mode"], "relay-reply");
+    let calls = NATIVE_CALLS.lock().unwrap().clone();
+    assert_eq!(calls.len(), 2);
+    let reply_envelope: Envelope = serde_json::from_value(calls[0].1["envelope"].clone()).unwrap();
+    assert_eq!(reply_envelope.parent, Some(Parent { owner: alice.device.owner.clone(), message_id: request_envelope.message_id.clone() }));
+    assert_eq!(reply_envelope.hop, 2);
+    assert_eq!(reply_envelope.grant_id.as_deref(), Some(grant_id.as_str()));
+    assert_eq!(reply_envelope.to_device, "agent-a");
+    assert_eq!(calls[1].1["state"], "replied");
+    assert_eq!(calls[1].1["messageId"], json!(request_envelope.message_id));
+    drop(calls);
+
+    // Alice picks up the correlated reply; her outgoing record flips to replied.
+    activate(home_a.path(), &alice, ([1; 32], [2; 32]), vec![]);
+    let ingress = root().join("ingress");
+    crate::storage::private_dir(&ingress).unwrap();
+    let mut client = TestClient::fake(vec![
+        (
+            "relay:pending",
+            Ok(pending_page(
+                vec![json!({"envelope":reply_envelope,"trust":"external-untrusted","senderDevice":bob.device})],
+                milliseconds(),
+            )),
+        ),
+        ("relay:observe", Ok(json!({}))),
+    ]);
+    rt.block_on(receive(&mut client, &alice, &ingress, &mut RejectedCache::new(), &mut deferred)).unwrap();
+    let (_, outgoing) = find_outgoing(&alice.device.owner, &request_envelope.message_id).unwrap();
+    assert_eq!(outgoing.state, State::Replied);
+    let replies = inbox::read("inbox-a");
+    assert_eq!(replies.len(), 1);
+    assert_eq!(replies[0]["external"], true);
+    assert_eq!(replies[0]["untrusted"], true);
+    assert_eq!(replies[0]["trust"], "external-untrusted");
+}
+
+#[test]
+fn cross_org_exact_inbox_mismatch_and_forged_sender_bundle_are_rejected() {
+    if !crate::test_support::isolated("relay::tests::cross_org_exact_inbox_mismatch_and_forged_sender_bundle_are_rejected") {
+        return;
+    }
+    let _env = RECEIVER_ENV_LOCK.lock().unwrap();
+    std::env::set_var("EVERETT_NOTIFY", "none");
+    std::env::set_var("EVERETT_AUTH_PROVIDER", "cloudflare");
+    let (alice, bob) = cross_org_devices();
+    let eve = Keys::new(
+        json!(["https://issuer.example/", "org", "org-c"]).to_string(),
+        "agent-e".into(),
+        [9; 32],
+        [10; 32],
+    );
+    let home_b = tempfile::tempdir().unwrap();
+    let rt = tokio::runtime::Runtime::new().unwrap();
+    activate(home_b.path(), &bob, ([3; 32], [4; 32]), vec![]);
+    let ingress = root().join("ingress");
+    crate::storage::private_dir(&ingress).unwrap();
+    let grant_id = grant();
+    let attested_row = |envelope: &Envelope, session: &str| {
+        json!({"envelope":envelope,"trust":"external-untrusted","inbox":{"address":"claude@wmm.10462","harness":"claude","session":session},"senderDevice":alice.device})
+    };
+
+    // (a) Payload sealed for another session than the attested inbox.
+    for (payload_session, inbox_session, harness) in [
+        ("other", "inbox-b", "claude"),
+        ("inbox-b", "inbox-b", "codex"),
+    ] {
+        let envelope = cross_org_envelope(&alice, &bob, payload_session, &grant_id);
+        let row = if harness == "codex" {
+            json!({"envelope":envelope,"inbox":{"address":"claude@wmm.10462","harness":"codex","session":inbox_session},"senderDevice":alice.device})
+        } else {
+            attested_row(&envelope, inbox_session)
+        };
+        let mut client = TestClient::fake(vec![(
+            "relay:pending",
+            Ok(pending_page(vec![row], milliseconds())),
+        )]);
+        rt.block_on(receive(&mut client, &bob, &ingress, &mut RejectedCache::new(), &mut false)).unwrap();
+        assert!(inbox::read("inbox-b").is_empty() && inbox::read("other").is_empty());
+        assert_eq!(client.calls.len(), 1, "nothing authorized, observed, or imported");
+    }
+
+    // (c) A root row with a sender bundle but no inbox binding.
+    let envelope = cross_org_envelope(&alice, &bob, "inbox-b", &grant_id);
+    let mut client = TestClient::fake(vec![(
+        "relay:pending",
+        Ok(pending_page(
+            vec![json!({"envelope":envelope,"trust":"external-untrusted","senderDevice":alice.device})],
+            milliseconds(),
+        )),
+    )]);
+    rt.block_on(receive(&mut client, &bob, &ingress, &mut RejectedCache::new(), &mut false)).unwrap();
+    assert!(inbox::read("inbox-b").is_empty());
+    assert_eq!(client.calls.len(), 1);
+
+    // (d) A sender bundle that does not match the sealed envelope.
+    let envelope = cross_org_envelope(&alice, &bob, "inbox-b", &grant_id);
+    let mut client = TestClient::fake(vec![(
+        "relay:pending",
+        Ok(pending_page(
+            vec![json!({"envelope":envelope,"trust":"external-untrusted","inbox":{"address":"claude@wmm.10462","harness":"claude","session":"inbox-b"},"senderDevice":eve.device})],
+            milliseconds(),
+        )),
+    )]);
+    rt.block_on(receive(&mut client, &bob, &ingress, &mut RejectedCache::new(), &mut false)).unwrap();
+    assert!(inbox::read("inbox-b").is_empty());
+    assert_eq!(client.calls.len(), 1);
+
+    // (e) A staged record whose attested inbox was tampered with on disk.
+    let envelope = cross_org_envelope(&alice, &bob, "inbox-b", &grant_id);
+    let staged_path = ingress.join("tampered.json");
+    write(
+        &staged_path,
+        &StagedFile::Row(Staged::new(
+            &envelope,
+            &Attestation {
+                inbox: Some(InboxBinding {
+                    address: "claude@wmm.10462".into(),
+                    harness: "claude".into(),
+                    session: "tampered".into(),
+                }),
+                sender_device: Some(alice.device.clone()),
+            },
+        )),
+    )
+    .unwrap();
+    let mut client = TestClient::fake(vec![]);
+    let (staged, recovered, attestation) = read_staged(&staged_path).unwrap();
+    rt.block_on(publish_staged(&mut client, &bob, &staged_path, &staged, &recovered, &attestation)).unwrap();
+    assert!(!staged_path.exists(), "a tampered stage is refused and removed");
+    assert!(inbox::read("inbox-b").is_empty() && inbox::read("tampered").is_empty());
+    assert!(client.calls.is_empty());
+}
+
+#[test]
+fn cross_org_denied_sender_and_revoked_grant_are_rejected() {
+    if !crate::test_support::isolated("relay::tests::cross_org_denied_sender_and_revoked_grant_are_rejected") {
+        return;
+    }
+    let _env = RECEIVER_ENV_LOCK.lock().unwrap();
+    std::env::set_var("EVERETT_NOTIFY", "none");
+    std::env::set_var("EVERETT_AUTH_PROVIDER", "cloudflare");
+    let (alice, bob) = cross_org_devices();
+    let home_a = tempfile::tempdir().unwrap();
+    let home_b = tempfile::tempdir().unwrap();
+    let address = "claude@wmm.10462";
+    let grant_id = grant();
+    let rt = tokio::runtime::Runtime::new().unwrap();
+
+    // A denied resolve leaves no enqueue attempt and no outgoing record.
+    activate(home_a.path(), &alice, ([1; 32], [2; 32]), vec![]);
+    *NATIVE_SCRIPT.lock().unwrap() = vec![(
+        "relay:resolveInbox",
+        Err("Cloudflare relay denied resolveInbox (HTTP 403, inbox_not_allowed)"),
+    )]
+    .into();
+    let error = send_address_as(address, "denied", None, None, None).unwrap_err();
+    assert!(denied(&error));
+    assert_eq!(NATIVE_CALLS.lock().unwrap().len(), 1);
+    assert!(crate::paths::glob(&root().join("outgoing"), "*.json").is_empty());
+
+    // A grant revoked between resolve and enqueue surfaces the denial.
+    *NATIVE_SCRIPT.lock().unwrap() = vec![
+        (
+            "relay:resolveInbox",
+            Ok(json!({"address":address,"owner":bob.device.owner,"device":bob.device,"harness":"claude","session":"inbox-b","grantId":grant_id})),
+        ),
+        ("relay:enqueue", Err("Cloudflare relay denied: revoked grant")),
+    ]
+    .into();
+    let error = send_address_as(address, "revoked", Some("revoked-key"), None, None).unwrap_err();
+    assert!(denied(&error));
+
+    // Receiver side: a staged cross-org row whose observe reports revocation is
+    // removed without import once our own identity is verified.
+    activate(home_b.path(), &bob, ([3; 32], [4; 32]), vec![]);
+    let ingress = root().join("ingress");
+    crate::storage::private_dir(&ingress).unwrap();
+    let envelope = cross_org_envelope(&alice, &bob, "inbox-b", &grant_id);
+    let staged_path = ingress.join("revoked.json");
+    write(
+        &staged_path,
+        &StagedFile::Row(Staged::new(
+            &envelope,
+            &Attestation {
+                inbox: Some(InboxBinding {
+                    address: address.into(),
+                    harness: "claude".into(),
+                    session: "inbox-b".into(),
+                }),
+                sender_device: Some(alice.device.clone()),
+            },
+        )),
+    )
+    .unwrap();
+    let mut client = TestClient::fake(vec![
+        ("relay:observe", Err("Cloudflare relay denied: revoked grant")),
+        ("relay:whoami", Ok(json!({"owner":bob.device.owner,"deviceId":bob.device.device_id}))),
+    ]);
+    let (staged, recovered, attestation) = read_staged(&staged_path).unwrap();
+    rt.block_on(publish_staged(&mut client, &bob, &staged_path, &staged, &recovered, &attestation)).unwrap();
+    assert!(!staged_path.exists());
+    assert!(inbox::read("inbox-b").is_empty());
+
+    // A reply attempt after revocation errors instead of posting.
+    let mut client = TestClient::fake(vec![
+        (
+            "relay:pending",
+            Ok(pending_page(
+                vec![json!({"envelope":envelope,"trust":"external-untrusted","inbox":{"address":address,"harness":"claude","session":"inbox-b"},"senderDevice":alice.device})],
+                milliseconds(),
+            )),
+        ),
+        ("relay:observe", Ok(json!({}))),
+    ]);
+    let mut deferred = false;
+    rt.block_on(receive(&mut client, &bob, &ingress, &mut RejectedCache::new(), &mut deferred)).unwrap();
+    assert_eq!(inbox::read("inbox-b").len(), 1);
+    *NATIVE_SCRIPT.lock().unwrap() = vec![(
+        "relay:enqueue",
+        Err("Cloudflare relay denied: revoked grant"),
+    )]
+    .into();
+    let local_id = local_message_id(&envelope);
+    assert!(crate::send::reply_as(&local_id, "too late", Some("inbox-b"), Some("claude")).is_err());
+    let paths = crate::paths::glob(&root().join("outgoing"), "*.json");
+    assert_eq!(paths.len(), 1);
+    let reply_out: Outgoing = read(&paths[0]).unwrap();
+    assert!(!reply_out.posted, "the denied reply stays an unposted retry record");
+    assert!(reply_out.reply_pending.is_some());
+}
+
+#[test]
+fn local_access_policy_enforces_cross_org_send_and_receive_rules() {
+    if !crate::test_support::isolated(
+        "relay::tests::local_access_policy_enforces_cross_org_send_and_receive_rules",
+    ) {
+        return;
+    }
+    let _env = RECEIVER_ENV_LOCK.lock().unwrap();
+    let home_a = tempfile::tempdir().unwrap();
+    let home_b = tempfile::tempdir().unwrap();
+    let owner_a = r#"["https://issuer.example/","org","org-a"]"#;
+    let owner_b = r#"["https://issuer.example/","org","org-b"]"#;
+    let alice = Keys::new(owner_a.into(), "agent-a".into(), [1; 32], [2; 32]);
+    let bob = Keys::new(owner_b.into(), "agent-b".into(), [3; 32], [4; 32]);
+    let address = "claude@wmm.10462";
+    let grant_id = "grant-0123456789abcdef0123456789abcdef";
+
+    // Outbound cross-org send is blocked when local access disables external sends.
+    activate(home_a.path(), &alice, ([1; 32], [2; 32]), vec![]);
+    crate::access::set_settings(None, Some("allowlist"), Some(false), None).unwrap();
+    *NATIVE_SCRIPT.lock().unwrap() = vec![(
+        "relay:resolveInbox",
+        Ok(json!({"address":address,"owner":bob.device.owner,"device":bob.device,"harness":"claude","session":"inbox-b","grantId":grant_id})),
+    )]
+    .into();
+    let err = send_address_as(address, "hello", Some("blocked-out"), None, None).unwrap_err();
+    assert!(err.message.contains("disabled by local access policy"), "{}", err.message);
+
+    // Incoming cross-org receive respects mode, allowlist, and blocklist rules.
+    activate(home_b.path(), &bob, ([3; 32], [4; 32]), vec![]);
+    let envelope = cross_org_envelope(&alice, &bob, "inbox-b", grant_id);
+    let attestation = Attestation {
+        inbox: Some(InboxBinding {
+            address: address.into(),
+            harness: "claude".into(),
+            session: "inbox-b".into(),
+        }),
+        sender_device: Some(alice.device.clone()),
+    };
+    let now = milliseconds();
+
+    crate::access::set_settings(None, Some("same-account"), None, None).unwrap();
+    assert!(import_inner(&bob, &envelope, &attestation, now, true).is_err());
+    assert!(inbox::read("inbox-b").is_empty());
+
+    crate::access::set_settings(None, Some("allowlist"), None, None).unwrap();
+    crate::access::allow_sender(
+        None,
+        owner_a,
+        "agent-other",
+        Some(address),
+        None,
+        false,
+    )
+    .unwrap();
+    assert!(import_inner(&bob, &envelope, &attestation, now, true).is_err());
+
+    crate::access::allow_sender(
+        None,
+        owner_a,
+        &alice.device.device_id,
+        Some(address),
+        Some("Alice"),
+        false,
+    )
+    .unwrap();
+    import_inner(&bob, &envelope, &attestation, now, true).unwrap();
+    assert_eq!(inbox::read("inbox-b").len(), 1);
+
+    // Turning off external sends also blocks cross-org replies and background reconcile retries.
+    crate::access::set_settings(None, Some("allowlist"), Some(false), None).unwrap();
+    let local_id = local_message_id(&envelope);
+    let reply_err =
+        crate::send::reply_as(&local_id, "blocked reply", Some("inbox-b"), Some("claude"))
+            .unwrap_err();
+    assert!(
+        reply_err.message.contains("disabled by local access policy"),
+        "{}",
+        reply_err.message
+    );
+    assert!(crate::paths::glob(&root().join("outgoing"), "*.json").is_empty());
+
+    // Simulate a pre-existing unposted cross-org outgoing record: reconcile must not post it while external sends are off.
+    let pending_reply_pin = Paired {
+        device: alice.device.clone(),
+        deployment: deployment().unwrap(),
+        grant_id: Some(grant_id.into()),
+    };
+    let reply_payload = Payload::Inbox {
+        session: "inbox-a".into(),
+        harness: "codex".into(),
+        text: "queued earlier".into(),
+        from: "inbox-b".into(),
+        from_harness: "claude".into(),
+        from_card: String::new(),
+        reply_to: envelope.message_id.clone(),
+        hops: 2,
+        external_untrusted: true,
+    };
+    let (reply_path, _) = prepare_for(
+        address,
+        pending_reply_pin,
+        true,
+        "reconcile-blocked-key",
+        &reply_payload,
+        &bob,
+        Some(Parent {
+            owner: envelope.owner.clone(),
+            message_id: envelope.message_id.clone(),
+        }),
+    )
+    .unwrap();
+    let mut client = TestClient::fake(vec![]);
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    rt.block_on(reconcile(&mut client, &bob, &mut RejectedCache::new()))
+        .unwrap();
+    let still_unposted: Outgoing = read(&reply_path).unwrap();
+    assert!(!still_unposted.posted);
+
+    crate::access::set_settings(None, Some("allowlist"), Some(true), None).unwrap();
+    crate::access::deny_sender(None, owner_a, None, Some("stop")).unwrap();
+    let envelope2 = cross_org_envelope(&alice, &bob, "inbox-b", grant_id);
+    assert!(import_inner(&bob, &envelope2, &attestation, now, true).is_err());
+    assert_eq!(inbox::read("inbox-b").len(), 1);
 }

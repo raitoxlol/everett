@@ -29,6 +29,7 @@ use crypto::{Device, Envelope, Keys, Parent};
 
 const DEADLINE: Duration = Duration::from_secs(20);
 const TTL: i64 = 3_600_000;
+const CROSS_OWNER_MAX_HOPS: i64 = 3;
 const OUTGOING_ACTIVITY_MS: i64 = 60_000;
 
 pub fn diagnostics() -> Value {
@@ -49,6 +50,27 @@ pub(super) fn valid(value: &str) -> Result<()> {
         return Err(bad("invalid identifier"));
     }
     Ok(())
+}
+
+fn inbox_address_part(part: &str) -> bool {
+    let edge = |c: u8| c.is_ascii_lowercase() || c.is_ascii_digit();
+    let inner = |c: u8| edge(c) || matches!(c, b'.' | b'_' | b'-');
+    let bytes = part.as_bytes();
+    !part.is_empty()
+        && part.len() <= 64
+        && edge(bytes[0])
+        && edge(bytes[bytes.len() - 1])
+        && bytes.iter().all(|&c| inner(c))
+}
+
+pub fn inbox_address(value: &str) -> bool {
+    if value.contains("..") {
+        return false;
+    }
+    let Some((local, zone)) = value.split_once('@') else {
+        return false;
+    };
+    !zone.contains('@') && inbox_address_part(local) && inbox_address_part(zone)
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
@@ -130,6 +152,8 @@ struct Outgoing {
     harness: String,
     posted: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    direct: Option<Paired>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     posted_at: Option<i64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     replied_at: Option<i64>,
@@ -147,7 +171,7 @@ struct RelayEvidence {
     replied_at: Option<i64>,
 }
 
-#[derive(Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 enum State {
     Queued,
@@ -584,6 +608,182 @@ pub fn admin_call(name: &str, value: Value, is_query: bool) -> Result<Value> {
 pub fn signed_in_owner() -> Result<String> {
     Ok(relay_account()?.owner)
 }
+
+#[derive(Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct ResolvedInbox {
+    address: String,
+    owner: String,
+    device: Device,
+    harness: String,
+    session: String,
+    grant_id: Option<String>,
+}
+
+fn resolved_inbox(requested: &str, value: Value, own_owner: &str, own_device: &str) -> Result<ResolvedInbox> {
+    let resolved: ResolvedInbox = serde_json::from_value(value).map_err(bad)?;
+    resolved.device.verify()?;
+    if resolved.address != requested || resolved.device.owner != resolved.owner {
+        return Err(bad("resolved inbox does not match the requested address"));
+    }
+    valid(&resolved.harness)?;
+    valid(&resolved.session)?;
+    if resolved.owner == own_owner {
+        if resolved.grant_id.is_some() {
+            return Err(bad("same-org inbox must not carry a grant"));
+        }
+    } else {
+        match &resolved.grant_id {
+            Some(grant_id) => valid(grant_id)?,
+            None => return Err(bad("cross-org inbox requires a grant")),
+        }
+    }
+    if resolved.device.device_id == own_device {
+        return Err(bad("address is bound to this device; use the local inbox"));
+    }
+    Ok(resolved)
+}
+
+pub fn register_inbox(
+    address: &str,
+    harness: &str,
+    session: &str,
+    device: Option<&str>,
+    remove: bool,
+) -> Result<Value> {
+    if !inbox_address(address) {
+        return Err(bad("invalid inbox address"));
+    }
+    valid(harness)?;
+    valid(session)?;
+    let mut args = json!({"address":address,"harness":harness,"session":session});
+    if let Some(device) = device {
+        valid(device)?;
+        args["deviceId"] = json!(device);
+    }
+    if remove {
+        args["remove"] = json!(true);
+    }
+    admin_call("relay:registerInbox", args, false)
+}
+
+pub fn grant_inbox(address: &str, sender_owner: &str, sender_device: &str) -> Result<Value> {
+    if !inbox_address(address) {
+        return Err(bad("invalid inbox address"));
+    }
+    if sender_owner.is_empty() || sender_owner.len() > 4096 {
+        return Err(bad("invalid sender owner"));
+    }
+    valid(sender_device)?;
+    admin_call(
+        "relay:grantInbox",
+        json!({"address":address,"senderOwner":sender_owner,"senderDeviceId":sender_device}),
+        false,
+    )
+}
+
+pub fn revoke_inbox_grant(grant_id: &str) -> Result<Value> {
+    valid(grant_id)?;
+    admin_call("relay:revokeInboxGrant", json!({"grantId":grant_id}), false)
+}
+
+pub fn resolve_inbox(address: &str) -> Result<Value> {
+    if !inbox_address(address) {
+        return Err(bad("invalid inbox address"));
+    }
+    let account = relay_account()?;
+    let value = admin_call("relay:resolveInbox", json!({"address":address}), true)?;
+    let resolved = resolved_inbox(address, value, &account.owner, &account.agent)?;
+    serde_json::to_value(resolved).map_err(bad)
+}
+
+pub fn send_address_as(
+    address: &str,
+    text: &str,
+    key: Option<&str>,
+    caller: Option<&str>,
+    caller_harness: Option<&str>,
+) -> Result<Value> {
+    if !inbox_address(address) {
+        return Err(bad("invalid inbox address"));
+    }
+    let owner = relay_account()?.owner;
+    let keys = verified_keys(&owner)?;
+    let who = send::sender_info_as(caller, caller_harness);
+    let from = who["sender"].as_str().unwrap_or(inbox::HUMAN).to_string();
+    let from_harness = who["from_harness"].as_str().unwrap_or("").to_string();
+    let from_card: String = who["from_card"]
+        .as_str()
+        .unwrap_or("")
+        .chars()
+        .take(160)
+        .collect();
+    let context = inbox::relay_context(&from);
+    if context.as_ref().is_some_and(|m| {
+        m["relay_owner"] != owner || m["relay_recipient_device"] != keys.device.device_id
+    }) {
+        return Err(bad("remote lineage belongs to another org/account"));
+    }
+    let hops = context
+        .as_ref()
+        .and_then(|m| m["hops"].as_i64())
+        .unwrap_or(0)
+        .max(send::current_hops())
+        .max(inbox::session_hops(&from))
+        .max(0)
+        + 1;
+    if hops != 1 {
+        return Err(EverettError::new(
+            7,
+            "cross-org address sends must be new root requests (hop 1); answer remote senders with everett reply",
+        ));
+    }
+    let external_context = context.as_ref().is_some_and(inbox::external);
+    let generated = uuid::Uuid::new_v4().to_string();
+    let key = key.unwrap_or(&generated).to_string();
+    let attempt_key = key.clone();
+    let text = text.trim().to_string();
+    let address = address.to_string();
+    runtime(async move {
+        let mut client = client(&owner).await?;
+        let resolved = resolved_inbox(
+            &address,
+            query(&mut client, "relay:resolveInbox", json!({"address":address})).await?,
+            &owner,
+            &keys.device.device_id,
+        )?;
+        let cross_owner = resolved.owner != owner;
+        if cross_owner {
+            crate::access::check_outgoing_cross_org()?;
+        }
+        let pin = Paired {
+            device: resolved.device.clone(),
+            deployment: deployment()?,
+            grant_id: resolved.grant_id.clone(),
+        };
+        let payload = Payload::Inbox {
+            session: resolved.session.clone(),
+            harness: resolved.harness.clone(),
+            text,
+            from,
+            from_harness,
+            from_card,
+            reply_to: String::new(),
+            hops: 1,
+            external_untrusted: cross_owner || external_context,
+        };
+        let (path, outgoing) = prepare_for(&address, pin, true, &attempt_key, &payload, &keys, None)?;
+        if outgoing.envelope.expires_at <= milliseconds() {
+            return Err(bad(
+                "request expired; use a new idempotency key only if you intend a new send",
+            ));
+        }
+        let response = post(&mut client, &path, &outgoing).await?;
+        let (_, observed) = find_outgoing(&owner, &outgoing.envelope.message_id)?;
+        let state = if observed.state != State::Queued { json!(observed.state) } else { response["state"].clone() };
+        Ok(json!({"peer":address,"address":address,"transport":"cloudflare","message_id":outgoing.envelope.message_id,"idempotency_key":outgoing.envelope.idempotency_key,"state":state,"expires_at":outgoing.envelope.expires_at,"recipient_owner":resolved.owner,"grant_id":resolved.grant_id,"inbox":{"harness":resolved.harness,"session":resolved.session},"external":cross_owner,"pickup":"live relay; hooks/MCP must consume local inbox"}))
+    }).map_err(|e| EverettError::new(e.code, format!("{}; idempotency key {key}. A local retry record exists, but relay queueing is not confirmed.",e.message)))
+}
 pub fn revoke_device(device_id: &str) -> Result<Value> {
     let owner = relay_account()?.owner;
     let deployment = deployment()?;
@@ -817,12 +1017,25 @@ fn prepare(
     keys: &Keys,
     parent: Option<Parent>,
 ) -> Result<(PathBuf, Outgoing)> {
+    let pin = paired(name, &keys.device.owner)?;
+    prepare_for(name, pin, false, key, payload, keys, parent)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn prepare_for(
+    label: &str,
+    pin: Paired,
+    direct: bool,
+    key: &str,
+    payload: &Payload,
+    keys: &Keys,
+    parent: Option<Parent>,
+) -> Result<(PathBuf, Outgoing)> {
     valid(key)?;
     payload.validate()?;
-    let pin = paired(name, &keys.device.owner)?;
     let digest = format!(
         "{:x}",
-        Sha256::digest(json!([name, payload, parent, pin.device.owner, pin.grant_id]).to_string())
+        Sha256::digest(json!([label, payload, parent, pin.device.owner, pin.grant_id]).to_string())
     );
     let path = outgoing_path(
         &json!([keys.device.owner, keys.device.device_id]).to_string(),
@@ -839,20 +1052,21 @@ fn prepare(
         _ => (String::new(), String::new()),
     };
     let outgoing = Outgoing {
-        peer: name.into(),
+        peer: label.into(),
         envelope: keys.seal(
             &pin.device,
             key,
             payload,
             milliseconds(),
             TTL,
-            pin.grant_id,
+            pin.grant_id.clone(),
             parent.clone(),
         )?,
         digest,
         session,
         harness,
         posted: false,
+        direct: direct.then_some(pin),
         posted_at: None,
         replied_at: None,
         relay_evidence: None,
@@ -893,6 +1107,9 @@ fn reuse_outgoing(
 }
 
 async fn post(client: &mut RelayClient, path: &Path, outgoing: &Outgoing) -> Result<Value> {
+    if outgoing.envelope.owner != outgoing.envelope.recipient_owner {
+        crate::access::check_outgoing_cross_org()?;
+    }
     let result = mutation(
         client,
         "relay:enqueue",
@@ -1013,15 +1230,49 @@ pub fn retain_reply(
     {
         return Err(bad("message belongs to another signed-in account"));
     }
-    let (name, _) = trusted(
-        original["relay_device"]
+    let sender_device = original["relay_device"]
+        .as_str()
+        .ok_or_else(|| bad("missing sender device"))?;
+    let sender_owner = original["relay_sender_owner"]
+        .as_str()
+        .ok_or_else(|| bad("missing sender owner"))?;
+    let grant_id = original["relay_grant_id"].as_str();
+    if sender_owner != owner {
+        crate::access::check_outgoing_cross_org()?;
+    }
+    let attested = sender_owner != owner
+        && grant_id.is_some()
+        && original.get("relay_sender_device").is_some_and(Value::is_object);
+    let (name, direct_pin) = if attested {
+        let device: Device = serde_json::from_value(original["relay_sender_device"].clone())
+            .map_err(bad)?;
+        device.verify()?;
+        if device.owner != sender_owner || device.device_id != sender_device {
+            return Err(bad("attested sender bundle does not match the message"));
+        }
+        let label = original["relay_inbox_address"]
             .as_str()
-            .ok_or_else(|| bad("missing sender device"))?,
-        original["relay_sender_owner"]
-            .as_str()
-            .ok_or_else(|| bad("missing sender owner"))?,
-        original["relay_grant_id"].as_str(),
-    )?;
+            .filter(|a| inbox_address(a))
+            .unwrap_or(sender_device)
+            .to_string();
+        (
+            label,
+            Some(Paired {
+                device,
+                deployment: deployment()?,
+                grant_id: grant_id.map(str::to_string),
+            }),
+        )
+    } else {
+        let (name, _) = trusted(sender_device, sender_owner, grant_id)?;
+        (name, None)
+    };
+    if grant_id.is_some() && hops > CROSS_OWNER_MAX_HOPS {
+        return Err(EverettError::new(
+            7,
+            "cross-org relay threads are limited to 3 hops; answer here instead",
+        ));
+    }
     let mid = original["relay_message_id"]
         .as_str()
         .ok_or_else(|| bad("missing message id"))?;
@@ -1058,7 +1309,10 @@ pub fn retain_reply(
         "reply-{:x}",
         Sha256::digest(json!([parent.owner, mid]).to_string())
     );
-    let (path, outgoing) = prepare(&name, &reply_key, &payload, &keys, Some(parent))?;
+    let (path, outgoing) = match direct_pin {
+        Some(pin) => prepare_for(&name, pin, true, &reply_key, &payload, &keys, Some(parent))?,
+        None => prepare(&name, &reply_key, &payload, &keys, Some(parent))?,
+    };
     let mid = mid.to_string();
     runtime(async move {
         let mut client = client(&owner).await?;
@@ -1098,13 +1352,15 @@ pub fn status(name: &str, mid: &str) -> Result<Value> {
     if outgoing.peer != name {
         return Err(bad("message is for another peer"));
     }
-    if same_owner_enabled()
-        && outgoing.envelope.recipient_owner == owner
-        && outgoing.envelope.grant_id.is_none()
-    {
-        same_owner_device(&outgoing.envelope.to_device, &owner, false)?;
-    } else {
-        paired(name, &owner)?;
+    if outgoing.direct.is_none() {
+        if same_owner_enabled()
+            && outgoing.envelope.recipient_owner == owner
+            && outgoing.envelope.grant_id.is_none()
+        {
+            same_owner_device(&outgoing.envelope.to_device, &owner, false)?;
+        } else {
+            paired(name, &owner)?;
+        }
     }
     let local = match outgoing.state {
         State::Replied => Some(("replied", "A correlated reply was received locally. Task success is not implied.")),
@@ -1217,16 +1473,39 @@ fn observe_reply_import(owner: &str, envelope: &Envelope, mid: &str, received_at
 }
 
 pub fn import(keys: &Keys, envelope: &Envelope, now: i64) -> Result<()> {
-    import_inner(keys, envelope, now, true)
+    import_inner(keys, envelope, &Attestation::default(), now, true)
 }
 
-fn import_inner(keys: &Keys, envelope: &Envelope, now: i64, publish: bool) -> Result<()> {
-    let (_, pin) = trusted(
-        &envelope.from_device,
-        &envelope.owner,
-        envelope.grant_id.as_deref(),
-    )?;
-    let payload = keys.open(&pin.device, envelope, now)?;
+fn import_inner(
+    keys: &Keys,
+    envelope: &Envelope,
+    attestation: &Attestation,
+    now: i64,
+    publish: bool,
+) -> Result<()> {
+    let attested = envelope.owner != keys.device.owner
+        && envelope.grant_id.is_some()
+        && attestation.sender_device.is_some();
+    let sender = if attested {
+        let device = attestation.sender_device.clone().unwrap();
+        device.verify()?;
+        if device.owner != envelope.owner
+            || device.device_id != envelope.from_device
+            || device.fingerprint() != envelope.sender_fingerprint
+        {
+            return Err(bad("attested sender bundle does not match the envelope"));
+        }
+        device
+    } else {
+        trusted(
+            &envelope.from_device,
+            &envelope.owner,
+            envelope.grant_id.as_deref(),
+        )?
+        .1
+        .device
+    };
+    let payload = keys.open(&sender, envelope, now)?;
     let _guard = crate::storage::lock(&root().join("inbox.lock"))?;
     match payload {
         Payload::Delivered { .. } => {
@@ -1245,6 +1524,15 @@ fn import_inner(keys: &Keys, envelope: &Envelope, now: i64, publish: bool) -> Re
             hops,
             external_untrusted,
         } => {
+            if envelope.owner != keys.device.owner {
+                crate::access::check_incoming_cross_org(
+                    &envelope.owner,
+                    &envelope.from_device,
+                    attestation.inbox.as_ref().map(|inbox| inbox.address.as_str()),
+                    envelope.hop,
+                    !reply_to.is_empty(),
+                )?;
+            }
             if !reply_to.is_empty() {
                 let (_, out) = find_outgoing(&keys.device.owner, &reply_to)?;
                 if out.envelope.from_device != keys.device.device_id
@@ -1264,6 +1552,15 @@ fn import_inner(keys: &Keys, envelope: &Envelope, now: i64, publish: bool) -> Re
                     || out.harness != harness
                 {
                     return Err(bad("reply does not match the original request"));
+                }
+            } else if attested {
+                let bound = attestation.inbox.as_ref().is_some_and(|inbox| {
+                    inbox.harness == harness && inbox.session == session
+                });
+                if !bound {
+                    return Err(bad(
+                        "cross-org message does not match the server-attested inbox",
+                    ));
                 }
             } else if !crate::registry::scan(24.0 * 365.0, true, None, &harness)
                 .iter()
@@ -1285,7 +1582,14 @@ fn import_inner(keys: &Keys, envelope: &Envelope, now: i64, publish: bool) -> Re
                 }
             } else {
                 let external = envelope.owner != envelope.recipient_owner || external_untrusted;
-                let extra = serde_json::from_value(json!({"id":local_id,"relay_message_id":envelope.message_id,"relay_owner":keys.device.owner,"relay_sender_owner":envelope.owner,"relay_recipient_owner":envelope.recipient_owner,"relay_grant_id":envelope.grant_id,"relay_device":envelope.from_device,"relay_recipient_device":keys.device.device_id,"relay_sender":from,"relay_digest":digest,"relay_parent":envelope.parent,"external":external,"untrusted":external,"trust":if external {"external-untrusted"} else {"same-org"},"instruction_source":"agent-data"})).map_err(bad)?;
+                let mut extra_value = json!({"id":local_id,"relay_message_id":envelope.message_id,"relay_owner":keys.device.owner,"relay_sender_owner":envelope.owner,"relay_recipient_owner":envelope.recipient_owner,"relay_grant_id":envelope.grant_id,"relay_device":envelope.from_device,"relay_recipient_device":keys.device.device_id,"relay_sender":from,"relay_digest":digest,"relay_parent":envelope.parent,"external":external,"untrusted":external,"trust":if external {"external-untrusted"} else {"same-org"},"instruction_source":"agent-data"});
+                if attested {
+                    if let Some(binding) = &attestation.inbox {
+                        extra_value["relay_inbox_address"] = json!(binding.address);
+                    }
+                    extra_value["relay_sender_device"] = json!(attestation.sender_device);
+                }
+                let extra = serde_json::from_value(extra_value).map_err(bad)?;
                 inbox::post(
                     &session,
                     &text,
@@ -1654,7 +1958,17 @@ async fn reconcile(client: &mut RelayClient, keys: &Keys, rejected: &mut Rejecte
                 || (out.posted && out.reply_pending.is_some()))
         {
             busy = true;
-            let pin = if out.envelope.recipient_owner == keys.device.owner && out.envelope.grant_id.is_none() {
+            let pin = if let Some(direct) = &out.direct {
+                match deployment() {
+                    Ok(current)
+                        if crate::cloudflare_auth::same_relay(&direct.deployment, &current) =>
+                    {
+                        Ok((direct.device.clone(), direct.grant_id.clone()))
+                    }
+                    Ok(_) => continue,
+                    Err(error) => Err(error),
+                }
+            } else if out.envelope.recipient_owner == keys.device.owner && out.envelope.grant_id.is_none() {
                 active_same_owner_device(client, &keys.device.owner, &out.envelope.to_device).await.map(|device| (device, None))
             } else {
                 paired(&out.peer, &keys.device.owner).map(|pin| (pin.device, pin.grant_id))
@@ -1698,9 +2012,76 @@ struct PendingPage {
     is_done: bool,
     continue_cursor: String,
 }
+#[derive(Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct InboxBinding {
+    address: String,
+    harness: String,
+    session: String,
+}
+
+#[derive(Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct Attestation {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    inbox: Option<InboxBinding>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    sender_device: Option<Device>,
+}
+
 #[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
 struct PendingRow {
     envelope: Envelope,
+    #[serde(default)]
+    #[allow(dead_code)]
+    trust: Option<String>,
+    #[serde(default)]
+    inbox: Option<InboxBinding>,
+    #[serde(default)]
+    sender_device: Option<Device>,
+}
+
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Staged {
+    envelope: Envelope,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    inbox: Option<InboxBinding>,
+    #[serde(default, rename = "senderDevice", skip_serializing_if = "Option::is_none")]
+    sender_device: Option<Device>,
+}
+
+impl Staged {
+    fn new(envelope: &Envelope, attestation: &Attestation) -> Self {
+        Self {
+            envelope: envelope.clone(),
+            inbox: attestation.inbox.clone(),
+            sender_device: attestation.sender_device.clone(),
+        }
+    }
+}
+
+#[derive(Serialize, Deserialize)]
+#[serde(untagged)]
+enum StagedFile {
+    Row(Staged),
+    Bare(Envelope),
+}
+
+fn read_staged(path: &Path) -> Result<(StagedFile, Envelope, Attestation)> {
+    let staged: StagedFile = read(path)?;
+    let (envelope, attestation) = match &staged {
+        StagedFile::Row(row) => (
+            row.envelope.clone(),
+            Attestation {
+                inbox: row.inbox.clone(),
+                sender_device: row.sender_device.clone(),
+            },
+        ),
+        StagedFile::Bare(envelope) => (envelope.clone(), Attestation::default()),
+    };
+    Ok((staged, envelope, attestation))
 }
 
 /// False means transient uncertainty, not revoked auth. Callers retain staging.
@@ -1722,7 +2103,9 @@ async fn publish_staged(
     client: &mut RelayClient,
     keys: &Keys,
     path: &Path,
+    staged: &StagedFile,
     envelope: &Envelope,
+    attestation: &Attestation,
 ) -> Result<()> {
     // The private durable ingress inbox is not visible to hooks/MCP until this mutation
     // reauthorizes BOTH agents, membership, current key bundles, grant and TTL.
@@ -1730,12 +2113,12 @@ async fn publish_staged(
     // observation rejects an expired QUEUED attempt but permits already delivered data.
     // We still authenticate every bound field before asking that authorization barrier.
     let validation_at = milliseconds().min(envelope.expires_at.saturating_sub(1));
-    if let Err(error) = import_inner(keys, envelope, validation_at, false) {
+    if let Err(error) = import_inner(keys, envelope, attestation, validation_at, false) {
         // A stale sender pin or invalid destination is specific to this row,
         // not evidence that our own agent has been revoked.
         eprintln!("everett relay: staged row not published: {}", error.message);
         if error.code == 6 { return Ok(()); }
-        remove_stage(path, envelope)?;
+        remove_stage(path, staged)?;
         return Ok(());
     }
     let authorization = signed_observation(
@@ -1751,7 +2134,7 @@ async fn publish_staged(
             // A sender rotation/revocation or grant revocation must not shut down
             // unrelated chats. Independently verify OUR authoritative identity.
             if check_own_identity(client, keys).await? {
-                remove_stage(path, envelope)?;
+                remove_stage(path, staged)?;
             }
             return Ok(());
         }
@@ -1759,10 +2142,10 @@ async fn publish_staged(
         // stage, but continue handling independently authorized envelopes.
         return Ok(());
     }
-    finish_staged(keys, path, envelope, authorization)
+    finish_staged(keys, path, staged, envelope, attestation, authorization)
 }
 
-fn remove_stage(path: &Path, envelope: &Envelope) -> Result<()> {
+fn remove_stage(path: &Path, staged: &impl Serialize) -> Result<()> {
     let parent = path.parent().ok_or_else(|| bad("missing stage parent"))?;
     // Fail before unlinking if the directory cannot be durably flushed.
     fs::File::open(parent)
@@ -1781,7 +2164,7 @@ fn remove_stage(path: &Path, envelope: &Envelope) -> Result<()> {
     if let Err(error) = flushed {
         // Keep recoverable ciphertext on a failed deletion fsync. Publication is
         // idempotent, so retrying this stage cannot duplicate the local message.
-        write(path, envelope)?;
+        write(path, staged)?;
         return Err(bad(error));
     }
     Ok(())
@@ -1793,32 +2176,36 @@ fn denied(error: &EverettError) -> bool {
 fn finish_staged(
     keys: &Keys,
     path: &Path,
+    staged: &StagedFile,
     envelope: &Envelope,
+    attestation: &Attestation,
     authorization: Result<()>,
 ) -> Result<()> {
     if let Err(error) = authorization {
         // Auth/grant/key revocation is terminal for cached query data. Network/timeouts
         // retain only encrypted staging, so an uncertain committed delivery can recover.
         if denied(&error) {
-            remove_stage(path, envelope)?;
+            remove_stage(path, staged)?;
         }
         return Err(error);
     }
     // Authorization above is signed observed delivery, so TTL is no longer an
     // undelivered-row constraint. This also recovers a crash after server acceptance.
-    import(
+    import_inner(
         keys,
         envelope,
+        attestation,
         milliseconds().min(envelope.expires_at.saturating_sub(1)),
+        true,
     )?;
-    remove_stage(path, envelope)?;
+    remove_stage(path, staged)?;
     Ok(())
 }
 
 /// Whether encrypted ingress for this device is still waiting to be published.
 fn has_stage(keys: &Keys, ingress: &Path) -> bool {
     crate::paths::glob(ingress, "*.json").iter().any(|path| {
-        read::<Envelope>(path).is_ok_and(|envelope| {
+        read_staged(path).is_ok_and(|(_, envelope, _)| {
             envelope.recipient_owner == keys.device.owner
                 && envelope.to_device == keys.device.device_id
         })
@@ -1834,12 +2221,12 @@ async fn receive(
 ) -> Result<bool> {
     let mut busy = false;
     for path in crate::paths::glob(ingress, "*.json") {
-        let envelope: Envelope = read(&path)?;
+        let (staged, envelope, attestation) = read_staged(&path)?;
         if envelope.recipient_owner == keys.device.owner
             && envelope.to_device == keys.device.device_id
         {
             busy = true;
-            publish_staged(client, keys, &path, &envelope).await?;
+            publish_staged(client, keys, &path, &staged, &envelope, &attestation).await?;
         }
     }
     let mut cursor: Option<String> = None;
@@ -1859,7 +2246,11 @@ async fn receive(
         }
         for row in page.envelopes {
             let envelope = row.envelope;
-            if let Err(error) = import_inner(keys, &envelope, page.server_now, false) {
+            let attestation = Attestation {
+                inbox: row.inbox,
+                sender_device: row.sender_device,
+            };
+            if let Err(error) = import_inner(keys, &envelope, &attestation, page.server_now, false) {
                 // Codes 5/6 are transient (timeout, sender-device lookup failure):
                 // leave the row queued and ask the caller to rescan instead of
                 // treating the hint as consumed.
@@ -1879,8 +2270,9 @@ async fn receive(
             }
             let path = ingress.join(format!("{}.json", local_message_id(&envelope)));
             busy = true;
-            write(&path, &envelope)?;
-            publish_staged(client, keys, &path, &envelope).await?;
+            let staged = StagedFile::Row(Staged::new(&envelope, &attestation));
+            write(&path, &staged)?;
+            publish_staged(client, keys, &path, &staged, &envelope, &attestation).await?;
         }
         if page.is_done {
             break;
@@ -2057,10 +2449,10 @@ pub fn run() -> Result<Value> {
     });
     if outcome.as_ref().err().is_some_and(denied) {
         for path in crate::paths::glob(&ingress, "*.json") {
-            if let Ok(envelope) = read::<Envelope>(&path) {
+            if let Ok((staged, envelope, _)) = read_staged(&path) {
                 if envelope.recipient_owner == owner && envelope.to_device == keys.device.device_id
                 {
-                    remove_stage(&path, &envelope)?;
+                    remove_stage(&path, &staged)?;
                 }
             }
         }
