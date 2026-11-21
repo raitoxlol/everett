@@ -43,6 +43,18 @@ fn classify_rules() {
 }
 
 #[test]
+fn classify_question_after_multibyte_char_does_not_panic() {
+    for (text, want) in [
+        ("Tests pass. Ship it to the café?", "Ship it to the café?"),
+        ("All green. Merge the naïve fix?", "Merge the naïve fix?"),
+        ("Done. Ready 🚀?", "Ready 🚀?"),
+    ] {
+        let (kind, summary) = events::classify(text).unwrap();
+        assert_eq!((kind.as_str(), summary.as_str()), ("needs-input", want), "{text}");
+    }
+}
+
+#[test]
 fn event_log_state_and_describe() {
     let h = lib_home();
     let cwd = project(&h);
