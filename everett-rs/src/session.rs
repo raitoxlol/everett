@@ -180,13 +180,24 @@ pub fn read_edges(path: &Path) -> EdgeRows {
     };
     let size = f.metadata().map(|m| m.len() as usize).unwrap_or(0);
     let mut buf = vec![0u8; CHUNK.min(size.max(1))];
-    if f.read(&mut buf).is_err() {
+    let Ok(n) = f.read(&mut buf) else {
         return (head, tail);
-    }
-    let head_text = String::from_utf8_lossy(&buf);
+    };
+    let head_text = String::from_utf8_lossy(&buf[..n]);
     let mut head_lines: Vec<&str> = head_text.split('\n').collect();
     if size > CHUNK {
-        head_lines.pop();
+        // The last element is a partial line — unless the byte right after the
+        // window is its newline, in which case it is a complete record.
+        let boundary_newline = f
+            .seek(SeekFrom::Start(CHUNK as u64))
+            .and_then(|_| {
+                let mut b = [0u8; 1];
+                f.read(&mut b).map(|n| n == 1 && b[0] == b'\n')
+            })
+            .unwrap_or(false);
+        if !(boundary_newline && head_lines.last().is_some_and(|l| !l.is_empty())) {
+            head_lines.pop();
+        }
     }
     for line in head_lines {
         if let Ok(Value::Object(obj)) = serde_json::from_str::<Value>(line) {
@@ -342,5 +353,33 @@ mod tests {
             tail.first().and_then(|m| m.get("i")).and_then(|v| v.as_i64()) == Some(999999),
             "boundary record was dropped"
         );
+    }
+
+    #[test]
+    fn read_edges_keeps_head_line_ending_at_window_boundary() {
+        // The tagged record's last byte is at CHUNK-1 and its newline sits at
+        // CHUNK: the head window ends on a complete record, not a partial line.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("s.jsonl");
+        let tagged = serde_json::to_string(&serde_json::json!({"type": "user", "i": 999999})).unwrap();
+        let rec0 = serde_json::to_string(&serde_json::json!({"type": "user", "i": 0})).unwrap();
+        let mut bytes = format!("{rec0}\n").into_bytes();
+        let pad = CHUNK - tagged.len() - bytes.len();
+        bytes.extend(std::iter::repeat_n(b' ', pad));
+        bytes.extend_from_slice(tagged.as_bytes());
+        assert_eq!(bytes.len(), CHUNK, "test setup: tagged record must end at the boundary");
+        bytes.push(b'\n');
+        let tail_rec = serde_json::to_string(&serde_json::json!({"type": "user", "i": 1})).unwrap();
+        bytes.extend_from_slice(tail_rec.as_bytes());
+        bytes.push(b'\n');
+        assert!(bytes.len() > CHUNK && bytes.len() <= 2 * CHUNK, "test setup: wrong size");
+        std::fs::write(&path, &bytes).unwrap();
+        let (head, tail) = read_edges(&path);
+        assert!(head.iter().any(|m| m["i"] == 0), "first record missing: {head:?}");
+        assert!(
+            head.iter().any(|m| m["i"] == 999999),
+            "boundary record dropped from head: {head:?}"
+        );
+        assert!(tail.iter().any(|m| m["i"] == 1), "tail record missing: {tail:?}");
     }
 }
