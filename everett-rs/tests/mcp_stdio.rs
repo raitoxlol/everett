@@ -1115,6 +1115,25 @@ fn install_mcp_apply_backs_up_and_is_idempotent() {
 }
 
 #[test]
+fn install_mcp_codex_repair_omits_stdio_type_field() {
+    let fx = fixture();
+    let cfg = fx.write(
+        ".codex/config.toml",
+        "[mcp_servers.everett]\ncommand = \"python3\"\nargs = [\"-m\", \"everett\", \"mcp\"]\n",
+    );
+    let out = fx.run(&["install-mcp", "--codex", "--apply"]);
+    assert_eq!(out.status.code(), Some(0), "{}", fx.stdout(&out));
+    let text = std::fs::read_to_string(&cfg).unwrap();
+    let block = text.split("[mcp_servers.everett]").nth(1).unwrap();
+    assert!(
+        !block.lines().any(|l| l.trim_start().starts_with("type")),
+        "{text}"
+    );
+    let parsed: toml::Value = text.parse().unwrap();
+    assert!(parsed["mcp_servers"]["everett"]["command"].is_str());
+}
+
+#[test]
 fn install_mcp_grok_toml_idempotent_with_backup() {
     let fx = fixture();
     let cfg = fx.write(
