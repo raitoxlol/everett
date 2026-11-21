@@ -571,6 +571,34 @@ fn queued_delivered_replied_and_deduplicated() {
     assert!(!args.contains("private message"));
 }
 
+fn status_on_a_torn_inbox_record_errors_instead_of_panicking() {
+    let p = Pair::new();
+    checked(p.add());
+    let first = p.send("request-1");
+    let mid = first["message_id"].as_str().unwrap().to_string();
+    // A torn or hand-edited record loses its recipient; status must report an
+    // error, not panic inside peer serve.
+    let inbox = p.remote.path().join(".everett/inbox/worker.jsonl");
+    let rows: Vec<String> = fs::read_to_string(&inbox)
+        .unwrap()
+        .lines()
+        .map(|line| {
+            let mut m: Value = serde_json::from_str(line).unwrap();
+            m.as_object_mut().unwrap().remove("to");
+            m.to_string()
+        })
+        .collect();
+    write(&inbox, &(rows.join("\n") + "\n"));
+    let out = p.run(&["peer", "status", "linux", &mid]);
+    let text = format!(
+        "{}{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(!text.contains("panicked"), "{text}");
+    assert!(!out.status.success(), "{text}");
+}
+
 fn body_hops_authorization_and_offline_are_bounded() {
     let mut p = Pair::new();
     checked(p.add());
@@ -861,6 +889,10 @@ const CASES: &[Case] = &[
     (
         "queued_delivered_replied_and_deduplicated",
         queued_delivered_replied_and_deduplicated,
+    ),
+    (
+        "status_on_a_torn_inbox_record_errors_instead_of_panicking",
+        status_on_a_torn_inbox_record_errors_instead_of_panicking,
     ),
     (
         "body_hops_authorization_and_offline_are_bounded",
