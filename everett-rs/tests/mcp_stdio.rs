@@ -372,6 +372,10 @@ fn error_codes() {
     );
     let batch = s.raw(r#"[{"jsonrpc":"2.0","id":"a","method":"ping"},{"jsonrpc":"2.0","method":"notifications/x"}]"#);
     assert_eq!(batch, json!([{"jsonrpc": "2.0", "id": "a", "result": {}}]));
+    // An empty batch is an invalid request: one error object, not an array.
+    let empty = s.raw("[]");
+    assert!(empty.is_object(), "{empty}");
+    assert_eq!(empty["error"]["code"], json!(-32600), "{empty}");
     s.close();
 }
 
