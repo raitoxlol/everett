@@ -4,6 +4,7 @@
 
 ### Fixed
 
+- Keep Unix inbox-compaction replacements and live-session records owner-only, with a private live directory and `0600` locks (#236, #246).
 - Treat session cards as fresh for 24 hours from their last modification, independent of session activity; stale cards no longer replace extracted session text (#241).
 - Bound `everett_send` MCP timeouts and explicit inbox waits to 1,800 seconds; this does not change the CLI `everett send` options (#241).
 - Write dotted config keys to their TOML section, including sections with trailing comments, and keep Codex/Grok `install-mcp --repair` entries in their native TOML form (#241).
