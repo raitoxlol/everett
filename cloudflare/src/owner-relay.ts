@@ -1,14 +1,21 @@
 import { DurableObject } from 'cloudflare:workers';
 import { z, ZodError } from 'zod';
 import {
-  DEVICE_LABEL_LIMIT, deviceSchema, envelopeSchema, observationSchema, identitySchema, principalSchema,
-  namespace, identifier, validateDevice, fingerprint, rotationBytes, verify,
+  CROSS_OWNER_MAX_HOPS, DEVICE_LABEL_LIMIT, deviceSchema, envelopeSchema, observationSchema, identitySchema, principalSchema,
+  namespace, identifier, inboxAddress, validateDevice, fingerprint, rotationBytes, verify,
   envelopeBytes, observationBytes, digest, RelayError,
-  type Device, type Envelope, type Principal, type Identity, type MessageState, type Operation, type RelayResult,
+  type Device, type Envelope, type Observation, type Principal, type Identity, type MessageState, type Operation, type RelayResult,
 } from './protocol';
+import type { AddressDirectory } from './address-directory';
 
+type OwnerRelayEnv = Cloudflare.Env & {
+  OWNERS: DurableObjectNamespace<OwnerRelay>;
+  ADDRESSES?: DurableObjectNamespace<AddressDirectory>;
+};
 type Credential = { agent_id: string; subject: string; status: string };
 type Member = { subject: string; role: 'admin' | 'member'; status: string };
+type InboxAddress = { address: string; agent_id: string; harness: string; session: string; status: string; created_at: number; updated_at: number };
+type InboxGrant = { grant_id: string; address: string; recipient_agent_id: string; harness: string; session: string; sender_owner: string; sender_agent_id: string; status: string; created_at: number; revoked_at: number | null };
 type Attempt = { message_id: string; from_device: string; to_device: string; idempotency_key: string; digest: string; state: MessageState; expires_at: number; metadata: string };
 type Metadata = Omit<Envelope, 'ciphertext' | 'signature' | 'ephemeralKey' | 'nonce' | 'createdAt'> & {
   queuedAt?: number;
@@ -16,6 +23,7 @@ type Metadata = Omit<Envelope, 'ciphertext' | 'signature' | 'ephemeralKey' | 'no
   repliedAt?: number;
 };
 type EnrollmentResult = { ok: true; value: { owner: string; deviceId: string } } | { ok: false; error: string; status: number };
+type RpcResult<T> = { ok: true; value: T } | { ok: false; error: string; status: number };
 const empty = z.strictObject({});
 // Matches the local inbox ID grammar used by peer::target for both address components.
 const addressPart = identifier.max(128).refine(value => value !== '.' && value !== '..');
@@ -26,8 +34,8 @@ const inboxChanged = JSON.stringify({ type: 'inbox_changed' });
 
 const meshLimit = { devices: 256, sessions: 256, receipts: 100 } as const;
 
-export class OwnerRelay extends DurableObject {
-  constructor(ctx: DurableObjectState, env: Cloudflare.Env) {
+export class OwnerRelay extends DurableObject<OwnerRelayEnv> {
+  constructor(ctx: DurableObjectState, env: OwnerRelayEnv) {
     super(ctx, env);
     ctx.storage.sql.exec(`
       CREATE TABLE IF NOT EXISTS owner (singleton INTEGER PRIMARY KEY CHECK(singleton=1), namespace TEXT NOT NULL);
@@ -36,6 +44,9 @@ export class OwnerRelay extends DurableObject {
       CREATE TABLE IF NOT EXISTS enrollments (event_id TEXT PRIMARY KEY, identity TEXT NOT NULL, role TEXT NOT NULL, agent_id TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS devices (agent_id TEXT PRIMARY KEY, bundle TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS session_cards (seq INTEGER PRIMARY KEY AUTOINCREMENT, agent_id TEXT NOT NULL, session TEXT NOT NULL, harness TEXT NOT NULL, card TEXT NOT NULL, updated_at INTEGER NOT NULL, UNIQUE(agent_id,session));
+      CREATE TABLE IF NOT EXISTS inbox_addresses (address TEXT PRIMARY KEY, agent_id TEXT NOT NULL, harness TEXT NOT NULL, session TEXT NOT NULL, status TEXT NOT NULL, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL);
+      CREATE TABLE IF NOT EXISTS inbox_grants (grant_id TEXT PRIMARY KEY, address TEXT NOT NULL, recipient_agent_id TEXT NOT NULL, harness TEXT NOT NULL, session TEXT NOT NULL, sender_owner TEXT NOT NULL, sender_agent_id TEXT NOT NULL, status TEXT NOT NULL, created_at INTEGER NOT NULL, revoked_at INTEGER);
+      CREATE INDEX IF NOT EXISTS inbox_grant_lookup ON inbox_grants(address, sender_owner, sender_agent_id, status);
       CREATE TABLE IF NOT EXISTS attempts (message_id TEXT PRIMARY KEY, from_device TEXT NOT NULL, idempotency_key TEXT NOT NULL, digest TEXT NOT NULL, state TEXT NOT NULL, expires_at INTEGER NOT NULL, to_device TEXT NOT NULL, metadata TEXT NOT NULL, UNIQUE(from_device, idempotency_key));
       CREATE INDEX IF NOT EXISTS attempt_recipient ON attempts(to_device, state, expires_at);
       CREATE TABLE IF NOT EXISTS messages (seq INTEGER PRIMARY KEY AUTOINCREMENT, message_id TEXT NOT NULL UNIQUE, to_device TEXT NOT NULL, expires_at INTEGER NOT NULL, envelope TEXT NOT NULL);
@@ -211,6 +222,57 @@ export class OwnerRelay extends DurableObject {
   }
   #own(p: Principal, agentId: string) { if (p.agentId !== agentId) throw new RelayError('agent_mismatch'); }
   #attempt(messageId: string) { return this.#row<Attempt>('SELECT * FROM attempts WHERE message_id=?', messageId); }
+  #ownerStub(targetOwner: string) { return this.env.OWNERS.get(this.env.OWNERS.idFromName(targetOwner)); }
+  #addresses() {
+    if (!this.env.ADDRESSES) throw new RelayError('address_directory_unavailable', 503);
+    return this.env.ADDRESSES.get(this.env.ADDRESSES.idFromName('global'));
+  }
+  #touchSeen(agentId: string) {
+    this.ctx.storage.sql.exec('INSERT INTO mesh_seen VALUES(?,?) ON CONFLICT(agent_id) DO UPDATE SET at=excluded.at', agentId, Date.now());
+  }
+  #activeGrant(grantId: string, senderOwner: string, senderDeviceId: string, recipientDeviceId: string) {
+    const grant = this.#row<InboxGrant>('SELECT * FROM inbox_grants WHERE grant_id=?', grantId);
+    if (
+      !grant
+      || grant.status !== 'active'
+      || grant.sender_owner !== senderOwner
+      || grant.sender_agent_id !== senderDeviceId
+      || grant.recipient_agent_id !== recipientDeviceId
+    ) throw new RelayError('inbox_not_allowed', 403);
+    const inbox = this.#row<InboxAddress>('SELECT * FROM inbox_addresses WHERE address=?', grant.address);
+    if (
+      !inbox
+      || inbox.status !== 'active'
+      || inbox.agent_id !== grant.recipient_agent_id
+      || inbox.harness !== grant.harness
+      || inbox.session !== grant.session
+    ) throw new RelayError('inbox_not_allowed', 403);
+    return { grant, inbox };
+  }
+  #assertReplyCorrelation(
+    orig: Attempt | undefined,
+    origMeta: Metadata | undefined,
+    e: Pick<Envelope, 'owner' | 'recipientOwner' | 'grantId' | 'fromDevice' | 'toDevice' | 'parent' | 'hop' | 'senderFingerprint' | 'recipientFingerprint'>,
+    expectedOwner: string,
+  ) {
+    if (
+      !orig
+      || !origMeta
+      || origMeta.parent !== null
+      || !e.parent
+      || e.parent.owner !== expectedOwner
+      || orig.from_device !== e.toDevice
+      || orig.to_device !== e.fromDevice
+      || origMeta.owner !== expectedOwner
+      || origMeta.recipientOwner !== e.owner
+      || origMeta.grantId === null
+      || origMeta.grantId !== e.grantId
+      || origMeta.recipientFingerprint !== e.senderFingerprint
+      || origMeta.senderFingerprint !== e.recipientFingerprint
+      || e.hop <= origMeta.hop
+      || e.hop > CROSS_OWNER_MAX_HOPS
+    ) throw new RelayError('invalid_parent_lineage');
+  }
   #route(e: Pick<Envelope, 'owner' | 'recipientOwner' | 'grantId' | 'fromDevice' | 'toDevice' | 'senderFingerprint' | 'recipientFingerprint'>) {
     if (e.owner !== this.#owner() || e.recipientOwner !== e.owner || e.grantId !== null) throw new RelayError('cross_owner_not_supported');
     const sender = this.#activeDevice(e.fromDevice), recipient = this.#activeDevice(e.toDevice);
@@ -225,12 +287,464 @@ export class OwnerRelay extends DurableObject {
     this.ctx.storage.sql.exec('INSERT INTO rates VALUES(?,?,?) ON CONFLICT(scope) DO UPDATE SET window=excluded.window,count=excluded.count', scope, window, count + 1);
   }
 
+  async resolveCrossOwnerInbox(senderOwnerInput: string, senderDeviceIdInput: string, addressInput: string): Promise<RpcResult<{
+    address: string; owner: string; device: Device; harness: string; session: string; grantId: string;
+  }>> {
+    try {
+      const senderOwner = z.string().min(1).max(4096).parse(senderOwnerInput);
+      const senderDeviceId = identifier.parse(senderDeviceIdInput);
+      const address = inboxAddress.parse(addressInput);
+      const owner = this.#owner();
+      if (!owner || owner === senderOwner) throw new RelayError('inbox_not_allowed', 403);
+      const grant = this.#row<InboxGrant>(
+        "SELECT * FROM inbox_grants WHERE address=? AND sender_owner=? AND sender_agent_id=? AND status='active' ORDER BY created_at DESC LIMIT 1",
+        address, senderOwner, senderDeviceId,
+      );
+      if (!grant) throw new RelayError('inbox_not_allowed', 403);
+      const { inbox } = this.#activeGrant(grant.grant_id, senderOwner, senderDeviceId, grant.recipient_agent_id);
+      const device = this.#activeDevice(inbox.agent_id);
+      return { ok: true, value: { address, owner, device, harness: inbox.harness, session: inbox.session, grantId: grant.grant_id } };
+    } catch (error) {
+      if (error instanceof RelayError) return { ok: false, error: error.code === 'device_unavailable' ? 'inbox_not_allowed' : error.code, status: error.status };
+      if (error instanceof ZodError) return { ok: false, error: 'invalid_request', status: 400 };
+      throw error;
+    }
+  }
+
+  async verifyActiveDevice(agentIdInput: string, expectedFingerprint: string): Promise<RpcResult<Device>> {
+    try {
+      const agentId = identifier.parse(agentIdInput);
+      const device = this.#activeDevice(agentId);
+      if (fingerprint(device) !== expectedFingerprint) throw new RelayError('device_key_changed');
+      return { ok: true, value: device };
+    } catch (error) {
+      if (error instanceof RelayError) return { ok: false, error: error.code, status: error.status };
+      if (error instanceof ZodError) return { ok: false, error: 'invalid_request', status: 400 };
+      throw error;
+    }
+  }
+
+  async verifyCrossOwnerReplySender(
+    grantIdInput: string,
+    recipientDeviceInput: string,
+    senderOwnerInput: string,
+    senderDeviceInput: string,
+    expectedFingerprint: string,
+  ): Promise<RpcResult<Device>> {
+    try {
+      const grantId = identifier.parse(grantIdInput);
+      const recipientDeviceId = identifier.parse(recipientDeviceInput);
+      const senderOwner = z.string().min(1).max(4096).parse(senderOwnerInput);
+      const senderDeviceId = identifier.parse(senderDeviceInput);
+      this.#activeGrant(grantId, senderOwner, senderDeviceId, recipientDeviceId);
+      const device = this.#activeDevice(recipientDeviceId);
+      if (fingerprint(device) !== expectedFingerprint) throw new RelayError('device_key_changed');
+      return { ok: true, value: device };
+    } catch (error) {
+      if (error instanceof RelayError) return { ok: false, error: error.code, status: error.status };
+      if (error instanceof ZodError) return { ok: false, error: 'invalid_request', status: 400 };
+      throw error;
+    }
+  }
+
+  async verifyCrossOwnerAccess(eInput: Pick<Envelope, 'owner' | 'recipientOwner' | 'grantId' | 'fromDevice' | 'toDevice' | 'parent' | 'hop' | 'senderFingerprint' | 'recipientFingerprint'>): Promise<RpcResult<null>> {
+    try {
+      const owner = this.#owner();
+      if (!owner || eInput.recipientOwner !== owner || eInput.owner === owner || eInput.grantId === null) throw new RelayError('cross_owner_not_supported');
+      const recipient = this.#activeDevice(eInput.toDevice);
+      if (fingerprint(recipient) !== eInput.recipientFingerprint) throw new RelayError('device_key_changed');
+      if (eInput.parent === null) {
+        this.#activeGrant(eInput.grantId, eInput.owner, eInput.fromDevice, eInput.toDevice);
+      } else {
+        const orig = this.#attempt(eInput.parent.messageId);
+        const origMeta: Metadata | undefined = orig && JSON.parse(orig.metadata);
+        this.#assertReplyCorrelation(orig, origMeta, eInput, owner);
+      }
+      return { ok: true, value: null };
+    } catch (error) {
+      if (error instanceof RelayError) return { ok: false, error: error.code, status: error.status };
+      if (error instanceof ZodError) return { ok: false, error: 'invalid_request', status: 400 };
+      throw error;
+    }
+  }
+
+  async receiveCrossOwnerEnvelope(eInput: Envelope, senderDeviceInput: Device): Promise<RpcResult<{ messageId: string; state: MessageState }>> {
+    try {
+      const e = envelopeSchema.parse(eInput);
+      const sender = deviceSchema.parse(senderDeviceInput);
+      const now = Date.now();
+      const result = this.ctx.storage.transactionSync(() => {
+        const owner = this.#owner();
+        if (!owner || e.recipientOwner !== owner || e.owner === owner || e.grantId === null) throw new RelayError('cross_owner_not_supported');
+        validateDevice(sender);
+        if (sender.owner !== e.owner || sender.deviceId !== e.fromDevice || fingerprint(sender) !== e.senderFingerprint) throw new RelayError('device_key_changed');
+        const recipient = this.#activeDevice(e.toDevice);
+        if (fingerprint(recipient) !== e.recipientFingerprint) throw new RelayError('device_key_changed');
+        verify(sender.signingKey, e.signature, envelopeBytes(e));
+        if (e.parent === null) {
+          if (e.hop !== 1) throw new RelayError('invalid_root_hop', 400);
+          this.#activeGrant(e.grantId, e.owner, e.fromDevice, e.toDevice);
+        } else {
+          const orig = this.#attempt(e.parent.messageId);
+          const origMeta: Metadata | undefined = orig && JSON.parse(orig.metadata);
+          this.#assertReplyCorrelation(orig, origMeta, e, owner);
+        }
+        const requestDigest = digest(envelopeBytes(e));
+        const old = this.#row<Attempt>('SELECT * FROM attempts WHERE from_device=? AND idempotency_key=?', e.fromDevice, e.idempotencyKey);
+        if (old) {
+          if (old.digest !== requestDigest) throw new RelayError('idempotency_conflict', 409);
+          return { messageId: old.message_id, state: this.#state(old, now), newlyQueued: false };
+        }
+        if (e.expiresAt <= now || Math.abs(e.createdAt - now) > 300000 || e.expiresAt <= e.createdAt || e.expiresAt - e.createdAt > 86400000) throw new RelayError('invalid_ttl', 400);
+        if (this.#attempt(e.messageId)) throw new RelayError('message_id_reused', 409);
+        const queued = this.#row<{ n: number }>("SELECT count(*) AS n FROM attempts WHERE to_device=? AND state='queued' AND expires_at>?", e.toDevice, now)!.n;
+        if (queued >= 256) throw new RelayError('recipient_queue_full', 429);
+        const { ciphertext, signature, ephemeralKey, nonce, createdAt, ...metadata } = e;
+        this.ctx.storage.sql.exec('INSERT INTO attempts VALUES(?,?,?,?,?,?,?,?)', e.messageId, e.fromDevice, e.idempotencyKey, requestDigest, 'queued', e.expiresAt, e.toDevice, JSON.stringify({ ...metadata, queuedAt: now }));
+        this.ctx.storage.sql.exec('INSERT INTO messages(message_id,to_device,expires_at,envelope) VALUES(?,?,?,?)', e.messageId, e.toDevice, e.expiresAt, JSON.stringify(e));
+        return { messageId: e.messageId, state: 'queued' as MessageState, newlyQueued: true };
+      });
+      if (result.newlyQueued) {
+        await this.#scheduleExpiry();
+        this.#notify(e.toDevice);
+      }
+      return { ok: true, value: { messageId: result.messageId, state: result.state } };
+    } catch (error) {
+      if (error instanceof RelayError) return { ok: false, error: error.code, status: error.status };
+      if (error instanceof ZodError) return { ok: false, error: 'invalid_request', status: 400 };
+      throw error;
+    }
+  }
+
+  async verifyAndRecordCrossOwnerObservation(recipientOwnerInput: string, oInput: Observation, recipientDeviceInput: Device): Promise<RpcResult<null>> {
+    try {
+      const recipientOwner = z.string().min(1).max(4096).parse(recipientOwnerInput);
+      const o = observationSchema.parse(oInput);
+      const recipient = deviceSchema.parse(recipientDeviceInput);
+      const now = Date.now();
+      this.ctx.storage.transactionSync(() => {
+        const owner = this.#owner();
+        if (!owner || o.senderOwner !== owner || recipientOwner === owner) throw new RelayError('cross_owner_not_supported');
+        const a = this.#attempt(o.messageId);
+        const e: Metadata | undefined = a && JSON.parse(a.metadata);
+        if (!a || !e || e.owner !== owner || e.recipientOwner !== recipientOwner || e.toDevice !== o.deviceId || e.grantId === null) {
+          throw new RelayError('message_not_for_agent');
+        }
+        const sender = this.#activeDevice(e.fromDevice);
+        if (fingerprint(sender) !== e.senderFingerprint) throw new RelayError('device_key_changed');
+        if (e.parent !== null) {
+          this.#activeGrant(e.grantId, recipientOwner, o.deviceId, e.fromDevice);
+        }
+        validateDevice(recipient);
+        if (recipient.owner !== recipientOwner || recipient.deviceId !== o.deviceId || fingerprint(recipient) !== e.recipientFingerprint) {
+          throw new RelayError('device_key_changed');
+        }
+        if (Math.abs(now - o.at) > 300000) throw new RelayError('stale_observation', 400);
+        verify(recipient.signingKey, o.signature, observationBytes(recipientOwner, o));
+        if (this.#state(a, now) === 'expired') throw new RelayError('message_expired');
+        if (a.state === 'queued' && o.state !== 'delivered') throw new RelayError('delivery_required');
+        const state = stateRank[o.state] > stateRank[a.state] ? o.state : a.state;
+        const newClaim = o.state === 'claimed' && e.claimedAt === undefined;
+        const newReply = o.state === 'replied' && e.repliedAt === undefined;
+        if (newClaim) e.claimedAt = o.at;
+        if (newReply) e.repliedAt = o.at;
+        if (state !== a.state || newClaim || newReply) {
+          this.ctx.storage.sql.exec('UPDATE attempts SET state=?, metadata=? WHERE message_id=?', state, JSON.stringify(e), o.messageId);
+        }
+      });
+      return { ok: true, value: null };
+    } catch (error) {
+      if (error instanceof RelayError) return { ok: false, error: error.code, status: error.status };
+      if (error instanceof ZodError) return { ok: false, error: 'invalid_request', status: 400 };
+      throw error;
+    }
+  }
+
+  async #registerInbox(p: Principal, args: unknown) {
+    const auth = this.#authorize(p), owner = namespace(p), now = Date.now();
+    this.#activeDevice(p.agentId);
+    const a = z.strictObject({
+      address: inboxAddress,
+      deviceId: identifier.optional(),
+      harness: addressPart,
+      session: addressPart,
+      remove: z.boolean().optional(),
+    }).parse(args);
+    const targetDevice = a.deviceId ?? p.agentId;
+    if (targetDevice !== p.agentId && !auth.admin) throw new RelayError('admin_required');
+    if (a.remove) {
+      const existing = this.#row<InboxAddress>('SELECT * FROM inbox_addresses WHERE address=?', a.address);
+      if (existing) {
+        if (existing.agent_id !== p.agentId && !auth.admin) throw new RelayError('admin_required');
+        if (existing.agent_id !== targetDevice || existing.harness !== a.harness || existing.session !== a.session) {
+          throw new RelayError('inbox_binding_immutable', 409);
+        }
+      }
+      await this.#addresses().release(a.address, owner);
+      this.ctx.storage.transactionSync(() => {
+        if (existing) {
+          this.ctx.storage.sql.exec("UPDATE inbox_addresses SET status='removed', updated_at=? WHERE address=?", now, a.address);
+          this.ctx.storage.sql.exec("UPDATE inbox_grants SET status='revoked', revoked_at=? WHERE address=? AND status='active'", now, a.address);
+        }
+        this.#touchSeen(p.agentId);
+      });
+      return { address: a.address, owner, deviceId: targetDevice, harness: a.harness, session: a.session, status: 'removed' as const };
+    }
+    this.#activeDevice(targetDevice);
+    const existing = this.#row<InboxAddress>('SELECT * FROM inbox_addresses WHERE address=?', a.address);
+    if (existing?.status === 'active' && (existing.agent_id !== targetDevice || existing.harness !== a.harness || existing.session !== a.session)) {
+      throw new RelayError('inbox_binding_immutable', 409);
+    }
+    const claimed = await this.#addresses().claim(a.address, owner);
+    if (!claimed.ok) throw new RelayError(claimed.error, claimed.status);
+    this.ctx.storage.transactionSync(() => {
+      const latest = this.#row<InboxAddress>('SELECT * FROM inbox_addresses WHERE address=?', a.address);
+      if (latest?.status === 'active' && (latest.agent_id !== targetDevice || latest.harness !== a.harness || latest.session !== a.session)) {
+        throw new RelayError('inbox_binding_immutable', 409);
+      }
+      this.ctx.storage.sql.exec(
+        "INSERT INTO inbox_addresses(address,agent_id,harness,session,status,created_at,updated_at) VALUES(?,?,?,?,'active',?,?) ON CONFLICT(address) DO UPDATE SET agent_id=excluded.agent_id,harness=excluded.harness,session=excluded.session,status='active',updated_at=excluded.updated_at",
+        a.address, targetDevice, a.harness, a.session, now, now,
+      );
+      this.#touchSeen(p.agentId);
+    });
+    return { address: a.address, owner, deviceId: targetDevice, harness: a.harness, session: a.session, status: 'active' as const };
+  }
+
+  async #resolveInbox(p: Principal, args: unknown) {
+    this.#authorize(p);
+    this.#activeDevice(p.agentId);
+    const owner = namespace(p);
+    const { address } = z.strictObject({ address: inboxAddress }).parse(args);
+    const targetOwner = await this.#addresses().lookup(address);
+    if (!targetOwner) throw new RelayError('inbox_not_allowed', 403);
+    if (targetOwner === owner) {
+      const inbox = this.#row<InboxAddress>('SELECT * FROM inbox_addresses WHERE address=?', address);
+      if (!inbox || inbox.status !== 'active') throw new RelayError('inbox_not_allowed', 403);
+      const device = this.#activeDevice(inbox.agent_id);
+      this.#touchSeen(p.agentId);
+      return { address, owner, device, harness: inbox.harness, session: inbox.session, grantId: null };
+    }
+    const resolved = await this.#ownerStub(targetOwner).resolveCrossOwnerInbox(owner, p.agentId, address);
+    if (!resolved.ok) throw new RelayError(resolved.error, resolved.status);
+    this.#touchSeen(p.agentId);
+    return resolved.value;
+  }
+
+  async #enqueueCrossOwner(p: Principal, e: Envelope) {
+    this.#authorize(p);
+    const now = Date.now(), owner = namespace(p);
+    this.#own(p, e.fromDevice);
+    if (e.owner !== owner) throw new RelayError('wrong_owner');
+    if (e.grantId === null) throw new RelayError('cross_owner_not_supported');
+    const sender = this.#activeDevice(e.fromDevice);
+    if (fingerprint(sender) !== e.senderFingerprint) throw new RelayError('device_key_changed');
+    verify(sender.signingKey, e.signature, envelopeBytes(e));
+    const requestDigest = digest(envelopeBytes(e));
+    const reserved = this.ctx.storage.transactionSync(() => {
+      const old = this.#row<Attempt>('SELECT * FROM attempts WHERE from_device=? AND idempotency_key=?', p.agentId, e.idempotencyKey);
+      if (old) {
+        if (old.digest !== requestDigest) throw new RelayError('idempotency_conflict', 409);
+        if (e.parent !== null) this.#activeGrant(e.grantId!, e.recipientOwner, e.toDevice, e.fromDevice);
+        return { existing: old, created: false };
+      }
+      if (e.expiresAt <= now || Math.abs(e.createdAt - now) > 300000 || e.expiresAt <= e.createdAt || e.expiresAt - e.createdAt > 86400000) throw new RelayError('invalid_ttl', 400);
+      if (this.#attempt(e.messageId)) throw new RelayError('message_id_reused', 409);
+      if (e.parent === null) {
+        if (e.hop !== 1) throw new RelayError('invalid_root_hop', 400);
+      } else {
+        const parent = this.#attempt(e.parent.messageId);
+        const parentMeta: Metadata | undefined = parent && JSON.parse(parent.metadata);
+        if (
+          !parent
+          || !parentMeta
+          || parentMeta.parent !== null
+          || parentMeta.owner !== e.parent.owner
+          || parentMeta.owner !== e.recipientOwner
+          || parentMeta.toDevice !== p.agentId
+          || parentMeta.fromDevice !== e.toDevice
+          || parentMeta.grantId !== e.grantId
+          || parentMeta.senderFingerprint !== e.recipientFingerprint
+          || !['delivered', 'claimed', 'replied'].includes(parent.state)
+          || e.hop <= parentMeta.hop
+          || e.hop > CROSS_OWNER_MAX_HOPS
+        ) throw new RelayError('invalid_parent_lineage');
+        this.#activeGrant(e.grantId!, e.recipientOwner, e.toDevice, e.fromDevice);
+      }
+      this.#rate(JSON.stringify(['agent', p.agentId]), 120, now);
+      this.#rate(JSON.stringify(['account', p.issuer, p.subject]), 120, now);
+      this.#rate('org', 600, now);
+      const { ciphertext, signature, ephemeralKey, nonce, createdAt, ...metadata } = e;
+      this.ctx.storage.sql.exec(
+        'INSERT INTO attempts VALUES(?,?,?,?,?,?,?,?)',
+        e.messageId, p.agentId, e.idempotencyKey, requestDigest, 'queued', e.expiresAt, e.toDevice, JSON.stringify({ ...metadata, queuedAt: now }),
+      );
+      return { existing: null as Attempt | null, created: true };
+    });
+    if (reserved.existing && this.#state(reserved.existing, now) !== 'queued') {
+      const check = await this.#ownerStub(e.recipientOwner).verifyCrossOwnerAccess(e);
+      if (!check.ok) throw new RelayError(check.error, check.status);
+      this.#touchSeen(p.agentId);
+      return { messageId: reserved.existing.message_id, state: this.#state(reserved.existing, now) };
+    }
+    const delivered = await this.#ownerStub(e.recipientOwner).receiveCrossOwnerEnvelope(e, sender);
+    if (!delivered.ok) {
+      if (reserved.created) {
+        this.ctx.storage.sql.exec("DELETE FROM attempts WHERE message_id=? AND state='queued'", e.messageId);
+      }
+      throw new RelayError(delivered.error, delivered.status);
+    }
+    return this.ctx.storage.transactionSync(() => {
+      const current = this.#attempt(e.messageId);
+      if (current && stateRank[delivered.value.state] > stateRank[current.state]) {
+        this.ctx.storage.sql.exec('UPDATE attempts SET state=? WHERE message_id=?', delivered.value.state, e.messageId);
+      }
+      this.#touchSeen(p.agentId);
+      const finalState = current && stateRank[current.state] > stateRank[delivered.value.state]
+        ? this.#state(current, now)
+        : delivered.value.state;
+      return { messageId: delivered.value.messageId, state: finalState };
+    });
+  }
+
+  async #pending(p: Principal, args: unknown) {
+    this.#authorize(p);
+    const now = Date.now(), owner = namespace(p);
+    const { deviceId, cursor } = z.strictObject({ deviceId: identifier, cursor: z.string().regex(/^(0|[1-9][0-9]*)$/).max(16).nullable().optional() }).parse(args);
+    this.#own(p, deviceId); this.#activeDevice(p.agentId);
+    const after = cursor == null ? 0 : Number(cursor);
+    if (!Number.isSafeInteger(after)) throw new RelayError('invalid_cursor', 400);
+    const rows = this.ctx.storage.sql.exec<{ seq: number; envelope: string }>('SELECT seq,envelope FROM messages WHERE to_device=? AND seq>? ORDER BY seq LIMIT 33', p.agentId, after).toArray();
+    const envelopes: unknown[] = [];
+    for (const row of rows.slice(0, 32)) {
+      const envelope: Envelope = JSON.parse(row.envelope);
+      if (envelope.expiresAt <= now) continue;
+      if (envelope.owner === owner) {
+        try { this.#route(envelope); envelopes.push({ envelope, trust: 'same-org' }); }
+        catch (error) { if (!(error instanceof RelayError)) throw error; }
+        continue;
+      }
+      try {
+        if (envelope.recipientOwner !== owner || envelope.grantId === null) continue;
+        const recipient = this.#activeDevice(envelope.toDevice);
+        if (fingerprint(recipient) !== envelope.recipientFingerprint) continue;
+        if (envelope.parent === null) {
+          const { grant } = this.#activeGrant(envelope.grantId, envelope.owner, envelope.fromDevice, envelope.toDevice);
+          const senderCheck = await this.#ownerStub(envelope.owner).verifyActiveDevice(envelope.fromDevice, envelope.senderFingerprint);
+          if (!senderCheck.ok) continue;
+          envelopes.push({
+            envelope,
+            trust: 'external-untrusted',
+            inbox: { address: grant.address, harness: grant.harness, session: grant.session },
+            senderDevice: senderCheck.value,
+          });
+        } else {
+          const orig = this.#attempt(envelope.parent.messageId);
+          const origMeta: Metadata | undefined = orig && JSON.parse(orig.metadata);
+          this.#assertReplyCorrelation(orig, origMeta, envelope, owner);
+          const senderCheck = await this.#ownerStub(envelope.owner).verifyCrossOwnerReplySender(
+            envelope.grantId, envelope.fromDevice, owner, envelope.toDevice, envelope.senderFingerprint,
+          );
+          if (!senderCheck.ok) continue;
+          envelopes.push({ envelope, trust: 'external-untrusted', senderDevice: senderCheck.value });
+        }
+      } catch (error) {
+        if (!(error instanceof RelayError)) throw error;
+      }
+    }
+    this.#touchSeen(p.agentId);
+    return { serverNow: now, envelopes, isDone: rows.length <= 32, continueCursor: String(rows.slice(0, 32).at(-1)?.seq ?? after) };
+  }
+
+  async #observeCrossOwner(p: Principal, o: Observation) {
+    this.#authorize(p);
+    const now = Date.now(), owner = namespace(p);
+    this.#own(p, o.deviceId);
+    const recipient = this.#activeDevice(p.agentId);
+    if (Math.abs(now - o.at) > 300000) throw new RelayError('stale_observation', 400);
+    verify(recipient.signingKey, o.signature, observationBytes(owner, o));
+    const a = this.#attempt(o.messageId), e: Metadata | undefined = a && JSON.parse(a.metadata);
+    if (!a || !e || e.toDevice !== p.agentId || e.owner !== o.senderOwner || e.recipientOwner !== owner || e.grantId === null) {
+      throw new RelayError('message_not_for_agent');
+    }
+    if (fingerprint(recipient) !== e.recipientFingerprint) throw new RelayError('device_key_changed');
+    if (e.parent === null) {
+      this.#activeGrant(e.grantId, e.owner, e.fromDevice, e.toDevice);
+    } else {
+      const orig = this.#attempt(e.parent.messageId);
+      const origMeta: Metadata | undefined = orig && JSON.parse(orig.metadata);
+      this.#assertReplyCorrelation(orig, origMeta, e, owner);
+    }
+    if (this.#state(a, now) === 'expired') throw new RelayError('message_expired');
+    if (a.state === 'queued' && o.state !== 'delivered') throw new RelayError('delivery_required');
+    const recorded = await this.#ownerStub(o.senderOwner).verifyAndRecordCrossOwnerObservation(owner, o, recipient);
+    if (!recorded.ok) throw new RelayError(recorded.error, recorded.status);
+    this.ctx.storage.transactionSync(() => {
+      const latest = this.#attempt(o.messageId);
+      const meta: Metadata | undefined = latest && JSON.parse(latest.metadata);
+      if (!latest || !meta) throw new RelayError('message_not_for_agent');
+      const state = stateRank[o.state] > stateRank[latest.state] ? o.state : latest.state;
+      const newClaim = o.state === 'claimed' && meta.claimedAt === undefined;
+      const newReply = o.state === 'replied' && meta.repliedAt === undefined;
+      if (newClaim) meta.claimedAt = o.at;
+      if (newReply) meta.repliedAt = o.at;
+      if (state !== latest.state || newClaim || newReply) {
+        this.ctx.storage.sql.exec('UPDATE attempts SET state=?, metadata=? WHERE message_id=?', state, JSON.stringify(meta), o.messageId);
+      }
+      if (state !== latest.state) {
+        this.ctx.storage.sql.exec('INSERT OR IGNORE INTO mesh_receipts(message_id,device_id,state,at) VALUES(?,?,?,?)', o.messageId, o.deviceId, o.state, o.at);
+        this.ctx.storage.sql.exec('DELETE FROM mesh_receipts WHERE seq <= (SELECT max(seq)-2000 FROM mesh_receipts)');
+      }
+      this.ctx.storage.sql.exec('DELETE FROM messages WHERE message_id=?', o.messageId);
+      this.#touchSeen(p.agentId);
+    });
+    await this.#scheduleExpiry();
+    return null;
+  }
+
+  async #status(p: Principal, args: unknown) {
+    this.#authorize(p);
+    const now = Date.now(), owner = namespace(p);
+    const { fromDevice, messageId } = z.strictObject({ fromDevice: identifier, messageId: identifier }).parse(args);
+    this.#own(p, fromDevice);
+    const sender = this.#activeDevice(p.agentId);
+    const a = this.#attempt(messageId);
+    if (!a || a.from_device !== p.agentId) throw new RelayError('message_not_for_agent');
+    const e: Metadata = JSON.parse(a.metadata);
+    if (e.recipientOwner === owner) {
+      this.#route(e);
+    } else {
+      if (e.grantId === null) throw new RelayError('cross_owner_not_supported');
+      if (fingerprint(sender) !== e.senderFingerprint) throw new RelayError('device_key_changed');
+      if (e.parent !== null) this.#activeGrant(e.grantId, e.recipientOwner, e.toDevice, e.fromDevice);
+      const check = await this.#ownerStub(e.recipientOwner).verifyCrossOwnerAccess(e);
+      if (!check.ok) throw new RelayError(check.error, check.status);
+    }
+    this.#touchSeen(p.agentId);
+    return { state: this.#state(a, now), queuedAt: e.queuedAt ?? null, claimedAt: e.claimedAt ?? null, repliedAt: e.repliedAt ?? null };
+  }
+
   async relay(principalInput: Principal, op: Operation, args: unknown) {
     try {
       const p = principalSchema.parse(principalInput);
+      const owner = namespace(p);
+      if (op === 'registerInbox') return { ok: true, value: await this.#registerInbox(p, args) } satisfies RelayResult;
+      if (op === 'resolveInbox') return { ok: true, value: await this.#resolveInbox(p, args) } satisfies RelayResult;
+      if (op === 'pending') return { ok: true, value: await this.#pending(p, args) } satisfies RelayResult;
+      if (op === 'status') return { ok: true, value: await this.#status(p, args) } satisfies RelayResult;
+      if (op === 'enqueue') {
+        const { envelope: e } = z.strictObject({ envelope: envelopeSchema }).parse(args);
+        if (e.recipientOwner !== owner) return { ok: true, value: await this.#enqueueCrossOwner(p, e) } satisfies RelayResult;
+      }
+      if (op === 'accept' || op === 'observe') {
+        const o = op === 'accept'
+          ? observationSchema.parse({ ...z.strictObject(observationSchema.omit({ state: true }).shape).parse(args), state: 'delivered' })
+          : observationSchema.parse(args);
+        if (o.senderOwner !== owner) return { ok: true, value: await this.#observeCrossOwner(p, o) } satisfies RelayResult;
+      }
       const value = await this.ctx.storage.transaction(async () => {
         const result = this.#execute(p, op, args);
-        this.ctx.storage.sql.exec('INSERT INTO mesh_seen VALUES(?,?) ON CONFLICT(agent_id) DO UPDATE SET at=excluded.at', p.agentId, Date.now());
+        this.#touchSeen(p.agentId);
         if (op === 'enqueue' || op === 'accept' || op === 'observe') await this.#scheduleExpiry();
         return result;
       });
@@ -280,6 +794,52 @@ export class OwnerRelay extends DurableObject {
             target: `id:${row.agent_id}/${row.harness}/${row.session}` });
         }
         return { sessions, isDone: rows.length <= 32, continueCursor: rows.length ? String(rows[Math.min(rows.length, 32) - 1].seq) : cursor ?? '' };
+      }
+      case 'grantInbox': {
+        this.#activeDevice(p.agentId);
+        const a = z.strictObject({
+          address: inboxAddress,
+          senderOwner: z.string().min(1).max(4096),
+          senderDeviceId: identifier,
+        }).parse(args);
+        if (a.senderOwner === owner) throw new RelayError('same_owner_grant_not_needed', 400);
+        const inbox = this.#row<InboxAddress>('SELECT * FROM inbox_addresses WHERE address=?', a.address);
+        if (!inbox || inbox.status !== 'active') throw new RelayError('unknown_inbox', 404);
+        if (inbox.agent_id !== p.agentId && !auth.admin) throw new RelayError('admin_required');
+        this.#activeDevice(inbox.agent_id);
+        const existing = this.#row<InboxGrant>(
+          "SELECT * FROM inbox_grants WHERE address=? AND recipient_agent_id=? AND harness=? AND session=? AND sender_owner=? AND sender_agent_id=? AND status='active'",
+          a.address, inbox.agent_id, inbox.harness, inbox.session, a.senderOwner, a.senderDeviceId,
+        );
+        const grantId = existing?.grant_id ?? `grant-${crypto.randomUUID().replaceAll('-', '')}`;
+        if (!existing) {
+          this.ctx.storage.sql.exec(
+            "INSERT INTO inbox_grants(grant_id,address,recipient_agent_id,harness,session,sender_owner,sender_agent_id,status,created_at,revoked_at) VALUES(?,?,?,?,?,?,?,'active',?,NULL)",
+            grantId, a.address, inbox.agent_id, inbox.harness, inbox.session, a.senderOwner, a.senderDeviceId, now,
+          );
+        }
+        return {
+          grantId,
+          address: a.address,
+          owner,
+          deviceId: inbox.agent_id,
+          harness: inbox.harness,
+          session: inbox.session,
+          senderOwner: a.senderOwner,
+          senderDeviceId: a.senderDeviceId,
+          status: 'active' as const,
+        };
+      }
+      case 'revokeInboxGrant': {
+        this.#activeDevice(p.agentId);
+        const { grantId } = z.strictObject({ grantId: identifier }).parse(args);
+        const grant = this.#row<InboxGrant>('SELECT * FROM inbox_grants WHERE grant_id=?', grantId);
+        if (!grant) throw new RelayError('unknown_grant');
+        if (grant.recipient_agent_id !== p.agentId && !auth.admin) throw new RelayError('admin_required');
+        if (grant.status !== 'revoked') {
+          this.ctx.storage.sql.exec("UPDATE inbox_grants SET status='revoked', revoked_at=? WHERE grant_id=?", now, grantId);
+        }
+        return { grantId, status: 'revoked' as const };
       }
       case 'whoami': empty.parse(args); return { owner, deviceId: p.agentId, role: auth.admin ? 'admin' : 'member' };
       case 'register': {
@@ -361,21 +921,6 @@ export class OwnerRelay extends DurableObject {
         this.ctx.storage.sql.exec('INSERT INTO messages(message_id,to_device,expires_at,envelope) VALUES(?,?,?,?)', e.messageId, e.toDevice, e.expiresAt, JSON.stringify(e));
         return { messageId: e.messageId, state: 'queued' };
       }
-      case 'pending': {
-        const { deviceId, cursor } = z.strictObject({ deviceId: identifier, cursor: z.string().regex(/^(0|[1-9][0-9]*)$/).max(16).nullable().optional() }).parse(args);
-        this.#own(p, deviceId); this.#activeDevice(p.agentId);
-        const after = cursor == null ? 0 : Number(cursor);
-        if (!Number.isSafeInteger(after)) throw new RelayError('invalid_cursor', 400);
-        const rows = this.ctx.storage.sql.exec<{ seq: number; envelope: string }>('SELECT seq,envelope FROM messages WHERE to_device=? AND seq>? ORDER BY seq LIMIT 33', p.agentId, after).toArray();
-        const envelopes = [];
-        for (const row of rows.slice(0, 32)) {
-          const envelope: Envelope = JSON.parse(row.envelope);
-          if (envelope.expiresAt <= now) continue;
-          try { this.#route(envelope); envelopes.push({ envelope, trust: 'same-org' }); }
-          catch (error) { if (!(error instanceof RelayError)) throw error; }
-        }
-        return { serverNow: now, envelopes, isDone: rows.length <= 32, continueCursor: String(rows.slice(0, 32).at(-1)?.seq ?? after) };
-      }
       case 'accept': case 'observe': {
         const o = op === 'accept' ? observationSchema.parse({ ...z.strictObject(observationSchema.omit({ state: true }).shape).parse(args), state: 'delivered' }) : observationSchema.parse(args);
         this.#own(p, o.deviceId);
@@ -402,15 +947,6 @@ export class OwnerRelay extends DurableObject {
         }
         this.ctx.storage.sql.exec('DELETE FROM messages WHERE message_id=?', o.messageId);
         return null;
-      }
-      case 'status': {
-        const { fromDevice, messageId } = z.strictObject({ fromDevice: identifier, messageId: identifier }).parse(args);
-        this.#own(p, fromDevice); this.#activeDevice(p.agentId);
-        const a = this.#attempt(messageId);
-        if (!a || a.from_device !== p.agentId) throw new RelayError('message_not_for_agent');
-        const e: Metadata = JSON.parse(a.metadata);
-        this.#route(e);
-        return { state: this.#state(a, now), queuedAt: e.queuedAt ?? null, claimedAt: e.claimedAt ?? null, repliedAt: e.repliedAt ?? null };
       }
       default: throw new RelayError('unsupported_operation', 400);
     }

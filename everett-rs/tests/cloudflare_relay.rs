@@ -89,6 +89,46 @@ fn cli_authors_lists_session_cards_without_fetching_device_bundles() {
 }
 
 #[test]
+fn inbox_admin_subcommands_hit_named_operations_and_address_dry_run_stays_local() {
+    let f = fixture();
+    let server = Server::new();
+    server.configure(&f);
+
+    let out = f.run(&["relay", "register-inbox", "claude@wmm.10462", "--harness", "claude", "--session", "inbox-b"]);
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let out = f.run(&["relay", "grant-inbox", "claude@wmm.10462", "--sender-owner", "[\"issuer\",\"org\",\"org-b\"]", "--sender-device", "agent-b"]);
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let out = f.run(&["relay", "revoke-inbox-grant", "grant-0123456789abcdef0123456789abcdef"]);
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let out = f.run(&["relay", "resolve-inbox", "claude@wmm.10462"]);
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let resolved: Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(resolved["grantId"], "grant-0123456789abcdef0123456789abcdef");
+    assert_eq!(resolved["session"], "inbox-b");
+    assert_eq!(resolved["device"]["deviceId"], "other-agent");
+
+    let bodies = server.bodies.lock().unwrap();
+    for (path, args) in [
+        ("/v2/relay/registerInbox", json!({"address":"claude@wmm.10462","harness":"claude","session":"inbox-b"})),
+        ("/v2/relay/grantInbox", json!({"address":"claude@wmm.10462","senderOwner":"[\"issuer\",\"org\",\"org-b\"]","senderDeviceId":"agent-b"})),
+        ("/v2/relay/revokeInboxGrant", json!({"grantId":"grant-0123456789abcdef0123456789abcdef"})),
+        ("/v2/relay/resolveInbox", json!({"address":"claude@wmm.10462"})),
+    ] {
+        assert!(bodies.iter().any(|(p, a)| p == path && *a == args), "missing {path} with {args}: {bodies:?}");
+    }
+    drop(bodies);
+
+    let before = server.calls.lock().unwrap().len();
+    let out = f.run(&["send", "hi", "--to", "claude@wmm.10462", "--mode", "inbox", "--dry-run"]);
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let dry: Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(dry["transport"], "cloudflare");
+    assert_eq!(dry["dry_run"], true);
+    assert_eq!(dry["mode"], "inbox");
+    assert_eq!(server.calls.lock().unwrap().len(), before, "dry run must not hit the relay");
+}
+
+#[test]
 fn corrupted_outgoing_record_is_retained_without_killing_or_flooding_the_receiver() {
     let f = fixture();
     let server = Server::new();
@@ -160,6 +200,7 @@ struct Server {
     registration_failures: Arc<AtomicBool>,
     pending_times: Arc<Mutex<Vec<Instant>>>,
     pending_completed: Arc<AtomicUsize>,
+    bodies: Arc<Mutex<Vec<(String, Value)>>>,
 }
 impl Server {
     fn new() -> Self {
@@ -178,12 +219,15 @@ impl Server {
         let times = pending_times.clone();
         let pending_completed = Arc::new(AtomicUsize::new(0));
         let completed = pending_completed.clone();
+        let bodies = Arc::new(Mutex::new(Vec::new()));
+        let b = bodies.clone();
         let (p, r, c) = (pending.clone(), revoked.clone(), calls.clone());
         std::thread::spawn(move || {
             for stream in listener.incoming() {
                 let mut stream = stream.unwrap();
                 let (path, args) = request(&mut stream);
                 c.lock().unwrap().push(path.clone());
+                b.lock().unwrap().push((path.clone(), args.clone()));
                 if path == "/v2/relay/pending" {
                     times.lock().unwrap().push(Instant::now());
                 }
@@ -254,6 +298,31 @@ impl Server {
                             200,
                             json!({"result":{"serverNow":(everett::session::now()*1000.0) as i64,"envelopes":[],"isDone":true,"continueCursor":"0","padding":"x".repeat(100_000)}}),
                         ),
+                        "/v2/relay/registerInbox" => (
+                            200,
+                            json!({"result":{"address":args["address"],"owner":"synthetic-owner","deviceId":"synthetic-agent","harness":args["harness"],"session":args["session"],"status":"active"}}),
+                        ),
+                        "/v2/relay/grantInbox" => (
+                            200,
+                            json!({"result":{"grantId":"grant-0123456789abcdef0123456789abcdef","address":args["address"],"owner":"synthetic-owner","deviceId":"synthetic-agent","harness":"claude","session":"inbox-b","senderOwner":args["senderOwner"],"senderDeviceId":args["senderDeviceId"],"status":"active"}}),
+                        ),
+                        "/v2/relay/revokeInboxGrant" => (
+                            200,
+                            json!({"result":{"grantId":args["grantId"],"status":"revoked"}}),
+                        ),
+                        "/v2/relay/resolveInbox" => {
+                            let device = everett::relay::crypto::Keys::new(
+                                "other-owner".into(),
+                                "other-agent".into(),
+                                [5; 32],
+                                [6; 32],
+                            )
+                            .device;
+                            (
+                                200,
+                                json!({"result":{"address":args["address"],"owner":"other-owner","device":device,"harness":"claude","session":"inbox-b","grantId":"grant-0123456789abcdef0123456789abcdef"}}),
+                            )
+                        }
                         _ => (404, json!({"error":"unsupported"})),
                     }
                 };
@@ -274,6 +343,7 @@ impl Server {
             registration_failures,
             pending_times,
             pending_completed,
+            bodies,
         }
     }
     fn configure(&self, f: &Fixture) {
@@ -665,4 +735,68 @@ fn missing_device_bundle_has_an_actionable_error_without_echoing_server_secrets(
     assert!(!unknown.status.success());
     assert!(!String::from_utf8_lossy(&unknown.stderr).contains(TOKEN));
     assert!(!String::from_utf8_lossy(&unknown.stdout).contains(TOKEN));
+}
+
+#[test]
+fn access_cli_manages_local_policy_and_syncs_relay_grants() {
+    let f = fixture();
+    let server = Server::new();
+    server.configure(&f);
+
+    let show = f.run(&["access", "--json"]);
+    assert!(show.status.success(), "{}", String::from_utf8_lossy(&show.stderr));
+    let initial: Value = serde_json::from_slice(&show.stdout).unwrap();
+    assert_eq!(initial["policy"]["mode"], "allowlist");
+    assert_eq!(initial["policy"]["allow_external_send"], true);
+    assert_eq!(initial["policy"]["max_hops"], 3);
+
+    let set = f.run(&[
+        "permissions",
+        "set",
+        "--mode",
+        "same-account",
+        "--external-send",
+        "off",
+        "--max-hops",
+        "2",
+        "--json",
+    ]);
+    assert!(set.status.success(), "{}", String::from_utf8_lossy(&set.stderr));
+    let updated: Value = serde_json::from_slice(&set.stdout).unwrap();
+    assert_eq!(updated["policy"]["mode"], "same-account");
+    assert_eq!(updated["policy"]["allow_external_send"], false);
+    assert_eq!(updated["policy"]["max_hops"], 2);
+
+    let allow = f.run(&[
+        "access",
+        "allow",
+        "--owner",
+        "other-owner",
+        "--device",
+        "other-agent",
+        "--address",
+        "claude@wmm.10462",
+        "--label",
+        "Alice",
+        "--sync",
+        "--json",
+    ]);
+    assert!(allow.status.success(), "{}", String::from_utf8_lossy(&allow.stderr));
+    let allowed: Value = serde_json::from_slice(&allow.stdout).unwrap();
+    assert_eq!(allowed["policy"]["allowed_senders"].as_array().unwrap().len(), 1);
+    assert_eq!(allowed["grant"]["grantId"], "grant-0123456789abcdef0123456789abcdef");
+    assert!(server.calls.lock().unwrap().iter().any(|p| p == "/v2/relay/grantInbox"));
+
+    let deny = f.run(&["access", "deny", "--owner", "other-owner", "--reason", "paused", "--json"]);
+    assert!(deny.status.success(), "{}", String::from_utf8_lossy(&deny.stderr));
+    let denied: Value = serde_json::from_slice(&deny.stdout).unwrap();
+    assert!(denied["policy"]["allowed_senders"].as_array().unwrap().is_empty());
+    assert_eq!(denied["policy"]["blocked_senders"].as_array().unwrap().len(), 1);
+
+    let reset = f.run(&["access", "reset", "--json"]);
+    assert!(reset.status.success(), "{}", String::from_utf8_lossy(&reset.stderr));
+    let clean: Value = serde_json::from_slice(&reset.stdout).unwrap();
+    assert_eq!(clean["policy"]["mode"], "allowlist");
+    assert_eq!(clean["policy"]["allow_external_send"], true);
+    assert!(clean["policy"]["blocked_senders"].as_array().unwrap().is_empty());
 }
