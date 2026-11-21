@@ -949,6 +949,8 @@ impl Credential {
             "relay:observe" => "observe", "relay:status" => "status",
             "relay:deviceLabels" => "deviceLabels", "relay:renameDevice" => "renameDevice",
             "relay:exposeSession" => "exposeSession", "relay:sessionDirectory" => "sessionDirectory",
+            "relay:registerInbox" => "registerInbox", "relay:grantInbox" => "grantInbox",
+            "relay:revokeInboxGrant" => "revokeInboxGrant", "relay:resolveInbox" => "resolveInbox",
             _ => return Err(fail(2, "this operation is not supported by the Cloudflare relay; SSH publication and cross-owner grants are unavailable")),
         };
         self.validate_relay_binding()?;
@@ -965,7 +967,12 @@ impl Credential {
                 if body.get("error").and_then(Value::as_str) == Some("device_unavailable") {
                     return Err(fail(1, &format!("Cloudflare relay denied {operation} (HTTP {status}, device_unavailable): a device has no active registered key bundle. Verify the account and device registration; this is separate from account sign-in.")));
                 }
-                return Err(fail(1, &format!("Cloudflare relay denied {operation} (HTTP {status}); check approval, current keys, message expiry and peer pins")));
+                let detail = if matches!(operation, "registerInbox" | "grantInbox" | "revokeInboxGrant" | "resolveInbox") {
+                    body.get("error").and_then(Value::as_str).map(|code| format!(", {code}")).unwrap_or_default()
+                } else {
+                    String::new()
+                };
+                return Err(fail(1, &format!("Cloudflare relay denied {operation} (HTTP {status}{detail}); check approval, current keys, message expiry and peer pins")));
             }
             return Err(fail(6, &format!("Cloudflare relay {operation} unavailable (HTTP {status}); delivery is unconfirmed; retry with the same idempotency key")));
         }

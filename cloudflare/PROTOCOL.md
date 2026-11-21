@@ -24,7 +24,7 @@ Envelope = {
 
 All hex is lowercase, even-length, no `0x`. IDs use the agent-ID character/length rule. Times are Unix milliseconds, finite safe integers (absolute value <= 2^53-1); deserialize with checked integral conversion. A new enqueue permits absolute sender-clock skew <= 300000 ms, TTL > 0 and <= 86400000 ms, and expiry strictly after server now. Old identical retries can return a tombstone beyond TTL; authorization and key checks still run first.
 
-Cloudflare accepts same-owner delivery only: `recipientOwner` must equal `owner` and `grantId` must be null. The field remains in signed bytes to preserve the v2 wire contract, not to offer cross-account grants.
+Same-owner delivery requires `recipientOwner == owner` and `grantId == null`. Cross-owner delivery requires `recipientOwner != owner` and a non-null `grantId` backed by an active recipient inbox grant (for root requests `parent == null`, `hop == 1`) or a correlated reply (`parent != null`, `parent.owner == recipientOwner`, `hop > parent.hop`, `hop <= 3`) bound to the original request and the same active `grantId`. The right-hand side of an inbox address (`LOCAL@SCOPE`) is a zone owned by the first owner namespace to claim an address in it; other owners registering an address in that zone get `409 zone_taken`. Zone ownership is tombstoned — never transferred — when its last address is released.
 
 ### Signed bytes and encryption
 

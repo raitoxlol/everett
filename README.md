@@ -246,6 +246,7 @@ Done. MAX_RETRIES is now 5 and the backoff test covers the cap.
 | `everett relay authors` | List exposed authenticated author/session cards across the account, without device pairing. |
 | `everett relay rename NAME` | Update this Cloudflare device's hosted label. Device ID, keys, and pins stay the same. |
 | `everett relay revoke-agent ID / revoke-member SUBJECT / rotate` | Revoke this or an admin-selected agent, remove org membership (admin), or rotate this agent's relay keys using its old signing key. |
+| `everett relay register-inbox / grant-inbox / revoke-inbox-grant / resolve-inbox` | Claim a `LOCAL@SCOPE` cross-org inbox, allow an exact sender owner/device to reach it, revoke a grant, or resolve an address to its verified recipient bundle. `--to LOCAL@SCOPE` with `--mode inbox` sends to it. |
 | `everett peer add-relay <name> --device ID --fingerprint HEX [--grant GRANT_ID]` | Pin a device on the selected relay after out-of-band bundle confirmation; fingerprint is raw 64-character lowercase hex, not the SSH `SHA256:` format. |
 | `everett peer identity / list / remove <name> / revoke <client-id>` | Inspect device keys/peers; remove a remote authorization or revoke a local tagged client key. |
 | `everett dashboard [--port 7347] [--no-open]` | Native Rust binary only: read-only local browser dashboard with session cards, filters, activity state, and copyable CLI actions. |
@@ -375,7 +376,10 @@ Choosing sign-in during fresh interactive onboarding opens `https://relay.raitox
 Identity keys remain `https://everett.raitox.tech`.
 That service supports public enrollment; messaging stays within each account. Existing account configuration
 is preserved. Cloudflare's device protocol is custom, not RFC8628.
-Cross-owner grants are unavailable on Cloudflare. SSH pairing uses an explicit address; cloud-agent OAuth is separate.
+Cross-owner delivery uses named inboxes: `everett relay register-inbox LOCAL@SCOPE --harness H --session S`
+claims the address (the first owner's SCOPE zone is never transferred), `relay grant-inbox` authorizes an
+exact sender owner/device, and `everett send --to LOCAL@SCOPE --mode inbox` sends a hop-1 cross-org root
+message whose replies correlate to the same grant. SSH pairing uses an explicit address; cloud-agent OAuth is separate.
 
 Local harnesses that launch Everett with the same `HOME` and `EVERETT_HOME` use that
 home's account configuration and device credential. They do not each need a separate

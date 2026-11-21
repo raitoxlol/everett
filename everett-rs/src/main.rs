@@ -645,6 +645,30 @@ enum RelayCmd {
     RevokeMember { subject: String },
     /// rotate both independent relay keys; requires the old signing key
     Rotate,
+    /// claim a LOCAL@SCOPE named inbox bound to an exact harness/session (or --remove it)
+    RegisterInbox {
+        address: String,
+        #[arg(long)]
+        harness: String,
+        #[arg(long)]
+        session: String,
+        #[arg(long)]
+        device: Option<String>,
+        #[arg(long)]
+        remove: bool,
+    },
+    /// allow one exact sender owner/device to resolve and send to a named inbox
+    GrantInbox {
+        address: String,
+        #[arg(long)]
+        sender_owner: String,
+        #[arg(long)]
+        sender_device: String,
+    },
+    /// permanently revoke a cross-org inbox grant by ID
+    RevokeInboxGrant { grant_id: String },
+    /// resolve a LOCAL@SCOPE inbox address to its verified recipient bundle
+    ResolveInbox { address: String },
 }
 
 #[derive(Subcommand)]
@@ -819,6 +843,18 @@ fn main() {
                 serde_json::json!({"subject":subject}),
                 false,
             )),
+            Some(RelayCmd::RegisterInbox { address, harness, session, device, remove }) => peer_output(
+                everett::relay::register_inbox(&address, &harness, &session, device.as_deref(), remove)
+            ),
+            Some(RelayCmd::GrantInbox { address, sender_owner, sender_device }) => peer_output(
+                everett::relay::grant_inbox(&address, &sender_owner, &sender_device)
+            ),
+            Some(RelayCmd::RevokeInboxGrant { grant_id }) => peer_output(
+                everett::relay::revoke_inbox_grant(&grant_id)
+            ),
+            Some(RelayCmd::ResolveInbox { address }) => peer_output(
+                everett::relay::resolve_inbox(&address)
+            ),
         },
         Cmd::Peer { action } => match action {
             PeerCmd::AddRelay {

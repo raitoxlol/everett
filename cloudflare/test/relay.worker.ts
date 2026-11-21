@@ -546,3 +546,278 @@ it('bounds a stalled identity probe without claiming a rejected operation', asyn
     expect(await out.json()).toEqual({ error: 'request_timeout', outcome: 'unconfirmed', retry: 'reconcile_before_retry' });
   } finally { vi.useRealTimers(); }
 });
+
+describe('Cross-org named inbox and grant allowlist', () => {
+  function decryptEnvelope(recipientKeySeed: number, e: Envelope) {
+    const shared = x25519.getSharedSecret(secret(recipientKeySeed + 1), bytes(e.ephemeralKey));
+    const key = hkdf(sha256, shared, encoder.encode('everett-relay-v2'), aadBytes(e), 32);
+    return JSON.parse(new TextDecoder().decode(chacha20poly1305(key, bytes(e.nonce), aadBytes(e)).decrypt(bytes(e.ciphertext))));
+  }
+
+  function encryptedEnvelope(
+    sender: Awaited<ReturnType<typeof agent>>,
+    recipientDevice: Device,
+    payload: unknown,
+    overrides: Partial<Envelope> = {},
+  ): Envelope {
+    const now = Date.now();
+    const e: Envelope = {
+      owner: namespace(sender.p), recipientOwner: recipientDevice.owner, grantId: null,
+      fromDevice: sender.p.agentId, toDevice: recipientDevice.deviceId,
+      messageId: crypto.randomUUID(), idempotencyKey: crypto.randomUUID(), parent: null,
+      hop: 1, createdAt: now, expiresAt: now + 60000,
+      senderFingerprint: fingerprint(sender.d), recipientFingerprint: fingerprint(recipientDevice),
+      ephemeralKey: hexString(x25519.getPublicKey(secret(101))), nonce: '11'.repeat(12), ciphertext: '', signature: '',
+      ...overrides,
+    };
+    const shared = x25519.getSharedSecret(secret(101), bytes(recipientDevice.encryptionKey));
+    const key = hkdf(sha256, shared, encoder.encode('everett-relay-v2'), aadBytes(e), 32);
+    e.ciphertext = hexString(chacha20poly1305(key, bytes(e.nonce), aadBytes(e)).encrypt(encode(payload)));
+    e.signature = sign(envelopeBytes(e), sender.n);
+    return e;
+  }
+
+  it('delivers a private cross-org send-and-reply by provisional address between two accounts', async () => {
+    const alice = await agent(org(), 'alice', 'admin', 1);
+    const bob = await agent(org(), 'bob', 'admin', 5);
+    const address = 'claude@wmm.10462';
+
+    const registered = await call(bob.p, 'registerInbox', { address, harness: 'claude', session: 'inbox-b' });
+    expect(registered).toEqual({
+      address, owner: namespace(bob.p), deviceId: bob.p.agentId,
+      harness: 'claude', session: 'inbox-b', status: 'active',
+    });
+
+    const grant = await call(bob.p, 'grantInbox', {
+      address, senderOwner: namespace(alice.p), senderDeviceId: alice.p.agentId,
+    });
+    expect(grant).toMatchObject({
+      grantId: expect.stringMatching(/^grant-[0-9a-f]{32}$/),
+      address, owner: namespace(bob.p), deviceId: bob.p.agentId,
+      harness: 'claude', session: 'inbox-b',
+      senderOwner: namespace(alice.p), senderDeviceId: alice.p.agentId,
+      status: 'active',
+    });
+
+    // Allowed sender resolves the private address over HTTP and receives the recipient bundle + exact inbox + grant.
+    const resolveRes = await handleRequest(
+      request('resolveInbox', { address }),
+      env,
+      { verify: async () => alice.p },
+    );
+    expect(resolveRes.status).toBe(200);
+    const { result: resolved } = await resolveRes.json() as { result: { address: string; owner: string; device: Device; harness: string; session: string; grantId: string } };
+    expect(resolved).toEqual({
+      address, owner: namespace(bob.p), device: bob.d,
+      harness: 'claude', session: 'inbox-b', grantId: grant.grantId,
+    });
+    validateDevice(resolved.device);
+
+    const bobWatch = await watch(bob.p);
+    const aliceWatch = await watch(alice.p);
+
+    const reqPayload = {
+      kind: 'inbox', session: resolved.session, harness: resolved.harness,
+      text: 'Hello across orgs', from: 'inbox-a', from_harness: 'codex',
+      from_card: 'Alice session', reply_to: '', hops: 1, external_untrusted: true,
+    };
+    const req = encryptedEnvelope(alice, resolved.device, reqPayload, { grantId: resolved.grantId });
+    expect(await call(alice.p, 'enqueue', { envelope: req })).toEqual({ messageId: req.messageId, state: 'queued' });
+    await vi.waitFor(() => expect(bobWatch.frames).toHaveLength(2));
+
+    // Recipient pulls the queued cross-org message with untrusted provenance, exact inbox binding, and verified sender bundle.
+    const bobPending = await call(bob.p, 'pending', { deviceId: bob.p.agentId });
+    expect(bobPending.envelopes).toEqual([{
+      envelope: req,
+      trust: 'external-untrusted',
+      inbox: { address, harness: 'claude', session: 'inbox-b' },
+      senderDevice: alice.d,
+    }]);
+    validateDevice(bobPending.envelopes[0].senderDevice);
+    verify(bobPending.envelopes[0].senderDevice.signingKey, req.signature, envelopeBytes(req));
+    expect(decryptEnvelope(bob.n, req)).toEqual(reqPayload);
+
+    // Recipient cannot reply before observing delivery.
+    const replyPayload = {
+      kind: 'inbox', session: 'inbox-a', harness: 'codex',
+      text: 'Correlated reply from Bob', from: 'inbox-b', from_harness: 'claude',
+      from_card: 'Bob session', reply_to: req.messageId, hops: 2, external_untrusted: true,
+    };
+    const reply = encryptedEnvelope(bob, bobPending.envelopes[0].senderDevice, replyPayload, {
+      grantId: req.grantId,
+      parent: { owner: req.owner, messageId: req.messageId },
+      hop: 2,
+      nonce: '22'.repeat(12),
+    });
+    await expect(call(bob.p, 'enqueue', { envelope: reply })).rejects.toThrow('invalid_parent_lineage');
+
+    // Recipient observes delivery, then enqueues the correlated reply and observes 'replied'.
+    await call(bob.p, 'observe', observe(bob, req, 'delivered'));
+    expect((await call(bob.p, 'pending', { deviceId: bob.p.agentId })).envelopes).toEqual([]);
+    expect(await call(alice.p, 'status', { fromDevice: alice.p.agentId, messageId: req.messageId })).toMatchObject({ state: 'delivered' });
+
+    expect(await call(bob.p, 'enqueue', { envelope: reply })).toEqual({ messageId: reply.messageId, state: 'queued' });
+    await vi.waitFor(() => expect(aliceWatch.frames).toHaveLength(2));
+    const repliedObs = observe(bob, req, 'replied');
+    await call(bob.p, 'observe', repliedObs);
+    expect(await call(alice.p, 'status', { fromDevice: alice.p.agentId, messageId: req.messageId })).toMatchObject({
+      state: 'replied', repliedAt: repliedObs.at,
+    });
+
+    // Sender receives the correlated reply, decrypts it, and observes delivery back to recipient.
+    const alicePending = await call(alice.p, 'pending', { deviceId: alice.p.agentId });
+    expect(alicePending.envelopes).toEqual([{
+      envelope: reply, trust: 'external-untrusted', senderDevice: bob.d,
+    }]);
+    expect(decryptEnvelope(alice.n, reply)).toEqual(replyPayload);
+    await call(alice.p, 'observe', observe(alice, reply, 'delivered'));
+    expect((await call(alice.p, 'pending', { deviceId: alice.p.agentId })).envelopes).toEqual([]);
+    expect(await call(bob.p, 'status', { fromDevice: bob.p.agentId, messageId: reply.messageId })).toMatchObject({ state: 'delivered' });
+  });
+
+  it('denies an unauthorized agent who knows the address without leaking existence or allowing hijacking', async () => {
+    const alice = await agent(org(), 'alice', 'admin', 1);
+    const bob = await agent(org(), 'bob', 'admin', 5);
+    const eve = await agent(org(), 'eve', 'admin', 9);
+    const address = 'claude@wmm.10462';
+
+    await call(bob.p, 'registerInbox', { address, harness: 'claude', session: 'inbox-b' });
+    const grant = await call(bob.p, 'grantInbox', {
+      address, senderOwner: namespace(alice.p), senderDeviceId: alice.p.agentId,
+    });
+
+    // Eve gets the exact same denial whether the address exists or does not exist.
+    const existingDenied = await handleRequest(request('resolveInbox', { address }), env, { verify: async () => eve.p });
+    const absentDenied = await handleRequest(request('resolveInbox', { address: 'nobody@wmm.99999' }), env, { verify: async () => eve.p });
+    expect(existingDenied.status).toBe(403);
+    expect(absentDenied.status).toBe(403);
+    expect(await existingDenied.json()).toEqual({ error: 'inbox_not_allowed' });
+    expect(await absentDenied.json()).toEqual({ error: 'inbox_not_allowed' });
+
+    // Eve cannot hijack the address, cannot send with no grant, guessed grant, or Alice's stolen grantId.
+    await expect(call(eve.p, 'registerInbox', { address, harness: 'claude', session: 'stolen' })).rejects.toThrow('address_taken');
+    await expect(call(eve.p, 'enqueue', { envelope: envelope(eve, bob) })).rejects.toThrow('cross_owner_not_supported');
+    await expect(call(eve.p, 'enqueue', { envelope: envelope(eve, bob, { grantId: 'grant-00000000000000000000000000000000' }) })).rejects.toThrow('inbox_not_allowed');
+    await expect(call(eve.p, 'enqueue', { envelope: envelope(eve, bob, { grantId: grant.grantId }) })).rejects.toThrow('inbox_not_allowed');
+    expect((await call(bob.p, 'pending', { deviceId: bob.p.agentId })).envelopes).toEqual([]);
+  });
+
+  it('blocks pickup, observation, retries, and reply delivery when a grant is revoked after enqueue', async () => {
+    const alice = await agent(org(), 'alice', 'admin', 1);
+    const bob = await agent(org(), 'bob', 'admin', 5);
+    const address = 'claude@wmm.10462';
+
+    await call(bob.p, 'registerInbox', { address, harness: 'claude', session: 'inbox-b' });
+    const grant = await call(bob.p, 'grantInbox', {
+      address, senderOwner: namespace(alice.p), senderDeviceId: alice.p.agentId,
+    });
+
+    const msg = envelope(alice, bob, { grantId: grant.grantId });
+    expect(await call(alice.p, 'enqueue', { envelope: msg })).toEqual({ messageId: msg.messageId, state: 'queued' });
+
+    // Revoke the grant AFTER enqueue, BEFORE Bob picks up the message.
+    expect(await call(bob.p, 'revokeInboxGrant', { grantId: grant.grantId })).toEqual({ grantId: grant.grantId, status: 'revoked' });
+
+    // Pickup, signed observation, status, retries, and future address resolution are all blocked.
+    expect((await call(bob.p, 'pending', { deviceId: bob.p.agentId })).envelopes).toEqual([]);
+    await expect(call(bob.p, 'observe', observe(bob, msg, 'delivered'))).rejects.toThrow('inbox_not_allowed');
+    await expect(call(alice.p, 'enqueue', { envelope: msg })).rejects.toThrow('inbox_not_allowed');
+    await expect(call(alice.p, 'status', { fromDevice: alice.p.agentId, messageId: msg.messageId })).rejects.toThrow('inbox_not_allowed');
+    await expect(call(alice.p, 'resolveInbox', { address })).rejects.toThrow('inbox_not_allowed');
+
+    // A fresh grant creates a brand-new grantId; revoking after Bob queues a reply also blocks Alice's reply pickup.
+    const freshGrant = await call(bob.p, 'grantInbox', {
+      address, senderOwner: namespace(alice.p), senderDeviceId: alice.p.agentId,
+    });
+    expect(freshGrant.grantId).not.toBe(grant.grantId);
+    const req2 = envelope(alice, bob, { grantId: freshGrant.grantId });
+    await call(alice.p, 'enqueue', { envelope: req2 });
+    await call(bob.p, 'observe', observe(bob, req2, 'delivered'));
+    const reply2 = envelope(bob, alice, { grantId: freshGrant.grantId, parent: { owner: req2.owner, messageId: req2.messageId }, hop: 2 });
+    await call(bob.p, 'enqueue', { envelope: reply2 });
+    await call(bob.p, 'revokeInboxGrant', { grantId: freshGrant.grantId });
+    expect((await call(alice.p, 'pending', { deviceId: alice.p.agentId })).envelopes).toEqual([]);
+    await expect(call(alice.p, 'observe', observe(alice, reply2, 'delivered'))).rejects.toThrow('inbox_not_allowed');
+  });
+
+  it('rejects cross-grant replies, hop overflow, silent inbox rebinding, and post-removal hijacking', async () => {
+    const alice = await agent(org(), 'alice', 'admin', 1);
+    const bob = await agent(org(), 'bob', 'admin', 5);
+    const eve = await agent(org(), 'eve', 'admin', 9);
+
+    await call(bob.p, 'registerInbox', { address: 'claude@wmm.10462', harness: 'claude', session: 'inbox-1' });
+    await call(bob.p, 'registerInbox', { address: 'codex@wmm.10462', harness: 'codex', session: 'inbox-2' });
+    await expect(call(bob.p, 'registerInbox', { address: 'claude@wmm.10462', harness: 'claude', session: 'other' })).rejects.toThrow('inbox_binding_immutable');
+
+    const g1 = await call(bob.p, 'grantInbox', { address: 'claude@wmm.10462', senderOwner: namespace(alice.p), senderDeviceId: alice.p.agentId });
+    const g2 = await call(bob.p, 'grantInbox', { address: 'codex@wmm.10462', senderOwner: namespace(alice.p), senderDeviceId: alice.p.agentId });
+
+    const req = envelope(alice, bob, { grantId: g1.grantId });
+    await call(alice.p, 'enqueue', { envelope: req });
+    await call(bob.p, 'observe', observe(bob, req, 'delivered'));
+
+    // Cross-grant reply and hop > 3 are both rejected.
+    await expect(call(bob.p, 'enqueue', {
+      envelope: envelope(bob, alice, { grantId: g2.grantId, parent: { owner: req.owner, messageId: req.messageId }, hop: 2 }),
+    })).rejects.toThrow('invalid_parent_lineage');
+    await expect(call(bob.p, 'enqueue', {
+      envelope: envelope(bob, alice, { grantId: g1.grantId, parent: { owner: req.owner, messageId: req.messageId }, hop: 4 }),
+    })).rejects.toThrow('invalid_parent_lineage');
+
+    // Removing the inbox revokes active grants and tombstones address ownership against hijacking.
+    await call(bob.p, 'registerInbox', { address: 'claude@wmm.10462', harness: 'claude', session: 'inbox-1', remove: true });
+    await expect(call(alice.p, 'resolveInbox', { address: 'claude@wmm.10462' })).rejects.toThrow('inbox_not_allowed');
+    await expect(call(eve.p, 'registerInbox', { address: 'claude@wmm.10462', harness: 'claude', session: 'hijack' })).rejects.toThrow('address_taken');
+
+    // Revoking the sender's device after enqueue also hides the queued cross-org message on pickup.
+    const queuedBeforeRevoke = envelope(alice, bob, { grantId: g2.grantId });
+    await call(alice.p, 'enqueue', { envelope: queuedBeforeRevoke });
+    await call(alice.p, 'revokeAgent', { deviceId: alice.p.agentId });
+    expect((await call(bob.p, 'pending', { deviceId: bob.p.agentId })).envelopes).toEqual([]);
+  });
+
+  it('binds a zone to the first owner and rejects other owners with zone_taken', async () => {
+    const bob = await agent(org(), 'bob', 'admin', 5);
+    const eve = await agent(org(), 'eve', 'admin', 9);
+
+    for (const [local, harness] of [['claude', 'claude'], ['codex', 'codex'], ['ops', 'ops']] as const) {
+      expect(await call(bob.p, 'registerInbox', {
+        address: `${local}@wmm.10462`, harness, session: `inbox-${local}`,
+      })).toMatchObject({ address: `${local}@wmm.10462`, status: 'active' });
+    }
+
+    await expect(call(eve.p, 'registerInbox', { address: 'other@wmm.10462', harness: 'claude', session: 'inbox-e' }))
+      .rejects.toThrow('zone_taken');
+    expect(await call(eve.p, 'registerInbox', { address: 'other@eve.zone', harness: 'claude', session: 'inbox-e' }))
+      .toMatchObject({ address: 'other@eve.zone', status: 'active' });
+    await expect(call(eve.p, 'registerInbox', { address: 'claude@wmm.10462', harness: 'claude', session: 'inbox-b' }))
+      .rejects.toThrow('address_taken');
+  });
+
+  it('tombstones zone ownership after the last address is released', async () => {
+    const bob = await agent(org(), 'bob', 'admin', 5);
+    const eve = await agent(org(), 'eve', 'admin', 9);
+
+    for (const [local, harness] of [['claude', 'claude'], ['codex', 'codex']] as const) {
+      await call(bob.p, 'registerInbox', { address: `${local}@wmm.10462`, harness, session: `inbox-${local}` });
+    }
+    for (const [local, harness] of [['claude', 'claude'], ['codex', 'codex']] as const) {
+      await call(bob.p, 'registerInbox', { address: `${local}@wmm.10462`, harness, session: `inbox-${local}`, remove: true });
+    }
+
+    await expect(call(eve.p, 'registerInbox', { address: 'fresh@wmm.10462', harness: 'claude', session: 'inbox-e' }))
+      .rejects.toThrow('zone_taken');
+    expect(await call(bob.p, 'registerInbox', { address: 'fresh@wmm.10462', harness: 'claude', session: 'inbox-f' }))
+      .toMatchObject({ address: 'fresh@wmm.10462', status: 'active' });
+  });
+
+  it('returns zone_taken from the address directory for a foreign zone claim', async () => {
+    const bob = await agent(org(), 'bob', 'admin', 5);
+    const eve = await agent(org(), 'eve', 'admin', 9);
+    const directory = env.ADDRESSES!.get(env.ADDRESSES!.idFromName('global'));
+
+    await call(bob.p, 'registerInbox', { address: 'claude@wmm.10462', harness: 'claude', session: 'inbox-b' });
+    expect(await directory.claim('other@wmm.10462', namespace(eve.p))).toEqual({ ok: false, error: 'zone_taken', status: 409 });
+    expect(await directory.claim('other@eve.zone', namespace(eve.p))).toEqual({ ok: true });
+  });
+});
