@@ -455,6 +455,10 @@ See [agent support and wake](docs/agent-support.md) and the
 5. **Replies.** The receiving agent answers with `everett_send(reply_to="<id>", text=…)` or `everett reply <id> "<text>"`. The reply lands in the sender's inbox and is injected there the same way. A sender can instead block on it: `everett send --wait 120 …` or `everett_send(wait=120)`. `everett inbox` / `everett_inbox` read an inbox directly.
 6. **Safety.** With the hop limit on, a thread can go back and forth at most 3 hops (exit 7); it is off by default (docs/hop-limit.md). The calling session is never a target, and headless `everett send` runs (`EVERETT_SEND=1`) never consume inbox messages.
 
+**Private local storage (Unix).** Inbox compaction and live-record writes use same-directory temporary files created with mode `0600` before writing, then atomically persist replacements. Compaction replaces the session `.jsonl` and `.done` files. Live-record replacements are at `~/.everett/inbox/live/<session-id>.json` (or `$EVERETT_HOME/.everett/inbox/live/` when `EVERETT_HOME` is set). The `live/` directory is created with mode `0700` and has group/other permission bits removed; associated lock files request mode `0600` at creation and reapply it when opened.
+
+These details cover Everett's Rust local inbox and live-record operations on Unix, when filesystem permission operations succeed. They do not claim non-Unix `0600`/`0700` semantics, permissions for provider-owned histories, or settings for every file under `~/.everett`.
+
 | Harness | Next turn | Mid-task | How |
 |---|---|---|---|
 | Claude Code | `UserPromptSubmit` | `PostToolUse` | `hookSpecificOutput.additionalContext` |
