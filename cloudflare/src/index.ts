@@ -5,7 +5,7 @@ import { namespace, operations, principalSchema, RelayError, type Operation, typ
 import { OwnerRelay } from './owner-relay';
 import { HostedAuth } from './hosted-auth';
 import { AddressDirectory } from './address-directory';
-import { hostedAuthPaths } from './hosted-config';
+import { deviceName, hostedAuthPaths } from './hosted-config';
 export { OwnerRelay, HostedAuth, AddressDirectory };
 export interface Env {
   OWNERS: DurableObjectNamespace<OwnerRelay>;
@@ -38,7 +38,7 @@ function relayFailure(result: Extract<RelayResult, { ok: false }>, env: Env): Re
 async function relayRequest(request: Request, env: Env, verifier: PrincipalVerifier = hostedVerifier(env)): Promise<Response> {
   const url = new URL(request.url);
   if (request.method === 'GET' && url.pathname === '/health') return Response.json({ backend: 'cloudflare', status: env.AUTHENTICATOR || env.EVERETT_ISSUER ? 'configuration-present' : 'authentication-unconfigured' });
-  if (url.pathname.startsWith('/v1/mesh/') || hostedAuthPaths(url.pathname)) {
+  if (hostedAuthPaths(url.pathname)) {
     if (!env.EVERETT_ISSUER || !env.AUTH_STATE) return Response.json({ error: 'authentication_unconfigured' }, { status: 503, headers: { 'Cache-Control': 'no-store' } });
     return env.AUTH_STATE.get(env.AUTH_STATE.idFromName(env.EVERETT_ISSUER)).fetch(new Request(request, { redirect: 'manual' }));
   }
@@ -64,7 +64,7 @@ async function relayRequest(request: Request, env: Env, verifier: PrincipalVerif
     if (metadata) {
       if (!env.AUTH_STATE || !env.EVERETT_ISSUER) throw new RelayError('metadata_unavailable', 404);
       const name = op === 'renameDevice'
-        ? z.strictObject({ name: z.string().trim().min(1).max(100).regex(/^[^\x00-\x1f\x7f]+$/) }).parse(args).name
+        ? z.strictObject({ name: deviceName }).parse(args).name
         : (z.strictObject({}).parse(args), undefined);
       const auth = env.AUTH_STATE.get(env.AUTH_STATE.idFromName(env.EVERETT_ISSUER));
       const result = await auth.relayDeviceLabels(p, name);

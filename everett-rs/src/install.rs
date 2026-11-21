@@ -2,6 +2,8 @@
 //! `--apply` backs up each file it changes (<file>.everett-bak-<timestamp>), merges
 //! idempotently, never duplicates an Everett entry and never removes anyone else's hooks.
 
+pub(crate) mod presence;
+
 use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -15,9 +17,8 @@ use crate::proc::shlex_quote;
 use crate::session::home;
 use crate::timefmt::strftime_local;
 
-// harness -> [(event, hook subcommand, timeout)]
 type HookSpec = (&'static str, &'static str, i64);
-pub const HOOKS: &[(&str, &[HookSpec])] = &[
+const HOOKS: &[(&str, &[HookSpec])] = &[
     (
         "claude",
         &[
@@ -52,6 +53,14 @@ fn hooks_for(harness: &str) -> &'static [(&'static str, &'static str, i64)] {
         .find(|(h, _)| *h == harness)
         .map(|(_, v)| *v)
         .unwrap_or(&[])
+}
+
+pub(crate) fn settings_hook_harnesses() -> impl Iterator<Item = &'static str> {
+    HOOKS.iter().map(|(harness, _)| *harness)
+}
+
+pub(crate) fn hook_events(harness: &str) -> impl Iterator<Item = &'static str> {
+    hooks_for(harness).iter().map(|(event, _, _)| *event)
 }
 
 fn exe() -> String {
@@ -240,7 +249,6 @@ pub fn installed(harness: &str, data: Option<&Map<String, Value>>) -> std::resul
 /// Merged settings, events added, events whose legacy Python hooks were replaced.
 type MergedHooks = (Map<String, Value>, Vec<String>, Vec<String>);
 
-/// Pure: does not touch the input.
 pub fn merge(
     data: &Map<String, Value>,
     harness: &str,
@@ -778,6 +786,11 @@ pub fn apply_mcp(harness: &str, repair: bool) -> std::result::Result<String, Str
     if harness == "devin" {
         entry.remove("type");
         entry.remove("transport");
+    }
+    if TOML_MCP.contains(&harness) {
+        // codex/grok config.toml entries have no "type" field; codex_block()
+        // omits it, so a repair must not introduce one either.
+        entry.remove("type");
     }
     let saved;
     if TOML_MCP.contains(&harness) {

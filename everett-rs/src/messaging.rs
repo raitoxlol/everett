@@ -4,7 +4,6 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
 use crate::error::{EverettError, Result};
-use crate::session::Session;
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct AuthorCard {
@@ -30,14 +29,11 @@ pub fn expose_id(id: &str, harness: Option<&str>, remove: bool) -> Result<Value>
             "Exposure requires one exact local session ID and harness",
         ));
     }
-    expose(matches[0], remove)
-}
-
-pub fn expose(session: &Session, remove: bool) -> Result<Value> {
+    let session = matches[0];
     let card = crate::cards::read_card_body(&session.id)
         .map(|(body, _)| body)
         .unwrap_or_else(|| session.card.clone());
-    update_card(&session.id, &session.harness, &card, remove)
+    update_card(&session.id, &session.harness, &card, false)
 }
 
 fn update_card(session: &str, harness: &str, card: &str, remove: bool) -> Result<Value> {

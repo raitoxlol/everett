@@ -32,6 +32,8 @@ const stateRank: Record<MessageState, number> = { queued: 0, expired: 0, deliver
 const watcherSchema = principalSchema.pick({ agentId: true, expiresAt: true }).extend({ fingerprint: z.string().regex(/^[0-9a-f]{64}$/) });
 const inboxChanged = JSON.stringify({ type: 'inbox_changed' });
 
+const meshLimit = { devices: 256, sessions: 256, receipts: 100 } as const;
+
 export class OwnerRelay extends DurableObject<OwnerRelayEnv> {
   constructor(ctx: DurableObjectState, env: OwnerRelayEnv) {
     super(ctx, env);
@@ -169,26 +171,26 @@ export class OwnerRelay extends DurableObject<OwnerRelayEnv> {
     const p = principalSchema.parse(input);
     this.#authorize(p);
     const now = Date.now();
-    const devices = this.ctx.storage.sql.exec<{ agent_id: string; at: number | null }>("SELECT d.agent_id,s.at FROM devices d JOIN credentials c ON c.agent_id=d.agent_id JOIN members m ON m.subject=c.subject LEFT JOIN mesh_seen s ON s.agent_id=d.agent_id WHERE c.subject=? AND c.status='active' AND m.status='active' ORDER BY d.agent_id LIMIT 257", p.subject).toArray();
-    const deviceCap = devices.length > 256;
-    const displayedDevices = devices.slice(0, 256);
+    const devices = this.ctx.storage.sql.exec<{ agent_id: string; at: number | null }>("SELECT d.agent_id,s.at FROM devices d JOIN credentials c ON c.agent_id=d.agent_id JOIN members m ON m.subject=c.subject LEFT JOIN mesh_seen s ON s.agent_id=d.agent_id WHERE c.subject=? AND c.status='active' AND m.status='active' ORDER BY d.agent_id LIMIT ?", p.subject, meshLimit.devices + 1).toArray();
+    const deviceCap = devices.length > meshLimit.devices;
+    const displayedDevices = devices.slice(0, meshLimit.devices);
     const lastDeviceId = displayedDevices.at(-1)?.agent_id ?? null;
     const activeSessions = "FROM session_cards s JOIN devices d ON d.agent_id=s.agent_id JOIN credentials c ON c.agent_id=s.agent_id WHERE c.subject=? AND c.status='active'";
     const sessions = this.ctx.storage.sql.exec<{ agent_id: string; session: string; harness: string; updated_at: number }>(
-      `SELECT s.agent_id,s.session,s.harness,s.updated_at ${activeSessions} AND s.agent_id<=? ORDER BY s.updated_at DESC,s.seq DESC LIMIT 257`,
-      p.subject, lastDeviceId,
+      `SELECT s.agent_id,s.session,s.harness,s.updated_at ${activeSessions} AND s.agent_id<=? ORDER BY s.updated_at DESC,s.seq DESC LIMIT ?`,
+      p.subject, lastDeviceId, meshLimit.sessions + 1,
     ).toArray();
     const omittedSessions = deviceCap && !!this.#row(
       `SELECT 1 ${activeSessions} AND s.agent_id>? LIMIT 1`, p.subject, lastDeviceId,
     );
     const queue = this.#row<{ queued: number }>("SELECT count(*) queued FROM attempts a JOIN credentials f ON f.agent_id=a.from_device JOIN credentials t ON t.agent_id=a.to_device WHERE f.subject=? AND t.subject=? AND f.status='active' AND t.status='active' AND a.state='queued' AND a.expires_at>?", p.subject,p.subject,now)!;
-    const receipts = this.ctx.storage.sql.exec<{ message_id: string; device_id: string; state: string; at: number }>("SELECT r.message_id,r.device_id,r.state,r.at FROM mesh_receipts r JOIN attempts a ON a.message_id=r.message_id JOIN credentials f ON f.agent_id=a.from_device JOIN credentials t ON t.agent_id=a.to_device WHERE f.subject=? AND t.subject=? AND f.status='active' AND t.status='active' ORDER BY r.seq DESC LIMIT 101",p.subject,p.subject).toArray();
+    const receipts = this.ctx.storage.sql.exec<{ message_id: string; device_id: string; state: string; at: number }>("SELECT r.message_id,r.device_id,r.state,r.at FROM mesh_receipts r JOIN attempts a ON a.message_id=r.message_id JOIN credentials f ON f.agent_id=a.from_device JOIN credentials t ON t.agent_id=a.to_device WHERE f.subject=? AND t.subject=? AND f.status='active' AND t.status='active' ORDER BY r.seq DESC LIMIT ?",p.subject,p.subject,meshLimit.receipts + 1).toArray();
     return {
       version: 'everett.mesh.v1' as const, source: 'cloudflare' as const, owner: namespace(p), serverNow: now,
       devices: displayedDevices.map(d => ({ deviceId:d.agent_id,lastSeen:d.at,lastSeenConfidence:d.at === null ? 'unavailable' : 'server-observed-request' })),
-      sessions: sessions.slice(0,256).map(s => ({ deviceId:s.agent_id,sessionId:s.session,harness:s.harness,lastSeen:s.updated_at,lastSeenConfidence:'server-observed-exposure',selfReported:{ status:null,confidence:'unavailable',observedAt:null } })),
-      queue, receipts:receipts.slice(0,100).map(r => ({ messageId:r.message_id,deviceId:r.device_id,state:r.state,at:r.at,confidence:'signed-device-observation' })),
-      truncated: { devices:deviceCap,sessions:sessions.length>256 || omittedSessions,receipts:receipts.length>100 },
+      sessions: sessions.slice(0,meshLimit.sessions).map(s => ({ deviceId:s.agent_id,sessionId:s.session,harness:s.harness,lastSeen:s.updated_at,lastSeenConfidence:'server-observed-exposure',selfReported:{ status:null,confidence:'unavailable',observedAt:null } })),
+      queue, receipts:receipts.slice(0,meshLimit.receipts).map(r => ({ messageId:r.message_id,deviceId:r.device_id,state:r.state,at:r.at,confidence:'signed-device-observation' })),
+      truncated: { devices:deviceCap,sessions:sessions.length>meshLimit.sessions || omittedSessions,receipts:receipts.length>meshLimit.receipts },
     };
   }
   async revokeCredential(identityInput: Identity, agentIdInput: string): Promise<boolean> {
@@ -276,11 +278,6 @@ export class OwnerRelay extends DurableObject<OwnerRelayEnv> {
     const sender = this.#activeDevice(e.fromDevice), recipient = this.#activeDevice(e.toDevice);
     if (fingerprint(sender) !== e.senderFingerprint || fingerprint(recipient) !== e.recipientFingerprint) throw new RelayError('device_key_changed');
     return { sender, recipient };
-  }
-  #checkRate(scope: string, limit: number, now: number) {
-    const window = Math.floor(now / 60000);
-    const old = this.#row<{ window: number; count: number }>('SELECT * FROM rates WHERE scope=?', scope);
-    if (old?.window === window && old.count >= limit) throw new RelayError('rate_limit', 429);
   }
   #rate(scope: string, limit: number, now: number) {
     const window = Math.floor(now / 60000);
@@ -501,6 +498,10 @@ export class OwnerRelay extends DurableObject<OwnerRelayEnv> {
     const claimed = await this.#addresses().claim(a.address, owner);
     if (!claimed.ok) throw new RelayError(claimed.error, claimed.status);
     this.ctx.storage.transactionSync(() => {
+      const latest = this.#row<InboxAddress>('SELECT * FROM inbox_addresses WHERE address=?', a.address);
+      if (latest?.status === 'active' && (latest.agent_id !== targetDevice || latest.harness !== a.harness || latest.session !== a.session)) {
+        throw new RelayError('inbox_binding_immutable', 409);
+      }
       this.ctx.storage.sql.exec(
         "INSERT INTO inbox_addresses(address,agent_id,harness,session,status,created_at,updated_at) VALUES(?,?,?,?,'active',?,?) ON CONFLICT(address) DO UPDATE SET agent_id=excluded.agent_id,harness=excluded.harness,session=excluded.session,status='active',updated_at=excluded.updated_at",
         a.address, targetDevice, a.harness, a.session, now, now,
@@ -540,57 +541,69 @@ export class OwnerRelay extends DurableObject<OwnerRelayEnv> {
     if (fingerprint(sender) !== e.senderFingerprint) throw new RelayError('device_key_changed');
     verify(sender.signingKey, e.signature, envelopeBytes(e));
     const requestDigest = digest(envelopeBytes(e));
-    const old = this.#row<Attempt>('SELECT * FROM attempts WHERE from_device=? AND idempotency_key=?', p.agentId, e.idempotencyKey);
-    if (old) {
-      if (old.digest !== requestDigest) throw new RelayError('idempotency_conflict', 409);
-      if (e.parent !== null) this.#activeGrant(e.grantId, e.recipientOwner, e.toDevice, e.fromDevice);
-      const check = await this.#ownerStub(e.recipientOwner).verifyCrossOwnerAccess(e);
-      if (!check.ok) throw new RelayError(check.error, check.status);
-      this.#touchSeen(p.agentId);
-      return { messageId: old.message_id, state: this.#state(old, now) };
-    }
-    if (e.expiresAt <= now || Math.abs(e.createdAt - now) > 300000 || e.expiresAt <= e.createdAt || e.expiresAt - e.createdAt > 86400000) throw new RelayError('invalid_ttl', 400);
-    if (this.#attempt(e.messageId)) throw new RelayError('message_id_reused', 409);
-    if (e.parent === null) {
-      if (e.hop !== 1) throw new RelayError('invalid_root_hop', 400);
-    } else {
-      const parent = this.#attempt(e.parent.messageId);
-      const parentMeta: Metadata | undefined = parent && JSON.parse(parent.metadata);
-      if (
-        !parent
-        || !parentMeta
-        || parentMeta.parent !== null
-        || parentMeta.owner !== e.parent.owner
-        || parentMeta.owner !== e.recipientOwner
-        || parentMeta.toDevice !== p.agentId
-        || parentMeta.fromDevice !== e.toDevice
-        || parentMeta.grantId !== e.grantId
-        || parentMeta.senderFingerprint !== e.recipientFingerprint
-        || !['delivered', 'claimed', 'replied'].includes(parent.state)
-        || e.hop <= parentMeta.hop
-        || e.hop > CROSS_OWNER_MAX_HOPS
-      ) throw new RelayError('invalid_parent_lineage');
-      this.#activeGrant(e.grantId, e.recipientOwner, e.toDevice, e.fromDevice);
-    }
-    this.#checkRate(JSON.stringify(['agent', p.agentId]), 120, now);
-    this.#checkRate(JSON.stringify(['account', p.issuer, p.subject]), 120, now);
-    this.#checkRate('org', 600, now);
-    const delivered = await this.#ownerStub(e.recipientOwner).receiveCrossOwnerEnvelope(e, sender);
-    if (!delivered.ok) throw new RelayError(delivered.error, delivered.status);
-    return this.ctx.storage.transactionSync(() => {
-      const existing = this.#row<Attempt>('SELECT * FROM attempts WHERE from_device=? AND idempotency_key=?', p.agentId, e.idempotencyKey);
-      if (existing) {
-        if (existing.digest !== requestDigest) throw new RelayError('idempotency_conflict', 409);
-        this.#touchSeen(p.agentId);
-        return { messageId: existing.message_id, state: this.#state(existing, now) };
+    const reserved = this.ctx.storage.transactionSync(() => {
+      const old = this.#row<Attempt>('SELECT * FROM attempts WHERE from_device=? AND idempotency_key=?', p.agentId, e.idempotencyKey);
+      if (old) {
+        if (old.digest !== requestDigest) throw new RelayError('idempotency_conflict', 409);
+        if (e.parent !== null) this.#activeGrant(e.grantId!, e.recipientOwner, e.toDevice, e.fromDevice);
+        return { existing: old, created: false };
+      }
+      if (e.expiresAt <= now || Math.abs(e.createdAt - now) > 300000 || e.expiresAt <= e.createdAt || e.expiresAt - e.createdAt > 86400000) throw new RelayError('invalid_ttl', 400);
+      if (this.#attempt(e.messageId)) throw new RelayError('message_id_reused', 409);
+      if (e.parent === null) {
+        if (e.hop !== 1) throw new RelayError('invalid_root_hop', 400);
+      } else {
+        const parent = this.#attempt(e.parent.messageId);
+        const parentMeta: Metadata | undefined = parent && JSON.parse(parent.metadata);
+        if (
+          !parent
+          || !parentMeta
+          || parentMeta.parent !== null
+          || parentMeta.owner !== e.parent.owner
+          || parentMeta.owner !== e.recipientOwner
+          || parentMeta.toDevice !== p.agentId
+          || parentMeta.fromDevice !== e.toDevice
+          || parentMeta.grantId !== e.grantId
+          || parentMeta.senderFingerprint !== e.recipientFingerprint
+          || !['delivered', 'claimed', 'replied'].includes(parent.state)
+          || e.hop <= parentMeta.hop
+          || e.hop > CROSS_OWNER_MAX_HOPS
+        ) throw new RelayError('invalid_parent_lineage');
+        this.#activeGrant(e.grantId!, e.recipientOwner, e.toDevice, e.fromDevice);
       }
       this.#rate(JSON.stringify(['agent', p.agentId]), 120, now);
       this.#rate(JSON.stringify(['account', p.issuer, p.subject]), 120, now);
       this.#rate('org', 600, now);
       const { ciphertext, signature, ephemeralKey, nonce, createdAt, ...metadata } = e;
-      this.ctx.storage.sql.exec('INSERT INTO attempts VALUES(?,?,?,?,?,?,?,?)', e.messageId, p.agentId, e.idempotencyKey, requestDigest, delivered.value.state, e.expiresAt, e.toDevice, JSON.stringify({ ...metadata, queuedAt: now }));
+      this.ctx.storage.sql.exec(
+        'INSERT INTO attempts VALUES(?,?,?,?,?,?,?,?)',
+        e.messageId, p.agentId, e.idempotencyKey, requestDigest, 'queued', e.expiresAt, e.toDevice, JSON.stringify({ ...metadata, queuedAt: now }),
+      );
+      return { existing: null as Attempt | null, created: true };
+    });
+    if (reserved.existing && this.#state(reserved.existing, now) !== 'queued') {
+      const check = await this.#ownerStub(e.recipientOwner).verifyCrossOwnerAccess(e);
+      if (!check.ok) throw new RelayError(check.error, check.status);
       this.#touchSeen(p.agentId);
-      return delivered.value;
+      return { messageId: reserved.existing.message_id, state: this.#state(reserved.existing, now) };
+    }
+    const delivered = await this.#ownerStub(e.recipientOwner).receiveCrossOwnerEnvelope(e, sender);
+    if (!delivered.ok) {
+      if (reserved.created) {
+        this.ctx.storage.sql.exec("DELETE FROM attempts WHERE message_id=? AND state='queued'", e.messageId);
+      }
+      throw new RelayError(delivered.error, delivered.status);
+    }
+    return this.ctx.storage.transactionSync(() => {
+      const current = this.#attempt(e.messageId);
+      if (current && stateRank[delivered.value.state] > stateRank[current.state]) {
+        this.ctx.storage.sql.exec('UPDATE attempts SET state=? WHERE message_id=?', delivered.value.state, e.messageId);
+      }
+      this.#touchSeen(p.agentId);
+      const finalState = current && stateRank[current.state] > stateRank[delivered.value.state]
+        ? this.#state(current, now)
+        : delivered.value.state;
+      return { messageId: delivered.value.messageId, state: finalState };
     });
   }
 

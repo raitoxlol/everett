@@ -189,6 +189,22 @@ fn listing_can_include_automation_sessions() {
 }
 
 #[test]
+fn send_tool_schema_bounds_wait_and_timeout() {
+    let fx = home_with_claude_session();
+    let mut s = Server::start(&fx, &[]);
+    let tools = s.request("tools/list", None)["result"]["tools"].clone();
+    let send = tools
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|t| t["name"] == "everett_send")
+        .expect("everett_send advertised");
+    let props = &send["inputSchema"]["properties"];
+    assert_eq!(props["timeout"]["maximum"], json!(1800));
+    assert_eq!(props["wait"]["maximum"], json!(1800));
+}
+
+#[test]
 fn round_trip_over_pipes() {
     let fx = home_with_claude_session();
     let mut s = Server::start(&fx, &[]);
@@ -356,6 +372,10 @@ fn error_codes() {
     );
     let batch = s.raw(r#"[{"jsonrpc":"2.0","id":"a","method":"ping"},{"jsonrpc":"2.0","method":"notifications/x"}]"#);
     assert_eq!(batch, json!([{"jsonrpc": "2.0", "id": "a", "result": {}}]));
+    // An empty batch is an invalid request: one error object, not an array.
+    let empty = s.raw("[]");
+    assert!(empty.is_object(), "{empty}");
+    assert_eq!(empty["error"]["code"], json!(-32600), "{empty}");
     s.close();
 }
 
@@ -1092,6 +1112,25 @@ fn install_mcp_apply_backs_up_and_is_idempotent() {
         backups(codex.parent().unwrap(), "config.toml.everett-bak-"),
         1
     );
+}
+
+#[test]
+fn install_mcp_codex_repair_omits_stdio_type_field() {
+    let fx = fixture();
+    let cfg = fx.write(
+        ".codex/config.toml",
+        "[mcp_servers.everett]\ncommand = \"python3\"\nargs = [\"-m\", \"everett\", \"mcp\"]\n",
+    );
+    let out = fx.run(&["install-mcp", "--codex", "--apply"]);
+    assert_eq!(out.status.code(), Some(0), "{}", fx.stdout(&out));
+    let text = std::fs::read_to_string(&cfg).unwrap();
+    let block = text.split("[mcp_servers.everett]").nth(1).unwrap();
+    assert!(
+        !block.lines().any(|l| l.trim_start().starts_with("type")),
+        "{text}"
+    );
+    let parsed: toml::Value = text.parse().unwrap();
+    assert!(parsed["mcp_servers"]["everett"]["command"].is_str());
 }
 
 #[test]

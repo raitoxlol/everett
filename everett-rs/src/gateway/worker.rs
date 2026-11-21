@@ -331,7 +331,7 @@ pub fn run() -> i32 {
             let response = crate::mcp::handle(&json!({
                 "jsonrpc": "2.0", "id": 1, "method": "tools/call",
                 "params": {"name": name, "arguments": arguments}
-            }));
+            }), None);
             response.map(|mut response| {
                 if let Some(message) = response["error"]["message"].as_str() {
                     json!({"isError":true,"content":[{"type":"text","text":message}]})

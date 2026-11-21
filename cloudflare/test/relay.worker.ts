@@ -820,4 +820,42 @@ describe('Cross-org named inbox and grant allowlist', () => {
     expect(await directory.claim('other@wmm.10462', namespace(eve.p))).toEqual({ ok: false, error: 'zone_taken', status: 409 });
     expect(await directory.claim('other@eve.zone', namespace(eve.p))).toEqual({ ok: true });
   });
+
+  it('keeps inbox bindings immutable under concurrent conflicting registrations', async () => {
+    const bob = await agent(org(), 'bob', 'admin', 5);
+    const address = 'claude@wmm.10462';
+
+    const results = await Promise.allSettled([
+      call(bob.p, 'registerInbox', { address, harness: 'claude', session: 'inbox-1' }),
+      call(bob.p, 'registerInbox', { address, harness: 'claude', session: 'inbox-2' }),
+    ]);
+    const ok = results.filter((r): r is PromiseFulfilledResult<any> => r.status === 'fulfilled');
+    const failed = results.filter((r): r is PromiseRejectedResult => r.status === 'rejected');
+    expect(ok).toHaveLength(1);
+    expect(failed).toHaveLength(1);
+    expect(String(failed[0].reason)).toContain('inbox_binding_immutable');
+
+    const resolved = await call(bob.p, 'resolveInbox', { address });
+    expect(resolved.session).toBe(ok[0].value.session);
+  });
+
+  it('recovers cross-org retries past the 5-minute createdAt skew window after sender reservation', async () => {
+    const alice = await agent(org(), 'alice', 'admin', 1);
+    const bob = await agent(org(), 'bob', 'admin', 5);
+    const address = 'claude@wmm.10462';
+    await call(bob.p, 'registerInbox', { address, harness: 'claude', session: 'inbox-b' });
+    const grant = await call(bob.p, 'grantInbox', {
+      address, senderOwner: namespace(alice.p), senderDeviceId: alice.p.agentId,
+    });
+
+    const t0 = Date.now();
+    const msg = envelope(alice, bob, { grantId: grant.grantId, createdAt: t0, expiresAt: t0 + 3_600_000 });
+    expect(await call(alice.p, 'enqueue', { envelope: msg })).toEqual({ messageId: msg.messageId, state: 'queued' });
+
+    // Simulate a late retry 6 minutes later (past the 5-minute createdAt skew check, still unexpired).
+    vi.spyOn(Date, 'now').mockReturnValue(t0 + 360_000);
+    expect(await call(alice.p, 'enqueue', { envelope: msg })).toEqual({ messageId: msg.messageId, state: 'queued' });
+    await call(bob.p, 'observe', observe(bob, msg, 'delivered'));
+    expect(await call(alice.p, 'enqueue', { envelope: msg })).toEqual({ messageId: msg.messageId, state: 'delivered' });
+  });
 });

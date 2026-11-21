@@ -2,8 +2,8 @@ mod common;
 
 use common::{fixture, lib_home};
 use everett::cards::{card_path, AUTO_MARKER};
-use everett::cli::regenerate_auto_cards;
-use everett::hooks_common::auto_card;
+use everett::cards::regenerate_auto;
+use everett::cards::auto::auto_card;
 use everett::session::Session;
 use serde_json::{json, Value};
 use std::path::{Path, PathBuf};
@@ -117,12 +117,31 @@ fn regenerate_auto_cards_dry_run_and_real_run() {
     let h = lib_home();
     let (sessions, auto, agent) = regen_setup(&h.path());
     let before = std::fs::read_to_string(&auto).unwrap();
-    assert_eq!(regenerate_auto_cards(&sessions, true).unwrap(), (1, 2));
+    assert_eq!(regenerate_auto(&sessions, true).unwrap(), (1, 2));
     assert_eq!(std::fs::read_to_string(&auto).unwrap(), before);
-    assert_eq!(regenerate_auto_cards(&sessions, false).unwrap(), (1, 2));
+    assert_eq!(regenerate_auto(&sessions, false).unwrap(), (1, 2));
     let content = std::fs::read_to_string(&auto).unwrap();
     assert!(content.contains("Atlas: Fix the retry logic.") && !content.contains("stale"), "{content}");
     assert_eq!(std::fs::read_to_string(&agent).unwrap(), "Hand-written agent card, never touched.\n");
+}
+
+#[test]
+fn regenerating_a_grok_card_reads_its_session_history() {
+    let fx = fixture();
+    fx.write(".grok/sessions/workspace/grok-card/summary.json",
+        &json!({"info":{"id":"grok-card","cwd":"/work/workspace"}}).to_string());
+    let history = fx.home().join(".grok/sessions/workspace/grok-card/chat_history.jsonl");
+    write_jsonl(&history, &[
+        json!({"type":"user","prompt_index":0,"content":[{"type":"text","text":"<user_query>\nRepair cache eviction.\n</user_query>"}]}),
+        json!({"type":"assistant","content":"Next: run the cache test."}),
+    ]);
+    let auto = fx.write(".everett/cards/grok-card.md", &format!("{AUTO_MARKER}\nold\n"));
+    let out = fx.run(&["cards", "--regenerate-auto"]);
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    assert!(fx.stdout(&out).contains("Rewrote 1 auto card(s)"));
+    let card = std::fs::read_to_string(auto).unwrap();
+    assert!(card.contains("What: Workspace: Repair cache eviction."), "{card}");
+    assert!(card.contains("Next: run the cache test."), "{card}");
 }
 
 fn stop_rows(harness: &str) -> Vec<Value> {
