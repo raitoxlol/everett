@@ -1,5 +1,4 @@
 //! Native Cloudflare enrollment. OAuth gateway grants stay separate.
-use crate::cli::Args;
 use crate::error::{EverettError, Result};
 use crate::{auth, session};
 use fs2::FileExt;
@@ -12,6 +11,17 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 use url::Url;
+
+#[derive(Default)]
+pub struct LoginOptions {
+    pub issuer: Option<String>,
+    pub base_url: Option<String>,
+    pub device: Option<String>,
+    pub force: bool,
+    pub open: bool,
+    pub no_wait: bool,
+    pub cancel: bool,
+}
 
 #[derive(Clone, Serialize, Deserialize)]
 pub struct Credential {
@@ -121,8 +131,8 @@ fn cloudflare_config_active(stored_or_pending: bool) -> bool {
         || !stored_or_pending
 }
 
-fn resolve_identity(args: &Args, stored: Option<&Credential>, pending: Option<&Pending>) -> Result<String> {
-    if let Some(issuer) = args.auth_issuer.as_deref().filter(|s| !s.is_empty()) {
+fn resolve_identity(options: &LoginOptions, stored: Option<&Credential>, pending: Option<&Pending>) -> Result<String> {
+    if let Some(issuer) = options.issuer.as_deref().filter(|s| !s.is_empty()) {
         return origin(canonical_identity(issuer));
     }
     if cloudflare_config_active(stored.is_some() || pending.is_some()) {
@@ -141,8 +151,8 @@ fn resolve_identity(args: &Args, stored: Option<&Credential>, pending: Option<&P
 }
 
 /// Connect origin for device start/poll/enroll. `base_url` always wins over issuer.
-fn resolve_base(args: &Args, stored: Option<&Credential>, pending: Option<&Pending>) -> Result<String> {
-    if let Some(base) = args.auth_base_url.as_deref().filter(|s| !s.is_empty()) {
+fn resolve_base(options: &LoginOptions, stored: Option<&Credential>, pending: Option<&Pending>) -> Result<String> {
+    if let Some(base) = options.base_url.as_deref().filter(|s| !s.is_empty()) {
         return origin(base);
     }
     let config_active = cloudflare_config_active(stored.is_some() || pending.is_some());
@@ -152,7 +162,7 @@ fn resolve_base(args: &Args, stored: Option<&Credential>, pending: Option<&Pendi
             return origin(&configured_base);
         }
     }
-    if let Some(issuer) = args.auth_issuer.as_deref().filter(|s| !s.is_empty()) {
+    if let Some(issuer) = options.issuer.as_deref().filter(|s| !s.is_empty()) {
         return origin(issuer);
     }
     if config_active {
@@ -189,10 +199,9 @@ pub fn authenticated() -> bool {
 
 pub fn onboard_sign_in(open: bool) -> Result<Value> {
     let issuer = onboarding_issuer().ok_or_else(|| fail(2, "existing account configuration requires its selected sign-in provider"))?;
-    let identity = sign_in(&Args {
+    let identity = sign_in(&LoginOptions {
         open,
-        auth_provider: Some("cloudflare".into()),
-        auth_issuer: (!issuer.is_empty()).then_some(issuer),
+        issuer: (!issuer.is_empty()).then_some(issuer),
         ..Default::default()
     })?;
     if identity["verified"] == true {
@@ -711,8 +720,8 @@ fn open_browser(pending: &Pending) -> Result<()> {
     }
 }
 
-pub fn sign_in(args: &Args) -> Result<Value> {
-    if args.auth_cancel {
+pub fn sign_in(options: &LoginOptions) -> Result<Value> {
+    if options.cancel {
         let Some(pending) = read::<Pending>(&pending_path())? else {
             return Err(fail(1, "no pending Cloudflare login"));
         };
@@ -722,9 +731,9 @@ pub fn sign_in(args: &Args) -> Result<Value> {
     let _lock = lock()?;
     let stored = load()?;
     let mut pending = read::<Pending>(&pending_path())?;
-    let issuer = resolve_identity(args, stored.as_ref(), pending.as_ref())?;
-    let base = resolve_base(args, stored.as_ref(), pending.as_ref())?;
-    if !args.force && pending.is_none() {
+    let issuer = resolve_identity(options, stored.as_ref(), pending.as_ref())?;
+    let base = resolve_base(options, stored.as_ref(), pending.as_ref())?;
+    if !options.force && pending.is_none() {
         if let Some(stored) = &stored {
             if stored.issuer != issuer {
                 return Err(fail(2, "stored credential belongs to a different issuer; use --force for a new approval"));
@@ -750,7 +759,7 @@ pub fn sign_in(args: &Args) -> Result<Value> {
                 "pending login belongs to a different relay URL; cancel it before switching",
             ));
         }
-        if args.force {
+        if options.force {
             cancel(old)?;
             pending = None;
         } else if old.expires_at <= session::now() {
@@ -760,7 +769,7 @@ pub fn sign_in(args: &Args) -> Result<Value> {
     }
     let pending = match pending {
         Some(p) => p,
-        None => start(&issuer, &base, &args.device.clone().unwrap_or_else(auth::hostname))?,
+        None => start(&issuer, &base, &options.device.clone().unwrap_or_else(auth::hostname))?,
     };
     eprintln!(
         "Open {}\nCompare code {} and device name {}. Approve in your browser.",
@@ -769,13 +778,13 @@ pub fn sign_in(args: &Args) -> Result<Value> {
     if INTERRUPTED.load(Ordering::Relaxed) {
         return Err(cancel(&pending)?.error());
     }
-    if args.open {
+    if options.open {
         open_browser(&pending)?;
     }
     if INTERRUPTED.load(Ordering::Relaxed) {
         return Err(cancel(&pending)?.error());
     }
-    if args.auth_no_wait {
+    if options.no_wait {
         return Ok(
             json!({"provider":"cloudflare","state":"pending","user_code":pending.user_code,
             "verification_uri":pending.verification_uri_complete,"device_name":pending.device_name,"expires_at":pending.expires_at}),
@@ -797,13 +806,13 @@ fn report(command: &str, result: Result<()>) -> i32 {
     }
 }
 
-pub fn cmd_login(args: &Args) -> i32 {
+pub fn cmd_login(options: &LoginOptions, json_output: bool) -> i32 {
     report(
         "login",
-        sign_in(args).map(|identity| {
+        sign_in(options).map(|identity| {
             if identity["verified"] == true {
-                show(&identity, args.json);
-            } else if args.json || identity["state"] == "pending" {
+                show(&identity, json_output);
+            } else if json_output || identity["state"] == "pending" {
                 println!("{identity}");
             } else {
                 println!(
@@ -815,29 +824,29 @@ pub fn cmd_login(args: &Args) -> i32 {
     )
 }
 
-pub fn cmd_whoami(args: &Args) -> i32 {
+pub fn cmd_whoami(json_output: bool) -> i32 {
     report(
         "whoami",
         (|| {
             let Some(stored) = load()? else {
-                if args.json {
+                if json_output {
                     println!("{}", json!({"signed_in":false,"provider":"cloudflare"}));
                 }
                 return Err(fail(1, "not signed in to Cloudflare"));
             };
-            show(&whoami(&stored)?, args.json);
+            show(&whoami(&stored)?, json_output);
             Ok(())
         })(),
     )
 }
 
-pub fn cmd_logout(args: &Args) -> i32 {
+pub fn cmd_logout(revoke_device: bool, json_output: bool) -> i32 {
     report(
         "logout",
         (|| {
             let _lock = lock()?;
             let stored = load()?;
-            if args.revoke_device {
+            if revoke_device {
                 if let Some(stored) = &stored {
                     let (status, _) = request(
                         &stored.connect_origin(),
@@ -854,12 +863,12 @@ pub fn cmd_logout(args: &Args) -> i32 {
                 cancel(&pending)?;
             }
             remove(&credential_path())?;
-            if args.json {
+            if json_output {
                 println!(
                     "{}",
-                    json!({"provider":"cloudflare","signed_out":true,"revoked":stored.is_some() && args.revoke_device})
+                    json!({"provider":"cloudflare","signed_out":true,"revoked":stored.is_some() && revoke_device})
                 );
-            } else if args.revoke_device && stored.is_some() {
+            } else if revoke_device && stored.is_some() {
                 println!("Credential revoked; signed out.");
             } else {
                 println!(

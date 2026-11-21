@@ -348,7 +348,7 @@ pub fn render_with_authors(sessions: &[Session], authors: &[crate::messaging::Au
 }
 
 fn session_row(session: &Session, index: usize, at: f64) -> String {
-    let state = state_class(session);
+    let state = filter_state(session);
     let project = project_label(&session.cwd);
     let label = harness_label(session);
     let summary = if !session.card.is_empty() {
@@ -389,7 +389,7 @@ fn session_row(session: &Session, index: usize, at: f64) -> String {
     )
     .to_lowercase();
     format!(
-        r#"<article class="session-row {state}" data-session data-search="{}" data-harness="{}" data-state="{}">
+        r#"<article class="session-row is-{state}" data-session data-search="{}" data-harness="{}" data-state="{}">
   <div class="route-stop" aria-hidden="true"><span>{}</span></div>
   <details>
     <summary>
@@ -406,7 +406,7 @@ fn session_row(session: &Session, index: usize, at: f64) -> String {
 </article>"#,
         attr(&search),
         attr(harness_key(session)),
-        attr(filter_state(session)),
+        attr(state),
         index + 1,
         html(label),
         html(&session.harness),
@@ -462,16 +462,6 @@ fn harness_name(harness: &str) -> &str {
         .find(|(key, _)| *key == harness)
         .map(|(_, label)| *label)
         .unwrap_or(harness)
-}
-
-fn state_class(session: &Session) -> &'static str {
-    if attention_state(session) {
-        "is-attention"
-    } else if session.running {
-        "is-running"
-    } else {
-        "is-quiet"
-    }
 }
 
 fn filter_state(session: &Session) -> &'static str {

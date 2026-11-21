@@ -19,17 +19,6 @@ const INTERPRETERS: &[&str] = &["node", "nodejs", "bun", "deno", "python", "pyth
 const SLACK: f64 = 2.0;
 const MAX_DEPTH: usize = 16;
 
-static LAUNCH: OnceLock<String> = OnceLock::new();
-
-/// `everett mcp --harness <name>`: the host this server was registered for.
-pub fn set_launch_harness(harness: &str) {
-    let _ = LAUNCH.set(harness.to_string());
-}
-
-pub fn launch_harness() -> Option<&'static str> {
-    LAUNCH.get().map(String::as_str).filter(|h| !h.is_empty())
-}
-
 #[derive(Clone, Debug)]
 pub struct Host {
     pub harness: String,

@@ -808,7 +808,10 @@ fn remote_status(client: &str, message_id: &str) -> Result<Value> {
     let reply = inbox::read(&format!("peer-{client}"))
         .into_iter()
         .find(|m| m.get("reply_to") == Some(&json!(message_id)));
-    let done = inbox::done_ids(original["to"].as_str().unwrap()).contains(message_id);
+    let Some(to) = original.get("to").and_then(Value::as_str) else {
+        return Err(bad("malformed inbox record: missing recipient"));
+    };
+    let done = inbox::done_ids(to).contains(message_id);
     Ok(
         json!({"message_id": message_id, "state": if reply.is_some() { "replied" } else if done { "delivered" } else { "queued" }, "reply": reply}),
     )
