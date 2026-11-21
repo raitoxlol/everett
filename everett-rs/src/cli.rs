@@ -446,6 +446,13 @@ fn cmd_remote_send(args: &Args, to: &str) -> i32 {
         return 4;
     }
     if args.dry_run {
+        if crate::relay::inbox_address(to) {
+            println!("{}", json!({
+                "target":to, "address":to, "mode":"inbox", "dry_run":true,
+                "transport":"cloudflare", "pickup":"Cloudflare relay"
+            }));
+            return 0;
+        }
         return match crate::peer::target(to).and_then(|(peer, _, _)| {
             crate::peer::uses_cloudflare(peer).map(|relay| (peer, relay))
         }) {
@@ -505,7 +512,11 @@ pub fn cmd_send(args: &Args) -> i32 {
             return e.code;
         }
     }
-    if let Some(to) = args.to.as_deref().filter(|to| crate::peer::target(to).is_ok()) {
+    if let Some(to) = args
+        .to
+        .as_deref()
+        .filter(|to| crate::peer::target(to).is_ok() || crate::relay::inbox_address(to))
+    {
         if args.wake {
             eprintln!("everett: --wake cannot target a remote peer session.");
             return 2;
