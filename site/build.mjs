@@ -503,7 +503,7 @@ function homePage() {
       ${card(`${setup}claude-code`, use('claudecode'), 'Claude Code', 'Hooks + MCP', true)}
       ${card(`${setup}codex`, use('codex'), 'Codex', 'Hooks + MCP', true)}
       ${card(`${setup}omp`, use('omp'), 'OMP', 'Extension + MCP', true)}
-      ${card(`${setup}pi`, use('pi'), 'Pi', 'CLI fallback · MCP unavailable in 0.73.1', true)}
+      ${card(`${setup}pi`, use('pi'), 'Pi', 'Extension tool bridge · no native MCP', true)}
       ${card(`${setup}hermes`, use('hermes'), 'Hermes Agent', 'Manual MCP entry', true)}
       ${card(`${setup}grok-cli`, use('grok'), 'Grok CLI', 'Local CLI · not Grok Bot', true)}
       ${card(`${setup}devin-cli`, use('devin'), 'Devin CLI', 'Session hooks + MCP', true)}
