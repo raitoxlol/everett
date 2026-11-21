@@ -2,20 +2,21 @@
 
 Native Hermes Agent plugin (`plugin.yaml` + Python) for [Everett](https://github.com/raitoxlol/everett).
 
-It connects Hermes to your local Everett runtime with per-session caller identity across CLI, TUI, Desktop, and shared messaging gateways. It also keeps a portable `plugin.json` + `mcp.json` fallback for non-Hermes Agent Plugins v1 hosts (Hermes always loads `plugin.yaml` first).
+It connects Hermes to your local Everett runtime with per-session caller identity across CLI, TUI, Desktop, and shared messaging gateways. The portable `plugin.json` + `mcp.json` pair is retained only for other hosts that support Agent Plugins v1 but cannot load Hermes's native plugin manifest; that compatibility path registers an MCP server, not the native Hermes features.
 
 ## What it adds
 
 - **Per-session bound Everett tools** (`everett` toolset): discovers every tool from `everett mcp --harness hermes` and runs a bounded per-`(session_id, cwd)` stdio pool so shared gateways bind each conversation to its real Hermes session ID without fabricating identity.
 - **Prompt-cache-safe shared core**: registers a bounded `everett` system prompt section frozen once per new session, injecting card guidance and Everett's compact shared core without mutating the cached prompt mid-conversation.
-- **Automatic inbox pickup**: checks a session's Everett inbox with a zero-subprocess `stat` fast path, streams validated `O_NOFOLLOW` + `0600` files directly with per-record bounds, and surfaces only validated message IDs in `pre_llm_call`, `transform_tool_result` (preserving JSON object structure), and `pre_verify`. Raw sender text never enters hook nudges.
+- **Automatic inbox pickup**: checks a session's Everett inbox with a zero-subprocess `stat` fast path, streams validated `O_NOFOLLOW` + `0600` files directly with per-record bounds, and surfaces only validated message-ID notices in `pre_llm_call`, `transform_tool_result` (preserving JSON object structure), and `pre_verify`. Call `everett_inbox` to read message contents; raw sender text never enters hook nudges.
 - **Session lifecycle and fallback cards**: binds per-session liveness on `on_session_start` without clobbering sibling Hermes sessions in the same gateway process, keeps live wake active across idle gaps after `on_session_end`, releases liveness and closes cached MCP processes on `on_session_finalize`, and atomically creates an `<!-- everett:auto -->` fallback card only when no card exists.
 - **Native `/everett` slash command**: `/everett status`, `/everett ls [hours]`, `/everett inbox`, `/everett core`, and `/everett help` across CLI, TUI, Desktop, and gateway chats.
-- **Opt-in live inbox wake**: when `live_wake: true` is enabled, a lightweight background watcher nudges active sessions via `ctx.inject_message` with validated local message IDs only (remote/relay traffic stays passive).
+- **Opt-in live inbox wake**: when `live_wake: true` is enabled, a lightweight background watcher nudges active sessions via `ctx.inject_message` with validated local message IDs only (remote/relay traffic stays passive). Shared hosts need a session route key; the setting is off by default.
 - **Host-isolation ready**: runs cleanly under both `plugins.isolation: in_process` and `plugins.isolation: host`.
 
 ## Requirements
 
+- The native Hermes integration is Unreleased, after Everett v2.4.0; it is not included in v2.4.0.
 - Everett 2.4+ installed with `everett` on the `PATH` visible to Hermes (or configured via `binary`).
 - Run `everett login` once in the same local Everett profile to enable Everett MCP tools.
 - Hermes Agent `>=0.20` with native plugin support.
@@ -38,7 +39,22 @@ hermes plugins enable everett-hermes
 
 Restart Hermes (or the Hermes gateway) after enabling. Remove it with `hermes plugins remove everett-hermes`.
 
-If you previously added a manual `mcp_servers.everett` entry in `~/.hermes/config.yaml`, remove it so Hermes does not expose duplicate Everett tools.
+If you previously added a manual `mcp_servers.everett` entry in `~/.hermes/config.yaml`, remove it so Hermes does not expose duplicate Everett tools. `everett install-mcp --hermes` prints that manual stdio entry but does not edit the config or support `--apply`. The printed entry has no session-ID override, so process detection can bind only one unambiguous interactive Hermes CLI session in the server's directory. An explicit `EVERETT_SESSION_ID` or `HERMES_SESSION_ID` binds that one session instead; it does not provide the native plugin's per-session gateway binding.
+
+## Portable and manual MCP alternatives
+
+Use the portable `plugin.json`/`mcp.json` pair only with a non-Hermes host that accepts Agent
+Plugins v1 metadata but not Hermes's native `plugin.yaml` manifest. It launches
+`everett mcp --harness hermes` and provides MCP tools only; it does not register the Python plugin,
+per-session native bridge, hooks, prompt context, skill, `/everett` command, automatic cards, or
+live wake. The MCP server still needs `EVERETT_SESSION_ID`/`HERMES_SESSION_ID` in its environment
+or a detectable Hermes process for session-bound calls; the portable manifest does not create
+that identity for another host.
+
+The manual `everett install-mcp --hermes` entry is a separate basic setup for Hermes itself, not
+the portable Agent Plugins fallback. Use it only instead of the native plugin; the printed entry
+does not add the native plugin's per-session bridge, hooks, or commands, and a static session ID
+binds only that one session.
 
 ## Settings
 
