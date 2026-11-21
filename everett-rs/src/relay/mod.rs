@@ -1107,6 +1107,9 @@ fn reuse_outgoing(
 }
 
 async fn post(client: &mut RelayClient, path: &Path, outgoing: &Outgoing) -> Result<Value> {
+    if outgoing.envelope.owner != outgoing.envelope.recipient_owner {
+        crate::access::check_outgoing_cross_org()?;
+    }
     let result = mutation(
         client,
         "relay:enqueue",
@@ -1234,6 +1237,9 @@ pub fn retain_reply(
         .as_str()
         .ok_or_else(|| bad("missing sender owner"))?;
     let grant_id = original["relay_grant_id"].as_str();
+    if sender_owner != owner {
+        crate::access::check_outgoing_cross_org()?;
+    }
     let attested = sender_owner != owner
         && grant_id.is_some()
         && original.get("relay_sender_device").is_some_and(Value::is_object);
