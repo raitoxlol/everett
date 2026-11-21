@@ -137,89 +137,222 @@ fn shared_thread_cli_maps_create_show_send_and_read_and_persists_encrypted_retry
     server.configure(&f);
     let key_hash = format!(
         "{:x}",
-        sha2::Sha256::digest(json!(["synthetic-owner", "synthetic-agent"]).to_string().as_bytes())
+        sha2::Sha256::digest(
+            json!(["synthetic-owner", "synthetic-agent"])
+                .to_string()
+                .as_bytes()
+        )
     );
     let key_path = format!(".everett/relay-cloudflare/keys-{key_hash}.json");
-    f.write(&key_path, &json!({"signing":hex::encode([1; 32]),"encryption":hex::encode([2; 32])}).to_string());
+    f.write(
+        &key_path,
+        &json!({"signing":hex::encode([1; 32]),"encryption":hex::encode([2; 32])}).to_string(),
+    );
 
     server.thread_create_failures.store(true, Ordering::SeqCst);
-    let out = f.run(&["thread", "create", "--from", "alice@zone-a", "--to", "bob@zone-b"]);
-    assert!(!out.status.success(), "first synthetic create request should fail for retry coverage");
+    let out = f.run(&[
+        "thread",
+        "create",
+        "--from",
+        "alice@zone-a",
+        "--to",
+        "bob@zone-b",
+    ]);
+    assert!(
+        !out.status.success(),
+        "first synthetic create request should fail for retry coverage"
+    );
     let bodies = server.bodies.lock().unwrap();
-    let first_create_key = bodies.iter()
+    let first_create_key = bodies
+        .iter()
         .find(|(path, _)| path == "/v2/relay/threadCreate")
-        .unwrap_or_else(|| panic!(
-            "missing synthetic threadCreate request; stderr: {}; bodies: {bodies:?}",
-            String::from_utf8_lossy(&out.stderr),
-        ))
-        .1["idempotencyKey"].clone();
+        .unwrap_or_else(|| {
+            panic!(
+                "missing synthetic threadCreate request; stderr: {}; bodies: {bodies:?}",
+                String::from_utf8_lossy(&out.stderr),
+            )
+        })
+        .1["idempotencyKey"]
+        .clone();
     drop(bodies);
-    let out = f.run(&["thread", "create", "--from", "alice@zone-a", "--to", "bob@zone-b"]);
-    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
-    let second_create_key = server.bodies.lock().unwrap().iter()
-        .filter(|(path, _)| path == "/v2/relay/threadCreate").nth(1).unwrap().1["idempotencyKey"].clone();
-    assert_eq!(first_create_key, second_create_key, "implicit create retry must reuse its request key");
+    let out = f.run(&[
+        "thread",
+        "create",
+        "--from",
+        "alice@zone-a",
+        "--to",
+        "bob@zone-b",
+    ]);
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let second_create_key = server
+        .bodies
+        .lock()
+        .unwrap()
+        .iter()
+        .filter(|(path, _)| path == "/v2/relay/threadCreate")
+        .nth(1)
+        .unwrap()
+        .1["idempotencyKey"]
+        .clone();
+    assert_eq!(
+        first_create_key, second_create_key,
+        "implicit create retry must reuse its request key"
+    );
 
     let out = f.run(&[
-        "thread", "create", "--from", "alice@zone-a", "--to", "bob@zone-b",
-        "--idempotency-key", "create-key",
+        "thread",
+        "create",
+        "--from",
+        "alice@zone-a",
+        "--to",
+        "bob@zone-b",
+        "--idempotency-key",
+        "create-key",
     ]);
-    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
     let out = f.run(&[
-        "thread", "show", "--creator-owner", "synthetic-owner", "--thread-id", THREAD_ID,
+        "thread",
+        "show",
+        "--creator-owner",
+        "synthetic-owner",
+        "--thread-id",
+        THREAD_ID,
     ]);
-    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
     let out = f.run(&[
-        "thread", "send", "--creator-owner", "synthetic-owner", "--thread-id", THREAD_ID,
-        "private synthetic text", "--idempotency-key", "message-key",
+        "thread",
+        "send",
+        "--creator-owner",
+        "synthetic-owner",
+        "--thread-id",
+        THREAD_ID,
+        "private synthetic text",
+        "--idempotency-key",
+        "message-key",
     ]);
-    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
     let out = f.run(&[
-        "thread", "send", "--creator-owner", "synthetic-owner", "--thread-id", THREAD_ID,
-        "private synthetic text", "--idempotency-key", "message-key",
+        "thread",
+        "send",
+        "--creator-owner",
+        "synthetic-owner",
+        "--thread-id",
+        THREAD_ID,
+        "private synthetic text",
+        "--idempotency-key",
+        "message-key",
     ]);
-    assert!(out.status.success(), "same-key exact retry failed: {}", String::from_utf8_lossy(&out.stderr));
-    let sends: Vec<_> = server.bodies.lock().unwrap().iter()
-        .filter(|(path, _)| path == "/v2/relay/threadSend").cloned().collect();
+    assert!(
+        out.status.success(),
+        "same-key exact retry failed: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let sends: Vec<_> = server
+        .bodies
+        .lock()
+        .unwrap()
+        .iter()
+        .filter(|(path, _)| path == "/v2/relay/threadSend")
+        .cloned()
+        .collect();
     assert_eq!(sends.len(), 2);
     assert_eq!(sends[0].1, sends[1].1);
     assert!(!sends[0].1.to_string().contains("private synthetic text"));
     let out = f.run(&[
-        "thread", "send", "--creator-owner", "synthetic-owner", "--thread-id", THREAD_ID,
-        "changed synthetic text", "--idempotency-key", "message-key",
+        "thread",
+        "send",
+        "--creator-owner",
+        "synthetic-owner",
+        "--thread-id",
+        THREAD_ID,
+        "changed synthetic text",
+        "--idempotency-key",
+        "message-key",
     ]);
     assert!(!out.status.success());
     assert!(String::from_utf8_lossy(&out.stderr).contains("different text"));
     assert_eq!(
-        server.bodies.lock().unwrap().iter().filter(|(path, _)| path == "/v2/relay/threadSend").count(),
+        server
+            .bodies
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|(path, _)| path == "/v2/relay/threadSend")
+            .count(),
         2,
         "changed local retry must not be posted",
     );
 
     let out = f.run(&[
-        "thread", "read", "--creator-owner", "synthetic-owner", "--thread-id", THREAD_ID,
-        "--after-seq", "4", "--limit", "7",
+        "thread",
+        "read",
+        "--creator-owner",
+        "synthetic-owner",
+        "--thread-id",
+        THREAD_ID,
+        "--after-seq",
+        "4",
+        "--limit",
+        "7",
     ]);
-    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
     let calls = server.bodies.lock().unwrap();
     assert!(calls.iter().any(|(path, args)| path == "/v2/relay/threadCreate" && *args == json!({
         "fromAddress":"alice@zone-a","toAddress":"bob@zone-b","idempotencyKey":"create-key"
     })));
-    assert!(calls.iter().any(|(path, args)| path == "/v2/relay/threadShow" && args["threadRef"] == json!({
-        "creatorOwner":"synthetic-owner","threadId":THREAD_ID
-    })));
-    assert!(calls.iter().any(|(path, args)| path == "/v2/relay/threadRead" && *args == json!({
-        "threadRef":{"creatorOwner":"synthetic-owner","threadId":THREAD_ID},
-        "afterSeq":4,"limit":7
-    })));
+    assert!(calls
+        .iter()
+        .any(|(path, args)| path == "/v2/relay/threadShow"
+            && args["threadRef"]
+                == json!({
+                    "creatorOwner":"synthetic-owner","threadId":THREAD_ID
+                })));
+    assert!(calls
+        .iter()
+        .any(|(path, args)| path == "/v2/relay/threadRead"
+            && *args
+                == json!({
+                    "threadRef":{"creatorOwner":"synthetic-owner","threadId":THREAD_ID},
+                    "afterSeq":4,"limit":7
+                })));
     let outbox = f.home().join(".everett/relay-cloudflare/thread-outbox");
     assert!(outbox.exists());
-    let thread_dir = std::fs::read_dir(outbox).unwrap().next().unwrap().unwrap().path();
-    let stored = std::fs::read_dir(thread_dir).unwrap().find_map(|entry| {
-        let path = entry.ok()?.path();
-        (path.extension().and_then(|ext| ext.to_str()) == Some("json")).then_some(path)
-    }).unwrap();
-    assert!(!std::fs::read_to_string(stored).unwrap().contains("private synthetic text"));
+    let thread_dir = std::fs::read_dir(outbox)
+        .unwrap()
+        .next()
+        .unwrap()
+        .unwrap()
+        .path();
+    let stored = std::fs::read_dir(thread_dir)
+        .unwrap()
+        .find_map(|entry| {
+            let path = entry.ok()?.path();
+            (path.extension().and_then(|ext| ext.to_str()) == Some("json")).then_some(path)
+        })
+        .unwrap();
+    assert!(!std::fs::read_to_string(stored)
+        .unwrap()
+        .contains("private synthetic text"));
 }
 
 #[test]
@@ -230,27 +363,43 @@ fn shared_thread_cli_respects_local_cross_org_access_policy() {
     server.configure(&f);
     let key_hash = format!(
         "{:x}",
-        sha2::Sha256::digest(json!(["synthetic-owner", "synthetic-agent"]).to_string().as_bytes())
+        sha2::Sha256::digest(
+            json!(["synthetic-owner", "synthetic-agent"])
+                .to_string()
+                .as_bytes()
+        )
     );
     f.write(
         &format!(".everett/relay-cloudflare/keys-{key_hash}.json"),
         &json!({"signing":hex::encode([1; 32]),"encryption":hex::encode([2; 32])}).to_string(),
     );
     let send = [
-        "thread", "send", "--creator-owner", "synthetic-owner", "--thread-id", THREAD_ID,
-        "blocked synthetic text", "--idempotency-key", "blocked-send",
+        "thread",
+        "send",
+        "--creator-owner",
+        "synthetic-owner",
+        "--thread-id",
+        THREAD_ID,
+        "blocked synthetic text",
+        "--idempotency-key",
+        "blocked-send",
     ];
     set_access_policy(&f, "allowlist", false, json!([]), json!([]));
     let out = f.run(&send);
     assert!(!out.status.success());
-    assert!(String::from_utf8_lossy(&out.stderr).contains("cross-org sends are disabled by local access policy"));
+    assert!(String::from_utf8_lossy(&out.stderr)
+        .contains("cross-org sends are disabled by local access policy"));
     set_access_policy(&f, "deny", true, json!([]), json!([]));
     let out = f.run(&send);
     assert!(!out.status.success());
-    assert!(String::from_utf8_lossy(&out.stderr).contains("cross-org sends are disabled by local access policy"));
-    assert!(!server.calls.lock().unwrap().iter().any(|path| {
-        path == "/v2/relay/threadShow" || path == "/v2/relay/threadSend"
-    }));
+    assert!(String::from_utf8_lossy(&out.stderr)
+        .contains("cross-org sends are disabled by local access policy"));
+    assert!(!server
+        .calls
+        .lock()
+        .unwrap()
+        .iter()
+        .any(|path| { path == "/v2/relay/threadShow" || path == "/v2/relay/threadSend" }));
 
     let members: [everett::relay::thread::ThreadMember; 2] =
         serde_json::from_value(thread_members()).unwrap();
@@ -259,51 +408,103 @@ fn shared_thread_cli_respects_local_cross_org_access_policy() {
         thread_id: THREAD_ID.into(),
     };
     let remote_keys = everett::relay::crypto::Keys::new(
-        "other-owner".into(), "other-agent".into(), [5; 32], [6; 32],
+        "other-owner".into(),
+        "other-agent".into(),
+        [5; 32],
+        [6; 32],
     );
     *server.thread_read_messages.lock().unwrap() = vec![stored_thread_message(
-        &remote_keys, &members, &thread_ref, "remote-policy-message", "remote synthetic text",
+        &remote_keys,
+        &members,
+        &thread_ref,
+        "remote-policy-message",
+        "remote synthetic text",
     )];
     let read = [
-        "thread", "read", "--creator-owner", "synthetic-owner", "--thread-id", THREAD_ID,
-        "--after-seq", "0", "--limit", "20",
+        "thread",
+        "read",
+        "--creator-owner",
+        "synthetic-owner",
+        "--thread-id",
+        THREAD_ID,
+        "--after-seq",
+        "0",
+        "--limit",
+        "20",
     ];
     set_access_policy(&f, "deny", true, json!([]), json!([]));
     let out = f.run(&read);
     assert!(!out.status.success());
     assert!(String::from_utf8_lossy(&out.stderr).contains("mode: deny"));
 
-    set_access_policy(&f, "allowlist", true, json!([]), json!([
-        {"owner":"other-owner","device":"other-agent"}
-    ]));
+    set_access_policy(
+        &f,
+        "allowlist",
+        true,
+        json!([]),
+        json!([
+            {"owner":"other-owner","device":"other-agent"}
+        ]),
+    );
     let out = f.run(&read);
     assert!(!out.status.success());
-    assert!(String::from_utf8_lossy(&out.stderr).contains("sender is blocked by local access policy"));
+    assert!(
+        String::from_utf8_lossy(&out.stderr).contains("sender is blocked by local access policy")
+    );
 
-    set_access_policy(&f, "allowlist", true, json!([
-        {"owner":"other-owner","device":"other-agent","address":"not-alice@zone-a"}
-    ]), json!([]));
+    set_access_policy(
+        &f,
+        "allowlist",
+        true,
+        json!([
+            {"owner":"other-owner","device":"other-agent","address":"not-alice@zone-a"}
+        ]),
+        json!([]),
+    );
     let out = f.run(&read);
     assert!(!out.status.success());
-    assert!(String::from_utf8_lossy(&out.stderr).contains("sender is not in local access allowlist"));
+    assert!(
+        String::from_utf8_lossy(&out.stderr).contains("sender is not in local access allowlist")
+    );
 
-    set_access_policy(&f, "allowlist", true, json!([
-        {"owner":"other-owner","device":"other-agent","address":"alice@zone-a"}
-    ]), json!([]));
+    set_access_policy(
+        &f,
+        "allowlist",
+        true,
+        json!([
+            {"owner":"other-owner","device":"other-agent","address":"alice@zone-a"}
+        ]),
+        json!([]),
+    );
     let out = f.run(&read);
-    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
     let history: Value = serde_json::from_slice(&out.stdout).unwrap();
     assert_eq!(history["messages"][0]["text"], "remote synthetic text");
 
     let local_keys = everett::relay::crypto::Keys::new(
-        "synthetic-owner".into(), "synthetic-agent".into(), [1; 32], [2; 32],
+        "synthetic-owner".into(),
+        "synthetic-agent".into(),
+        [1; 32],
+        [2; 32],
     );
     *server.thread_read_messages.lock().unwrap() = vec![stored_thread_message(
-        &local_keys, &members, &thread_ref, "own-policy-message", "own synthetic text",
+        &local_keys,
+        &members,
+        &thread_ref,
+        "own-policy-message",
+        "own synthetic text",
     )];
     set_access_policy(&f, "deny", true, json!([]), json!([]));
     let out = f.run(&read);
-    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
     let history: Value = serde_json::from_slice(&out.stdout).unwrap();
     assert_eq!(history["messages"][0]["text"], "own synthetic text");
 }
@@ -316,7 +517,11 @@ fn shared_thread_cli_reuses_implicit_send_after_uncertain_failure() {
     server.configure(&f);
     let key_hash = format!(
         "{:x}",
-        sha2::Sha256::digest(json!(["synthetic-owner", "synthetic-agent"]).to_string().as_bytes())
+        sha2::Sha256::digest(
+            json!(["synthetic-owner", "synthetic-agent"])
+                .to_string()
+                .as_bytes()
+        )
     );
     f.write(
         &format!(".everett/relay-cloudflare/keys-{key_hash}.json"),
@@ -324,23 +529,54 @@ fn shared_thread_cli_reuses_implicit_send_after_uncertain_failure() {
     );
     server.thread_send_failures.store(true, Ordering::SeqCst);
     let args = [
-        "thread", "send", "--creator-owner", "synthetic-owner", "--thread-id", THREAD_ID,
+        "thread",
+        "send",
+        "--creator-owner",
+        "synthetic-owner",
+        "--thread-id",
+        THREAD_ID,
         "implicit private synthetic text",
     ];
     let failed = f.run(&args);
-    assert!(!failed.status.success(), "first synthetic send should fail for retry coverage");
-    let first = server.bodies.lock().unwrap().iter()
+    assert!(
+        !failed.status.success(),
+        "first synthetic send should fail for retry coverage"
+    );
+    let first = server
+        .bodies
+        .lock()
+        .unwrap()
+        .iter()
         .find(|(path, _)| path == "/v2/relay/threadSend")
-        .unwrap().1.clone();
+        .unwrap()
+        .1
+        .clone();
     let retried = f.run(&args);
-    assert!(retried.status.success(), "implicit retry failed: {}", String::from_utf8_lossy(&retried.stderr));
-    let sends: Vec<_> = server.bodies.lock().unwrap().iter()
-        .filter(|(path, _)| path == "/v2/relay/threadSend").cloned().collect();
+    assert!(
+        retried.status.success(),
+        "implicit retry failed: {}",
+        String::from_utf8_lossy(&retried.stderr)
+    );
+    let sends: Vec<_> = server
+        .bodies
+        .lock()
+        .unwrap()
+        .iter()
+        .filter(|(path, _)| path == "/v2/relay/threadSend")
+        .cloned()
+        .collect();
     assert_eq!(sends.len(), 2);
     assert_eq!(sends[0].1, sends[1].1);
-    assert!(!first.to_string().contains("implicit private synthetic text"));
+    assert!(!first
+        .to_string()
+        .contains("implicit private synthetic text"));
     let outbox = f.home().join(".everett/relay-cloudflare/thread-outbox");
-    let thread_dir = std::fs::read_dir(outbox).unwrap().next().unwrap().unwrap().path();
+    let thread_dir = std::fs::read_dir(outbox)
+        .unwrap()
+        .next()
+        .unwrap()
+        .unwrap()
+        .path();
     assert!(!thread_dir.join("pending-send.json").exists());
 }
 
@@ -548,7 +784,9 @@ impl Server {
                                 json!({"result":{"address":args["address"],"owner":"other-owner","device":device,"harness":"claude","session":"inbox-b","grantId":"grant-0123456789abcdef0123456789abcdef"}}),
                             )
                         }
-                        "/v2/relay/threadCreate" if thread_failures.swap(false, Ordering::SeqCst) => {
+                        "/v2/relay/threadCreate"
+                            if thread_failures.swap(false, Ordering::SeqCst) =>
+                        {
                             (503, json!({"error":"service_unavailable"}))
                         }
                         "/v2/relay/threadCreate" => (
@@ -611,11 +849,19 @@ impl Server {
 
 fn thread_members() -> Value {
     let alice = everett::relay::crypto::Keys::new(
-        "synthetic-owner".into(), "synthetic-agent".into(), [1; 32], [2; 32],
-    ).device;
+        "synthetic-owner".into(),
+        "synthetic-agent".into(),
+        [1; 32],
+        [2; 32],
+    )
+    .device;
     let bob = everett::relay::crypto::Keys::new(
-        "other-owner".into(), "other-agent".into(), [5; 32], [6; 32],
-    ).device;
+        "other-owner".into(),
+        "other-agent".into(),
+        [5; 32],
+        [6; 32],
+    )
+    .device;
     json!([
         {
             "address":"alice@zone-a","owner":alice.owner,"agentId":alice.device_id,
@@ -630,19 +876,14 @@ fn thread_members() -> Value {
     ])
 }
 
-fn set_access_policy(
-    f: &Fixture,
-    mode: &str,
-    external_send: bool,
-    allowed: Value,
-    blocked: Value,
-) {
+fn set_access_policy(f: &Fixture, mode: &str, external_send: bool, allowed: Value, blocked: Value) {
     let path = f.write(
         ".everett/access.json",
         &json!({
             "version":1,"mode":mode,"allow_external_send":external_send,"max_hops":3,
             "allowed_senders":allowed,"blocked_senders":blocked
-        }).to_string(),
+        })
+        .to_string(),
     );
     std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
 }
@@ -654,8 +895,7 @@ fn stored_thread_message(
     key: &str,
     text: &str,
 ) -> Value {
-    let post =
-        everett::relay::thread::create_post(keys, thread_ref, members, key, text).unwrap();
+    let post = everett::relay::thread::create_post(keys, thread_ref, members, key, text).unwrap();
     serde_json::to_value(everett::relay::thread::StoredThreadMessage {
         seq: 1,
         context: post.context,

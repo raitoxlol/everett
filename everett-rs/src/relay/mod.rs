@@ -769,11 +769,7 @@ fn thread_outbox_path(
     Ok(directory.join(format!("{:x}.json", Sha256::digest(key.as_bytes()))))
 }
 
-fn thread_pending_path(
-    owner: &str,
-    agent: &str,
-    thread_ref: &ThreadRef,
-) -> Result<PathBuf> {
+fn thread_pending_path(owner: &str, agent: &str, thread_ref: &ThreadRef) -> Result<PathBuf> {
     Ok(thread_outbox_directory(owner, agent, thread_ref)?.join("pending-send.json"))
 }
 
@@ -914,9 +910,9 @@ pub fn thread_send(
             path.parent()
                 .ok_or_else(|| bad("missing thread send retry directory"))?,
         )
-            .map_err(bad)?
-            .sync_all()
-            .map_err(bad)?;
+        .map_err(bad)?
+        .sync_all()
+        .map_err(bad)?;
     }
     drop(pending_lock);
     Ok(result)
