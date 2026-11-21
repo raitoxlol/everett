@@ -402,6 +402,16 @@ fn hook_main_inner(stem: &str, args: &[String]) -> i32 {
                 crate::inbox::bind_live(sid, if stem == "pi_bind" { "pi" } else { "omp" });
             }
         }
+        "hermes_bind" => {
+            if let Some(sid) = args.first() {
+                crate::inbox::bind_live_session(sid, "hermes");
+            }
+        }
+        "hermes_release" => {
+            if let Some(sid) = args.first() {
+                crate::inbox::release_live_session(sid, "hermes");
+            }
+        }
         "devin_bind" => {
             let sid = serde_json::from_str::<Value>(&stdin_raw())
                 .ok()
@@ -441,7 +451,7 @@ fn hook_main_inner(stem: &str, args: &[String]) -> i32 {
                 }
             }
         }
-        "omp_card_context" | "pi_card_context" => {
+        "omp_card_context" | "pi_card_context" | "hermes_card_context" => {
             if let Some(sid) = args.first() {
                 let cwd = std::env::current_dir().map(|p| p.to_string_lossy().to_string()).unwrap_or_default();
                 let context = session_start_context(sid, &cwd);
@@ -497,5 +507,46 @@ mod tests {
             "claude",
         );
         assert_eq!(fs::read_to_string(&card).unwrap(), body);
+    }
+
+    #[test]
+    fn hermes_bind_preserves_sibling_sessions_and_releases_individually() {
+        if !crate::test_support::isolated("hooks_common::tests::hermes_bind_preserves_sibling_sessions_and_releases_individually") {
+            return;
+        }
+        let home = tempfile::tempdir().unwrap();
+        std::env::set_var("EVERETT_HOME", home.path());
+        std::env::remove_var("EVERETT_SEND");
+        let sid_a = "hermes-session-a";
+        let sid_b = "hermes-session-b";
+        assert_eq!(hook_main("hermes_bind", &[sid_a.to_string()]), 0);
+        assert_eq!(hook_main("hermes_bind", &[sid_b.to_string()]), 0);
+        assert_eq!(
+            crate::inbox::live(sid_a).and_then(|m| m.get("harness").and_then(Value::as_str).map(str::to_owned)).as_deref(),
+            Some("hermes")
+        );
+        assert_eq!(
+            crate::inbox::live(sid_b).and_then(|m| m.get("harness").and_then(Value::as_str).map(str::to_owned)).as_deref(),
+            Some("hermes")
+        );
+        // Re-binding a resumed session succeeds and still preserves sibling.
+        assert_eq!(hook_main("hermes_bind", &[sid_a.to_string()]), 0);
+        assert!(crate::inbox::live(sid_a).is_some());
+        assert!(crate::inbox::live(sid_b).is_some());
+
+        // Releasing session A drops only session A's liveness, preserves sibling B, and keeps unexpired hop memory.
+        crate::inbox::record_hops(sid_a, 7);
+        assert_eq!(hook_main("hermes_release", &[sid_a.to_string()]), 0);
+        assert!(crate::inbox::live(sid_a).is_none());
+        assert_eq!(crate::inbox::session_hops(sid_a), 7);
+        assert!(crate::inbox::live(sid_b).is_some());
+
+        // Reopening session A preserves the 7-hop count.
+        assert_eq!(hook_main("hermes_bind", &[sid_a.to_string()]), 0);
+        assert!(crate::inbox::live(sid_a).is_some());
+        assert_eq!(crate::inbox::session_hops(sid_a), 7);
+
+        let ctx = session_start_context(sid_b, &home.path().to_string_lossy());
+        assert!(ctx.contains(&format!("{sid_b}.md")), "expected card path in context: {ctx}");
     }
 }
