@@ -282,6 +282,7 @@ export class HostedAuth extends DurableObject<HostedAuthEnv> {
       CREATE INDEX IF NOT EXISTS oauth_tokens_expiry ON oauth_tokens(expires_at);
       CREATE INDEX IF NOT EXISTS owner_sessions_expiry ON owner_sessions(expires_at);
       CREATE TABLE IF NOT EXISTS auth_rates(scope TEXT PRIMARY KEY,window INTEGER NOT NULL,count INTEGER NOT NULL);
+      CREATE INDEX IF NOT EXISTS auth_rates_window ON auth_rates(window);
       CREATE TABLE IF NOT EXISTS meta(key TEXT PRIMARY KEY,value TEXT NOT NULL);
     `);
     this.#migrate();

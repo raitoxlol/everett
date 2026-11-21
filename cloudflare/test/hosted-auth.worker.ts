@@ -674,3 +674,17 @@ describe('Public hosts stay separate from issuer identity', () => {
   });
 });
 
+describe('Expiry cleanup indexing', () => {
+  it('resolves the rate-window cleanup predicate through an index', async () => {
+    const auth = env.AUTH_STATE!.get(env.AUTH_STATE!.idFromName(issuer));
+    const plans = await runInDurableObject(auth, (_instance, state) => {
+      const detail = (q: string) => state.storage.sql.exec(`EXPLAIN QUERY PLAN ${q}`).toArray().map((r) => (r as { detail: string }).detail).join(' | ');
+      const out: Record<string, string> = { auth_rates: detail('SELECT rowid FROM auth_rates WHERE window<0') };
+      for (const table of ['owner_sessions', 'oauth_tokens', 'mesh_grants'])
+        out[table] = detail(`SELECT rowid FROM ${table} WHERE expires_at<=0 LIMIT 128`);
+      return out;
+    });
+    for (const [table, plan] of Object.entries(plans)) expect(plan, table).toMatch(/SEARCH .* USING/);
+  });
+});
+
