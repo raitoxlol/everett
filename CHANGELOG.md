@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+
+- Fix regeneration of Grok CLI AUTO cards from their session transcripts.
+- Fix docs-site search results so heading links target the rendered section anchors.
+
 ## 2.4.0
 
 - Bind local handoffs to the active harness session (#231). Ambiguous route results and exposed cards include an address callers can use (#232).
