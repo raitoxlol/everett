@@ -256,7 +256,6 @@ pub fn resolve_target(target: &str) -> String {
         return format!("project:{}", slug(rest));
     }
     let sessions = crate::registry::scan(72.0 * 7.0, true, None, "");
-    // Subscriptions match the event's session ID across harnesses.
     if sessions.iter().any(|session| session.id == target) {
         return target.to_string();
     }

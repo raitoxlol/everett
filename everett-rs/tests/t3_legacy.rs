@@ -3,7 +3,7 @@ mod common;
 use common::{fixture, Fixture};
 use everett::adapters::{grok, t3code};
 use everett::send::command_for;
-use rusqlite::{Connection, OpenFlags};
+use rusqlite::Connection;
 use serde_json::{json, Value};
 use std::path::PathBuf;
 
@@ -67,16 +67,17 @@ fn legacy_threads_map_to_harness_sessions_read_only() {
     let fx = fixture();
     let db = legacy(&fx);
     let before = std::fs::read(&db).unwrap();
-    let found = t3code::threads(&db);
-    let get = |h: &str, id: &str| found.get(&(h.to_string(), id.to_string())).cloned().unwrap_or_else(|| panic!("{h}/{id}"));
-    let (thread, title) = get("claude", "cl-1");
-    assert!([thread.as_str(), title.as_str()].contains(&"API retry thread"), "{thread} {title}");
-    let (thread, title) = get("codex", "cx-1");
-    assert!([thread.as_str(), title.as_str()].contains(&"t-cx"), "{thread} {title}");
-    get("grok", "gk-1");
+    let rows = ls(&fx);
+    for (id, thread, title) in [
+        ("cl-1", "t-cl", "API retry thread"),
+        ("cx-1", "t-cx", "Dark mode"),
+        ("gk-1", "t-gk", "Infra bucket"),
+    ] {
+        let session = by_id(&rows, id);
+        assert_eq!(session["t3_thread_id"], thread);
+        assert_eq!(session["title"], title);
+    }
     assert_eq!(std::fs::read(&db).unwrap(), before);
-    let con = Connection::open_with_flags(&db, OpenFlags::SQLITE_OPEN_READ_ONLY).unwrap();
-    assert!(con.execute("DELETE FROM projection_threads", []).is_err());
 }
 
 #[test]

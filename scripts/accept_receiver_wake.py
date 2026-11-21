@@ -79,7 +79,6 @@ class RunManifest:
     cleanup: dict = field(default_factory=dict)
 
 
-MANIFEST_OWNERS: dict[str, tuple[int, int]] = {}
 
 
 REMOTE_HELPER = r'''import base64, json, os, pathlib, signal, stat, subprocess, sys, time
@@ -325,35 +324,42 @@ else: raise SystemExit(37)
 '''
 
 
-def save_manifest(path: Path, manifest: RunManifest) -> None:
-    data = json.dumps(asdict(manifest), indent=2, sort_keys=True).encode()
-    key = str(path)
-    try:
-        current = path.lstat()
-    except FileNotFoundError:
-        current = None
-    if key not in MANIFEST_OWNERS:
-        require(current is None, "manifest path already exists; refusing to replace it")
-        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0), 0o600)
-        owner = os.fstat(fd)
-        require(stat.S_ISREG(owner.st_mode) and owner.st_uid == os.getuid(), "new manifest is not an owner-owned regular file")
-        MANIFEST_OWNERS[key] = (owner.st_dev, owner.st_ino)
-    else:
-        require(current is not None and stat.S_ISREG(current.st_mode) and current.st_uid == os.getuid() and stat.S_IMODE(current.st_mode) == 0o600, "manifest changed type, owner, or permissions")
-        require((current.st_dev, current.st_ino) == MANIFEST_OWNERS[key], "manifest path no longer names the file created by this run")
-        temp = path.with_name(path.name + f".tmp.{os.getpid()}")
-        fd = os.open(temp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0), 0o600)
-    with os.fdopen(fd, "wb") as stream:
-        stream.write(data)
-        stream.flush()
-        os.fsync(stream.fileno())
-    os.chmod(path if key not in MANIFEST_OWNERS or current is None else temp, 0o600)
-    if current is not None:
-        latest = path.lstat()
-        require((latest.st_dev, latest.st_ino) == MANIFEST_OWNERS[key], "manifest path changed before update")
-        os.replace(temp, path)
-        updated = path.lstat()
-        MANIFEST_OWNERS[key] = (updated.st_dev, updated.st_ino)
+class ManifestFile:
+    def __init__(self, path: Path):
+        self.path = path
+        self.identity: tuple[int, int] | None = None
+
+    def save(self, manifest: RunManifest) -> None:
+        data = json.dumps(asdict(manifest), indent=2, sort_keys=True).encode()
+        path = self.path
+        try:
+            current = path.lstat()
+        except FileNotFoundError:
+            current = None
+        flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0)
+        creating = self.identity is None
+        if creating:
+            require(current is None, "manifest path already exists; refusing to replace it")
+            target = path
+        else:
+            require(current is not None and stat.S_ISREG(current.st_mode) and current.st_uid == os.getuid() and stat.S_IMODE(current.st_mode) == 0o600, "manifest changed type, owner, or permissions")
+            require((current.st_dev, current.st_ino) == self.identity, "manifest path no longer names the file created by this run")
+            target = path.with_name(path.name + f".tmp.{os.getpid()}")
+        with os.fdopen(os.open(target, flags, 0o600), "wb") as stream:
+            if creating:
+                owner = os.fstat(stream.fileno())
+                require(stat.S_ISREG(owner.st_mode) and owner.st_uid == os.getuid(), "new manifest is not an owner-owned regular file")
+                self.identity = (owner.st_dev, owner.st_ino)
+            stream.write(data)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.chmod(target, 0o600)
+        if not creating:
+            latest = path.lstat()
+            require((latest.st_dev, latest.st_ino) == self.identity, "manifest path changed before update")
+            os.replace(target, path)
+            updated = path.lstat()
+            self.identity = (updated.st_dev, updated.st_ino)
 
 
 def require(condition: bool, message: str) -> None:
@@ -402,7 +408,7 @@ def local_env(profile: str, sender: bool = False) -> dict[str, str]:
 class Acceptance:
     def __init__(self, args):
         self.args = args
-        self.manifest_path = Path(args.manifest).expanduser().absolute()
+        self.manifest_file = ManifestFile(Path(args.manifest).expanduser().absolute())
         self.manifest: RunManifest | None = None
         self.listeners: list[Listener] = []
         self.policy_path = f"{args.nuc_profile}/.everett/relay-cloudflare/receiver-wake.json"
@@ -436,8 +442,8 @@ class Acceptance:
         require(Path(a.mac_binary).is_file() and os.access(a.mac_binary, os.X_OK), "Mac Everett binary is unavailable")
         mac_profile = Path(a.mac_profile).lstat()
         require(stat.S_ISDIR(mac_profile.st_mode) and mac_profile.st_uid == os.getuid() and stat.S_IMODE(mac_profile.st_mode) & 0o077 == 0, "Mac Everett profile must be an owner-owned private directory")
-        require(self.manifest_path.parent.is_dir(), "manifest parent directory must exist")
-        manifest_parent = self.manifest_path.parent.stat()
+        require(self.manifest_file.path.parent.is_dir(), "manifest parent directory must exist")
+        manifest_parent = self.manifest_file.path.parent.stat()
         require(manifest_parent.st_uid == os.getuid() and stat.S_IMODE(manifest_parent.st_mode) & 0o077 == 0, "manifest parent directory must be owner-only")
         require(a.nuc_profile.startswith("/") and a.nuc_binary.startswith("/"), "NUC profile and binary paths must be absolute")
         require(re.fullmatch(r"[0-9a-f]{64}", a.nuc_sha256) is not None, "expected NUC candidate SHA-256 must be 64 lowercase hexadecimal characters")
@@ -449,9 +455,9 @@ class Acceptance:
         require(Path(a.cwd).is_absolute(), "Claude cwd must be absolute")
         require(bool(a.mac_device_id and a.nuc_device_id and a.mac_fingerprint and a.nuc_fingerprint), "both paired device IDs and fingerprints are required")
         require(a.mac_device_id != a.nuc_device_id and a.mac_fingerprint != a.nuc_fingerprint, "paired relay devices must have distinct IDs and fingerprints")
-        require(self.manifest_path.exists() is False, "manifest path already exists")
+        require(self.manifest_file.path.exists() is False, "manifest path already exists")
         self.manifest = RunManifest(str(uuid.uuid4()), time.time(), "preflight", a.mac_profile, a.nuc_profile, a.mac_device_id, a.nuc_device_id, a.mac_fingerprint, a.nuc_fingerprint, a.session_id, a.cwd)
-        save_manifest(self.manifest_path, self.manifest)
+        self.manifest_file.save(self.manifest)
         self.helper("profile", a.nuc_profile)
         claude_info = json_value(self.helper("claude-info", a.nuc_claude_binary), "NUC Claude executable")
         self.manifest.results["nuc_claude_executable"] = claude_info
@@ -487,7 +493,7 @@ class Acceptance:
         self.manifest.results["binary_sha256"] = {"mac": self._sha256(a.mac_binary), "nuc": actual_nuc_sha256, "expected_nuc": a.nuc_sha256}
         self.manifest.results["draft_preservation"] = "not verified; separate native Claude composer evidence is required"
         self.manifest.results["preflight"] = "passed"
-        save_manifest(self.manifest_path, self.manifest)
+        self.manifest_file.save(self.manifest)
 
     @staticmethod
     def _assert_pin(peers, alias, expected_id, expected_fingerprint, host):
@@ -541,20 +547,20 @@ class Acceptance:
         self.manifest.policy_installed_b64 = content_b64
         self.manifest.policy_owned = True
         self.manifest.phase = "prepare"
-        save_manifest(self.manifest_path, self.manifest)
+        self.manifest_file.save(self.manifest)
         installed = json_value(self.helper("install-policy", self.policy_path, original, original_identity, content_b64), "NUC receiver policy install")
         self.manifest.policy_installed_identity = installed["identity"]
-        save_manifest(self.manifest_path, self.manifest)
+        self.manifest_file.save(self.manifest)
         self._start_local_listener()
         remote_log = f"{a.nuc_profile}/.everett/relay-cloudflare/receiver-wake/acceptance-{self.manifest.run_id}.log"
         self.manifest.listeners.append({"host": "nuc", "state": "starting", "log": remote_log})
-        save_manifest(self.manifest_path, self.manifest)
+        self.manifest_file.save(self.manifest)
         remote = json_value(self.helper("start", a.nuc_binary, remote_log, a.nuc_claude_binary), "NUC relay listener start")
         pid = int(remote["pid"])
         self.listeners.append(Listener("nuc", pid, float(remote["started"])))
         entry = next(item for item in self.manifest.listeners if item.get("host") == "nuc")
         entry.update({"pid": pid, "started": float(remote["started"])})
-        save_manifest(self.manifest_path, self.manifest)
+        self.manifest_file.save(self.manifest)
         inspect = json_value(self.helper("inspect-pid", pid, a.nuc_profile), "NUC relay listener ownership")
         entry["start_ticks"] = inspect.get("start_ticks", "")
         require(inspect.get("owned"), "NUC relay process ownership could not be proved")
@@ -563,21 +569,21 @@ class Acceptance:
         self.manifest.phase = "prepared"
         self.manifest.results["policy"] = "exact allow rule installed with mode 0600"
         self.manifest.results["listeners"] = "Mac and NUC owned relay processes started"
-        save_manifest(self.manifest_path, self.manifest)
+        self.manifest_file.save(self.manifest)
 
     def _start_local_listener(self):
         env = local_env(self.args.mac_profile)
-        self.local_log = str(self.manifest_path.with_name(self.manifest_path.name + ".mac-relay.log"))
+        self.local_log = str(self.manifest_file.path.with_name(self.manifest_file.path.name + ".mac-relay.log"))
         fd = os.open(self.local_log, os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0), 0o600)
         log = os.fdopen(fd, "wb")
         self.manifest.listeners.append({"host": "mac", "state": "starting", "log": self.local_log})
-        save_manifest(self.manifest_path, self.manifest)
+        self.manifest_file.save(self.manifest)
         process = subprocess.Popen([self.args.mac_binary, "relay"], env=env, stdin=subprocess.DEVNULL, stdout=log, stderr=log, start_new_session=True, close_fds=True)
         listener = Listener("mac", process.pid, time.time(), process)
         self.listeners.append(listener)
         time.sleep(1)
         self.manifest.listeners[0].update({"pid": process.pid, "started": time.time()})
-        save_manifest(self.manifest_path, self.manifest)
+        self.manifest_file.save(self.manifest)
         require(process.poll() is None, "Mac Everett relay exited during startup")
 
     def send(self):
@@ -596,7 +602,7 @@ class Acceptance:
         self.manifest.message_id = message_id
         self.manifest.phase = "sent"
         self.manifest.results["duplicate_retry"] = "same key returned the original message ID"
-        save_manifest(self.manifest_path, self.manifest)
+        self.manifest_file.save(self.manifest)
         initial_job = self._await_prompt_sent(message_id)
         self._restart_nuc_listener_and_retry(argv, message_id, initial_job)
 
@@ -621,20 +627,20 @@ class Acceptance:
         self.manifest.cleanup["nuc_listener_first"] = stopped.strip()
         self.manifest.results["listener_restart"] = "first owned NUC listener stopped"
         self.manifest.phase = "retry_after_restart"
-        save_manifest(self.manifest_path, self.manifest)
+        self.manifest_file.save(self.manifest)
         log_path = f"{self.args.nuc_profile}/.everett/relay-cloudflare/receiver-wake/acceptance-{self.manifest.run_id}-retry.log"
         self.manifest.listeners.append({"host": "nuc", "state": "starting", "log": log_path})
-        save_manifest(self.manifest_path, self.manifest)
+        self.manifest_file.save(self.manifest)
         started = json_value(self.helper("start", self.args.nuc_binary, log_path, self.args.nuc_claude_binary), "NUC relay listener restart")
         process = Listener("nuc", int(started["pid"]), float(started["started"]))
         self.listeners.append(process)
         entry = self.manifest.listeners[-1]
         entry.update({"pid": process.pid, "started": process.started})
-        save_manifest(self.manifest_path, self.manifest)
+        self.manifest_file.save(self.manifest)
         inspection = json_value(self.helper("inspect-pid", process.pid, self.args.nuc_profile), "NUC restarted relay ownership")
         require(inspection.get("owned"), "restarted NUC relay process ownership could not be proved")
         entry["start_ticks"] = inspection.get("start_ticks", "")
-        save_manifest(self.manifest_path, self.manifest)
+        self.manifest_file.save(self.manifest)
         retry = self.local(argv, timeout=25, sender=True)
         require(retry.get("message_id") == message_id, "retry after listener restart created a second public request")
         time.sleep(2)
@@ -643,7 +649,7 @@ class Acceptance:
         require(len(matches) == 1 and matches[0] == original_job, "same-key retry after listener restart changed or duplicated the receiver attempt")
         self.manifest.results["duplicate_retry_after_restart"] = "same idempotency key returned original message ID"
         self.manifest.results["receiver_attempt_after_restart"] = "ledger unchanged after listener restart and duplicate retry"
-        save_manifest(self.manifest_path, self.manifest)
+        self.manifest_file.save(self.manifest)
 
     def verify(self):
         self._set_phase("verify")
@@ -674,7 +680,7 @@ class Acceptance:
         require(job.get("state") == "prompt_sent" and job.get("target_pid") == self.claude_row["pid"], "receiver ledger does not prove an attach to the preflighted Claude background PID")
         self.manifest.phase = "verified"
         self.manifest.results.update({"relay_status": status_value.get("state"), "receiver_job_state": job["state"], "target_pid": job["target_pid"], "target_inbox_message_id": job["local_id"], "target_inbox_session": self.args.session_id, "reply_to": reply["reply_to"], "reply_from": reply["from"], "reply_marker_found": True, "sender_inbox": "human", "duplicate_job_count": len(matching)})
-        save_manifest(self.manifest_path, self.manifest)
+        self.manifest_file.save(self.manifest)
         self.negative_probe()
 
     def negative_probe(self):
@@ -709,11 +715,11 @@ class Acceptance:
         self.manifest.results["cwd_untracked_paths_after"] = cwd_after["untracked_paths"]
         require(cwd_after["sha256"] == self.manifest.results["cwd_state_before_sha256"], "NUC Claude project state changed during acceptance")
         self.manifest.results["cwd_state_unchanged"] = True
-        save_manifest(self.manifest_path, self.manifest)
+        self.manifest_file.save(self.manifest)
 
     def _set_phase(self, phase):
         self.manifest.phase = phase
-        save_manifest(self.manifest_path, self.manifest)
+        self.manifest_file.save(self.manifest)
 
     def cleanup(self):
         if not self.manifest:
@@ -752,7 +758,7 @@ class Acceptance:
                 self.manifest.cleanup["policy"] = outcome.strip()
             except BaseException as error:
                 self.manifest.cleanup["policy_error"] = str(error)
-        save_manifest(self.manifest_path, self.manifest)
+        self.manifest_file.save(self.manifest)
 
 
 def build_parser():
@@ -808,7 +814,7 @@ def main(argv=None):
         failure = error
     finally:
         cleaning = True
-        owns_manifest = str(run.manifest_path) in MANIFEST_OWNERS
+        owns_manifest = run.manifest_file.identity is not None
         if run.manifest and owns_manifest:
             if failure is not None:
                 run.manifest.results["failure"] = str(failure) or failure.__class__.__name__
@@ -818,7 +824,7 @@ def main(argv=None):
                 cleanup_error = error
                 run.manifest.cleanup["error"] = str(error) or error.__class__.__name__
                 try:
-                    save_manifest(run.manifest_path, run.manifest)
+                    run.manifest_file.save(run.manifest)
                 except BaseException:
                     pass
         for signum, handler in old_handlers.items():
@@ -826,33 +832,33 @@ def main(argv=None):
 
     if failure is not None:
         status = "interrupted" if isinstance(failure, (AcceptanceInterrupted, KeyboardInterrupt)) else "failed"
-        print(json.dumps({"status": status, "phase": run.manifest.phase if run.manifest else "preflight", "manifest": str(run.manifest_path), "error": str(failure) or failure.__class__.__name__, "cleanup": run.manifest.cleanup if run.manifest else {}}, sort_keys=True), file=sys.stderr)
+        print(json.dumps({"status": status, "phase": run.manifest.phase if run.manifest else "preflight", "manifest": str(run.manifest_file.path), "error": str(failure) or failure.__class__.__name__, "cleanup": run.manifest.cleanup if run.manifest else {}}, sort_keys=True), file=sys.stderr)
         return 1
     if cleanup_error is not None:
-        print(json.dumps({"status": "incomplete", "manifest": str(run.manifest_path), "error": str(cleanup_error) or cleanup_error.__class__.__name__, "cleanup": run.manifest.cleanup}, sort_keys=True))
+        print(json.dumps({"status": "incomplete", "manifest": str(run.manifest_file.path), "error": str(cleanup_error) or cleanup_error.__class__.__name__, "cleanup": run.manifest.cleanup}, sort_keys=True))
         return 1
     if not run.manifest:
-        print(json.dumps({"status": "failed", "phase": "preflight", "manifest": str(run.manifest_path), "error": "preflight ended without a manifest"}, sort_keys=True), file=sys.stderr)
+        print(json.dumps({"status": "failed", "phase": "preflight", "manifest": str(run.manifest_file.path), "error": "preflight ended without a manifest"}, sort_keys=True), file=sys.stderr)
         return 1
     try:
         complete = succeeded and not interrupted and run.manifest.results.get("draft_preservation") == "verified_external_native_composer_receipt" and run.manifest.results.get("cwd_state_unchanged") is True and run.manifest.cleanup.get("mac_listener") in ("stopped", "already-stopped") and run.manifest.cleanup.get("nuc_listener_first") in ("stopped", "already-stopped") and run.manifest.cleanup.get("nuc_listener") == "stopped" and run.manifest.cleanup.get("policy") in ("removed", "restored")
         if not complete:
             run.manifest.results["cleanup_complete"] = False
-            save_manifest(run.manifest_path, run.manifest)
-            print(json.dumps({"status": "incomplete", "manifest": str(run.manifest_path), "results": run.manifest.results, "cleanup": run.manifest.cleanup}, sort_keys=True))
+            run.manifest_file.save(run.manifest)
+            print(json.dumps({"status": "incomplete", "manifest": str(run.manifest_file.path), "results": run.manifest.results, "cleanup": run.manifest.cleanup}, sort_keys=True))
             return 1
         run.manifest.results["cleanup_complete"] = True
-        save_manifest(run.manifest_path, run.manifest)
-        print(json.dumps({"status": "passed", "manifest": str(run.manifest_path), "message_id": run.manifest.message_id, "session_id": run.manifest.session_id, "reply_marker": run.manifest.marker, "results": run.manifest.results, "cleanup": run.manifest.cleanup}, sort_keys=True))
+        run.manifest_file.save(run.manifest)
+        print(json.dumps({"status": "passed", "manifest": str(run.manifest_file.path), "message_id": run.manifest.message_id, "session_id": run.manifest.session_id, "reply_marker": run.manifest.marker, "results": run.manifest.results, "cleanup": run.manifest.cleanup}, sort_keys=True))
         return 0
     except BaseException as error:
         run.manifest.cleanup["error"] = str(error) or error.__class__.__name__
         run.manifest.results["cleanup_complete"] = False
         try:
-            save_manifest(run.manifest_path, run.manifest)
+            run.manifest_file.save(run.manifest)
         except BaseException:
             pass
-        print(json.dumps({"status": "incomplete", "manifest": str(run.manifest_path), "error": str(error) or error.__class__.__name__, "cleanup": run.manifest.cleanup}, sort_keys=True))
+        print(json.dumps({"status": "incomplete", "manifest": str(run.manifest_file.path), "error": str(error) or error.__class__.__name__, "cleanup": run.manifest.cleanup}, sort_keys=True))
         return 1
 
 

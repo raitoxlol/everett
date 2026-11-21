@@ -1,3 +1,5 @@
+pub(crate) mod t3_dispatch;
+
 use std::collections::{BTreeMap, HashSet};
 use std::fs::{self, OpenOptions};
 use std::io::Write;
@@ -35,6 +37,10 @@ pub fn inbox_dir() -> PathBuf {
     home().join(".everett").join("inbox")
 }
 
+pub(crate) fn path_in(home: &Path, session_id: &str) -> PathBuf {
+    home.join(".everett/inbox").join(format!("{session_id}.jsonl"))
+}
+
 pub fn valid_id(session_id: &str) -> bool {
     !session_id.is_empty() && sid_re().is_match(session_id) && session_id != "." && session_id != ".."
 }
@@ -43,7 +49,7 @@ pub fn path(session_id: &str) -> Result<PathBuf> {
     if !valid_id(session_id) {
         return Err(EverettError::new(2, format!("not a valid session id: {:?}", session_id)));
     }
-    Ok(inbox_dir().join(format!("{}.jsonl", session_id)))
+    Ok(path_in(&home(), session_id))
 }
 
 fn done_path(session_id: &str) -> PathBuf {
@@ -267,6 +273,31 @@ pub fn mark_done(session_id: &str, ids: &[&str]) {
     }
 }
 
+pub(crate) fn pending_matching(
+    session: &str,
+    message_id: Option<&str>,
+    reply_to: Option<&str>,
+) -> Vec<Map<String, Value>> {
+    let mut items = pending(session, None);
+    if let Some(id) = message_id {
+        items.retain(|item| item.get("id").and_then(Value::as_str) == Some(id));
+    }
+    if let Some(original) = reply_to {
+        items.retain(|item| is_reply_to(item, original));
+    }
+    items
+}
+
+/// Call after selecting the rows that fit the response. Peek records provenance without claiming.
+pub(crate) fn reveal_pending(session: &str, ids: &[&str], peek: bool) -> Result<Option<HashSet<String>>> {
+    if peek {
+        persist_relay_context(session, ids)?;
+        Ok(None)
+    } else {
+        claim_pending(session, ids).map(Some)
+    }
+}
+
 pub(crate) fn claim_pending(session_id: &str, selected: &[&str]) -> Result<HashSet<String>> {
     let target = path(session_id)?;
     if selected.is_empty() {
@@ -446,16 +477,16 @@ pub fn sent_status(sender: &str, message_id: &str) -> Result<Value> {
     let (target, request) = sent_request(sender, message_id)?;
     let picked_up = done_ids(&target).contains(message_id);
     let reply = sent_reply(read(sender), sender, &target, message_id);
-    let state = if reply.is_some() {
-        "replied"
-    } else if picked_up {
-        "picked_up"
-    } else if request_expired(&request) {
-        "expired"
-    } else {
-        "queued"
-    };
     use crate::delivery_status::{unix_ms, with_status, DeliveryState, Evidence};
+    let state = if reply.is_some() {
+        DeliveryState::Replied
+    } else if picked_up {
+        DeliveryState::PickedUp
+    } else if request_expired(&request) {
+        DeliveryState::Expired
+    } else {
+        DeliveryState::Queued
+    };
     let ts = |item: &Map<String, Value>| item.get("ts").and_then(Value::as_f64);
     let at = now();
     let evidence = Evidence {
@@ -465,11 +496,9 @@ pub fn sent_status(sender: &str, message_id: &str) -> Result<Value> {
         expires_at_ms: ts(&request).filter(|ts| unix_ms(*ts).is_some()).and_then(|ts| unix_ms(ts + TTL)),
     };
     let delivery = match state {
-        "replied" => DeliveryState::Replied,
-        "picked_up" => DeliveryState::PickedUp,
-        "expired" if evidence.expires_at_ms.is_some() => DeliveryState::Expired,
-        "queued" if evidence.queued_at_ms.is_some() => DeliveryState::Queued,
-        _ => DeliveryState::Unknown,
+        DeliveryState::Expired if evidence.expires_at_ms.is_none() => DeliveryState::Unknown,
+        DeliveryState::Queued if evidence.queued_at_ms.is_none() => DeliveryState::Unknown,
+        _ => state,
     };
     let agent = crate::cards::status(&target, at);
     Ok(with_status(json!({
@@ -481,7 +510,8 @@ pub fn sent_status(sender: &str, message_id: &str) -> Result<Value> {
     }), delivery, evidence, agent))
 }
 
-pub(crate) fn persist_status_reply_context(sender: &str, reply: &Value) -> Result<()> {
+pub(crate) fn reveal_status_reply(sender: &str, status: &Value) -> Result<()> {
+    let reply = &status["reply"];
     if reply.get("relay_message_id").is_some() || reply.get("relay_lineage").is_some() {
         if let Some(id) = reply["id"].as_str() {
             persist_relay_context(sender, &[id])?;
@@ -572,6 +602,30 @@ fn wire_reply_hops(original: &Map<String, Value>, env_hops: i64, limit: Option<i
         ));
     }
     Ok(hops)
+}
+
+/// Wait for an unread reply from the session that received this wake.
+pub(crate) fn wait_target_reply(sender: &str, message_id: &str, target_id: &str, wait: f64, poll: f64) -> std::result::Result<Option<Map<String, Value>>, String> {
+    let deadline = now() + wait.max(0.0);
+    loop {
+        for item in pending(sender, None) {
+            if is_target_reply(&item, message_id, target_id) {
+                if let Some(id) = item.get("id").and_then(Value::as_str) {
+                    persist_relay_context(sender, &[id]).map_err(|error| error.message)?;
+                    mark_done(sender, &[id]);
+                }
+                return Ok(Some(item));
+            }
+        }
+        let now = now();
+        if now >= deadline { return Ok(None); }
+        std::thread::sleep(std::time::Duration::from_secs_f64(poll.min(deadline - now).max(0.001)));
+    }
+}
+
+fn is_target_reply(item: &Map<String, Value>, message_id: &str, target_id: &str) -> bool {
+    item.get("reply_to").and_then(Value::as_str) == Some(message_id)
+        && item.get("from").and_then(Value::as_str) == Some(target_id)
 }
 
 /// Poll for a correlated reply and return it even if another inbox reader consumed it.
@@ -900,7 +954,7 @@ fn compact(session_id: &str) {
         if fs::write(&tmp, &body).and_then(|_| fs::rename(&tmp, &target)).is_err() {
             return;
         }
-        let _ = crate::t3_wake::forget_retired_dispatches(session_id, &keep_ids, &target);
+        let _ = t3_dispatch::forget_retired_dispatches(session_id, &keep_ids, &target);
     }
     let live_done: Vec<String> = done.iter().filter(|id| keep_ids.contains(id.as_str())).cloned().collect();
     if live_done.len() != done.len() {
@@ -1168,4 +1222,40 @@ pub fn live(session_id: &str) -> Option<Map<String, Value>> {
         return None; // a recycled PID can't keep a dead session "attached" forever
     }
     Some(data)
+}
+
+#[cfg(test)]
+mod reply_filter_tests {
+    use super::*;
+
+    #[test]
+    fn wake_reply_must_match_both_message_and_target_session() {
+        let correct = serde_json::from_value::<Map<String, Value>>(json!({
+            "id":"mreply00001", "reply_to":"mrequest0001", "from":"target-session"
+        }))
+        .unwrap();
+        let wrong_target = serde_json::from_value::<Map<String, Value>>(json!({
+            "id":"mreply00002", "reply_to":"mrequest0001", "from":"other-session"
+        }))
+        .unwrap();
+        let wrong_message = serde_json::from_value::<Map<String, Value>>(json!({
+            "id":"mreply00003", "reply_to":"other-message", "from":"target-session"
+        }))
+        .unwrap();
+        assert!(is_target_reply(
+            &correct,
+            "mrequest0001",
+            "target-session"
+        ));
+        assert!(!is_target_reply(
+            &wrong_target,
+            "mrequest0001",
+            "target-session"
+        ));
+        assert!(!is_target_reply(
+            &wrong_message,
+            "mrequest0001",
+            "target-session"
+        ));
+    }
 }

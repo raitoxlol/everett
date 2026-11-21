@@ -316,10 +316,7 @@ impl Binding {
         if message_id.is_empty() || message_id.chars().count() > 128 {
             return Err("invalid reply message ID".into());
         }
-        let path = self
-            .home
-            .join(".everett/inbox")
-            .join(format!("{}.jsonl", self.agent_id));
+        let path = crate::inbox::path_in(&self.home, &self.agent_id);
         let raw = bounded_file(&path, MAX_INBOX)?;
         let mut matches = Vec::new();
         for line in raw.split(|b| *b == b'\n').filter(|line| !line.is_empty()) {
@@ -714,14 +711,14 @@ impl Gateway {
                 if name == "everett_send" && args.contains_key("to") {
                     let info = peer.peer_info().ok_or(BACKEND_ERROR)?;
                     let enforced = info.capabilities.experimental.as_ref()
-                        .and_then(|caps| caps.get("everettExactDestinationIds"))
+                        .and_then(|caps| caps.get(crate::mcp::EXACT_DESTINATION_IDS))
                         .and_then(|cap| cap.get("enforced"));
                     if enforced != Some(&Value::Bool(true)) { return Err("backend lacks strict exact-ID delivery; owned-message replies remain available".into()); }
                 }
                 if name == "everett_inbox" && args.contains_key("message_id") {
                     let info = peer.peer_info().ok_or(BACKEND_ERROR)?;
                     let enforced = info.capabilities.experimental.as_ref()
-                        .and_then(|caps| caps.get("everettExactInboxPickup"))
+                        .and_then(|caps| caps.get(crate::mcp::EXACT_INBOX_PICKUP))
                         .and_then(|cap| cap.get("enforced"));
                     if enforced != Some(&Value::Bool(true)) {
                         return Err("backend lacks exact inbox pickup; update the Everett backend to use message_id".into());

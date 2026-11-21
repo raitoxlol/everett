@@ -2,10 +2,11 @@
 //! timestamp parsing, and session ages in `everett ls`.
 
 mod common;
+use everett::session::project_match_key;
 
 use common::{fixture, lib_home, plant};
-use everett::hooks_common::auto_card;
-use everett::route::{describe, local_route, project_name, rank, relevant_sessions};
+use everett::cards::auto::auto_card;
+use everett::route::{describe, local_route, rank, relevant_sessions};
 use everett::session::{clean, now, Session};
 use everett::timefmt::{epoch_from_iso, iso_from_epoch};
 use serde_json::json;
@@ -54,14 +55,14 @@ fn a_project_name_made_of_short_and_common_words_still_matches() {
 #[test]
 fn a_worktree_session_routes_under_its_repository() {
     let s = session("wt-1", WORKTREE, "");
-    assert_eq!(project_name(&s), "everett");
+    assert_eq!(project_match_key(&s), "everett");
     assert!(describe(&s).contains("project=everett "), "{}", describe(&s));
     let s = session("wt-2", "/Users/w/src/Api/.claude/worktrees/fix-retry/", "");
-    assert_eq!(project_name(&s), "api");
+    assert_eq!(project_match_key(&s), "api");
     let s = session("wt-3", "/Users/w/.t3/worktrees/chat/t3-1a2b3c4d", "");
-    assert_eq!(project_name(&s), "chat");
+    assert_eq!(project_match_key(&s), "chat");
     let s = session("chat-1", "/Users/w/Documents/Codex/2026-10-19/chat", "");
-    assert_eq!(project_name(&s), "", "a Codex chat folder is not a project");
+    assert_eq!(project_match_key(&s), "", "a Codex chat folder is not a project");
 }
 
 #[test]
@@ -123,7 +124,6 @@ fn ls_shows_old_sessions_in_days() {
     let aged = std::time::SystemTime::now() - std::time::Duration::from_secs(3 * 86400 + 3600);
     std::fs::File::options().write(true).open(&path).unwrap().set_modified(aged).unwrap();
     let out = fx.stdout(&fx.run(&["ls", "--hours", "200"]));
-    let columns: Vec<&str> = out.split_whitespace().collect();
-    assert!(columns.contains(&"3d"), "{out}");
-    assert!(!columns.contains(&"72h"), "{out}");
+    let row = out.lines().find(|row| row.split_whitespace().nth(1) == Some("claude")).unwrap();
+    assert_eq!(row.split_whitespace().nth(2), Some("3d"), "{out}");
 }

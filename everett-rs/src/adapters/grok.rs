@@ -11,7 +11,8 @@ use crate::paths;
 use crate::proc::pid_alive;
 use crate::session::{clean, file_mtime, home, is_injected, now, read_edges, Session};
 
-pub const ACTIVITY_FILES: &[&str] = &["updates.jsonl", "chat_history.jsonl", "summary.json"];
+pub(crate) const HISTORY_FILE: &str = "chat_history.jsonl";
+pub const ACTIVITY_FILES: &[&str] = &["updates.jsonl", HISTORY_FILE, "summary.json"];
 
 fn query_re() -> &'static Regex {
     static RE: OnceLock<Regex> = OnceLock::new();
@@ -172,12 +173,12 @@ pub fn prompt_history(cwd_dir: &Path) -> HashMap<String, Vec<String>> {
 pub fn transcript(session_id: &str, cwd: &str) -> Option<PathBuf> {
     let root = sessions_root();
     if !cwd.is_empty() {
-        let direct = root.join(quote(cwd)).join(session_id).join("chat_history.jsonl");
+        let direct = root.join(quote(cwd)).join(session_id).join(HISTORY_FILE);
         if direct.is_file() {
             return Some(direct);
         }
     }
-    paths::glob(&root, &format!("*/{}/chat_history.jsonl", session_id))
+    paths::glob(&root, &format!("*/{session_id}/{HISTORY_FILE}"))
         .into_iter()
         .next()
 }
@@ -212,7 +213,7 @@ pub fn parse(
                     .unwrap_or_default(),
             )
         });
-    let history = session_dir.join("chat_history.jsonl");
+    let history = session_dir.join(HISTORY_FILE);
     let (head, tail) = if history.is_file() {
         read_edges(&history)
     } else {
