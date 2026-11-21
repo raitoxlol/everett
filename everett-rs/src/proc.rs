@@ -67,10 +67,18 @@ fn run_inner(
         });
     }
     let mut child = cmd.spawn().map_err(|e| e.to_string())?;
-    if let (Some(mut stdin), Some(text)) = (child.stdin.take(), input) {
-        use std::io::Write;
-        let _ = stdin.write_all(text.as_bytes());
-    }
+    // Feed stdin from its own thread: writing inline would block past the
+    // pipe buffer before the readers start or the timeout clock runs.
+    let t_in = match (child.stdin.take(), input) {
+        (Some(mut stdin), Some(text)) => {
+            let bytes = text.as_bytes().to_vec();
+            Some(std::thread::spawn(move || {
+                use std::io::Write;
+                let _ = stdin.write_all(&bytes);
+            }))
+        }
+        _ => None,
+    };
     let mut stdout = child.stdout.take().expect("piped stdout");
     let mut stderr = child.stderr.take().expect("piped stderr");
     let t_out = std::thread::spawn(move || {
@@ -101,6 +109,9 @@ fn run_inner(
             let _ = child.wait();
         }
         Err(e) => return Err(e.to_string()),
+    }
+    if let Some(t_in) = t_in {
+        let _ = t_in.join();
     }
     let out = t_out.join().unwrap_or_default();
     let err = t_err.join().unwrap_or_default();
@@ -250,4 +261,43 @@ pub fn parent_args(pid: i32) -> Option<(i32, String)> {
     let text = String::from_utf8_lossy(&out.stdout);
     let (ppid, args) = text.trim().split_once(char::is_whitespace)?;
     Some((ppid.trim().parse().ok()?, args.trim().to_string()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::mpsc;
+
+    fn env() -> HashMap<String, String> {
+        HashMap::from([("PATH".to_string(), std::env::var("PATH").unwrap_or_default())])
+    }
+
+    /// Run on a helper thread so a deadlock fails the test instead of hanging it.
+    fn within(secs: u64, command: Vec<String>, timeout: f64, input: String) -> RunOutput {
+        let (tx, rx) = mpsc::channel();
+        std::thread::spawn(move || {
+            let _ = tx.send(run_capture_stdin(&command, None, &env(), timeout, Some(&input)));
+        });
+        rx.recv_timeout(Duration::from_secs(secs))
+            .expect("run_capture_stdin hung past its own timeout")
+            .unwrap()
+    }
+
+    #[test]
+    fn large_input_echoed_back_does_not_deadlock() {
+        let input = "x".repeat(1 << 20);
+        let out = within(30, vec!["cat".into()], 20.0, input.clone());
+        assert!(!out.timed_out);
+        assert_eq!(out.code, 0);
+        assert_eq!(out.stdout.len(), input.len());
+    }
+
+    #[test]
+    fn timeout_holds_when_child_never_reads_large_input() {
+        let input = "x".repeat(1 << 20);
+        let started = std::time::Instant::now();
+        let out = within(15, vec!["sleep".into(), "30".into()], 0.5, input);
+        assert!(out.timed_out);
+        assert!(started.elapsed() < Duration::from_secs(10), "{:?}", started.elapsed());
+    }
 }
