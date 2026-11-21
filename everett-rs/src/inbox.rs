@@ -873,6 +873,14 @@ pub fn render(messages: &[Map<String, Value>], at: Option<f64>) -> (String, Vec<
     (format!("{}\n{}{}", header, parts.join("\n"), tail), ids)
 }
 
+fn rewrite_compacted_file(target: &Path, body: &str) -> std::io::Result<()> {
+    // NamedTempFile creates a fresh file with mode 0600 before any data is written.
+    let mut temp = tempfile::NamedTempFile::new_in(inbox_dir())?;
+    temp.write_all(body.as_bytes())?;
+    temp.persist(target)?;
+    Ok(())
+}
+
 /// Shrink this session's files under its lock: drop expired records only —
 /// delivered records stay so reply_to lookups still resolve — prune .done to
 /// ids still on disk, and reap stale live records.
@@ -896,8 +904,7 @@ fn compact(session_id: &str) {
             .filter_map(|m| serde_json::to_string(&Value::Object(m.clone())).ok())
             .map(|s| s + "\n")
             .collect();
-        let tmp = target.with_extension("jsonl.tmp");
-        if fs::write(&tmp, &body).and_then(|_| fs::rename(&tmp, &target)).is_err() {
+        if rewrite_compacted_file(&target, &body).is_err() {
             return;
         }
         let _ = crate::t3_wake::forget_retired_dispatches(session_id, &keep_ids, &target);
@@ -905,9 +912,8 @@ fn compact(session_id: &str) {
     let live_done: Vec<String> = done.iter().filter(|id| keep_ids.contains(id.as_str())).cloned().collect();
     if live_done.len() != done.len() {
         let done_target = done_path(session_id);
-        let tmp = done_target.with_extension("done.tmp");
         let body: String = live_done.iter().map(|i| format!("{i}\n")).collect();
-        if fs::write(&tmp, body).and_then(|_| fs::rename(&tmp, &done_target)).is_ok() {
+        if rewrite_compacted_file(&done_target, &body).is_ok() {
             let mut times = pickup_times(session_id);
             times.retain(|id, _| keep_ids.contains(id.as_str()));
             if pickup_times_path(session_id).exists() {
