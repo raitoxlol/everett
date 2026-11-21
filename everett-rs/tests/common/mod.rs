@@ -13,6 +13,15 @@ pub fn scrub_caller_identity(command: &mut Command) {
     }
 }
 
+/// Clear the harness home overrides (T3CODE_HOME, DEVIN_HOME, ...) a test's
+/// parent shell may carry, so a child pointed at a temp HOME cannot read the
+/// developer's real session stores.
+pub fn scrub_sandbox(command: &mut Command) {
+    for name in SANDBOX_UNSET {
+        command.env_remove(name);
+    }
+}
+
 pub struct Fixture {
     pub dir: tempfile::TempDir,
 }

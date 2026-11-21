@@ -251,10 +251,11 @@ pub fn is_stale(path: Option<&PathBuf>) -> bool {
     let Some(end) = rest.find("</string>") else {
         return true;
     };
+    // Undo plist_escape in reverse: `&amp;` last, so an escaped `&lt;` stays literal.
     let exe = rest[..end]
-        .replace("&amp;", "&")
         .replace("&lt;", "<")
-        .replace("&gt;", ">");
+        .replace("&gt;", ">")
+        .replace("&amp;", "&");
     exe.is_empty() || !crate::proc::executable_ok(&exe)
 }
 
@@ -355,6 +356,22 @@ mod tests {
 
         let ok = render_plist("04:00", "none").unwrap();
         fs::write(&plist, ok).unwrap();
+        assert!(!is_stale(Some(&plist)));
+    }
+
+    #[test]
+    fn baked_program_with_literal_entity_text_is_not_stale() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let exe = dir.path().join("a&lt;b");
+        fs::write(&exe, "#!/bin/sh\n").unwrap();
+        fs::set_permissions(&exe, fs::Permissions::from_mode(0o755)).unwrap();
+        let plist = dir.path().join("dev.everett.core-merge.plist");
+        let xml = format!(
+            "<plist><dict><key>ProgramArguments</key><array><string>{}</string></array></dict></plist>",
+            plist_escape(&exe.to_string_lossy())
+        );
+        fs::write(&plist, xml).unwrap();
         assert!(!is_stale(Some(&plist)));
     }
 
