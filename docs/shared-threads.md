@@ -7,7 +7,8 @@ notification polling, group membership, or direct-message transport change.
 ## Create and use a thread
 
 Each owner must register an inbox and grant the other owner's exact device access in both directions.
-Then the creator's authenticated owner admin, using the device bound to the first inbox, creates it:
+An authenticated member (not only an owner admin) can create the thread using the device bound to the
+first inbox:
 
 ```sh
 everett thread create --from alice@zone-a --to bob@zone-b --idempotency-key create-2026-01
@@ -35,7 +36,8 @@ one bounded page, with the text encoded as JSON data.
 
 ## Permissions and retention
 
-Creation requires two active reciprocal grants and active addressed devices. Thread membership
+Creation requires an authenticated member using the exact device bound to its inbox, two active
+reciprocal grants, and active addressed devices. Thread membership
 immutably snapshots both addresses, owners, agent IDs, harness/session bindings, device fingerprints,
 and original grant IDs. Both original grants, both device keys, and both inbox bindings are checked on
 every show, send, and read. Operations begun after a revoke has been acknowledged are denied for both

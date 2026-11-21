@@ -614,8 +614,8 @@ export class OwnerRelay extends DurableObject<OwnerRelayEnv> {
   }
 
   async #threadCreate(p: Principal, args: unknown) {
-    const auth = this.#authorize(p), owner = namespace(p);
-    if (!auth.admin) throw new RelayError('admin_required');
+    const owner = namespace(p);
+    this.#authorize(p);
     this.#activeDevice(p.agentId);
     this.#rate(JSON.stringify(['agent', p.agentId]), 120, Date.now());
     this.#rate(JSON.stringify(['account', p.issuer, p.subject]), 120, Date.now());

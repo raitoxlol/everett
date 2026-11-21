@@ -142,12 +142,12 @@ try {
     const identity = fixture.principal;
     const owner = ownerFor(identity);
     const stub = env.OWNERS.get(env.OWNERS.idFromName(owner));
-    const result = await stub.enroll(identity, 'admin', crypto.randomUUID());
+    const result = await stub.enroll(identity, 'member', crypto.randomUUID());
     assert.equal(result.ok, true, `synthetic ${name} enrollment failed`);
     const principal = {
       ...identity,
       agentId: result.value.deviceId,
-      role: 'admin',
+      role: 'member',
       expiresAt: Date.now() + 3_600_000,
     };
     const response = await authWorker.fetch('https://test-auth.internal/__test/set-principal', {
@@ -160,6 +160,8 @@ try {
   }
   const alicePrincipal = await enroll('alice');
   const bobPrincipal = await enroll('bob');
+  assert.equal(alicePrincipal.role, 'member');
+  assert.equal(bobPrincipal.role, 'member');
   accounts.alice = await createAccount('alice', url.origin, alicePrincipal);
   accounts.bob = await createAccount('bob', url.origin, bobPrincipal);
 
