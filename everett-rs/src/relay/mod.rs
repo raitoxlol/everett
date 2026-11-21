@@ -3,6 +3,7 @@ mod diagnostics;
 mod notifications;
 pub(crate) mod queue;
 pub(crate) mod receiver;
+pub mod thread;
 #[cfg(not(test))]
 mod transport;
 
@@ -26,6 +27,7 @@ use std::{
 use crate::error::{EverettError, Result};
 use crate::{inbox, peer, send, session};
 use crypto::{Device, Envelope, Keys, Parent};
+use thread::{StoredThreadMessage, ThreadMember, ThreadRef};
 
 const DEADLINE: Duration = Duration::from_secs(20);
 const TTL: i64 = 3_600_000;
@@ -695,6 +697,289 @@ pub fn resolve_inbox(address: &str) -> Result<Value> {
     let value = admin_call("relay:resolveInbox", json!({"address":address}), true)?;
     let resolved = resolved_inbox(address, value, &account.owner, &account.agent)?;
     serde_json::to_value(resolved).map_err(bad)
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct ThreadView {
+    thread_ref: ThreadRef,
+    members: [ThreadMember; 2],
+    created_at: i64,
+    last_seq: u64,
+    state: String,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct ThreadPage {
+    thread_ref: ThreadRef,
+    members: [ThreadMember; 2],
+    messages: Vec<StoredThreadMessage>,
+    next_after_seq: u64,
+    has_more: bool,
+}
+
+#[derive(Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct ThreadCreateAttempt {
+    from_address: String,
+    to_address: String,
+    idempotency_key: String,
+}
+
+#[derive(Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct ThreadSendAttempt {
+    thread_ref: ThreadRef,
+    idempotency_key: String,
+}
+
+fn thread_ref(creator_owner: &str, thread_id: &str) -> Result<ThreadRef> {
+    if creator_owner.is_empty() || creator_owner.len() > 4096 {
+        return Err(bad("invalid thread creator owner"));
+    }
+    uuid::Uuid::parse_str(thread_id).map_err(bad)?;
+    Ok(ThreadRef {
+        creator_owner: creator_owner.to_string(),
+        thread_id: thread_id.to_string(),
+    })
+}
+
+fn thread_outbox_directory(owner: &str, agent: &str, thread_ref: &ThreadRef) -> Result<PathBuf> {
+    let deployment = deployment()?;
+    let directory = root().join("thread-outbox").join(format!(
+        "{:x}",
+        Sha256::digest(
+            json!([owner, agent, deployment, thread_ref])
+                .to_string()
+                .as_bytes()
+        )
+    ));
+    crate::storage::private_dir(&directory)?;
+    Ok(directory)
+}
+
+fn thread_outbox_path(
+    owner: &str,
+    agent: &str,
+    thread_ref: &ThreadRef,
+    key: &str,
+) -> Result<PathBuf> {
+    let directory = thread_outbox_directory(owner, agent, thread_ref)?;
+    Ok(directory.join(format!("{:x}.json", Sha256::digest(key.as_bytes()))))
+}
+
+fn thread_pending_path(
+    owner: &str,
+    agent: &str,
+    thread_ref: &ThreadRef,
+) -> Result<PathBuf> {
+    Ok(thread_outbox_directory(owner, agent, thread_ref)?.join("pending-send.json"))
+}
+
+pub fn thread_create(
+    from_address: &str,
+    to_address: &str,
+    idempotency_key: Option<&str>,
+) -> Result<Value> {
+    if !inbox_address(from_address) || !inbox_address(to_address) {
+        return Err(bad("invalid thread inbox address"));
+    }
+    if let Some(key) = idempotency_key {
+        valid(key)?;
+        return admin_call(
+            "relay:threadCreate",
+            json!({"fromAddress":from_address,"toAddress":to_address,"idempotencyKey":key}),
+            false,
+        );
+    }
+    let owner = relay_account()?.owner;
+    let deployment = deployment()?;
+    let directory = root().join("thread-create");
+    crate::storage::private_dir(&directory)?;
+    let path = directory.join(format!(
+        "{:x}.json",
+        Sha256::digest(
+            json!([owner, deployment, from_address, to_address])
+                .to_string()
+                .as_bytes()
+        )
+    ));
+    let lock = crate::storage::lock(&path.with_extension("lock"))?;
+    let key = if path.exists() {
+        let attempt: ThreadCreateAttempt = read(&path)?;
+        if attempt.from_address != from_address || attempt.to_address != to_address {
+            return Err(bad("thread creation retry binding mismatch"));
+        }
+        attempt.idempotency_key
+    } else {
+        let key = uuid::Uuid::new_v4().to_string();
+        let attempt = ThreadCreateAttempt {
+            from_address: from_address.to_string(),
+            to_address: to_address.to_string(),
+            idempotency_key: key.clone(),
+        };
+        write(&path, &attempt)?;
+        key
+    };
+    valid(&key)?;
+    let result = admin_call(
+        "relay:threadCreate",
+        json!({"fromAddress":from_address,"toAddress":to_address,"idempotencyKey":key}),
+        false,
+    )?;
+    fs::remove_file(&path).map_err(bad)?;
+    fs::File::open(directory)
+        .map_err(bad)?
+        .sync_all()
+        .map_err(bad)?;
+    drop(lock);
+    Ok(result)
+}
+
+pub fn thread_show(creator_owner: &str, thread_id: &str) -> Result<Value> {
+    let reference = thread_ref(creator_owner, thread_id)?;
+    admin_call("relay:threadShow", json!({"threadRef":reference}), true)
+}
+
+pub fn thread_send(
+    creator_owner: &str,
+    thread_id: &str,
+    text: &str,
+    idempotency_key: Option<&str>,
+) -> Result<Value> {
+    if text.is_empty() || text.len() > thread::MAX_TEXT_BYTES {
+        return Err(bad(
+            "thread text must be non-empty and at most 16 KiB UTF-8",
+        ));
+    }
+    let reference = thread_ref(creator_owner, thread_id)?;
+    crate::access::check_outgoing_cross_org()?;
+    let account = relay_account()?;
+    let keys = verified_keys(&account.owner)?;
+    let view_value = admin_call("relay:threadShow", json!({"threadRef":reference}), true)?;
+    let view: ThreadView = serde_json::from_value(view_value).map_err(bad)?;
+    if view.thread_ref != reference {
+        return Err(bad("thread reference mismatch"));
+    }
+    let _ = (view.created_at, view.last_seq, view.state.as_str());
+    let pending_path = if idempotency_key.is_none() {
+        Some(thread_pending_path(
+            &account.owner,
+            &account.agent,
+            &reference,
+        )?)
+    } else {
+        None
+    };
+    let pending_lock = pending_path
+        .as_ref()
+        .map(|path| crate::storage::lock(&path.with_extension("lock")))
+        .transpose()?;
+    let key = if let Some(key) = idempotency_key {
+        key.to_string()
+    } else {
+        let path = pending_path
+            .as_ref()
+            .ok_or_else(|| bad("missing thread send retry path"))?;
+        if path.exists() {
+            let attempt: ThreadSendAttempt = read(path)?;
+            if attempt.thread_ref != reference {
+                return Err(bad("thread send retry binding mismatch"));
+            }
+            attempt.idempotency_key
+        } else {
+            let key = uuid::Uuid::new_v4().to_string();
+            write(
+                path,
+                &ThreadSendAttempt {
+                    thread_ref: reference.clone(),
+                    idempotency_key: key.clone(),
+                },
+            )?;
+            key
+        }
+    };
+    valid(&key)?;
+    let path = thread_outbox_path(&account.owner, &account.agent, &reference, &key)?;
+    let post = thread::persist_outgoing(&path, &keys, &reference, &view.members, &key, text)?;
+    let result = admin_call(
+        "relay:threadSend",
+        json!({"threadRef":reference,"post":post}),
+        false,
+    )?;
+    if let Some(path) = &pending_path {
+        fs::remove_file(path).map_err(bad)?;
+        fs::File::open(
+            path.parent()
+                .ok_or_else(|| bad("missing thread send retry directory"))?,
+        )
+            .map_err(bad)?
+            .sync_all()
+            .map_err(bad)?;
+    }
+    drop(pending_lock);
+    Ok(result)
+}
+
+pub fn thread_read(
+    creator_owner: &str,
+    thread_id: &str,
+    after_seq: u64,
+    limit: u8,
+) -> Result<Value> {
+    if !(1..=32).contains(&limit) {
+        return Err(bad("thread page limit must be between 1 and 32"));
+    }
+    let reference = thread_ref(creator_owner, thread_id)?;
+    let account = relay_account()?;
+    let keys = verified_keys(&account.owner)?;
+    let page_value = admin_call(
+        "relay:threadRead",
+        json!({"threadRef":reference,"afterSeq":after_seq,"limit":limit}),
+        true,
+    )?;
+    let page: ThreadPage = serde_json::from_value(page_value).map_err(bad)?;
+    if page.thread_ref != reference {
+        return Err(bad("thread reference mismatch"));
+    }
+    let local_member = page
+        .members
+        .iter()
+        .find(|member| member.owner == account.owner && member.agent_id == account.agent)
+        .ok_or_else(|| bad("authenticated device is not a thread member"))?;
+    for message in &page.messages {
+        if message.context.author_owner != account.owner
+            || message.context.author_device_id != account.agent
+        {
+            crate::access::check_incoming_cross_org(
+                &message.context.author_owner,
+                &message.context.author_device_id,
+                Some(&local_member.address),
+                1,
+                false,
+            )?;
+        }
+    }
+    let mut messages = Vec::with_capacity(page.messages.len());
+    for message in page.messages {
+        let text = thread::open_copy(&keys, &reference, &page.members, &message)?;
+        messages.push(json!({
+            "seq": message.seq,
+            "messageId": message.context.message_id,
+            "idempotencyKey": message.context.idempotency_key,
+            "authorOwner": message.context.author_owner,
+            "authorDeviceId": message.context.author_device_id,
+            "createdAt": message.created_at,
+            "text": text,
+        }));
+    }
+    Ok(json!({
+        "threadRef": page.thread_ref,
+        "messages": messages,
+        "nextAfterSeq": page.next_after_seq,
+        "hasMore": page.has_more,
+    }))
 }
 
 pub fn send_address_as(

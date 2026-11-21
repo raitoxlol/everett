@@ -53,6 +53,14 @@ pub struct Keys {
     encryption: StaticSecret,
 }
 
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ThreadCipher {
+    pub ephemeral_key: String,
+    pub nonce: String,
+    pub ciphertext: String,
+}
+
 impl Keys {
     pub fn new(owner: String, device_id: String, signing: [u8; 32], encryption: [u8; 32]) -> Self {
         let signing = SigningKey::from_bytes(&signing);
@@ -74,6 +82,68 @@ impl Keys {
 
     pub fn sign(&self, bytes: &[u8]) -> String {
         hex::encode(self.signing.sign(bytes).to_bytes())
+    }
+
+    pub(crate) fn seal_thread_bytes(
+        &self,
+        recipient: &Device,
+        context: &[u8],
+        body: &[u8],
+    ) -> Result<ThreadCipher> {
+        recipient.verify()?;
+        if body.len() > 17 * 1024 {
+            return Err(bad("shared thread payload exceeds limit"));
+        }
+        let secret = StaticSecret::random_from_rng(OsRng);
+        let ephemeral_key = hex::encode(PublicKey::from(&secret).to_bytes());
+        let mut nonce = [0u8; 12];
+        OsRng.fill_bytes(&mut nonce);
+        let cipher = thread_cipher(&secret, &recipient.encryption_key, context)?;
+        let ciphertext = cipher
+            .encrypt(
+                (&nonce).into(),
+                Aad {
+                    msg: body,
+                    aad: context,
+                },
+            )
+            .map_err(|_| bad("shared thread encryption failed"))?;
+        Ok(ThreadCipher {
+            ephemeral_key,
+            nonce: hex::encode(nonce),
+            ciphertext: hex::encode(ciphertext),
+        })
+    }
+
+    pub(crate) fn open_thread_bytes(
+        &self,
+        recipient: &Device,
+        context: &[u8],
+        encrypted: &ThreadCipher,
+    ) -> Result<Vec<u8>> {
+        recipient.verify()?;
+        if recipient.owner != self.device.owner
+            || recipient.device_id != self.device.device_id
+            || recipient.fingerprint() != self.device.fingerprint()
+        {
+            return Err(bad("shared thread recipient device mismatch"));
+        }
+        let cipher = thread_cipher(&self.encryption, &encrypted.ephemeral_key, context)?;
+        let nonce = decode::<12>(&encrypted.nonce)?;
+        let ciphertext = hex::decode(&encrypted.ciphertext).map_err(bad)?;
+        let body = cipher
+            .decrypt(
+                (&nonce).into(),
+                Aad {
+                    msg: &ciphertext,
+                    aad: context,
+                },
+            )
+            .map_err(|_| bad("shared thread ciphertext authentication failed"))?;
+        if body.len() > 17 * 1024 {
+            return Err(bad("shared thread payload exceeds limit"));
+        }
+        Ok(body)
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -341,6 +411,18 @@ fn cipher(secret: &StaticSecret, public: &str, context: &[u8]) -> Result<ChaCha2
     }
     let mut key = [0u8; 32];
     Hkdf::<Sha256>::new(Some(b"everett-relay-v2"), shared.as_bytes())
+        .expand(context, &mut key)
+        .map_err(bad)?;
+    Ok(ChaCha20Poly1305::new((&key).into()))
+}
+
+fn thread_cipher(secret: &StaticSecret, public: &str, context: &[u8]) -> Result<ChaCha20Poly1305> {
+    let shared = secret.diffie_hellman(&PublicKey::from(decode::<32>(public)?));
+    if !shared.was_contributory() {
+        return Err(bad("invalid X25519 public key"));
+    }
+    let mut key = [0u8; 32];
+    Hkdf::<Sha256>::new(Some(b"everett-thread-copy-v1"), shared.as_bytes())
         .expand(context, &mut key)
         .map_err(bad)?;
     Ok(ChaCha20Poly1305::new((&key).into()))
