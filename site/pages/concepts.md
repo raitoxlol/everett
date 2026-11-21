@@ -24,6 +24,9 @@ is about, its state, and the next step. Agent-written cards are preferred; when 
 none, the Stop hook writes an automatic card from the transcript, marked
 `<!-- everett:auto -->`. Routing and `ls` prefer cards over raw transcript text. A card summarizes
 one session; it is not project-wide truth. See [Session cards and hooks](/session-cards/).
+Refresh existing AUTO-marked cards for Claude Code, Codex, and Grok CLI with
+`everett cards --regenerate-auto`; add `--dry-run` to preview changes or `--hours N` to set the
+look-back window. Agent-written and missing cards are left alone.
 
 ## Route
 
