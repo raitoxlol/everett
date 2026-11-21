@@ -787,6 +787,11 @@ pub fn apply_mcp(harness: &str, repair: bool) -> std::result::Result<String, Str
         entry.remove("type");
         entry.remove("transport");
     }
+    if TOML_MCP.contains(&harness) {
+        // codex/grok config.toml entries have no "type" field; codex_block()
+        // omits it, so a repair must not introduce one either.
+        entry.remove("type");
+    }
     let saved;
     if TOML_MCP.contains(&harness) {
         let text = fs::read_to_string(&path).unwrap_or_default();
