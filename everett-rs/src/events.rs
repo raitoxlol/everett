@@ -526,7 +526,9 @@ pub fn parse_since(value: &str) -> Result<f64> {
 
 pub fn age(seconds: f64) -> String {
     let s = seconds.max(0.0).round() as i64;
-    if s < 3600 {
+    if s < 60 {
+        format!("{}s", s)
+    } else if s < 3600 {
         format!("{}m", s / 60)
     } else if s < 172800 {
         format!("{}h", s / 3600)
@@ -684,4 +686,16 @@ pub fn classify(message: &str) -> Option<(String, String)> {
         return Some(("needs-input".into(), hit_result.chars().take(MAX_TEXT).collect()));
     }
     Some(("done".into(), lines.last().unwrap().chars().take(160).collect()))
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn age_shows_seconds_under_a_minute() {
+        assert_eq!(super::age(0.0), "0s");
+        assert_eq!(super::age(45.4), "45s");
+        assert_eq!(super::age(90.0), "1m");
+        assert_eq!(super::age(7200.0), "2h");
+        assert_eq!(super::age(200000.0), "2d");
+    }
 }
