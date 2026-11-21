@@ -1,6 +1,6 @@
 ---
 name: verify-everett
-description: Verify Everett releases, CLI setup, and all advertised stdio MCP tools using isolated session stores. Use after routing, messaging, status, memory, or packaging changes.
+description: Verify Everett releases, CLI setup, the skill hub, and all advertised stdio MCP tools using isolated session stores. Use after routing, messaging, status, memory, skill hub, or packaging changes.
 ---
 # Verify Everett
 
@@ -16,6 +16,8 @@ cargo test --locked --test release_journey                                    # 
 EVERETT_VERIFY_BINARY="$PWD/target/release/everett" cargo test --locked --test release_journey   # a packaged binary
 ```
 
+For the skill hub, also run `cargo test --locked --test skills` from `everett-rs/` (see [its feature page](features/skills.md)).
+
 Read [the feature map](features/README.md). `tests/release_journey.rs` runs all four mapped journeys with the real CLI and JSON-RPC pipes and checks every advertised tool. It uses no model credentials or paid calls. Synthetic Claude/Codex transcripts stand in for external storage. The Claude stub is detection-only and exits 88 if invoked. A shell Codex stub simulates resume/spawn and reads stdin; it must receive EOF while the MCP connection stays open.
 
 ## Evidence
@@ -26,4 +28,4 @@ Run `cargo test --locked --test relay_diagnostics` for the offline CLI and MCP d
 
 ## Cleanup
 
-The test removes its own temporary home and only kills its own MCP subprocess. Never operate on real harness stores. Run the rest of the suite with `cargo test --locked`.
+Each test removes its own temporary home and only kills its own subprocesses. By-hand steps clean up with a `trap`. Never operate on real harness stores. Run the rest of the suite with `cargo test --locked`.
