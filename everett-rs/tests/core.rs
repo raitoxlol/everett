@@ -269,6 +269,40 @@ fn fill(fx: &common::Fixture) {
 }
 
 #[test]
+fn learn_project_scope_reaches_repo_root_from_deep_directories() {
+    let fx = fixture();
+    let repo = fx.home().join("fixture-repo");
+    std::fs::create_dir_all(repo.join(".git")).unwrap();
+    let shallow = repo.join("work");
+    std::fs::create_dir_all(&shallow).unwrap();
+    let mut deep = repo.clone();
+    for index in 1..=12 {
+        deep = deep.join(format!("layer-{index}"));
+    }
+    std::fs::create_dir_all(&deep).unwrap();
+    let orphan = fx.home().join("orphan/child");
+    std::fs::create_dir_all(&orphan).unwrap();
+
+    for (cwd, fact, expected) in [
+        (&shallow, "Synthetic shallow project fact", "fixture-repo"),
+        (&deep, "Synthetic deeply nested project fact", "fixture-repo"),
+        (&orphan, "Synthetic orphan project fact", "child"),
+    ] {
+        let out = fx.run_in(cwd, &["learn", fact, "--scope", "project"]);
+        assert_eq!(out.status.code(), Some(0), "{fact}: {}", fx.stdout(&out));
+        let text = fx.stdout(&out);
+        assert!(text.contains(&format!("(project {expected})")), "{fact}: {text}");
+    }
+
+    let merge = fx.run_in(&repo, &["trunk", "merge", "--llm", "none"]);
+    assert_eq!(merge.status.code(), Some(0), "{}", fx.stdout(&merge));
+    let core = std::fs::read_to_string(fx.home().join(".everett/core/projects/fixture-repo.md")).unwrap();
+    assert!(core.contains("Synthetic deeply nested project fact"), "{core}");
+    assert!(std::fs::read_to_string(fx.home().join(".everett/core/projects/child.md")).unwrap().contains("Synthetic orphan project fact"));
+    assert!(!fx.home().join(".everett/core/projects/layer-12.md").exists());
+}
+
+#[test]
 fn session_start_hooks_inject_bounded_core() {
     let fx = fixture();
     fill(&fx);
