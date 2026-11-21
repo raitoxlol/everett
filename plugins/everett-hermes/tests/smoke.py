@@ -19,8 +19,8 @@ import time
 PLUGIN_ROOT = Path(__file__).resolve().parents[1]
 SIGNED_OUT = "EVERETT_HERMES_SIGNED_OUT"
 SIGNED_IN = "EVERETT_HERMES_SIGNED_IN"
-WHOAMI = "mcp__everett_hermes__everett_whoami"
-LIST = "mcp__everett_hermes__everett_ls"
+WHOAMI = "everett_whoami"
+LIST = "everett_ls"
 TOOL_SEARCH = "tool_search"
 TOOL_DESCRIBE = "tool_describe"
 TOOL_CALL = "tool_call"
@@ -104,9 +104,18 @@ def _targets(marker: str) -> tuple[str, ...]:
     return (WHOAMI,) if marker == SIGNED_OUT else (WHOAMI, LIST)
 
 
-def _next_call(marker: str, messages: list[dict]) -> tuple[str, dict] | None:
+def _next_call(marker: str, messages: list[dict], available: set[str] | None = None) -> tuple[str, dict] | None:
     history = _history_calls(messages)
     names = _targets(marker)
+    direct = available is not None and set(names).issubset(available)
+    if direct:
+        called = {name for name, _ in history}
+        if WHOAMI not in called:
+            return WHOAMI, {}
+        if marker == SIGNED_IN and LIST not in called:
+            return LIST, {"harness": "hermes", "all": True}
+        return None
+
     if not any(name == TOOL_SEARCH for name, _ in history):
         return TOOL_SEARCH, {"queries": ["Everett whoami account identity", "Everett list recent Hermes sessions"]}
 
@@ -161,9 +170,14 @@ class ModelHandler(BaseHTTPRequestHandler):
                 for tool in payload.get("tools", [])
                 if isinstance(tool, dict) and isinstance(tool.get("function"), dict)
             }
-            if not {TOOL_SEARCH, TOOL_DESCRIBE, TOOL_CALL}.issubset(available):
-                raise SmokeFailure("Hermes did not expose the tool_search/describe/call bridge")
-            action = _next_call(marker, messages)
+            targets = set(_targets(marker))
+            has_direct = targets.issubset(available)
+            has_bridge = {TOOL_SEARCH, TOOL_DESCRIBE, TOOL_CALL}.issubset(available)
+            if not has_direct and not has_bridge:
+                raise SmokeFailure(
+                    f"Hermes exposed neither native Everett tools nor the tool_search/describe/call bridge (available={sorted(n for n in available if n)})"
+                )
+            action = _next_call(marker, messages, available=available)
             if action is None:
                 self._send_completion(payload, content="local model completed scripted tool flow")
             else:
@@ -324,6 +338,12 @@ def _make_install_source(root: Path) -> str:
     package = repository / "plugins" / "everett-hermes"
     package.mkdir(parents=True)
     files = (
+        "plugin.yaml",
+        "__init__.py",
+        "_everett.py",
+        "_inbox.py",
+        "_wake.py",
+        "_commands.py",
         "plugin.json",
         "mcp.json",
         "README.md",
@@ -450,18 +470,24 @@ def _tool_results(requests: list[dict]) -> dict[str, str]:
                 continue
             for call in message.get("tool_calls", []):
                 function = call.get("function", {})
-                if not isinstance(function, dict) or function.get("name") != TOOL_CALL:
+                if not isinstance(function, dict):
                     continue
-                arguments = _arguments(function.get("arguments", {}))
+                fname = function.get("name")
                 output = []
                 for following in messages[index + 1:]:
                     if following.get("role") == "assistant":
                         break
                     if following.get("role") == "tool":
                         output.append(_content_text(following.get("content")))
-                entries = arguments.get("calls", [])
-                if output and isinstance(entries, list) and len(entries) == 1 and isinstance(entries[0], dict):
-                    results[entries[0].get("name", "")] = "\n".join(output)
+                if not output:
+                    continue
+                if fname == TOOL_CALL:
+                    arguments = _arguments(function.get("arguments", {}))
+                    entries = arguments.get("calls", [])
+                    if isinstance(entries, list) and len(entries) == 1 and isinstance(entries[0], dict):
+                        results[entries[0].get("name", "")] = "\n".join(output)
+                elif fname in {WHOAMI, LIST}:
+                    results[fname] = "\n".join(output)
     return results
 
 
@@ -678,14 +704,16 @@ def _read_hermes_tool_result(hermes_home: Path, session_id: str, tool_name: str,
                 raise SmokeFailure("Hermes state.db stored malformed tool calls") from exc
             for call in calls:
                 function = call.get("function", {})
-                if function.get("name") != TOOL_CALL:
-                    continue
-                bridge_arguments = _arguments(function.get("arguments", {}))
-                arguments.extend(
-                    target.get("arguments", {})
-                    for target in bridge_arguments.get("calls", [])
-                    if isinstance(target, dict) and target.get("name") == tool_name
-                )
+                fname = function.get("name")
+                if fname == TOOL_CALL:
+                    bridge_arguments = _arguments(function.get("arguments", {}))
+                    arguments.extend(
+                        target.get("arguments", {})
+                        for target in bridge_arguments.get("calls", [])
+                        if isinstance(target, dict) and target.get("name") == tool_name
+                    )
+                elif fname == tool_name:
+                    arguments.append(_arguments(function.get("arguments", {})))
         if role == "tool" and stored_tool_name == tool_name and isinstance(content, str):
             result = content
 
@@ -708,6 +736,8 @@ def _assert_tool_flow(state: ModelState, marker: str, expected: set[str]) -> lis
     requests = state.snapshot(marker)
     calls = _tool_calls(requests)
     names = {name for name, _ in calls}
+    if expected.issubset(names):
+        return requests
     described = {
         tool_name
         for name, arguments in calls if name == TOOL_DESCRIBE
@@ -720,7 +750,7 @@ def _assert_tool_flow(state: ModelState, marker: str, expected: set[str]) -> lis
         for entry in arguments.get("calls", []) if isinstance(entry, dict)
     }
     if not {TOOL_SEARCH, TOOL_DESCRIBE, TOOL_CALL}.issubset(names) or not expected.issubset(described & invoked):
-        raise SmokeFailure(f"Hermes did not complete tool_search/describe/call for {marker}")
+        raise SmokeFailure(f"Hermes did not invoke expected Everett tools for {marker}")
     return requests
 
 
@@ -733,7 +763,7 @@ def _assert_signed_out_result(state: ModelState) -> None:
 
 
 def _assert_client_results(state: ModelState, expected_session_id: str, hermes_home: Path,
-                           chat: subprocess.CompletedProcess) -> tuple[int, bool]:
+                           chat: subprocess.CompletedProcess) -> tuple[int, bool, str]:
     _assert_tool_flow(state, SIGNED_IN, {WHOAMI})
     session_id = _read_oneshot_session_id(hermes_home, chat)
     whoami_text = _read_hermes_tool_result(hermes_home, session_id, WHOAMI, {})
@@ -745,9 +775,9 @@ def _assert_client_results(state: ModelState, expected_session_id: str, hermes_h
     caller_id = caller.get("id") if isinstance(caller, dict) else None
     if not isinstance(caller_id, str):
         caller_id = whoami.get("session_id")
-    if caller_id and caller_id != session_id:
-        raise SmokeFailure("Everett identified a different Hermes session as the caller")
-    return len(sessions), caller_id == session_id
+    if caller_id != session_id:
+        raise SmokeFailure(f"Everett caller identity {caller_id!r} did not match Hermes session {session_id!r}")
+    return len(sessions), True, session_id
 
 
 def _resolve_executable(value: str, label: str) -> Path:
@@ -782,6 +812,8 @@ def main() -> int:
             source = "raitoxlol/everett#plugins/everett-hermes" if arguments.upstream else _make_install_source(temp)
             _run(hermes, ["plugins", "doctor", str(PLUGIN_ROOT), "--ci"], env, home)
             print("Hermes plugin doctor: local checkout passed")
+            _run(hermes, ["plugins", "validate", str(PLUGIN_ROOT)], env, home)
+            print("Hermes plugin validate: local checkout passed (host-ready & safe)")
             _run(hermes, ["plugins", "install", source, "--no-enable"], env, home)
             installed = True
             _run(hermes, ["plugins", "enable", "everett-hermes"], env, home)
@@ -806,27 +838,29 @@ def main() -> int:
                 hermes, env, home, model_url, SIGNED_IN,
                 "Use tool_search, tool_describe, and tool_call for Everett whoami and a Hermes-only session list.")
             try:
-                session_count, identity_bound = _assert_client_results(
+                session_count, identity_bound, signed_in_session_id = _assert_client_results(
                     state, expected_session_id, hermes_home, signed_in_chat)
             except SmokeFailure as exc:
                 raise _failure_with_diagnostics(
                     exc, state,
                     [("signed-out Hermes", signed_out_chat), ("signed-in Hermes", signed_in_chat)],
                     hermes_home) from exc
+            auto_card = home / ".everett" / "cards" / f"{signed_in_session_id}.md"
+            if not auto_card.is_file() or not auto_card.read_text(encoding="utf-8").startswith("<!-- everett:auto -->\n"):
+                raise SmokeFailure(f"native Hermes plugin did not write fallback auto-card at {auto_card}")
             _run(hermes, ["plugins", "remove", "everett-hermes"], env, home)
             installed = False
             if any(row.get("name") == "everett-hermes" for row in _plugin_rows(hermes, env, home)
                    if isinstance(row, dict)):
                 raise SmokeFailure("Hermes plugin manager still listed everett-hermes after removal")
             print(f"Hermes plugin manager: {source} installed, enabled, and removed")
-            print("Hermes client: tool_search -> tool_describe -> tool_call completed")
+            print("Hermes client: native Everett tools executed end-to-end")
             print(f"Signed-out whoami: {ACCOUNT_ERROR} Run `everett login` in this Everett profile, then retry.")
             print("Loopback fixture: whoami account verified; everett_ls returned sessions")
             print(f"Hermes sessions listed: {session_count}")
+            print(f"Hermes fallback card: {auto_card.name} written on session end")
             if identity_bound:
                 print("Hermes caller identity: bound ID matches the calling chat and its state.db row")
-            else:
-                print("Hermes caller identity: unbound for this chat; the smoke supplied no caller ID")
         finally:
             _cleanup_profile(
                 hermes, env, home, installed,

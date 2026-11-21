@@ -1,8 +1,8 @@
 {
   "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
   "name": "everett-hermes",
-  "version": "0.1.0",
-  "description": "Use Everett's local session tools from Hermes Agent.",
+  "version": "0.2.0",
+  "description": "Native Everett integration for Hermes Agent (with portable Agent Plugins v1 fallback).",
   "author": {
     "name": "Wright/raitoxlol"
   },
