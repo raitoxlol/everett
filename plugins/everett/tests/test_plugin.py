@@ -117,7 +117,11 @@ class PluginArtifact(unittest.TestCase):
             self.assertEqual(first.read_bytes(), second.read_bytes())
             self.assertEqual(result['sha256'], hashlib.sha256(first.read_bytes()).hexdigest())
             with zipfile.ZipFile(first) as archive:
-                self.assertEqual(set(archive.namelist()), set(builder.FILES) | {'plugin.json', '.app.json', 'provenance.json'})
+                members = set(archive.namelist())
+                self.assertEqual(members, {
+                    '.codex-plugin/plugin.json', 'README.md', 'check.py', 'skills/everett/SKILL.md',
+                    'plugin.json', '.app.json', 'provenance.json',
+                })
                 local = json.loads(archive.read('.codex-plugin/plugin.json'))
                 portable = json.loads(archive.read('plugin.json'))
                 self.assertEqual(local['version'], portable['version'])
@@ -128,6 +132,7 @@ class PluginArtifact(unittest.TestCase):
                                                     'homepage', 'repository', 'license', 'keywords', 'extensions'})
                 self.assertEqual(json.loads(archive.read('.app.json')), {'apps': {'everett': {'id': APP, 'required': True}}})
                 provenance = json.loads(archive.read('provenance.json'))
+                self.assertEqual(set(provenance['files']), members - {'provenance.json'})
                 for name, expected in provenance['files'].items():
                     self.assertEqual(hashlib.sha256(archive.read(name)).hexdigest(), expected)
                 self.assertEqual(result['source_revision'], provenance['source_revision'])

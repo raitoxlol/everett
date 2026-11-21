@@ -2,7 +2,7 @@
 //! (text, json, exit code) happens here; the modules it calls stay pure of stdout.
 
 use std::io::{IsTerminal, Write};
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 use serde_json::{json, Map, Value};
 
@@ -86,24 +86,6 @@ pub struct Args {
     pub pi: bool,
     pub hermes: bool,
     pub repair: bool,
-    pub onboard_yes: bool,
-    pub onboard_handoff: Option<String>,
-    pub onboard_handoff_preview: bool,
-    pub onboard_span_days_explicit: bool,
-    pub span_days: i64,
-    pub no_backfill: bool,
-    pub no_mcp: bool,
-    pub jev_key_env: Option<String>,
-    pub schedule_merge: bool,
-    pub device: Option<String>,
-    pub open: bool,
-    pub force: bool,
-    pub revoke_device: bool,
-    pub auth_provider: Option<String>,
-    pub auth_issuer: Option<String>,
-    pub auth_base_url: Option<String>,
-    pub auth_cancel: bool,
-    pub auth_no_wait: bool,
 }
 
 fn ago(ts: f64) -> String {
@@ -182,50 +164,11 @@ pub fn cmd_ls(args: &Args) -> i32 {
     0
 }
 
-const REGENERATE_HARNESSES: &[&str] = &["claude", "codex", "grok"];
-
-/// Rewrite every AUTO-marked card among `sessions` with the current builder. Never touches a
-/// missing card or an agent-written one. Returns (rewritten, skipped).
-pub fn regenerate_auto_cards(sessions: &[Session], dry_run: bool) -> std::result::Result<(usize, usize), String> {
-    let mut rewritten = 0usize;
-    let mut skipped = 0usize;
-    for s in sessions {
-        if !REGENERATE_HARNESSES.contains(&s.harness.as_str()) || s.path.is_empty() {
-            skipped += 1;
-            continue;
-        }
-        if !crate::cards::is_auto_card(&s.id) {
-            skipped += 1;
-            continue;
-        }
-        let content = crate::hooks_common::auto_card(Path::new(&s.path), &s.harness, &s.cwd, &s.id);
-        if content.is_empty() {
-            skipped += 1;
-            continue;
-        }
-        let Some(target) = crate::cards::card_path(&s.id) else {
-            skipped += 1; // invalid session id: nothing safe to write
-            continue;
-        };
-        let current = std::fs::read_to_string(&target).ok();
-        if current.as_deref() == Some(content.as_str()) {
-            skipped += 1;
-            continue;
-        }
-        if !dry_run {
-            std::fs::write(&target, &content)
-                .map_err(|e| format!("cannot write {}: {}", target.display(), e))?;
-        }
-        rewritten += 1;
-    }
-    Ok((rewritten, skipped))
-}
-
 pub fn cmd_cards(args: &Args) -> i32 {
     if args.regenerate_auto {
         let hours = args.regen_hours.unwrap_or(args.hours);
         let sessions = crate::registry::scan(hours, true, None, "");
-        let (rewritten, skipped) = match regenerate_auto_cards(&sessions, args.dry_run) {
+        let (rewritten, skipped) = match crate::cards::regenerate_auto(&sessions, args.dry_run) {
             Ok(pair) => pair,
             Err(e) => {
                 eprintln!("everett: {e}");
@@ -239,15 +182,15 @@ pub fn cmd_cards(args: &Args) -> i32 {
     let hours = args.regen_hours.unwrap_or(args.hours);
     let sessions = crate::registry::scan(hours, true, None, "");
     let (counts, totals) = crate::cards::coverage(&sessions);
-    println!("Sessions (last {} hours): {}", crate::fmt::g(hours), totals[0]);
-    println!("Agent cards: {}", totals[1]);
-    println!("Auto cards: {}", totals[2]);
-    println!("Missing: {}", totals[3]);
+    println!("Sessions (last {} hours): {}", crate::fmt::g(hours), totals.total());
+    println!("Agent cards: {}", totals.agent);
+    println!("Auto cards: {}", totals.auto);
+    println!("Missing: {}", totals.missing);
     println!("Per harness:");
     for (harness, item) in &counts {
         println!(
             "  {}: {} sessions, {} agent, {} auto, {} missing",
-            harness, item["total"], item["agent"], item["auto"], item["missing"]
+            harness, item.total(), item.agent, item.auto, item.missing
         );
     }
     0
@@ -449,7 +392,7 @@ fn spawn_cmd(args: &Args, r: &Map<String, Value>, sessions: &[Session]) -> i32 {
             &payload,
             vec![
                 Some(format!("DRY RUN  spawn NEW [{}] {}", harness, cwd)),
-                Some(format!("  {}", crate::send::format_command(&command))),
+                Some(format!("  {}", crate::proc::shlex_join(&command))),
             ],
         );
         return 0;
@@ -722,11 +665,11 @@ pub fn cmd_send(args: &Args) -> i32 {
     }
     if args.dry_run {
         let text = args.text.as_deref().unwrap_or("");
-        if mode == "ping" && (text.trim().is_empty() || text.len() > crate::peer::BODY_CAP
-            || !args.timeout.is_finite() || args.timeout <= 0.0)
-        {
-            eprintln!("everett: Ping requires non-empty text within 64 KiB and a positive finite timeout");
-            return 2;
+        if mode == "ping" {
+            if let Err(error) = crate::send::validate_ping(text, args.timeout) {
+                eprintln!("everett: {error}");
+                return error.code;
+            }
         }
         let ping_transport = if mode == "ping" {
             crate::send::ping_transport(&session, None)
@@ -770,7 +713,7 @@ pub fn cmd_send(args: &Args) -> i32 {
         if let crate::send::Delivery::Ping(Some(binding)) = &delivery {
             payload.insert("thread_id".into(), json!(binding.thread));
         }
-        let preview = command.as_ref().map(|argv| crate::send::format_command(argv))
+        let preview = command.as_ref().map(|argv| crate::proc::shlex_join(argv))
             .unwrap_or_else(|| format!("{transport} inbox nudge; no provider resume command"));
         emit(
             args.json,
@@ -857,7 +800,7 @@ fn send_wake_cmd(args: &Args, r: &Map<String, Value>, session: &Session, label: 
     let (reply, reply_error) = if matches!(&wake, crate::claude_wake::WakeOutcome::Cancelled { .. }) {
         (None, None)
     } else if args.wait > 0.0 && !message_id.is_empty() {
-        match wait_target_reply(crate::inbox::HUMAN, &message_id, &session.id, args.wait, 1.0) {
+        match crate::inbox::wait_target_reply(crate::inbox::HUMAN, &message_id, &session.id, args.wait, 1.0) {
             Ok(reply) => (reply, None),
             Err(error) => (None, Some(error)),
         }
@@ -903,29 +846,6 @@ fn send_wake_cmd(args: &Args, r: &Map<String, Value>, session: &Session, label: 
     } else {
         4
     }
-}
-
-fn wait_target_reply(sender: &str, message_id: &str, target_id: &str, wait: f64, poll: f64) -> std::result::Result<Option<Map<String, Value>>, String> {
-    let deadline = crate::session::now() + wait.max(0.0);
-    loop {
-        for item in crate::inbox::pending(sender, None) {
-            if is_target_reply(&item, message_id, target_id) {
-                if let Some(id) = item.get("id").and_then(Value::as_str) {
-                    crate::inbox::persist_relay_context(sender, &[id]).map_err(|error| error.message)?;
-                    crate::inbox::mark_done(sender, &[id]);
-                }
-                return Ok(Some(item));
-            }
-        }
-        let now = crate::session::now();
-        if now >= deadline { return Ok(None); }
-        std::thread::sleep(std::time::Duration::from_secs_f64(poll.min(deadline - now).max(0.001)));
-    }
-}
-
-fn is_target_reply(item: &Map<String, Value>, message_id: &str, target_id: &str) -> bool {
-    item.get("reply_to").and_then(Value::as_str) == Some(message_id)
-        && item.get("from").and_then(Value::as_str) == Some(target_id)
 }
 
 fn wake_json(outcome: &crate::claude_wake::WakeOutcome) -> Value {
@@ -1104,7 +1024,7 @@ pub fn cmd_status(message_id: &str, json: bool) -> i32 {
     let caller = crate::host::caller_session_id();
     let sender = if caller.is_empty() { crate::inbox::HUMAN } else { &caller };
     match crate::inbox::sent_status(sender, message_id).and_then(|status| {
-        crate::inbox::persist_status_reply_context(sender, &status["reply"])?;
+        crate::inbox::reveal_status_reply(sender, &status)?;
         Ok(status)
     }) {
         Ok(status) => {
@@ -1136,22 +1056,9 @@ pub fn cmd_inbox(args: &Args) -> i32 {
         .session
         .clone()
         .unwrap_or(if caller.is_empty() { crate::inbox::HUMAN.to_string() } else { caller });
-    let mut items = crate::inbox::pending(&sid, None);
-    if let Some(mid) = args.message.as_deref() {
-        items.retain(|m| m.get("id").and_then(Value::as_str) == Some(mid));
-    }
-    if let Some(original_id) = args.reply_to.as_deref() {
-        items.retain(|item| crate::inbox::is_reply_to(item, original_id));
-    }
-    let viewed_ids: Vec<&str> = items
-        .iter()
-        .filter_map(|m| m.get("id").and_then(Value::as_str))
-        .collect();
-    let read = if args.peek {
-        crate::inbox::persist_relay_context(&sid, &viewed_ids).map(|()| None)
-    } else {
-        crate::inbox::claim_pending(&sid, &viewed_ids).map(Some)
-    };
+    let mut items = crate::inbox::pending_matching(&sid, args.message.as_deref(), args.reply_to.as_deref());
+    let viewed_ids: Vec<&str> = items.iter().filter_map(|m| m.get("id").and_then(Value::as_str)).collect();
+    let read = crate::inbox::reveal_pending(&sid, &viewed_ids, args.peek);
     let claimed = match read {
         Ok(claimed) => claimed,
         Err(error) => {
@@ -1563,42 +1470,31 @@ pub fn cmd_core(args: &Args) -> i32 {
     }
 }
 
-fn harnesses(args: &Args, mcp: bool) -> Vec<String> {
-    let mut choices = vec!["claude", "codex"];
-    for (h, asked) in [("omp", args.omp), ("grok", args.grok), ("pi", args.pi), ("devin", args.devin)] {
-        if asked || crate::install::harness_present(h) {
-            choices.push(h);
-        }
+fn harnesses(args: &Args, mcp: bool) -> Vec<&'static str> {
+    let choices = [
+        ("claude", args.claude),
+        ("codex", args.codex),
+        ("omp", args.omp),
+        ("grok", args.grok),
+        ("pi", args.pi),
+        ("devin", args.devin),
+        ("hermes", mcp && args.hermes),
+    ];
+    let explicit: Vec<_> = choices.iter().filter_map(|&(name, selected)| selected.then_some(name)).collect();
+    if !explicit.is_empty() {
+        return explicit;
     }
-    if mcp && args.hermes {
-        choices.push("hermes");
-    }
-    let mut picked: Vec<String> = Vec::new();
-    for h in &choices {
-        if match *h {
-            "claude" => args.claude,
-            "codex" => args.codex,
-            "omp" => args.omp,
-            "grok" => args.grok,
-            "devin" => args.devin,
-            "pi" => args.pi,
-            "hermes" => args.hermes,
-            _ => false,
-        } {
-            picked.push(h.to_string());
-        }
-    }
-    if picked.is_empty() {
-        choices.iter().map(|h| h.to_string()).collect()
-    } else {
-        picked
-    }
+    choices.iter().map(|&(name, _)| name).filter(|&name| match name {
+        "claude" | "codex" => true,
+        "hermes" => false,
+        _ => crate::install::harness_present(name),
+    }).collect()
 }
 
 pub fn cmd_install_hooks(args: &Args) -> i32 {
     for harness in harnesses(args, false) {
         if args.apply {
-            match crate::install::apply(&harness, None) {
+            match crate::install::apply(harness, None) {
                 Ok(msg) => println!("{}", msg),
                 Err(e) => {
                     eprintln!("everett: {}: {}", harness, e);
@@ -1607,17 +1503,13 @@ pub fn cmd_install_hooks(args: &Args) -> i32 {
             }
         } else {
             println!("## {}", harness);
-            println!("{}", crate::install::snippet(&harness));
+            println!("{}", crate::install::snippet(harness));
         }
     }
     if !args.apply {
         println!("# run again with --apply to merge these (a backup is written first)");
     }
     0
-}
-
-pub fn cmd_mcp(_args: &Args) -> i32 {
-    crate::mcp::serve()
 }
 
 pub fn cmd_install_mcp(args: &Args) -> i32 {
@@ -1627,7 +1519,7 @@ pub fn cmd_install_mcp(args: &Args) -> i32 {
     }
     for harness in harnesses(args, true) {
         if args.apply {
-            match crate::install::apply_mcp(&harness, args.repair) {
+            match crate::install::apply_mcp(harness, args.repair) {
                 Ok(msg) => println!("{}", msg),
                 Err(e) => {
                     eprintln!("everett: {}: {}", harness, e);
@@ -1636,7 +1528,7 @@ pub fn cmd_install_mcp(args: &Args) -> i32 {
             }
         } else {
             println!("## {}", harness);
-            println!("{}", crate::install::mcp_snippet(&harness));
+            println!("{}", crate::install::mcp_snippet(harness));
         }
     }
     if !args.apply {
@@ -1645,84 +1537,38 @@ pub fn cmd_install_mcp(args: &Args) -> i32 {
     0
 }
 
-pub fn cmd_doctor(args: &Args) -> i32 {
-    crate::doctor::run(args.hours)
-}
-
-fn auth_provider(args: &Args) -> crate::error::Result<()> {
-    match args.auth_provider.as_deref() {
+fn auth_provider(provider: Option<&str>) -> crate::error::Result<()> {
+    match provider {
         Some("cloudflare") => Ok(()),
         Some(_) => Err(crate::error::EverettError::new(2, "auth.provider must be cloudflare")),
         None => crate::cloudflare_auth::require_provider(),
     }
 }
 
-pub fn cmd_login(args: &Args) -> i32 {
-    match auth_provider(args) {
-        Ok(()) => crate::cloudflare_auth::cmd_login(args),
+pub fn cmd_login(provider: Option<&str>, options: &crate::cloudflare_auth::LoginOptions, json: bool) -> i32 {
+    match auth_provider(provider) {
+        Ok(()) => crate::cloudflare_auth::cmd_login(options, json),
         Err(e) => { eprintln!("everett login: {e}"); e.code },
     }
 }
 
-pub fn cmd_whoami(args: &Args) -> i32 {
-    match auth_provider(args) {
-        Ok(()) => crate::cloudflare_auth::cmd_whoami(args),
+pub fn cmd_whoami(provider: Option<&str>, json: bool) -> i32 {
+    match auth_provider(provider) {
+        Ok(()) => crate::cloudflare_auth::cmd_whoami(json),
         Err(e) => { eprintln!("everett whoami: {e}"); e.code },
     }
 }
 
-pub fn cmd_logout(args: &Args) -> i32 {
-    match auth_provider(args) {
-        Ok(()) => crate::cloudflare_auth::cmd_logout(args),
+pub fn cmd_logout(provider: Option<&str>, revoke_device: bool, json: bool) -> i32 {
+    match auth_provider(provider) {
+        Ok(()) => crate::cloudflare_auth::cmd_logout(revoke_device, json),
         Err(e) => { eprintln!("everett logout: {e}"); e.code },
     }
-}
-
-pub fn cmd_onboard(args: &Args) -> i32 {
-    if args.onboard_handoff.is_some() || args.onboard_handoff_preview {
-        return crate::onboard_handoff::run(args);
-    }
-    crate::onboard::run(args)
-}
-
-pub fn cmd_hook(stem: &str, rest: &[String]) -> i32 {
-    crate::hooks_common::hook_main(stem, rest)
 }
 
 #[cfg(test)]
 mod wake_reply_tests {
     use super::*;
-
-    #[test]
-    fn wake_reply_must_match_both_message_and_target_session() {
-        let correct = serde_json::from_value::<Map<String, Value>>(json!({
-            "id":"mreply00001", "reply_to":"mrequest0001", "from":"target-session"
-        }))
-        .unwrap();
-        let wrong_target = serde_json::from_value::<Map<String, Value>>(json!({
-            "id":"mreply00002", "reply_to":"mrequest0001", "from":"other-session"
-        }))
-        .unwrap();
-        let wrong_message = serde_json::from_value::<Map<String, Value>>(json!({
-            "id":"mreply00003", "reply_to":"other-message", "from":"target-session"
-        }))
-        .unwrap();
-        assert!(is_target_reply(
-            &correct,
-            "mrequest0001",
-            "target-session"
-        ));
-        assert!(!is_target_reply(
-            &wrong_target,
-            "mrequest0001",
-            "target-session"
-        ));
-        assert!(!is_target_reply(
-            &wrong_message,
-            "mrequest0001",
-            "target-session"
-        ));
-    }
 
     #[test]
     fn wake_cli_rejects_noninteractive_invocation_before_session_lookup() {

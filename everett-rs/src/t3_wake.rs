@@ -7,11 +7,9 @@
 use crate::adapters::{t3_cli, t3code};
 use crate::error::{EverettError, Result};
 use crate::session::{clean, Session};
-use rusqlite::{params, Connection, OptionalExtension, TransactionBehavior};
+use crate::inbox::t3_dispatch::{dispatch_once, Binding, DispatchFailure};
 use serde_json::{json, Map, Value};
-use std::collections::HashSet;
 use std::path::Path;
-use std::time::Duration;
 
 pub const SEND_TIMEOUT: f64 = 20.0;
 
@@ -20,25 +18,8 @@ fn resolved_data_home() -> Result<String> {
         .ok_or_else(|| EverettError::new(4, "Cannot resolve the T3 data folder for dispatch."))
 }
 
-/// The T3 thread that drives this provider session, if any.
-pub fn thread_id(session: &Session) -> Option<String> {
-    thread_id_in(session, &t3code::db_path())
-}
-
-fn thread_id_in(session: &Session, db_path: &Path) -> Option<String> {
-    t3code::threads(db_path)
-        .get(&(session.harness.clone(), session.id.clone()))
-        .map(|(thread, _)| thread.clone())
-        .filter(|t| !t.is_empty() && session.t3_thread_id.as_ref().is_none_or(|expected| expected == t))
-}
-
 pub fn validate_target(session: &Session) -> Result<String> {
     Ok(validate_binding(session)?.thread)
-}
-
-pub(crate) struct Binding {
-    pub thread: String,
-    pub data_home: String,
 }
 
 pub(crate) fn validate_binding(session: &Session) -> Result<Binding> {
@@ -46,12 +27,12 @@ pub(crate) fn validate_binding(session: &Session) -> Result<Binding> {
         "No active T3 thread resolves to this provider session. Nothing was queued. Use --mode inbox for manual pickup.");
     let data_home = resolved_data_home().map_err(|_| unavailable())?;
     let home = Path::new(&data_home);
-    let thread = thread_id_in(session, &t3code::db_path_in(home)).ok_or_else(unavailable)?;
+    let thread = t3code::thread_id_in(session, &t3code::db_path_in(home)).ok_or_else(unavailable)?;
     if t3_cli::binary_in(home).is_none() {
         return Err(EverettError::new(4,
             "T3 Code CLI (t3) is unavailable. Set EVERETT_T3_BIN to an executable, install t3 on PATH or in ~/.t3/bin, or use --mode inbox. Nothing was queued."));
     }
-    Ok(Binding { thread, data_home })
+    Ok(Binding { thread, harness: session.harness.clone(), data_home })
 }
 
 pub fn nudge(session: &Session, message_id: &str) -> Result<String> {
@@ -71,23 +52,6 @@ pub fn wake(thread: &str, session: &Session, message_id: &str) -> Result<String>
     wake_with_timeout(thread, session, message_id, SEND_TIMEOUT)
 }
 
-pub(crate) struct DispatchFailure {
-    pub error: EverettError,
-    pub retryable: bool,
-}
-
-impl DispatchFailure {
-    fn uncertain(message: impl Into<String>) -> Self {
-        Self { error: EverettError::new(4, message), retryable: false }
-    }
-}
-
-impl From<EverettError> for DispatchFailure {
-    fn from(error: EverettError) -> Self {
-        Self { error, retryable: true }
-    }
-}
-
 pub(crate) fn wake_bound(binding: &Binding, session: &Session, message_id: &str) -> std::result::Result<String, DispatchFailure> {
     let (receipt, _) = dispatch_once(&session.id, message_id, || {
         wake_checked(&binding.thread, &binding.data_home, session, message_id, SEND_TIMEOUT, || Ok(()))
@@ -95,104 +59,17 @@ pub(crate) fn wake_bound(binding: &Binding, session: &Session, message_id: &str)
     Ok(receipt)
 }
 
-fn journal_error(error: rusqlite::Error) -> DispatchFailure {
-    DispatchFailure {
-        error: EverettError::new(4, format!("Cannot record T3 dispatch confirmation: {error}")),
-        retryable: false,
-    }
-}
-
-fn journal_path() -> std::path::PathBuf {
-    crate::inbox::inbox_dir().join("t3-dispatch.sqlite")
-}
-
-pub(crate) fn forget_retired_dispatches(target: &str, live_ids: &HashSet<&str>, mailbox: &Path) -> rusqlite::Result<()> {
-    if !journal_path().is_file() {
-        return Ok(());
-    }
-    let mut journal = Connection::open_with_flags(journal_path(), rusqlite::OpenFlags::SQLITE_OPEN_READ_WRITE)?;
-    journal.busy_timeout(Duration::from_millis(50))?;
-    let transaction = journal.transaction_with_behavior(TransactionBehavior::Immediate)?;
-    let retired = {
-        let mut query = transaction.prepare("SELECT message_id FROM dispatch WHERE target = ?1")?;
-        let mut rows = query.query([target])?;
-        let mut retired = Vec::new();
-        while let Some(row) = rows.next()? {
-            let id: String = row.get(0)?;
-            if !live_ids.contains(id.as_str()) {
-                retired.push(id);
-            }
-        }
-        retired
-    };
-    // The mailbox lock is held by compaction. Confirm durable retirement before forgetting receipts.
-    if retired.is_empty()
-        || std::fs::File::open(mailbox).and_then(|file| file.sync_all()).is_err()
-        || std::fs::File::open(crate::inbox::inbox_dir()).and_then(|dir| dir.sync_all()).is_err()
-    {
-        return Ok(());
-    }
-    for id in retired {
-        transaction.execute("DELETE FROM dispatch WHERE target = ?1 AND message_id = ?2", params![target, id])?;
-    }
-    transaction.commit()
-}
-
-fn dispatch_once(
-    target: &str, message_id: &str, dispatch: impl FnOnce() -> std::result::Result<String, DispatchFailure>,
-) -> std::result::Result<(String, bool), DispatchFailure> {
-    let mut journal = Connection::open(journal_path())
-        .map_err(journal_error)?;
-    journal.busy_timeout(Duration::from_secs(1)).map_err(journal_error)?;
-    journal.execute_batch("CREATE TABLE IF NOT EXISTS dispatch (
-        target TEXT NOT NULL, message_id TEXT NOT NULL, receipt TEXT,
-        PRIMARY KEY (target, message_id)
-    )").map_err(journal_error)?;
-    let reserve = journal.transaction_with_behavior(TransactionBehavior::Immediate).map_err(journal_error)?;
-    let recorded: Option<Option<String>> = reserve.query_row(
-        "SELECT receipt FROM dispatch WHERE target = ?1 AND message_id = ?2", params![target, message_id],
-        |row| row.get(0),
-    ).optional().map_err(journal_error)?;
-    match recorded {
-        Some(Some(receipt)) => return Ok((receipt, true)),
-        Some(None) => return Err(DispatchFailure {
-            error: EverettError::new(4, "T3 dispatch is in progress or its confirmation could not be saved. Check the original request and the T3 thread."),
-            retryable: false,
-        }),
-        None => {}
-    }
-    reserve.execute("INSERT INTO dispatch (target, message_id) VALUES (?1, ?2)",
-        params![target, message_id]).map_err(journal_error)?;
-    reserve.commit().map_err(journal_error)?;
-
-    match dispatch() {
-        Ok(receipt) => {
-            journal.execute("UPDATE dispatch SET receipt = ?3 WHERE target = ?1 AND message_id = ?2",
-                params![target, message_id, receipt]).map_err(journal_error)?;
-            Ok((receipt, false))
-        }
-        Err(failure) if failure.retryable => {
-            journal.execute("DELETE FROM dispatch WHERE target = ?1 AND message_id = ?2",
-                params![target, message_id]).map_err(journal_error)?;
-            Err(failure)
-        }
-        Err(failure) => Err(failure),
-    }
-}
-
 pub(crate) fn retry(sender: &str, message_id: &str) -> Result<Map<String, Value>> {
     crate::send::require_local_prompt(Some(sender))?;
     let (target, request) = crate::inbox::queued_local_request(sender, message_id)?;
     let missing_binding = || EverettError::new(2, "This request has no original T3 ping binding. Use inbox pickup.");
-    let binding = request.get("t3_ping").ok_or_else(missing_binding)?;
-    let thread = binding.get("thread_id").and_then(Value::as_str).ok_or_else(missing_binding)?;
-    let harness = binding.get("harness").and_then(Value::as_str).ok_or_else(missing_binding)?;
-    let data_home = binding.get("data_home").and_then(Value::as_str).ok_or_else(missing_binding)?;
-    if resolved_data_home()? != data_home {
+    let binding = Binding::from_request(&request).ok_or_else(missing_binding)?;
+    if resolved_data_home()? != binding.data_home {
         return Err(EverettError::new(4, "The T3 data folder changed since the original ping."));
     }
-    let session = Session::new(harness, &target, "", "", "", 0.0);
-    let (receipt, already_dispatched) = dispatch_once(&target, message_id, || wake_checked(thread, data_home, &session, message_id, SEND_TIMEOUT, || {
+    let session = Session::new(&binding.harness, &target, "", "", "", 0.0);
+    let thread = &binding.thread;
+    let (receipt, already_dispatched) = dispatch_once(&target, message_id, || wake_checked(thread, &binding.data_home, &session, message_id, SEND_TIMEOUT, || {
         crate::send::require_local_prompt(Some(sender))?;
         let (current_target, current_request) = crate::inbox::queued_local_request(sender, message_id)?;
         if current_target != target || current_request != request {
@@ -226,7 +103,7 @@ fn wake_checked(
     }
     let home = Path::new(data_home);
     let db_path = t3code::db_path_in(home);
-    if thread_id_in(session, &db_path).as_deref() != Some(thread) {
+    if t3code::thread_id_in(session, &db_path).as_deref() != Some(thread) {
         return Err(EverettError::new(4, "The T3 thread binding changed before dispatch. No nudge was sent.").into());
     }
     let bin = t3_cli::binary_in(home).ok_or_else(|| {

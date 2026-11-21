@@ -24,6 +24,8 @@ const stateRank: Record<MessageState, number> = { queued: 0, expired: 0, deliver
 const watcherSchema = principalSchema.pick({ agentId: true, expiresAt: true }).extend({ fingerprint: z.string().regex(/^[0-9a-f]{64}$/) });
 const inboxChanged = JSON.stringify({ type: 'inbox_changed' });
 
+const meshLimit = { devices: 256, sessions: 256, receipts: 100 } as const;
+
 export class OwnerRelay extends DurableObject {
   constructor(ctx: DurableObjectState, env: Cloudflare.Env) {
     super(ctx, env);
@@ -158,26 +160,26 @@ export class OwnerRelay extends DurableObject {
     const p = principalSchema.parse(input);
     this.#authorize(p);
     const now = Date.now();
-    const devices = this.ctx.storage.sql.exec<{ agent_id: string; at: number | null }>("SELECT d.agent_id,s.at FROM devices d JOIN credentials c ON c.agent_id=d.agent_id JOIN members m ON m.subject=c.subject LEFT JOIN mesh_seen s ON s.agent_id=d.agent_id WHERE c.subject=? AND c.status='active' AND m.status='active' ORDER BY d.agent_id LIMIT 257", p.subject).toArray();
-    const deviceCap = devices.length > 256;
-    const displayedDevices = devices.slice(0, 256);
+    const devices = this.ctx.storage.sql.exec<{ agent_id: string; at: number | null }>("SELECT d.agent_id,s.at FROM devices d JOIN credentials c ON c.agent_id=d.agent_id JOIN members m ON m.subject=c.subject LEFT JOIN mesh_seen s ON s.agent_id=d.agent_id WHERE c.subject=? AND c.status='active' AND m.status='active' ORDER BY d.agent_id LIMIT ?", p.subject, meshLimit.devices + 1).toArray();
+    const deviceCap = devices.length > meshLimit.devices;
+    const displayedDevices = devices.slice(0, meshLimit.devices);
     const lastDeviceId = displayedDevices.at(-1)?.agent_id ?? null;
     const activeSessions = "FROM session_cards s JOIN devices d ON d.agent_id=s.agent_id JOIN credentials c ON c.agent_id=s.agent_id WHERE c.subject=? AND c.status='active'";
     const sessions = this.ctx.storage.sql.exec<{ agent_id: string; session: string; harness: string; updated_at: number }>(
-      `SELECT s.agent_id,s.session,s.harness,s.updated_at ${activeSessions} AND s.agent_id<=? ORDER BY s.updated_at DESC,s.seq DESC LIMIT 257`,
-      p.subject, lastDeviceId,
+      `SELECT s.agent_id,s.session,s.harness,s.updated_at ${activeSessions} AND s.agent_id<=? ORDER BY s.updated_at DESC,s.seq DESC LIMIT ?`,
+      p.subject, lastDeviceId, meshLimit.sessions + 1,
     ).toArray();
     const omittedSessions = deviceCap && !!this.#row(
       `SELECT 1 ${activeSessions} AND s.agent_id>? LIMIT 1`, p.subject, lastDeviceId,
     );
     const queue = this.#row<{ queued: number }>("SELECT count(*) queued FROM attempts a JOIN credentials f ON f.agent_id=a.from_device JOIN credentials t ON t.agent_id=a.to_device WHERE f.subject=? AND t.subject=? AND f.status='active' AND t.status='active' AND a.state='queued' AND a.expires_at>?", p.subject,p.subject,now)!;
-    const receipts = this.ctx.storage.sql.exec<{ message_id: string; device_id: string; state: string; at: number }>("SELECT r.message_id,r.device_id,r.state,r.at FROM mesh_receipts r JOIN attempts a ON a.message_id=r.message_id JOIN credentials f ON f.agent_id=a.from_device JOIN credentials t ON t.agent_id=a.to_device WHERE f.subject=? AND t.subject=? AND f.status='active' AND t.status='active' ORDER BY r.seq DESC LIMIT 101",p.subject,p.subject).toArray();
+    const receipts = this.ctx.storage.sql.exec<{ message_id: string; device_id: string; state: string; at: number }>("SELECT r.message_id,r.device_id,r.state,r.at FROM mesh_receipts r JOIN attempts a ON a.message_id=r.message_id JOIN credentials f ON f.agent_id=a.from_device JOIN credentials t ON t.agent_id=a.to_device WHERE f.subject=? AND t.subject=? AND f.status='active' AND t.status='active' ORDER BY r.seq DESC LIMIT ?",p.subject,p.subject,meshLimit.receipts + 1).toArray();
     return {
       version: 'everett.mesh.v1' as const, source: 'cloudflare' as const, owner: namespace(p), serverNow: now,
       devices: displayedDevices.map(d => ({ deviceId:d.agent_id,lastSeen:d.at,lastSeenConfidence:d.at === null ? 'unavailable' : 'server-observed-request' })),
-      sessions: sessions.slice(0,256).map(s => ({ deviceId:s.agent_id,sessionId:s.session,harness:s.harness,lastSeen:s.updated_at,lastSeenConfidence:'server-observed-exposure',selfReported:{ status:null,confidence:'unavailable',observedAt:null } })),
-      queue, receipts:receipts.slice(0,100).map(r => ({ messageId:r.message_id,deviceId:r.device_id,state:r.state,at:r.at,confidence:'signed-device-observation' })),
-      truncated: { devices:deviceCap,sessions:sessions.length>256 || omittedSessions,receipts:receipts.length>100 },
+      sessions: sessions.slice(0,meshLimit.sessions).map(s => ({ deviceId:s.agent_id,sessionId:s.session,harness:s.harness,lastSeen:s.updated_at,lastSeenConfidence:'server-observed-exposure',selfReported:{ status:null,confidence:'unavailable',observedAt:null } })),
+      queue, receipts:receipts.slice(0,meshLimit.receipts).map(r => ({ messageId:r.message_id,deviceId:r.device_id,state:r.state,at:r.at,confidence:'signed-device-observation' })),
+      truncated: { devices:deviceCap,sessions:sessions.length>meshLimit.sessions || omittedSessions,receipts:receipts.length>meshLimit.receipts },
     };
   }
   async revokeCredential(identityInput: Identity, agentIdInput: string): Promise<boolean> {

@@ -6,9 +6,6 @@
 //! or starting promotes text to an owner prompt and reading discloses transcripts.
 //! `stop` is reported per harness; no harness exposes a safe stop to Everett yet.
 
-use std::collections::VecDeque;
-use std::io::{self, BufRead, BufReader};
-
 use serde_json::{json, Map, Value};
 
 use crate::error::{EverettError, Result};
@@ -75,7 +72,7 @@ fn thread_for(thread: &str, session: Option<&Session>) -> Option<String> {
     if !thread.is_empty() {
         return Some(thread.to_string());
     }
-    session.and_then(crate::t3_wake::thread_id)
+    session.and_then(crate::adapters::t3code::thread_id)
 }
 
 pub fn threads(project: &str) -> Result<Value> {
@@ -183,25 +180,7 @@ pub fn read(thread: &str, session: Option<&Session>, messages: usize, caller: Op
         return Ok(json!({"via": "t3", "thread": thread, "result": result}));
     }
     let session = session.ok_or_else(|| EverettError::new(2, "read needs session or thread."))?;
-    if session.harness == "devin" && std::path::Path::new(&session.path).extension().and_then(|e| e.to_str()) != Some("json") {
-        return Err(EverettError::new(4, "read is not supported for devin SQLite sessions yet."));
-    }
-    let unreadable = |e: String| EverettError::new(4, format!("Cannot read the {} transcript: {e}", session.harness));
-    let tail = if session.harness == "devin" {
-        crate::adapters::devin::transcript_messages(std::path::Path::new(&session.path), messages).map_err(unreadable)?
-    } else if session.harness == "hermes" {
-        crate::adapters::hermes::messages(&std::path::PathBuf::from(&session.path), &session.id, messages)
-            .map_err(unreadable)?
-            .into_iter()
-            .map(|(role, text)| json!({"role": role, "text": text.chars().take(4000).collect::<String>()}))
-            .collect()
-    } else {
-        // Grok stores a session directory; its messages live in chat_history.jsonl.
-        let path = std::path::Path::new(&session.path);
-        let file = if path.is_dir() { path.join("chat_history.jsonl") } else { path.to_path_buf() };
-        let file = std::fs::File::open(file).map_err(|e| unreadable(e.to_string()))?;
-        read_transcript_tail(BufReader::new(file), messages).map_err(|e| unreadable(e.to_string()))?
-    };
+    let tail = crate::adapters::transcript::read(session, messages)?;
     Ok(json!({
         "via": "transcript",
         "session_id": session.id,
@@ -216,7 +195,7 @@ pub fn read(thread: &str, session: Option<&Session>, messages: usize, caller: Op
 
 /// Explicit per-harness answer; Everett never kills a user's interactive session.
 pub fn stop(thread: &str, session: Option<&Session>) -> Result<Value> {
-    let target = if !thread.is_empty() || session.and_then(crate::t3_wake::thread_id).is_some() {
+    let target = if !thread.is_empty() || session.and_then(crate::adapters::t3code::thread_id).is_some() {
         "t3"
     } else {
         session.map(|s| s.harness.as_str()).unwrap_or("")
@@ -227,68 +206,6 @@ pub fn stop(thread: &str, session: Option<&Session>) -> Result<Value> {
         _ => "Everett starts headless runs synchronously and does not own interactive sessions, so it has no process it may stop. Stop it in its own terminal or app.",
     };
     Err(EverettError::new(4, format!("stop is not supported for {}: {reason}", if target.is_empty() { "this target" } else { target })))
-}
-
-/// Last `limit` user/assistant text messages from a JSONL transcript of any
-/// supported harness. Finds `{role, content}` objects at any depth, so Claude
-/// (`message`), Codex (`payload`) and plain chat rows all parse.
-pub fn transcript_tail(text: &str, limit: usize) -> Vec<Value> {
-    read_transcript_tail(text.as_bytes(), limit).expect("a UTF-8 string is readable")
-}
-
-fn read_transcript_tail(mut reader: impl BufRead, limit: usize) -> io::Result<Vec<Value>> {
-    let mut out = VecDeque::new();
-    if limit == 0 {
-        return Ok(Vec::new());
-    }
-    let mut line = String::new();
-    loop {
-        line.clear();
-        if reader.read_line(&mut line)? == 0 {
-            break;
-        }
-        let Ok(row) = serde_json::from_str::<Value>(&line) else { continue };
-        if let Some((role, body)) = find_message(&row, 0) {
-            if !body.trim().is_empty() {
-                let body: String = body.chars().take(4000).collect();
-                if out.len() == limit {
-                    out.pop_front();
-                }
-                out.push_back(json!({"role": role, "text": body}));
-            }
-        }
-    }
-    Ok(out.into())
-}
-
-fn find_message(v: &Value, depth: usize) -> Option<(String, String)> {
-    let obj = v.as_object()?;
-    if obj.contains_key("synthetic_reason") {
-        return None;
-    }
-    // Grok rows carry the speaker in `type` instead of `role`.
-    let role = obj.get("role").or_else(|| obj.get("type")).and_then(Value::as_str);
-    if let (Some(role), Some(content)) = (role, obj.get("content")) {
-        if matches!(role, "user" | "assistant") {
-            return Some((role.to_string(), content_text(content)));
-        }
-    }
-    if depth >= 3 {
-        return None;
-    }
-    obj.values().find_map(|child| find_message(child, depth + 1))
-}
-
-fn content_text(content: &Value) -> String {
-    match content {
-        Value::String(s) => s.clone(),
-        Value::Array(parts) => parts.iter()
-            .filter(|p| matches!(p.get("type").and_then(Value::as_str), Some("text" | "input_text" | "output_text")))
-            .filter_map(|p| p.get("text").and_then(Value::as_str))
-            .collect::<Vec<_>>()
-            .join("\n"),
-        _ => String::new(),
-    }
 }
 
 pub fn as_map(v: Value) -> Map<String, Value> {
@@ -305,23 +222,6 @@ pub fn as_map(v: Value) -> Map<String, Value> {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn tail_reads_claude_codex_and_plain_rows() {
-        let text = [
-            r#"{"type":"user","message":{"role":"user","content":"hi claude"}}"#,
-            r#"{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"hello"},{"type":"tool_use","name":"x"}]}}"#,
-            r#"{"type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"codex ask"}]}}"#,
-            r#"{"type":"response_item","payload":{"type":"message","role":"developer","content":[{"type":"input_text","text":"hidden"}]}}"#,
-            r#"{"role":"assistant","content":"plain"}"#,
-            "not json",
-        ].join("\n");
-        let all = transcript_tail(&text, 10);
-        let texts: Vec<_> = all.iter().map(|m| m["text"].as_str().unwrap()).collect();
-        assert_eq!(texts, ["hi claude", "hello", "codex ask", "plain"]);
-        assert_eq!(transcript_tail(&text, 2).len(), 2);
-        assert_eq!(transcript_tail(&text, 2)[1]["text"], "plain");
-    }
 
     #[test]
     fn timeouts_are_bounded() {

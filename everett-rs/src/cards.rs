@@ -1,6 +1,7 @@
-use std::collections::HashMap;
 use std::fs;
 use std::path::PathBuf;
+
+pub mod auto;
 
 use regex::Regex;
 
@@ -81,14 +82,14 @@ pub fn is_auto_card(session_id: &str) -> bool {
 }
 
 /// Prefer the session's own card over extracted text, unless the card went stale.
-pub fn apply(sessions: &mut [Session], now: Option<f64>) {
-    let _ = now;
+pub fn apply(sessions: &mut [Session]) {
+    let now = crate::session::now();
     for s in sessions.iter_mut() {
         let Some(path) = card_path(&s.id) else { continue };
         let Some((body, mtime, source)) = read_card_full(&path) else {
             continue;
         };
-        if s.last_active - mtime > STALE_AFTER {
+        if now - mtime >= STALE_AFTER {
             continue;
         }
         s.card = clean(&body, 300);
@@ -96,45 +97,81 @@ pub fn apply(sessions: &mut [Session], now: Option<f64>) {
     }
 }
 
-/// Per-harness and total counts of agent/auto/missing cards.
-pub type Coverage = (Vec<(String, HashMap<String, i64>)>, [i64; 5]);
+#[derive(Default)]
+pub struct Counts {
+    pub agent: usize,
+    pub auto: usize,
+    pub missing: usize,
+}
 
-pub fn coverage(sessions: &[Session]) -> Coverage {
-    let mut order: Vec<String> = Vec::new();
-    let mut counts: HashMap<String, HashMap<String, i64>> = HashMap::new();
-    for harness in crate::harness::NATIVE {
-        order.push(harness.to_string());
-        counts.insert(harness.to_string(), HashMap::from([
-            ("total".to_string(), 0i64), ("agent".to_string(), 0), ("auto".to_string(), 0), ("missing".to_string(), 0),
-        ]));
+impl Counts {
+    pub fn total(&self) -> usize {
+        self.agent + self.auto + self.missing
     }
-    for session in sessions {
-        let entry = counts.entry(session.harness.clone()).or_insert_with(|| HashMap::from([
-            ("total".to_string(), 0i64), ("agent".to_string(), 0), ("auto".to_string(), 0), ("missing".to_string(), 0),
-        ]));
-        if !order.iter().any(|o| o == &session.harness) {
-            order.push(session.harness.clone());
+
+    fn record(&mut self, source: Option<&str>) {
+        match source {
+            Some("agent") => self.agent += 1,
+            Some("auto") => self.auto += 1,
+            _ => self.missing += 1,
         }
-        *entry.get_mut("total").unwrap() += 1;
-        let source = match session.card_source.as_deref() {
-            Some("agent") => "agent",
-            Some("auto") => "auto",
-            _ => "missing",
-        };
-        *entry.get_mut(source).unwrap() += 1;
     }
-    let totals = [
-        counts.values().map(|m| m["total"]).sum(),
-        counts.values().map(|m| m["agent"]).sum(),
-        counts.values().map(|m| m["auto"]).sum(),
-        counts.values().map(|m| m["missing"]).sum(),
-        0,
-    ];
-    let rows = order
-        .iter()
-        .filter_map(|o| counts.get(o).map(|m| (o.clone(), m.clone())))
-        .collect();
+}
+
+pub fn coverage(sessions: &[Session]) -> (Vec<(&str, Counts)>, Counts) {
+    let mut rows: Vec<_> = crate::harness::NATIVE.iter().map(|&harness| (harness, Counts::default())).collect();
+    let mut totals = Counts::default();
+    for session in sessions {
+        let harness = session.harness.as_str();
+        let source = session.card_source.as_deref();
+        let row = match rows.iter_mut().find(|(name, _)| *name == harness) {
+            Some((_, counts)) => counts,
+            None => {
+                rows.push((harness, Counts::default()));
+                &mut rows.last_mut().unwrap().1
+            }
+        };
+        row.record(source);
+        totals.record(source);
+    }
     (rows, totals)
+}
+
+/// Rewrite every AUTO-marked card among `sessions` with the current builder. Never touches a
+/// missing card or an agent-written one. Returns (rewritten, skipped).
+pub fn regenerate_auto(sessions: &[Session], dry_run: bool) -> std::result::Result<(usize, usize), String> {
+    let mut rewritten = 0usize;
+    let mut skipped = 0usize;
+    for s in sessions {
+        if !auto::supports(&s.harness) || s.path.is_empty() {
+            skipped += 1;
+            continue;
+        }
+        if !is_auto_card(&s.id) {
+            skipped += 1;
+            continue;
+        }
+        let content = auto::for_session(s);
+        if content.is_empty() {
+            skipped += 1;
+            continue;
+        }
+        let Some(target) = card_path(&s.id) else {
+            skipped += 1; // invalid session id: nothing safe to write
+            continue;
+        };
+        let current = std::fs::read_to_string(&target).ok();
+        if current.as_deref() == Some(content.as_str()) {
+            skipped += 1;
+            continue;
+        }
+        if !dry_run {
+            std::fs::write(&target, &content)
+                .map_err(|e| format!("cannot write {}: {}", target.display(), e))?;
+        }
+        rewritten += 1;
+    }
+    Ok((rewritten, skipped))
 }
 
 pub const INSTRUCTION: &str = "REQUIRED — Everett card. Other agents route work to this session using a card at {path}. \

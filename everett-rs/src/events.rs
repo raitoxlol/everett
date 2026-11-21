@@ -256,7 +256,6 @@ pub fn resolve_target(target: &str) -> String {
         return format!("project:{}", slug(rest));
     }
     let sessions = crate::registry::scan(72.0 * 7.0, true, None, "");
-    // Subscriptions match the event's session ID across harnesses.
     if sessions.iter().any(|session| session.id == target) {
         return target.to_string();
     }
@@ -527,7 +526,9 @@ pub fn parse_since(value: &str) -> Result<f64> {
 
 pub fn age(seconds: f64) -> String {
     let s = seconds.max(0.0).round() as i64;
-    if s < 3600 {
+    if s < 60 {
+        format!("{}s", s)
+    } else if s < 3600 {
         format!("{}m", s / 60)
     } else if s < 172800 {
         format!("{}h", s / 3600)
@@ -672,7 +673,13 @@ pub fn classify(message: &str) -> Option<(String, String)> {
         .unwrap_or_default();
     if !question.is_empty() {
         let trimmed = question.trim_end();
-        let start = trimmed.rfind('?').map(|i| i.saturating_sub(1)).unwrap_or(0);
+        // Start one character (not one byte) before the last '?', so a
+        // multi-byte character there cannot split the slice.
+        let start = trimmed
+            .rfind('?')
+            .and_then(|i| trimmed[..i].char_indices().next_back())
+            .map(|(i, _)| i)
+            .unwrap_or(0);
         let s = sentence(&question, start);
         let out: String = s.chars().take(MAX_TEXT).collect();
         return Some((
@@ -685,4 +692,16 @@ pub fn classify(message: &str) -> Option<(String, String)> {
         return Some(("needs-input".into(), hit_result.chars().take(MAX_TEXT).collect()));
     }
     Some(("done".into(), lines.last().unwrap().chars().take(160).collect()))
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn age_shows_seconds_under_a_minute() {
+        assert_eq!(super::age(0.0), "0s");
+        assert_eq!(super::age(45.4), "45s");
+        assert_eq!(super::age(90.0), "1m");
+        assert_eq!(super::age(7200.0), "2h");
+        assert_eq!(super::age(200000.0), "2d");
+    }
 }
