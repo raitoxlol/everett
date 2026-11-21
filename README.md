@@ -493,7 +493,7 @@ The Jev key is read from, in order: `TYPESAFE_API_KEY`, `typesafe_api_key` in `~
 
 ## Session cards
 
-A card is a note of 50 words or fewer, kept at `~/.everett/cards/<session-id>.md`, that says what a session is about, its state, and the next step. Routing and `ls` prefer a card over the raw transcript text. A card is ignored if it is more than 24 hours older than the session's last activity.
+A card is a note of 50 words or fewer, kept at `~/.everett/cards/<session-id>.md`, that says what a session is about, its state, and the next step. Routing and `ls` prefer a card over the raw transcript text while it is less than 24 hours old by file modification time. At 24 hours, it is stale and the extracted transcript text takes precedence; session activity does not refresh the card's age. Staleness affects which summary Everett uses, not whether the card file is kept.
 
 - **Agent cards**: the SessionStart hook tells each new session where its card lives and asks the agent to write it in its first working reply.
 - **Automatic cards**: when the agent has not written one, the Stop hook writes a deterministic fallback from the transcript (no LLM, no network). Automatic cards start with `<!-- everett:auto -->`, and hooks never overwrite an agent-written card.
@@ -599,6 +599,8 @@ Everett is mostly used by agents. `everett mcp` is a native Rust stdio MCP serve
 | `everett_agent_relay` | `action`, `id?`, `name?`, `fingerprint?` | Verified identity, registration, directory/pins and scoped revocation controls. |
 | `everett_agent_send` | `agent`, `session`, `harness`, `text`, `idempotency_key` | Device-side encrypted send to an explicit named agent. No sender-requested wake or implicit routing; receiver policies are separate. |
 | `everett_agent_status` | `message_id` | Sender-only status from signed delivery/pickup/reply observations. |
+
+The `everett_send` MCP tool bounds `timeout` and `wait` to 1,800 seconds (30 minutes); values above that are capped. `wait` applies only to explicit `mode: "inbox"` and does not ping or wake the target. These MCP tool bounds do not add a 30-minute cap to the CLI `everett send` options.
 
 See [agent-facing relay MCP](docs/agent-relay.md), [cross-device deployment](docs/cross-device.md)
 and [relay threat model](docs/relay-threat-model.md). Cloudflare binds account/agent identity;
