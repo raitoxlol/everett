@@ -26,6 +26,7 @@ impl Fixture {
     pub fn run(&self, args: &[&str]) -> Output {
         let mut cmd = Command::new(env!("CARGO_BIN_EXE_everett"));
         cmd.args(args)
+            .current_dir(self.home())
             .env("EVERETT_HOME", self.home())
             .env_remove("DEVIN_HOME")
             .env_remove("PI_CODING_AGENT_DIR")
@@ -50,6 +51,7 @@ impl Fixture {
         use std::io::Write;
         let mut cmd = Command::new(env!("CARGO_BIN_EXE_everett"));
         cmd.args(args)
+            .current_dir(self.home())
             .env("EVERETT_HOME", self.home())
             .env_remove("DEVIN_HOME")
             .env_remove("PI_CODING_AGENT_DIR")
