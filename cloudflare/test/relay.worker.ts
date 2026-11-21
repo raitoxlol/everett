@@ -932,6 +932,37 @@ describe('Cross-org named inbox and grant allowlist', () => {
 });
 
 describe('two-member shared threads', () => {
+  it('allows authenticated members to create only from their bound inbox device', async () => {
+    const alice = await agent(org(), 'alice', 'member', 71);
+    const otherMember = await agent(alice.p.org!, 'other', 'member', 73);
+    const bob = await agent(org(), 'bob', 'member', 75);
+    const outsider = await agent(org(), 'outsider', 'member', 77);
+    const suffix = crypto.randomUUID().replaceAll('-', '').slice(0, 8);
+    const aliceAddress = `alice${suffix}@member-zone-a`;
+    const bobAddress = `bob${suffix}@member-zone-b`;
+    await call(alice.p, 'registerInbox', { address: aliceAddress, harness: 'claude', session: 'alice-session' });
+    await call(bob.p, 'registerInbox', { address: bobAddress, harness: 'codex', session: 'bob-session' });
+    await call(alice.p, 'grantInbox', {
+      address: aliceAddress, senderOwner: namespace(bob.p), senderDeviceId: bob.p.agentId,
+    });
+    await call(bob.p, 'grantInbox', {
+      address: bobAddress, senderOwner: namespace(alice.p), senderDeviceId: alice.p.agentId,
+    });
+
+    const created = await call(alice.p, 'threadCreate', {
+      fromAddress: aliceAddress, toAddress: bobAddress, idempotencyKey: 'member-create',
+    });
+    expect(created.members[0]).toMatchObject({
+      address: aliceAddress, owner: namespace(alice.p), agentId: alice.p.agentId,
+    });
+    await expect(call(otherMember.p, 'threadCreate', {
+      fromAddress: aliceAddress, toAddress: bobAddress, idempotencyKey: 'wrong-device-create',
+    })).rejects.toThrow('creator_inbox_must_match_device');
+    await expect(call(outsider.p, 'threadCreate', {
+      fromAddress: aliceAddress, toAddress: bobAddress, idempotencyKey: 'unauthorized-create',
+    })).rejects.toThrow('creator_inbox_must_match_device');
+  });
+
   it('requires reciprocal fixed members, stores an ordered encrypted pair once, and retains it after revoke', async () => {
     const alice = await agent(org(), 'alice', 'admin', 31);
     const bob = await agent(org(), 'bob', 'admin', 41);
