@@ -38,6 +38,9 @@ const INSTRUCTIONS: &str =
      everett_skill get and follow it. When a task could use a playbook, call everett_skill match with the task; \
      it returns the one skill that fits, or none.";
 
+pub(crate) const EXACT_DESTINATION_IDS: &str = "everettExactDestinationIds";
+pub(crate) const EXACT_INBOX_PICKUP: &str = "everettExactInboxPickup";
+
 fn s(desc: &str) -> Value {
     json!({"type": "string", "description": desc})
 }
@@ -370,8 +373,8 @@ fn err2(code: i32, msg: impl Into<String>) -> ToolFailure {
 /// A stdio MCP request is model-controlled. When the host identifies its
 /// harness session, that binding is authoritative for safety and lineage.
 /// Model-supplied arguments cannot establish a missing host binding.
-fn call_identity(params: &Map<String, Value>) -> Map<String, Value> {
-    let launch = crate::host::launch_harness();
+fn call_identity(params: &Map<String, Value>, launch: Option<&str>) -> Map<String, Value> {
+    let launch = launch.filter(|h| !h.is_empty());
     let identity = match launch {
         Some(h) => crate::host::caller_identity_for(h),
         None => caller_identity(),
@@ -562,7 +565,7 @@ fn tool_control(
     } else {
         Some(control::resolve_session(&target, 168.0).map_err(ToolFailure::Tool)?)
     };
-    let is_t3 = !thread.is_empty() || session.as_ref().and_then(crate::t3_wake::thread_id).is_some();
+    let is_t3 = !thread.is_empty() || session.as_ref().and_then(crate::adapters::t3code::thread_id).is_some();
     let value = match action.as_str() {
         "threads" => control::threads(&str_arg(args, "project", false)?),
         "start" => {
@@ -813,13 +816,8 @@ pub(crate) fn tool_send(
                 );
                 return Ok(out);
             }
-            let harness = str_arg(args, "harness", false)?.pipe(|h| {
-                if h.is_empty() {
-                    crate::route::default_harness()
-                } else {
-                    h
-                }
-            });
+            let harness = str_arg(args, "harness", false)?;
+            let harness = if harness.is_empty() { crate::route::default_harness() } else { harness };
             let cwd = match args.get("dir").and_then(|v| v.as_str()) {
                 Some(d) => crate::paths::realpath(&crate::paths::expanduser(d))
                     .to_string_lossy()
@@ -1085,9 +1083,9 @@ pub(crate) fn tool_card(
     }
     let body = format!(
         "What: {}\nState: {}\nNext: {}\n",
-        crate::hooks_common::word_limit(parts["what"].as_str().unwrap_or(""), 16),
-        crate::hooks_common::word_limit(parts["state"].as_str().unwrap_or(""), 14),
-        crate::hooks_common::word_limit(parts["next"].as_str().unwrap_or(""), 14)
+        crate::cards::auto::word_limit(parts["what"].as_str().unwrap_or(""), 16),
+        crate::cards::auto::word_limit(parts["state"].as_str().unwrap_or(""), 14),
+        crate::cards::auto::word_limit(parts["next"].as_str().unwrap_or(""), 14)
     );
     let Some(path) = crate::cards::card_path(&sid) else {
         return Err(err2(
@@ -1126,9 +1124,10 @@ fn tool_skill(args: &Map<String, Value>) -> std::result::Result<Map<String, Valu
         }
         "get" => {
             let name = str_arg(args, "name", true)?;
-            let result = crate::skills::get_result(&name, source);
-            if let Some(found) = result.get("name").and_then(Value::as_str) {
-                crate::skill_match::record_use(&cwd, found);
+            let matches = crate::skills::find(&name, source);
+            let result = crate::skills::get_result(&name, &matches);
+            if let Some(skill) = matches.first() {
+                crate::skill_match::record_use(&cwd, &skill.name);
             }
             Ok(result)
         }
@@ -1162,13 +1161,11 @@ pub(crate) fn tool_inbox(
     }
     let message_id = str_arg(args, "message_id", false)?;
     let reply_to = str_arg(args, "reply_to", false)?;
-    let mut items = crate::inbox::pending(&sid, None);
-    if args.contains_key("message_id") {
-        items.retain(|m| m.get("id").and_then(Value::as_str) == Some(message_id.as_str()));
-    }
-    if args.contains_key("reply_to") {
-        items.retain(|item| crate::inbox::is_reply_to(item, &reply_to));
-    }
+    let items = crate::inbox::pending_matching(
+        &sid,
+        args.contains_key("message_id").then_some(message_id.as_str()),
+        args.contains_key("reply_to").then_some(reply_to.as_str()),
+    );
     let mut messages: Vec<Value> = Vec::new();
     let mut out = Map::new();
     out.insert("session".into(), json!(sid));
@@ -1269,10 +1266,7 @@ pub(crate) fn tool_inbox(
         .iter()
         .filter_map(|m| m.get("id").and_then(Value::as_str))
         .collect();
-    if peek {
-        crate::inbox::persist_relay_context(&sid, &ids)?;
-    } else {
-        let claimed = crate::inbox::claim_pending(&sid, &ids)?;
+    if let Some(claimed) = crate::inbox::reveal_pending(&sid, &ids, peek)? {
         messages.retain(|message| message["id"].as_str().is_some_and(|id| claimed.contains(id)));
         out.insert("messages".into(), json!(messages));
         if let Some(hops) = items
@@ -1350,7 +1344,7 @@ fn tool_status(
         out.insert("recovery_command".into(), json!(crate::proc::shlex_join(&argv)));
         out.insert("note".into(), json!("The reply exceeds the MCP response limit. Run the recovery command in the same Everett profile to read it."));
     } else {
-        crate::inbox::persist_status_reply_context(&sid, &status["reply"])?;
+        crate::inbox::reveal_status_reply(&sid, &status)?;
     }
     Ok(out)
 }
@@ -1470,13 +1464,6 @@ pub(crate) fn tool_whoami(
     );
     Ok(out)
 }
-
-trait Pipe: Sized {
-    fn pipe<R>(self, f: impl FnOnce(Self) -> R) -> R {
-        f(self)
-    }
-}
-impl Pipe for String {}
 
 fn call_handler(
     name: &str,
@@ -1600,7 +1587,7 @@ fn verify_native_account() -> crate::error::Result<Value> {
     Ok(account)
 }
 
-fn call_tool(params: &Map<String, Value>) -> std::result::Result<Map<String, Value>, Value> {
+fn call_tool(params: &Map<String, Value>, launch: Option<&str>) -> std::result::Result<Map<String, Value>, Value> {
     // Reload and verify per call so an already-running server observes login,
     // logout, expiration and issuer revocation on the next request.
     let account = match verify_native_account() {
@@ -1731,7 +1718,7 @@ fn call_tool(params: &Map<String, Value>) -> std::result::Result<Map<String, Val
             }
         }
     }
-    let identity = call_identity(params);
+    let identity = call_identity(params, launch);
     let started = now();
     let mut log_fields = Map::new();
     log_fields.insert("tool".into(), json!(name));
@@ -1852,7 +1839,7 @@ fn result(msg_id: &Value, result: Value) -> Value {
 }
 
 /// One JSON-RPC message in, one response out (None for notifications).
-pub fn handle(message: &Value) -> Option<Value> {
+pub fn handle(message: &Value, launch: Option<&str>) -> Option<Value> {
     let Some(map) = message.as_object() else {
         let id = message.get("id").cloned().unwrap_or(Value::Null);
         return Some(error(&id, INVALID_REQUEST, "Invalid Request"));
@@ -1904,8 +1891,8 @@ pub fn handle(message: &Value) -> Option<Value> {
             let mut capabilities = json!({"tools": {"listChanged": false}, "prompts": {"listChanged": false}});
             if std::env::var("EVERETT_GATEWAY_EXACT_IDS").as_deref() == Ok("1") {
                 capabilities["experimental"] = json!({
-                    "everettExactDestinationIds": {"enforced": true},
-                    "everettExactInboxPickup": {"enforced": true},
+                    (EXACT_DESTINATION_IDS): {"enforced": true},
+                    (EXACT_INBOX_PICKUP): {"enforced": true},
                 });
             }
             if crate::gateway::scoped_worker_enabled() {
@@ -1949,7 +1936,7 @@ pub fn handle(message: &Value) -> Option<Value> {
                 .unwrap_or("")
                 .to_string();
             let outcome =
-                std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| call_tool(params)));
+                std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| call_tool(params, launch)));
             match outcome {
                 Ok(Ok(out)) => Some(result(&msg_id, Value::Object(out))),
                 Ok(Err(e)) => Some(error(
@@ -1973,7 +1960,7 @@ pub fn handle(message: &Value) -> Option<Value> {
     }
 }
 
-pub fn serve() -> i32 {
+pub fn serve(launch: Option<&str>) -> i32 {
     let mut f = Map::new();
     f.insert("pid".into(), json!(std::process::id()));
     f.insert(
@@ -2025,14 +2012,14 @@ pub fn serve() -> i32 {
                 let _ = out.flush();
                 continue;
             }
-            let responses: Vec<Value> = batch.iter().filter_map(handle).collect();
+            let responses: Vec<Value> = batch.iter().filter_map(|message| handle(message, launch)).collect();
             if !responses.is_empty() {
                 let _ = writeln!(out, "{}", serde_json::to_string(&responses).unwrap());
                 let _ = out.flush();
             }
             continue;
         }
-        if let Some(response) = handle(&message) {
+        if let Some(response) = handle(&message, launch) {
             let _ = writeln!(out, "{}", serde_json::to_string(&response).unwrap());
             let _ = out.flush();
         }

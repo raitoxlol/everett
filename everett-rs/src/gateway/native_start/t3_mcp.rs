@@ -7,14 +7,14 @@ use std::{
 use serde_json::{json, Value};
 use url::{Host, Url};
 
-use super::{valid_receipt_id, Policy, Selection, MAX_RESULT};
+use super::{valid_receipt_id, DispatchDiagnostic, Policy, Selection, MAX_RESULT};
 
 const UNAVAILABLE: &str = "t3_mcp_unavailable";
 const EFFORT_OPTION: &str = "reasoningEffort";
 
 pub(super) enum LaunchError {
     BeforeLaunch(&'static str),
-    Unconfirmed(&'static str),
+    Unconfirmed(DispatchDiagnostic),
 }
 
 impl From<&'static str> for LaunchError {
@@ -110,7 +110,7 @@ pub(super) fn launch(
                     "options":[{"id":EFFORT_OPTION,"value":effort}]}
             }),
         )
-        .map_err(|_| LaunchError::Unconfirmed("t3_mcp_launch_unconfirmed"))?;
+        .map_err(|_| LaunchError::Unconfirmed(DispatchDiagnostic::T3McpLaunchUnconfirmed))?;
     if receipt["projectId"] != policy.project_id
         || ["threadId", "runId"]
             .iter()
@@ -121,7 +121,7 @@ pub(super) fn launch(
         )
     {
         return Err(LaunchError::Unconfirmed(
-            "destination_mismatch_or_missing_run",
+            DispatchDiagnostic::DestinationMismatchOrMissingRun,
         ));
     }
     let effective = &receipt["modelSelection"];
@@ -137,7 +137,7 @@ pub(super) fn launch(
         || effective["model"] != selection.model
         || !verified_effort
     {
-        return Err(LaunchError::Unconfirmed("t3_effective_selection_mismatch"));
+        return Err(LaunchError::Unconfirmed(DispatchDiagnostic::T3EffectiveSelectionMismatch));
     }
     Ok(receipt)
 }

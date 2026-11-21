@@ -2,14 +2,27 @@ import { DurableObject } from 'cloudflare:workers';
 import { z, ZodError } from 'zod';
 import { sha256 } from '@noble/hashes/sha256';
 import { DEVICE_LABEL_LIMIT, digest, identifier, namespace, RelayError, type Identity, type Principal } from './protocol';
-import { hostedConfig, requireOAuth, requirePublicHost, type HostedConfig, type HostedAuthEnv } from './hosted-config';
+import { deviceName, hostedConfig, isHttpLoopback, isMeshPath, requireOAuth, requirePublicHost, type HostedConfig, type HostedAuthEnv } from './hosted-config';
 import { boundedText } from './http-body';
 
 const MINUTE = 60000, DAY = 86400000;
 const MESH_HISTORY_MS = 30 * DAY;
+const meshDecisions = {
+  approve: { state: 'approved', label: 'Approve read access' },
+  deny: { state: 'denied', label: 'Deny' },
+  revoke: { state: 'revoked', label: 'Revoke read access' },
+} as const;
+const meshDecision = z.enum(['approve', 'deny', 'revoke']);
+const activeMeshGrant = "expires_at>? AND state IN ('pending','approved')";
+
+function meshButtons(state: string): string {
+  const choices = state === 'pending' ? ['approve', 'deny'] as const :
+    state === 'approved' ? ['revoke'] as const : [];
+  return choices.map(value => `<button name="decision" value="${value}">${meshDecisions[value].label}</button>`).join('');
+}
+
 const DEVICE_MS = 10 * MINUTE, CODE_MS = 5 * MINUTE, ACCESS_MS = 15 * MINUTE, REFRESH_MS = 30 * DAY, SESSION_MS = 12 * 60 * MINUTE;
 const secretPattern = /^[a-f0-9]{64}$/;
-const cleanName = z.string().trim().min(1).max(100).regex(/^[^\x00-\x1f\x7f]+$/);
 const hash = (v: string) => digest(new TextEncoder().encode(v));
 const random = () => Array.from(crypto.getRandomValues(new Uint8Array(32)), b => b.toString(16).padStart(2, '0')).join('');
 const s256 = (v: string) => btoa(String.fromCharCode(...sha256(new TextEncoder().encode(v)))).replaceAll('+', '-').replaceAll('/', '_').replaceAll('=', '');
@@ -420,7 +433,7 @@ export class HostedAuth extends DurableObject<HostedAuthEnv> {
     if (!active.ok) throw new RelayError(active.error, active.status);
     const activeIds = new Set(active.value);
     if (rename !== undefined) {
-      const name = cleanName.parse(rename);
+      const name = deviceName.parse(rename);
       this.#rate(`device-rename:${caller.account}`, 30);
       this.ctx.storage.sql.exec('UPDATE hosted_agents SET name=? WHERE agent_id=? AND account=?', name, principal.agentId, caller.account);
     }
@@ -434,7 +447,7 @@ export class HostedAuth extends DurableObject<HostedAuthEnv> {
 
   async #route(request: Request, url: URL, c: HostedConfig, host: string): Promise<Response> {
     const path = url.pathname;
-    if (path.startsWith('/v1/mesh/')) return this.#mesh(request, c, host);
+    if (isMeshPath(path)) return this.#mesh(request, c, host, path);
     if (path === '/enroll/mesh' && request.method === 'POST') return this.#meshDecision(request, c, host);
     if (request.method === 'GET') {
       if (path === '/auth/github') return this.#githubStart(request, url, c, host);
@@ -531,7 +544,7 @@ export class HostedAuth extends DurableObject<HostedAuthEnv> {
 
   async #deviceStart(request: Request, c: HostedConfig, host: string) {
     this.#rate('device-start', 30);
-    const { name } = z.strictObject({ name: cleanName }).parse(await body(request));
+    const { name } = z.strictObject({ name: deviceName }).parse(await body(request));
     if (this.#count('device_requests') >= 100) throw new RelayError('pending_limit', 429);
     let requester: string | null = null;
     if (c.enrollment === 'public') {
@@ -598,7 +611,7 @@ export class HostedAuth extends DurableObject<HostedAuthEnv> {
       throw new RelayError('credential_limit', 429);
     }
   }
-  async #enroll(c: HostedConfig, account: Account, eventId: string, name: string, kind: string) {
+  async #enroll(account: Account, eventId: string, name: string, kind: string) {
     const result = await this.#relayFor(account.identity).enroll(account.identity, 'admin', eventId);
     if (!result.ok) throw new RelayError('enrollment_denied', 403);
     this.ctx.storage.sql.exec('INSERT OR IGNORE INTO hosted_agents(agent_id,name,kind,created_at,revoked,account) VALUES(?,?,?,?,?,?)', result.value.deviceId, name, kind, Date.now(), 0, account.subject);
@@ -627,7 +640,7 @@ export class HostedAuth extends DurableObject<HostedAuthEnv> {
       } else if (row.account !== account.subject) {
         throw new RelayError('request_expired_or_decided', 409);
       }
-      const agent = await this.#enroll(c, account, row.event_id, row.name, 'device');
+      const agent = await this.#enroll(account, row.event_id, row.name, 'device');
       this.ctx.storage.sql.exec("UPDATE device_requests SET state='approved',agent_id=? WHERE poll_hash=? AND account=?", agent, row.poll_hash, account.subject);
     }
     return redirect(`${host}/enroll?code=${p.user_code}`);
@@ -653,7 +666,7 @@ export class HostedAuth extends DurableObject<HostedAuthEnv> {
       identifier.parse(p.mesh);
       const grant = this.#row<{ id: string; origin: string; state: string; expires_at: number }>('SELECT id,origin,state,expires_at FROM mesh_grants WHERE id=? AND account=?', p.mesh, session.account.subject);
       if (!grant || grant.expires_at <= Date.now()) return html('<h1>Mesh request unavailable</h1>', 403);
-      content += `<div class="auth-lead"><h1>Read-only mesh console</h1><p>Scope <strong>mesh:read:v1</strong>. Device and session identifiers, observed last seen, aggregate queue and signed receipt metadata only. No messages, session cards, transcripts or keys. Expires ${esc(new Date(grant.expires_at).toISOString())}.</p></div><div class="auth-action"><p>Console origin <strong>${esc(grant.origin)}</strong></p><p>State ${esc(grant.state)}</p><form method="post" action="/enroll/mesh">${csrfField(session.csrf)}<input type="hidden" name="id" value="${esc(grant.id)}">${grant.state === 'pending' ? '<button name="decision" value="approve">Approve read access</button><button name="decision" value="deny">Deny</button>' : ''}${grant.state === 'approved' ? '<button name="decision" value="revoke">Revoke read access</button>' : ''}</form></div>`;
+      content += `<div class="auth-lead"><h1>Read-only mesh console</h1><p>Scope <strong>mesh:read:v1</strong>. Device and session identifiers, observed last seen, aggregate queue and signed receipt metadata only. No messages, session cards, transcripts or keys. Expires ${esc(new Date(grant.expires_at).toISOString())}.</p></div><div class="auth-action"><p>Console origin <strong>${esc(grant.origin)}</strong></p><p>State ${esc(grant.state)}</p><form method="post" action="/enroll/mesh">${csrfField(session.csrf)}<input type="hidden" name="id" value="${esc(grant.id)}">${meshButtons(grant.state)}</form></div>`;
     } else if (p.request) {
       const row = this.#row<AuthRequest>('SELECT * FROM auth_requests WHERE id=?', identifier.parse(p.request));
       const binding = cookies(request)[cookieName(c, 'oauth')] ?? '';
@@ -693,7 +706,7 @@ export class HostedAuth extends DurableObject<HostedAuthEnv> {
     content += '</ul></section><section class="auth-credentials"><h2>Mesh read grants</h2><ul>';
     const now = Date.now();
     const activeGrants = this.ctx.storage.sql.exec<{ id: string; origin: string; state: string }>(
-      "SELECT id,origin,state FROM mesh_grants WHERE account=? AND expires_at>? AND state IN ('pending','approved') ORDER BY created_at DESC",
+      `SELECT id,origin,state FROM mesh_grants WHERE account=? AND ${activeMeshGrant} ORDER BY created_at DESC`,
       session.account.subject, now,
     ).toArray();
     for (const grant of activeGrants) {
@@ -701,7 +714,7 @@ export class HostedAuth extends DurableObject<HostedAuthEnv> {
     }
     if (!activeGrants.length) content += '<li>No pending or approved grants.</li>';
     const history = this.ctx.storage.sql.exec<{ origin: string; state: string; expires_at: number }>(
-      "SELECT origin,state,expires_at FROM mesh_grants WHERE account=? AND (expires_at<=? OR state NOT IN ('pending','approved')) ORDER BY created_at DESC LIMIT 64",
+      `SELECT origin,state,expires_at FROM mesh_grants WHERE account=? AND NOT (${activeMeshGrant}) ORDER BY created_at DESC LIMIT 64`,
       session.account.subject, now,
     );
     content += '</ul><h3>Recent grant history</h3><ul>';
@@ -711,8 +724,7 @@ export class HostedAuth extends DurableObject<HostedAuthEnv> {
     }
     return html(`${content}</ul>${agents.length > 256 ? '<p>Only the newest 256 credentials are displayed.</p>' : ''}</section>`, 200, callbackOrigin);
   }
-  async #mesh(request: Request, c: HostedConfig, host: string): Promise<Response> {
-    const path = new URL(request.url).pathname;
+  async #mesh(request: Request, c: HostedConfig, host: string, path: string): Promise<Response> {
     const token = (request.headers.get('Authorization') ?? '').replace(/^Bearer /, '');
     if (path === '/v1/mesh/setup' && request.method === 'POST') {
       const principal = await this.authenticateRelayToken(token);
@@ -721,9 +733,9 @@ export class HostedAuth extends DurableObject<HostedAuthEnv> {
       this.#rate(`mesh-setup:${account}`, 10);
       const input = z.strictObject({ origin: z.string().max(256) }).parse(await body(request));
       const origin = new URL(input.origin);
-      const local = new URL(c.issuer).protocol === 'http:' && ['localhost', '127.0.0.1', '[::1]'].includes(new URL(c.issuer).hostname) && origin.protocol === 'http:' && ['localhost', '127.0.0.1', '[::1]'].includes(origin.hostname);
+      const local = isHttpLoopback(new URL(c.issuer)) && isHttpLoopback(origin);
       if ((!local && origin.protocol !== 'https:') || origin.origin !== input.origin || origin.username || origin.password) throw new RelayError('invalid_origin', 400);
-      if (this.#row<{ n: number }>("SELECT count(*) n FROM mesh_grants WHERE account=? AND expires_at>? AND state IN ('pending','approved')", account, Date.now())!.n >= 16) throw new RelayError('mesh_grant_limit', 429);
+      if (this.#row<{ n: number }>(`SELECT count(*) n FROM mesh_grants WHERE account=? AND ${activeMeshGrant}`, account, Date.now())!.n >= 16) throw new RelayError('mesh_grant_limit', 429);
       const id = crypto.randomUUID(), readToken = `emr_${crypto.randomUUID().replaceAll('-', '')}${crypto.randomUUID().replaceAll('-', '')}`;
       const now = Date.now(), expiresAt = now + DAY;
       this.ctx.storage.sql.exec('INSERT INTO mesh_grants VALUES(?,?,?,?,?,?,?,?)', id, hash(readToken), account, principal.agentId, input.origin, 'pending', now, expiresAt);
@@ -745,12 +757,12 @@ export class HostedAuth extends DurableObject<HostedAuthEnv> {
     const fields = await form(request, ['csrf', 'id', 'decision']);
     const session = this.#mutation(request, c, fields);
     identifier.parse(fields.id);
-    const decision = z.enum(['approve', 'deny', 'revoke']).parse(fields.decision);
+    const decision = meshDecision.parse(fields.decision);
     const grant = this.#row<{ state: string; agent_id: string; expires_at: number }>('SELECT state,agent_id,expires_at FROM mesh_grants WHERE id=? AND account=?', fields.id, session.account.subject);
     if (!grant || grant.expires_at <= Date.now()) throw new RelayError('mesh_request_unavailable', 403);
     if (decision === 'approve' && (grant.state !== 'pending' || !await this.#live(c, grant.agent_id))) throw new RelayError('mesh_request_unavailable', 403);
     if (decision === 'deny' && grant.state !== 'pending') throw new RelayError('mesh_request_unavailable', 403);
-    this.ctx.storage.sql.exec('UPDATE mesh_grants SET state=? WHERE id=? AND account=?', decision === 'approve' ? 'approved' : decision === 'deny' ? 'denied' : 'revoked', fields.id, session.account.subject);
+    this.ctx.storage.sql.exec('UPDATE mesh_grants SET state=? WHERE id=? AND account=?', meshDecisions[decision].state, fields.id, session.account.subject);
     return redirect(`${host}/enroll?mesh=${fields.id}`);
   }
   async #browserRevoke(request: Request, c: HostedConfig, host: string) {
@@ -783,7 +795,7 @@ export class HostedAuth extends DurableObject<HostedAuthEnv> {
     if (authMethods === undefined ? (doc.token_endpoint_auth_method !== undefined && doc.token_endpoint_auth_method !== 'none') : (!Array.isArray(authMethods) || !authMethods.every(v => typeof v === 'string') || !authMethods.includes('none'))) throw new RelayError('invalid_client', 400);
     if (doc.grant_types !== undefined && (!Array.isArray(doc.grant_types) || !doc.grant_types.includes('authorization_code'))) throw new RelayError('invalid_client', 400);
     if (doc.response_types !== undefined && (!Array.isArray(doc.response_types) || !doc.response_types.includes('code'))) throw new RelayError('invalid_client', 400);
-    const name = cleanName.safeParse(doc.client_name), clientName = name.success ? name.data : new URL(p.client_id).host;
+    const name = deviceName.safeParse(doc.client_name), clientName = name.success ? name.data : new URL(p.client_id).host;
     const binding = random(), id = crypto.randomUUID();
     this.ctx.storage.sql.exec('INSERT INTO auth_requests(id,client_id,client_name,redirect_uri,resource,challenge,state,binding_hash,phase,event_id,agent_id,expires_at,account) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)', id, p.client_id, clientName, p.redirect_uri, p.resource, p.code_challenge, p.state ?? null, hash(binding), 'pending', crypto.randomUUID(), null, Date.now() + DEVICE_MS, null);
     const response = redirect(`${host}/enroll?request=${id}`, 302); setCookie(response, c, 'oauth', binding, 600); return response;
@@ -816,7 +828,7 @@ export class HostedAuth extends DurableObject<HostedAuthEnv> {
     } else if (row.account !== account.subject) {
       throw new RelayError('request_expired_or_browser_mismatch', 403);
     }
-    const agentId = await this.#enroll(c, account, row.event_id, name, 'oauth'), code = random();
+    const agentId = await this.#enroll(account, row.event_id, name, 'oauth'), code = random();
     this.ctx.storage.transactionSync(() => {
       this.ctx.storage.sql.exec('INSERT INTO auth_codes VALUES(?,?,?,?,?,?,?,?,?)', hash(code), id, agentId, row.client_id, row.redirect_uri, row.resource, row.challenge, Date.now() + CODE_MS, 0);
       this.ctx.storage.sql.exec("UPDATE auth_requests SET phase='approved',agent_id=? WHERE id=? AND account=?", agentId, id, account.subject);

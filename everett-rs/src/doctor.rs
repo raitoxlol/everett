@@ -2,50 +2,8 @@
 
 use serde_json::{json, Value};
 
+use crate::install::presence::{detected_harnesses, store_path, stores, which};
 use crate::adapters::devin as devin_adapter;
-use crate::session::home;
-
-pub fn stores() -> &'static [(&'static str, &'static str)] {
-    // t3code's database annotates sessions of the other harnesses; devin's root moves with DEVIN_HOME.
-    &[
-        ("claude", ".claude/projects"),
-        ("codex", ".codex/sessions"),
-        ("omp", ".omp/agent/sessions"),
-        ("pi", ".pi/agent/sessions"),
-        ("hermes", ".hermes"),
-        ("grok", ".grok/sessions"),
-        ("devin", devin_adapter::DEFAULT_REL),
-        ("t3code", ".t3/userdata/state.sqlite"),
-    ]
-}
-
-fn store_path(harness: &str, relative: &str) -> std::path::PathBuf {
-    if harness == "pi" {
-        crate::adapters::pi::agent_dir().join("sessions")
-    } else if harness == "hermes" {
-        crate::adapters::hermes::profile_home(&home())
-    } else {
-        home().join(relative)
-    }
-}
-
-fn which(name: &str) -> Option<String> {
-    crate::proc::which(name, &std::env::var("PATH").unwrap_or_default())
-}
-
-pub fn detected_harnesses() -> Vec<String> {
-    stores()
-        .iter()
-        .filter(|(h, _)| *h != "t3code")
-        .filter(|(h, rel)| {
-            which(h).is_some()
-                || store_path(h, rel).exists()
-                || (*h == "devin" && devin_adapter::data_dirs().iter().any(|d| d.is_dir()))
-                || (*h == "devin" && crate::install::mcp_path(h).exists())
-        })
-        .map(|(h, _)| h.to_string())
-        .collect()
-}
 
 /// Spawn the server once and check initialize + tools/list.
 fn probe_mcp(launch: Option<(String, Vec<String>, std::collections::HashMap<String, String>)>) -> (bool, String) {
@@ -351,14 +309,14 @@ pub fn run(hours: f64) -> i32 {
     let (_, totals) = crate::cards::coverage(&sessions);
     line(
         &mut warnings,
-        if totals[0] > 0 { Some(true) } else { None },
+        if totals.total() > 0 { Some(true) } else { None },
         &format!(
             "cards (last {} h, interactive): {} sessions, {} agent, {} auto, {} missing",
             crate::fmt::g(hours),
-            totals[0],
-            totals[1],
-            totals[2],
-            totals[3]
+            totals.total(),
+            totals.agent,
+            totals.auto,
+            totals.missing
         ),
     );
 

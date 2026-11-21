@@ -202,6 +202,24 @@ const STORE_ERROR: &str =
 
 const RECOVERY: &str = "Reuse this request_id and identical text to read its receipt. Do not launch under a new ID until the owner reconciles T3; a previous dispatch may have succeeded.";
 
+#[derive(Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
+enum DispatchDiagnostic {
+    InterruptedOrPending,
+    CliUnavailable,
+    CliIoError,
+    CliExit,
+    CliTimeout,
+    CliOutputTooLarge,
+    InvalidReceipt,
+    DestinationMismatchOrMissingRun,
+    // Retain diagnostic spellings accepted in receipts written by older builds.
+    T3McpUnavailable,
+    T3ModelOrEffortUnavailable,
+    T3McpLaunchUnconfirmed,
+    T3EffectiveSelectionMismatch,
+}
+
 // T3 thread/run IDs are opaque receipt values, never Everett inbox paths.
 fn valid_receipt_id(id: &str) -> bool {
     !id.is_empty() && id.len() <= 512 && id.bytes().all(|b| b.is_ascii_graphic())
@@ -254,23 +272,11 @@ fn cached_receipt(
         Some("dispatch_unconfirmed")
             if value["dispatch_confirmed"] == false
                 && value["recovery"] == RECOVERY
-                && matches!(
-                    value["diagnostic"].as_str(),
-                    Some(
-                        "interrupted_or_pending"
-                            | "cli_unavailable"
-                            | "cli_io_error"
-                            | "cli_exit"
-                            | "cli_timeout"
-                            | "cli_output_too_large"
-                            | "invalid_receipt"
-                            | "destination_mismatch_or_missing_run"
-                            | "t3_mcp_unavailable"
-                            | "t3_model_or_effort_unavailable"
-                            | "t3_mcp_launch_unconfirmed"
-                            | "t3_effective_selection_mismatch"
-                    )
-                ) =>
+                && value["diagnostic"].as_str().is_some_and(|diagnostic| {
+                    use serde::de::{value::StrDeserializer, IntoDeserializer};
+                    let value: StrDeserializer<'_, serde::de::value::Error> = diagnostic.into_deserializer();
+                    DispatchDiagnostic::deserialize(value).is_ok()
+                }) =>
         {
             &[
                 "state",
@@ -391,7 +397,7 @@ pub(super) async fn start(
         }
         .map_err(|_| STORE_ERROR)?,
     );
-    let unknown = json!({"state":"dispatch_unconfirmed","dispatch_confirmed":false,"diagnostic":"interrupted_or_pending","request_id":key,
+    let unknown = json!({"state":"dispatch_unconfirmed","dispatch_confirmed":false,"diagnostic":DispatchDiagnostic::InterruptedOrPending,"request_id":key,
         "requested":requested,"effective":null,
         "pickup_confirmed":false,"completion_confirmed":false,"reply_confirmed":false,
         "recovery":RECOVERY});
@@ -450,7 +456,7 @@ pub(super) async fn start(
         })
         .await
         .unwrap_or(Err(t3_mcp::LaunchError::Unconfirmed(
-            "t3_mcp_launch_unconfirmed",
+            DispatchDiagnostic::T3McpLaunchUnconfirmed,
         )))
     } else {
         launch_cli(binding, policy, text)
@@ -508,7 +514,7 @@ impl Drop for OwnedCli {
     }
 }
 
-async fn launch_cli(binding: &Binding, policy: &Policy, text: &str) -> Result<Value, &'static str> {
+async fn launch_cli(binding: &Binding, policy: &Policy, text: &str) -> Result<Value, DispatchDiagnostic> {
     use std::os::unix::process::CommandExt;
     let mut command = Command::new(&policy.command);
     command
@@ -538,20 +544,20 @@ async fn launch_cli(binding: &Binding, policy: &Policy, text: &str) -> Result<Va
         }
     }
     command.as_std_mut().process_group(0);
-    let child = command.spawn().map_err(|_| "cli_unavailable")?;
-    let group = child.id().ok_or("cli_unavailable")?;
+    let child = command.spawn().map_err(|_| DispatchDiagnostic::CliUnavailable)?;
+    let group = child.id().ok_or(DispatchDiagnostic::CliUnavailable)?;
     let mut owned = OwnedCli { child, group };
-    let mut stdin = owned.child.stdin.take().ok_or("cli_io_error")?;
-    let stdout = owned.child.stdout.take().ok_or("cli_io_error")?;
+    let mut stdin = owned.child.stdin.take().ok_or(DispatchDiagnostic::CliIoError)?;
+    let stdout = owned.child.stdout.take().ok_or(DispatchDiagnostic::CliIoError)?;
     let operation = async {
         let send = async {
             stdin
                 .write_all(text.as_bytes())
                 .await
-                .map_err(|_| "cli_io_error")?;
-            stdin.shutdown().await.map_err(|_| "cli_io_error")?;
+                .map_err(|_| DispatchDiagnostic::CliIoError)?;
+            stdin.shutdown().await.map_err(|_| DispatchDiagnostic::CliIoError)?;
             drop(stdin);
-            Ok::<(), &'static str>(())
+            Ok::<(), DispatchDiagnostic>(())
         };
         let receive = async {
             let mut bytes = Vec::new();
@@ -559,35 +565,35 @@ async fn launch_cli(binding: &Binding, policy: &Policy, text: &str) -> Result<Va
                 .take((MAX_RESULT + 1) as u64)
                 .read_to_end(&mut bytes)
                 .await
-                .map_err(|_| "cli_io_error")?;
+                .map_err(|_| DispatchDiagnostic::CliIoError)?;
             if bytes.len() > MAX_RESULT {
-                return Err("cli_output_too_large");
+                return Err(DispatchDiagnostic::CliOutputTooLarge);
             }
             Ok(bytes)
         };
         let (_, bytes) = tokio::try_join!(send, receive)?;
-        let status = owned.child.wait().await.map_err(|_| "cli_io_error")?;
+        let status = owned.child.wait().await.map_err(|_| DispatchDiagnostic::CliIoError)?;
         if !status.success() {
-            return Err("cli_exit");
+            return Err(DispatchDiagnostic::CliExit);
         }
-        let stdout = std::str::from_utf8(&bytes).map_err(|_| "invalid_receipt")?;
-        let receipt = t3_cli::parse_json_output(stdout).ok_or("invalid_receipt")?;
+        let stdout = std::str::from_utf8(&bytes).map_err(|_| DispatchDiagnostic::InvalidReceipt)?;
+        let receipt = t3_cli::parse_json_output(stdout).ok_or(DispatchDiagnostic::InvalidReceipt)?;
         t3_cli::validate_dispatch(
             &receipt,
             Dispatch::Start,
             false,
             status.code().unwrap_or(-1),
         )
-        .map_err(|_| "invalid_receipt")?;
+        .map_err(|_| DispatchDiagnostic::InvalidReceipt)?;
         if receipt["projectId"] != policy.project_id
             || !receipt["threadId"].as_str().is_some_and(valid_receipt_id)
             || !receipt["runId"].as_str().is_some_and(valid_receipt_id)
         {
-            return Err("destination_mismatch_or_missing_run");
+            return Err(DispatchDiagnostic::DestinationMismatchOrMissingRun);
         }
         Ok(receipt)
     };
     timeout(Duration::from_secs_f64(binding.timeout), operation)
         .await
-        .map_err(|_| "cli_timeout")?
+        .map_err(|_| DispatchDiagnostic::CliTimeout)?
 }

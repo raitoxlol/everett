@@ -1,27 +1,15 @@
 import { env as bindings, exports as workerExports } from 'cloudflare:workers';
 import { evictDurableObject, listDurableObjectIds, reset, runInDurableObject } from 'cloudflare:test';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { sha256 } from '@noble/hashes/sha256';
-import { hkdf } from '@noble/hashes/hkdf';
 import { ed25519, x25519 } from '@noble/curves/ed25519';
-import { chacha20poly1305 } from '@noble/ciphers/chacha';
-import { aadBytes, bytes, deviceBytes, encode, envelopeBytes, fingerprint, hexString, namespace, observationBytes, RelayError, type Device, type Envelope, type Observation } from '../src/protocol';
-import { hostedConfig, type HostedAuthEnv } from '../src/hosted-config';
+import { deviceBytes, envelopeBytes, fingerprint, hexString, observationBytes, type Device, type Envelope, type Observation } from '../src/protocol';
 import type { Env } from '../src/index';
 
 const issuer = 'https://everett.test';
 const relayHost = 'https://relay.everett.test';
-const resource = 'https://gateway.example/mcp';
 const redirect = 'https://chatgpt.com/connector_platform_oauth_redirect';
 const client = 'https://chatgpt.com/oauth/client.json';
 const env = bindings as unknown as Env;
-async function memberCount() {
-  let count = 0;
-  for (const id of await listDurableObjectIds(env.OWNERS)) {
-    count += await runInDurableObject(env.OWNERS.get(id), (_instance, state) => state.storage.sql.exec<{ n: number }>('SELECT count(*) n FROM members').one().n);
-  }
-  return count;
-}
 const fetchOn = (origin: string, path: string, init?: RequestInit) => workerExports.default.fetch(new Request(origin + path, { ...init, redirect: 'manual' }));
 const fetchWorker = (path: string, init?: RequestInit) => fetchOn(issuer, path, init);
 const json = (body: unknown): RequestInit => ({ method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
@@ -82,24 +70,6 @@ async function begin(name = 'mac-mini-test') {
   const response = await fetchWorker('/v2/auth/device', json({ name }));
   expect(response.status).toBe(200);
   return await response.json() as { device_code: string; user_code: string; expires_in: number; interval: number; verification_uri_complete: string };
-}
-function expectAuthShell(page: string) {
-  expect(page).toContain('<html lang="en">');
-  expect(page).toContain('<header class="auth-header">');
-  expect(page).toContain('<main id="main" class="auth-main">');
-  expect(page).toContain('<span class="auth-brand" aria-label="Everett">everett</span>');
-  expect(page).toContain('<div class="auth-content">');
-  expect(page).toMatch(/<div class="auth-lead"><h1>[^<]+<\/h1>/);
-  expect(page).not.toContain('auth-card');
-  expect(page).not.toContain('PRIVATE BY DESIGN');
-  expect(page).not.toContain('SECURE DEVICE ACCESS');
-}
-function expectAuthState(page: string, state: 'pending' | 'connected' | 'denied' | 'cancelled' | 'expired' | 'revoked') {
-  expect(page).toContain(`<section class="auth-state" data-state="${state}"`);
-}
-function expectNestedAuthStateLayout(page: string, state: 'pending' | 'connected') {
-  expect(page).toMatch(new RegExp(`<div class="auth-action">[\\s\\S]*?<section class="auth-state" data-state="${state}"`));
-  expect(page).toContain('<style>.auth-action>.auth-state{grid-column:1/-1}</style>');
 }
 async function enroll(browser: Browser, name = 'mac-mini-test') {
   const pending = await begin(name);

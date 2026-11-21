@@ -2,18 +2,14 @@
 
 use std::collections::HashMap;
 use std::io::Write;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 use crate::session::home;
 
 /// "since forever": detection counts every session Everett can see, not just a recent window.
 pub const ALL_HOURS: f64 = 24.0 * 365.0 * 5.0;
 
-/// Harnesses whose hooks live in a settings file Everett can toggle event-by-event.
-pub const HOOK_HARNESSES: &[&str] = &["claude", "codex", "grok", "devin"];
 pub const MCP_HARNESSES: &[&str] = &["claude", "codex", "omp", "pi", "grok", "devin"];
-/// `hooks_common::auto_card` only knows how to build a fallback card for these harnesses.
-pub const BACKFILL_HARNESSES: &[&str] = &["claude", "codex", "grok"];
 
 pub fn devin_hook_label(event: &str) -> &str {
     match event {
@@ -53,6 +49,16 @@ pub const JEV_LINES: &[&str] = &[
     "Jev (typesafe.ai) picks the right session when many are running, instead of a lexical guess.",
     "Without it, routing stays local. Harness calls and LLM merges use their configured providers.",
 ];
+
+#[derive(Default)]
+pub struct Options {
+    pub yes: bool,
+    pub span_days: i64,
+    pub no_backfill: bool,
+    pub no_mcp: bool,
+    pub jev_key_env: Option<String>,
+    pub schedule_merge: bool,
+}
 
 struct QuitOnboarding;
 
@@ -132,7 +138,7 @@ pub fn instruction_prompt(agents: &[String]) -> String {
 
 /// harness -> session count, including CLIs that have not created a session yet.
 pub fn detect_harnesses(hours: f64) -> Vec<(String, usize)> {
-    let detected = crate::doctor::detected_harnesses();
+    let detected = crate::install::presence::detected_harnesses();
     crate::harness::NATIVE
         .iter()
         .filter(|h| detected.iter().any(|d| d == *h))
@@ -149,17 +155,11 @@ pub fn default_config() -> OnboardConfig {
         jev_choice: "skip".to_string(),
         ..Default::default()
     };
-    for harness in HOOK_HARNESSES {
+    for harness in crate::install::settings_hook_harnesses() {
         if cfg.detected.iter().any(|(h, _)| h == harness) {
             cfg.hooks.push((
                 harness.to_string(),
-                crate::install::HOOKS
-                    .iter()
-                    .find(|(h, _)| *h == *harness)
-                    .map(|(_, events)| {
-                        events.iter().map(|(e, _, _)| (e.to_string(), true)).collect()
-                    })
-                    .unwrap_or_default(),
+                crate::install::hook_events(harness).map(|event| (event.to_string(), true)).collect(),
             ));
         }
     }
@@ -305,7 +305,7 @@ fn apply_trunk_schedule(cfg: &OnboardConfig) -> Result<String, String> {
 pub fn missing_card_sessions(span_days: i64) -> Vec<crate::session::Session> {
     crate::registry::scan((span_days as f64) * 24.0, false, None, "")
         .into_iter()
-        .filter(|s| s.card_source.is_none() && BACKFILL_HARNESSES.contains(&s.harness.as_str()))
+        .filter(|s| s.card_source.is_none() && crate::cards::auto::supports(&s.harness))
         .collect()
 }
 
@@ -314,7 +314,7 @@ pub fn generate_backfill_cards(sessions: &[crate::session::Session], progress: O
     let (mut written, mut skipped) = (0usize, 0usize);
     let total = sessions.len();
     for (i, s) in sessions.iter().enumerate() {
-        let content = crate::hooks_common::auto_card(Path::new(&s.path), &s.harness, &s.cwd, &s.id);
+        let content = crate::cards::auto::for_session(s);
         if content.is_empty() {
             skipped += 1;
         } else if let Some(target) = crate::cards::card_path(&s.id) {
@@ -484,7 +484,7 @@ pub fn setup_warnings(cfg: &OnboardConfig, result: &ApplyResult) -> Vec<String> 
     warnings
 }
 
-pub fn run_yes(args: &crate::cli::Args) -> i32 {
+pub fn run_yes(args: &Options) -> i32 {
     let mut cfg = default_config();
     cfg.span_days = args.span_days;
     cfg.backfill_enabled = !args.no_backfill;
@@ -558,7 +558,7 @@ fn plain_jev_entry(cfg: &mut OnboardConfig) -> Result<(), QuitOnboarding> {
     Ok(())
 }
 
-fn run_plain(args: &crate::cli::Args) -> Result<i32, QuitOnboarding> {
+fn run_plain(args: &Options) -> Result<i32, QuitOnboarding> {
     println!("Everett -- first-time setup");
     for line in WELCOME_LINES {
         println!("{}", line);
@@ -703,7 +703,7 @@ fn run_plain(args: &crate::cli::Args) -> Result<i32, QuitOnboarding> {
     Ok(if result.errors.is_empty() { finish() } else { 1 })
 }
 
-pub fn run(args: &crate::cli::Args) -> i32 {
+pub fn run(args: &Options) -> i32 {
     if args.schedule_merge && crate::trunk_schedule::Scheduler::current().is_none() {
         eprintln!("everett onboard: --schedule-merge requires macOS launchd or Linux systemd; use `everett trunk merge --llm none`.");
         return 2;
@@ -712,7 +712,7 @@ pub fn run(args: &crate::cli::Args) -> i32 {
         eprintln!("everett onboard: --span-days must be between 1 and 30.");
         return 2;
     }
-    if args.onboard_yes {
+    if args.yes {
         return run_yes(args);
     }
     if let Ok(result) = crate::tui::run(args, default_config()) {

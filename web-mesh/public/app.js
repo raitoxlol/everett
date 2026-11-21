@@ -7,11 +7,11 @@ const make = (tag, text, className) => {
 };
 
 const views = {
-  overview: 'Mesh overview',
-  devices: 'Devices',
-  cloud: 'Cloud agents',
-  activity: 'Activity',
-  settings: 'Settings',
+  overview: { title: 'Mesh overview', draw: overview, results: ['metrics', 'session-summary', 'device-summary', 'recent-receipts'] },
+  devices: { title: 'Devices', draw: devices, results: ['device-list', 'session-list'] },
+  cloud: { title: 'Cloud agents', draw: cloud, results: ['cloud-list'] },
+  activity: { title: 'Activity', draw: activity, results: ['receipt-list'] },
+  settings: { title: 'Settings', draw: settings, results: ['connection'] },
 };
 const defaultPrefs = { theme: 'light', density: 'comfortable', 'time-format': 'relative' };
 const choices = { theme: ['dark', 'light', 'system'], density: ['comfortable', 'compact'], 'time-format': ['relative', 'absolute'] };
@@ -24,14 +24,6 @@ let signedIn = false;
 let signedOut = false;
 let githubLogin = false;
 let currentView = 'overview';
-
-const viewResults = {
-  overview: ['metrics', 'session-summary', 'device-summary', 'recent-receipts'],
-  devices: ['device-list', 'session-list'],
-  cloud: ['cloud-list'],
-  activity: ['receipt-list'],
-  settings: ['connection'],
-};
 
 try {
   const saved = JSON.parse(localStorage.getItem(prefKey) || '{}');
@@ -55,10 +47,10 @@ function setView() {
   const hash = location.hash.slice(1);
   const selected = Object.hasOwn(views, hash) ? hash : 'overview';
   if (selected !== currentView) {
-    for (const id of viewResults[currentView]) $(id).replaceChildren();
+    for (const id of views[currentView].results) $(id).replaceChildren();
     currentView = selected;
   }
-  $('title').textContent = views[selected];
+  $('title').textContent = views[selected].title;
   for (const panel of document.querySelectorAll('[data-view]')) {
     panel.hidden = panel.dataset.view !== selected;
   }
@@ -296,10 +288,10 @@ function render(data) {
 }
 
 function drawView() {
-  ({ overview, devices, cloud, activity, settings })[currentView]();
+  views[currentView].draw();
 }
 
-const privateResults = [...Object.values(viewResults).flat(), 'snapshot-time'];
+const privateResults = [...Object.values(views).flatMap(view => view.results), 'snapshot-time'];
 function clear() {
   snapshot = null;
   $('data').hidden = true;

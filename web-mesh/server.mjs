@@ -1,6 +1,7 @@
 import { createHmac, randomBytes, timingSafeEqual } from 'node:crypto';
 import { fixtureSnapshot } from './fixtures/v1.mjs';
 import { githubOwner, githubRoutes, readCookie } from './github-auth.mjs';
+import { isExactOrigin, readGrantToken } from './grant.mjs';
 const headers = { 'Cache-Control':'no-store', 'Content-Type':'application/json; charset=utf-8', 'X-Content-Type-Options':'nosniff', 'Referrer-Policy':'no-referrer' };
 const reply = (data,status=200,extra={}) => new Response(data===null?null:JSON.stringify(data),{status,headers:{...headers,...extra}});
 const text = (value,max=256) => { if(typeof value!=='string'||!value||value.length>max||/[\x00-\x1f\x7f]/.test(value))throw Error('invalid projection');return value; };
@@ -32,17 +33,16 @@ export function adaptSnapshot(value,config) {
   return {version:'everett.mesh.v1',source,verification:source==='fixture'?'fixture-only':'cloudflare-read',owner:text(value.owner,2048),serverNow,grantExpiresAt:time(value.grantExpiresAt),fetchedAt:Date.now(),authentication:config.auth ?? 'secret',devices,sessions,cloudAgents,accountUrl,queue:{queued},receipts,truncated};
 }
 const equal = (a,b) => {const x=Buffer.from(a),y=Buffer.from(b);return x.length===y.length&&timingSafeEqual(x,y);};
-const local = url => url.protocol==='http:'&&['127.0.0.1','localhost','[::1]'].includes(url.hostname);
 function configuration(env) {
   const origin=new URL(env.CONSOLE_ORIGIN);
-  if(origin.origin!==env.CONSOLE_ORIGIN||(!local(origin)&&origin.protocol!=='https:'))throw Error('invalid console origin');
+  if (!isExactOrigin(origin, env.CONSOLE_ORIGIN, true)) throw Error('invalid console origin');
   const auth = env.CONSOLE_AUTH ?? 'secret';
   if (!env.SESSION_KEY || env.SESSION_KEY.length < 32 || !['secret', 'github'].includes(auth)) throw Error('invalid console authentication');
   if (auth === 'secret' && (!env.CONSOLE_SECRET || env.CONSOLE_SECRET.length < 32)) throw Error('private console secret required');
   if(env.MESH_MODE!=='fixture') {
     const endpoint=new URL(env.MESH_ENDPOINT);
-    if(endpoint.origin!==env.MESH_ENDPOINT||endpoint.username||endpoint.password||(!local(endpoint)&&endpoint.protocol!=='https:')||(local(endpoint)&&env.MESH_ALLOW_LOCAL!=='true'))throw Error('invalid source');
-    if(!/^emr_[a-f0-9]{64}$/.test(env.MESH_TOKEN)||!env.MESH_OWNER)throw Error('read grant required');
+    if (!isExactOrigin(endpoint, env.MESH_ENDPOINT, env.MESH_ALLOW_LOCAL === 'true')) throw Error('invalid source');
+    if (!readGrantToken.test(env.MESH_TOKEN) || !env.MESH_OWNER) throw Error('read grant required');
   }
   let account = null;
   if (auth === 'github') {

@@ -105,6 +105,10 @@ pub fn project(cwd: &str) -> Option<String> {
     project_in(cwd, &home()).ok()
 }
 
+pub fn project_match_key(session: &Session) -> String {
+    project(&session.cwd).unwrap_or_default().to_lowercase()
+}
+
 /// The project name, or the label shown for a folder that is not a project.
 fn project_in(cwd: &str, home: &Path) -> Result<String, &'static str> {
     let path = Path::new(cwd.trim_end_matches('/'));

@@ -336,11 +336,15 @@ fn claude_spawn_preassigns_id_and_records_it() {
     let args: Vec<_> = args.lines().collect();
     assert_eq!(std::fs::canonicalize(args[0]).unwrap(), std::fs::canonicalize(&cwd).unwrap());
     assert_eq!(&args[1..4], ["--session-id", result.session_id.as_str(), "--print"]);
-    let spawned = registry::spawned_ids();
-    assert!(spawned.contains(&result.session_id));
-    let mut hidden = Session::new("claude", &result.session_id, "", "", "", 0.0);
-    hidden.auto = true;
-    assert!(!registry::is_auto(&hidden, &spawned));
+    let session_id = &result.session_id;
+    let transcript = serde_json::json!({
+        "type": "user", "sessionId": session_id, "cwd": cwd, "entrypoint": "sdk-cli",
+        "message": {"role": "user", "content": "Automation: check the result"}
+    });
+    let project = h.path().join(".claude/projects/test");
+    std::fs::create_dir_all(&project).unwrap();
+    std::fs::write(project.join(format!("{session_id}.jsonl")), format!("{transcript}\n")).unwrap();
+    assert!(registry::scan(1.0, false, None, "claude").iter().any(|session| &session.id == session_id));
 }
 
 #[test]
