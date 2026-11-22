@@ -244,7 +244,7 @@ fn next_step(text: &str) -> String {
         .collect();
     static STRIP_NEXT: OnceLock<Regex> = OnceLock::new();
     let strip_next = STRIP_NEXT.get_or_init(|| {
-        Regex::new(r"(?i)^\s*(?:the\s+)?next(?:\s+step)?\s*(?:is\s+to\s+)?[:,—–-]?\s*").unwrap()
+        Regex::new(r"(?i)^\s*(?:the\s+)?next(?:\s+steps?)?\s*(?:is\s+to\s+)?[:,—–-]?\s*").unwrap()
     });
     static STRIP_JP1: OnceLock<Regex> = OnceLock::new();
     let strip_jp1 = STRIP_JP1.get_or_init(|| Regex::new(r"^\s*次のステップ\s*[:：、]?\s*").unwrap());
