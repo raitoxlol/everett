@@ -1,0 +1,295 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<style>
+  @font-face {
+    font-family: "Sora";
+    src: url("fonts/Sora-var.woff2") format("woff2");
+    font-weight: 100 800;
+  }
+  @font-face {
+    font-family: "Geist Mono";
+    src: url("file:///home/nuc/.t3/worktrees/everett/t3-37b645f8-751392bac4256f05/site/assets/fonts/GeistMono-400.woff2") format("woff2");
+    font-weight: 400;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    background: #F6F5F2;
+    color: #141517;
+    font-family: "Sora", ui-sans-serif, -apple-system, sans-serif;
+    padding: 28px;
+    width: 980px;
+  }
+  .stack { display: flex; flex-direction: column; gap: 22px; }
+  .header {
+    display: flex;
+    justify-content: space-between;
+    align-items: baseline;
+    border-bottom: 1px solid #DCD9D2;
+    padding-bottom: 12px;
+  }
+  .header h1 { font-size: 20px; font-weight: 700; letter-spacing: -0.03em; }
+  .header span { font-family: "Geist Mono", monospace; font-size: 11px; color: #666; }
+
+  .sec-label {
+    font-family: "Geist Mono", monospace;
+    font-size: 11px;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    color: #666;
+    margin-bottom: 9px;
+  }
+
+  /* Row 1: 7 mark + icon tiles */
+  .marks-grid {
+    display: grid;
+    grid-template-columns: repeat(7, minmax(0, 1fr));
+    gap: 10px;
+  }
+  .m-tile {
+    border-radius: 10px;
+    overflow: hidden;
+    border: 1px solid #DCD9D2;
+    background: #FFFFFF;
+    display: flex;
+    flex-direction: column;
+  }
+  .m-stage {
+    height: 104px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+  .bg-white { background: #FFFFFF; }
+  .bg-paper { background: #F3EEE5; }
+  .bg-ink { background: #0E0C0B; }
+  .bg-black { background: #000000; }
+  .m-cap {
+    padding: 7px 8px;
+    border-top: 1px solid #ECEAE4;
+    display: flex;
+    flex-direction: column;
+    gap: 1px;
+  }
+  .m-name { font-size: 11px; font-weight: 600; }
+  .m-file { font-family: "Geist Mono", monospace; font-size: 8.5px; color: #777; }
+
+  /* Row 2: Lockups + Scale Strip */
+  .row-2 {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 12px;
+  }
+  .lock-card {
+    border-radius: 10px;
+    padding: 18px 20px 14px;
+    display: flex;
+    flex-direction: column;
+    gap: 14px;
+  }
+  .lock-light { background: #F3EEE5; border: 1px solid #CBC1B3; color: #141517; }
+  .lock-dark { background: #0E0C0B; border: 1px solid #2A2623; color: #EDE6DC; }
+  .lock-top {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+  }
+  .lock-brand { display: flex; align-items: center; gap: 12px; }
+  .lock-word { font-size: 32px; font-weight: 700; letter-spacing: -0.045em; line-height: 1; }
+  .lock-tag { font-family: "Geist Mono", monospace; font-size: 10.5px; opacity: 0.55; }
+  .scale-strip {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding-top: 12px;
+    border-top: 1px solid;
+  }
+  .lock-light .scale-strip { border-color: #CBC1B3; }
+  .lock-dark .scale-strip { border-color: rgba(237,230,220,0.12); }
+  .sc {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    font-family: "Geist Mono", monospace;
+    font-size: 9.5px;
+    color: rgba(20,21,23,0.58);
+  }
+  .lock-dark .sc { color: rgba(237,230,220,0.58); }
+
+  /* Row 3: README Hero Banners */
+  .hero-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 12px;
+  }
+  .hero-frame {
+    border-radius: 10px;
+    overflow: hidden;
+    display: block;
+  }
+  .hero-frame img { display: block; width: 100%; height: auto; }
+
+  /* Row 4: Palette + Type */
+  .sys-grid {
+    display: grid;
+    grid-template-columns: 1.45fr 1fr;
+    gap: 12px;
+  }
+  .panel {
+    background: #FFFFFF;
+    border: 1px solid #DCD9D2;
+    border-radius: 10px;
+    padding: 14px 16px;
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+  }
+  .sw-grid {
+    display: grid;
+    grid-template-columns: repeat(5, minmax(0, 1fr));
+    gap: 8px;
+  }
+  .sw {
+    border-radius: 6px;
+    overflow: hidden;
+    border: 1px solid #E5E2DC;
+  }
+  .sw-c { height: 28px; }
+  .sw-m { padding: 5px 6px; display: flex; flex-direction: column; }
+  .sw-n { font-size: 10px; font-weight: 600; }
+  .sw-h { font-family: "Geist Mono", monospace; font-size: 9px; color: #777; }
+
+  .type-rows { display: flex; flex-direction: column; gap: 8px; }
+  .t-row {
+    display: flex;
+    justify-content: space-between;
+    align-items: baseline;
+    padding-bottom: 7px;
+    border-bottom: 1px solid #ECEAE4;
+  }
+  .t-row:last-child { border-bottom: 0; padding-bottom: 0; }
+  .t-meta { font-family: "Geist Mono", monospace; font-size: 9.5px; color: #777; }
+</style>
+</head>
+<body>
+<div class="stack">
+
+  <div class="header">
+    <h1>Everett Identity Family (Final Mark: M6)</h1>
+    <span>R=43 at (64,60) · 60° wrap · 108×7 horizon · 8u gaps · Sora + Geist Mono</span>
+  </div>
+
+  <!-- 01 Marks & Icons -->
+  <div>
+    <div class="sec-label">01 / Core marks and app icons (brand/assets/)</div>
+    <div class="marks-grid">
+      <div class="m-tile">
+        <div class="m-stage bg-white"><img src="everett-mark-black.svg" width="76" height="76"></div>
+        <div class="m-cap"><span class="m-name">Mono Black</span><span class="m-file">mark-black.svg</span></div>
+      </div>
+      <div class="m-tile">
+        <div class="m-stage bg-black"><img src="everett-mark-white.svg" width="76" height="76"></div>
+        <div class="m-cap"><span class="m-name">Mono White</span><span class="m-file">mark-white.svg</span></div>
+      </div>
+      <div class="m-tile">
+        <div class="m-stage bg-paper"><img src="everett-mark-sun-light.svg" width="76" height="76"></div>
+        <div class="m-cap"><span class="m-name">Sun Light</span><span class="m-file">mark-sun-light.svg</span></div>
+      </div>
+      <div class="m-tile">
+        <div class="m-stage bg-ink"><img src="everett-mark-sun-dark.svg" width="76" height="76"></div>
+        <div class="m-cap"><span class="m-name">Sun Dark</span><span class="m-file">mark-sun-dark.svg</span></div>
+      </div>
+      <div class="m-tile">
+        <div class="m-stage bg-white"><img src="everett-favicon-dark.svg" width="66" height="66"></div>
+        <div class="m-cap"><span class="m-name">Icon Dark</span><span class="m-file">favicon-dark.svg</span></div>
+      </div>
+      <div class="m-tile">
+        <div class="m-stage bg-white"><img src="everett-favicon-light.svg" width="66" height="66"></div>
+        <div class="m-cap"><span class="m-name">Icon Light</span><span class="m-file">favicon-light.svg</span></div>
+      </div>
+      <div class="m-tile">
+        <div class="m-stage bg-white"><img src="everett-favicon-sun.svg" width="66" height="66"></div>
+        <div class="m-cap"><span class="m-name">Icon Sun</span><span class="m-file">favicon-sun.svg</span></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- 02 Lockups & Optical Scales -->
+  <div>
+    <div class="sec-label">02 / Primary lockups and 48 / 32 / 24 / 16px optical checks</div>
+    <div class="row-2">
+      <div class="lock-card lock-light">
+        <div class="lock-top">
+          <div class="lock-brand">
+            <img src="everett-mark-black.svg" width="46" height="46">
+            <span class="lock-word">Everett</span>
+          </div>
+          <span class="lock-tag">paper · #000000</span>
+        </div>
+        <div class="scale-strip">
+          <span class="sc"><img src="everett-mark-black.svg" width="48" height="48">48</span>
+          <span class="sc"><img src="everett-mark-black.svg" width="32" height="32">32</span>
+          <span class="sc"><img src="everett-mark-black.svg" width="24" height="24">24</span>
+          <span class="sc"><img src="everett-mark-black.svg" width="16" height="16">16</span>
+        </div>
+      </div>
+      <div class="lock-card lock-dark">
+        <div class="lock-top">
+          <div class="lock-brand">
+            <img src="everett-mark-white.svg" width="46" height="46">
+            <span class="lock-word">Everett</span>
+          </div>
+          <span class="lock-tag">ink · #FFFFFF</span>
+        </div>
+        <div class="scale-strip">
+          <span class="sc"><img src="everett-mark-white.svg" width="48" height="48">48</span>
+          <span class="sc"><img src="everett-mark-white.svg" width="32" height="32">32</span>
+          <span class="sc"><img src="everett-mark-white.svg" width="24" height="24">24</span>
+          <span class="sc"><img src="everett-mark-white.svg" width="16" height="16">16</span>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- 03 README Hero Banners -->
+  <div>
+    <div class="sec-label">03 / GitHub README hero banners (1120×260, light &amp; dark theme switch)</div>
+    <div class="hero-grid">
+      <div class="hero-frame"><img src="everett-hero-light.svg"></div>
+      <div class="hero-frame"><img src="everett-hero-dark.svg"></div>
+    </div>
+  </div>
+
+  <!-- 04 Unified Color System + Typography -->
+  <div>
+    <div class="sec-label">04 / Unified palette (monochrome + raitox.tech + dashboard) &amp; Sora type ramp</div>
+    <div class="sys-grid">
+      <div class="panel">
+        <div class="sw-grid">
+          <div class="sw"><div class="sw-c" style="background:#000000"></div><div class="sw-m"><span class="sw-n">mono</span><span class="sw-h">#000000</span></div></div>
+          <div class="sw"><div class="sw-c" style="background:#0E0C0B"></div><div class="sw-m"><span class="sw-n">ink</span><span class="sw-h">#0E0C0B</span></div></div>
+          <div class="sw"><div class="sw-c" style="background:#EDE6DC"></div><div class="sw-m"><span class="sw-n">bone</span><span class="sw-h">#EDE6DC</span></div></div>
+          <div class="sw"><div class="sw-c" style="background:#FF5A1F"></div><div class="sw-m"><span class="sw-n">sun</span><span class="sw-h">#FF5A1F</span></div></div>
+          <div class="sw"><div class="sw-c" style="background:#F596AA"></div><div class="sw-m"><span class="sw-n">momo</span><span class="sw-h">#F596AA</span></div></div>
+          <div class="sw"><div class="sw-c" style="background:#F3EEE5"></div><div class="sw-m"><span class="sw-n">paper</span><span class="sw-h">#F3EEE5</span></div></div>
+          <div class="sw"><div class="sw-c" style="background:#242825"></div><div class="sw-m"><span class="sw-n">carbon</span><span class="sw-h">#242825</span></div></div>
+          <div class="sw"><div class="sw-c" style="background:#B64F1A"></div><div class="sw-m"><span class="sw-n">oxide</span><span class="sw-h">#B64F1A</span></div></div>
+          <div class="sw"><div class="sw-c" style="background:#216B4C"></div><div class="sw-m"><span class="sw-n">green</span><span class="sw-h">#216B4C</span></div></div>
+          <div class="sw"><div class="sw-c" style="background:#A1382F"></div><div class="sw-m"><span class="sw-n">red</span><span class="sw-h">#A1382F</span></div></div>
+        </div>
+      </div>
+      <div class="panel">
+        <div class="type-rows">
+          <div class="t-row"><span style="font-size:23px;font-weight:700;letter-spacing:-0.035em">One layer above.</span><span class="t-meta">Sora 700 · -0.035em</span></div>
+          <div class="t-row"><span style="font-size:15px;font-weight:500">Many sessions. One mind.</span><span class="t-meta">Sora 500 · 18px</span></div>
+          <div class="t-row"><span style="font-size:13px;color:#555">Route requests and shared memory.</span><span class="t-meta">Sora 400 · 16px</span></div>
+          <div class="t-row"><span style="font-family:'Geist Mono',monospace;font-size:12px">everett send "cap retries at 5"</span><span class="t-meta">Geist Mono · 12px</span></div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+</div>
+</body>
+</html>
