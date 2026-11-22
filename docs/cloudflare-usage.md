@@ -32,6 +32,12 @@ The receiver now registers until the first successful response, then polls witho
 
 `HostedAuth.authenticateRelayToken` validates the native token, expiry and account binding. It does not authorize an operation. `OwnerRelay.relay` authorizes every operation; metadata operations authorize through `activeCredentialIds` before reading or changing labels. Hosted credential/membership denials still return HTTP 401 with `invalid_token`. No token or authorization cache is introduced.
 
+## HostedAuth expiry and row cleanup
+
+HostedAuth checks expiry on read and authorization paths; physical row deletion is separate. OAuth introspection continues to reject an expired access token even while its row remains stored. OAuth authorization-server discovery and token introspection skip cleanup; before other requests that reach route dispatch, HostedAuth runs an opportunistic sweep. This is request-path maintenance, not a scheduled cleanup job.
+
+A sweep deletes at most 128 rows from each of `gh_states`, `owner_sessions`, `device_requests`, `auth_requests`, and `auth_codes`, plus 256 expired `oauth_tokens` and 128 `mesh_grants` beyond the mesh-history cutoff. It prunes stale `auth_rates` buckets once per minute window per live Durable Object instance. Expiry and window indexes support these bounded queries. Expired rows may remain stored, especially while traffic uses only discovery and introspection, and a backlog takes eligible requests and bounded sweeps to drain. Production savings from this change have not been measured.
+
 ## Steady idle budget
 
 These are calculated ceilings assuming one cycle every five seconds, excluding HTTP latency, startup, retries, message traffic, login and alarms. They are not measured post-deployment savings.
