@@ -11,6 +11,7 @@ pub mod config;
 pub mod control;
 pub mod core;
 pub mod dashboard;
+pub mod directory;
 pub mod doctor;
 pub mod error;
 pub mod events;
