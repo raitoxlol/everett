@@ -20,9 +20,73 @@ An exact `id:DEVICE_ID/HARNESS/SESSION_ID` selector works without name metadata.
 Duplicate or incomplete name directories fail closed. Names select an ID; they do
 not replace signed device identity. Existing SSH aliases retain their transport.
 
-The Cloudflare account service is the same-owner trust authority. It can authorize
-a new key bundle; a compromised service can substitute a same-owner identity.
-Different-owner delivery and bilateral grants are unavailable. Manual SSH pairing remains separate.
+The Cloudflare account service is the trust authority for account identity, active device
+bundles and inbox grants; the address flow does not add out-of-band fingerprint confirmation.
+Manual SSH pairing remains separate.
+
+## Cross-account addressed inboxes
+
+Cross-account delivery is available through a private `LOCAL@SCOPE` inbox and an explicit
+grant from the receiving inbox device or an account admin. Each account enrolls and uses its
+own Cloudflare device credentials. The recipient registers an address against one device and
+exact harness/session:
+
+```sh
+everett relay register-inbox review@team --harness claude --session SESSION_ID
+```
+
+An active address cannot be silently rebound to another device or inbox. The first owner to
+claim a `SCOPE` owns that zone, and zone ownership is not transferred when its last address is
+removed. The address is not a public directory entry: another account can resolve it only when
+its exact sender owner/device has an active grant for that inbox.
+
+The receiving owner or authorized admin grants that exact sender:
+
+```sh
+everett relay grant-inbox review@team --sender-owner SENDER_OWNER --sender-device SENDER_DEVICE
+```
+
+The sender account can report these values with `everett relay whoami`; its output fields are
+named `owner` and `deviceId`. The receiving account uses them to create the grant.
+The grant is scoped to this address and sender identity; it does not add the sender to the
+recipient account or expose other inboxes or sessions. The sender can then use the CLI or the
+general `everett_send` tool with the known address and explicit inbox mode:
+
+```sh
+everett send --to review@team --mode inbox "Please review this change"
+```
+
+An addressed send creates a new hop-1 root request. For a correlated reply on that request and
+grant, the recipient uses the message ID with `everett reply`:
+
+```sh
+everett reply MESSAGE_ID "This review looks good"
+```
+
+`everett_agent_send` and `everett_agent_relay`'s device
+directory remain same-owner MCP surfaces; grant and address administration uses the CLI.
+The sender's local `everett access` policy can still block outbound cross-account traffic, and
+the recipient's local policy can still reject inbound messages. These local settings do not
+revoke the hosted grant; the inbox owner must revoke it separately below.
+
+Revoke one grant from the inbox device or an account admin with the returned grant ID:
+
+```sh
+everett relay revoke-inbox-grant GRANT_ID
+```
+
+Revocation blocks later relay resolution and use of that grant, including queued pickup and
+correlated replies, but cannot recall content already delivered or decrypted. Removing the
+address revokes all active grants; run this on the receiving account's inbox device or as an
+account admin:
+
+```sh
+everett relay register-inbox review@team --harness claude --session SESSION_ID --remove
+```
+
+Cross-account content is labeled external/untrusted after import. The relay encrypts message
+bodies end-to-end, but routing and delivery metadata remain visible; see the
+[threat model](relay-threat-model.md) for the exact protection boundary.
 
 Receiver wake support is separate from device trust. See
 [agent support and wake](agent-support.md).
