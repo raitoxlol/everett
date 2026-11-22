@@ -337,12 +337,12 @@ pub fn backup(path: &PathBuf) -> Option<PathBuf> {
     Some(dest)
 }
 
-fn write_json(path: &Path, data: &Map<String, Value>) -> std::io::Result<()> {
+fn write_preserving_mode(path: &Path, contents: &str) -> std::io::Result<()> {
     use std::io::{ErrorKind, Write};
     let parent = path.parent().unwrap_or(Path::new("."));
     fs::create_dir_all(parent)?;
     let mut tmp = tempfile::NamedTempFile::new_in(parent)?;
-    writeln!(tmp, "{}", serde_json::to_string_pretty(data)?)?;
+    tmp.write_all(contents.as_bytes())?;
     match fs::metadata(path) {
         Ok(metadata) => tmp.as_file().set_permissions(metadata.permissions())?,
         Err(error) if error.kind() == ErrorKind::NotFound => {}
@@ -350,6 +350,10 @@ fn write_json(path: &Path, data: &Map<String, Value>) -> std::io::Result<()> {
     }
     tmp.persist(path)?;
     Ok(())
+}
+
+fn write_json(path: &Path, data: &Map<String, Value>) -> std::io::Result<()> {
+    write_preserving_mode(path, &format!("{}\n", serde_json::to_string_pretty(data)?))
 }
 
 pub fn snippet(harness: &str) -> String {
@@ -811,12 +815,7 @@ pub fn apply_mcp(harness: &str, repair: bool) -> std::result::Result<String, Str
             return Ok(format!("{}: everett MCP server already registered ({})", harness, path.display()));
         }
         saved = backup(&path);
-        if let Some(parent) = path.parent() {
-            fs::create_dir_all(parent).map_err(|e| e.to_string())?;
-        }
-        let tmp = path.with_file_name(format!("{}.everett-tmp", path.file_name().unwrap_or_default().to_string_lossy()));
-        fs::write(&tmp, &updated).map_err(|e| e.to_string())?;
-        fs::rename(&tmp, &path).map_err(|e| e.to_string())?;
+        write_preserving_mode(&path, &updated).map_err(|e| e.to_string())?;
     } else {
         let mut data = data.clone();
         match data.get("mcpServers") {
