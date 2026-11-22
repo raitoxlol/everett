@@ -42,10 +42,12 @@ The examples below use the same ids as [Grok Bot registration](grok-bot.md).
    MCP Tunnel. The target workspace may require admin approval. Actual dot tool
    selection, write confirmations, and permissions still need an owner test.
 
-`destinations` are exact full session ids. Use an id from `everett ls --json`
-or another external registration such as `ext-grok-wright`. Titles, folder
+`destinations` are exact full session or T3 Code thread ids. Use an id from
+`everett ls --json` (its `t3_thread_id` field names the thread) or another
+external registration such as `ext-grok-wright`. Titles, folder
 names, and prefixes are not accepted, and a destination cannot be this agent's
-own id.
+own id. A T3 thread id resolves to the thread's provider session inbox on send;
+`everett_directory` shows the binding's authorized ids with these labels.
 
 ```json
 {

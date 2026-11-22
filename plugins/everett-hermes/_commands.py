@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 from typing import Callable
 
-from ._everett import card_status, run_cli
+from ._everett import card_status, read_card_summary, run_cli
 from ._inbox import InboxTracker, valid_session_id
 
 
@@ -14,6 +14,8 @@ HELP_TEXT = (
     "  /everett status     Show Everett binary, account, bound session, inbox, and card status\n"
     "  /everett ls [hours] List recent coding-agent sessions (default 72h)\n"
     "  /everett inbox      Peek waiting Everett inbox message IDs without marking them read\n"
+    "  /everett card       Show this session's current Everett routing card\n"
+    "  /everett sent       List recent local Everett requests sent by this session\n"
     "  /everett core       Show the compact Everett shared core for this workspace\n"
     "  /everett help       Show this help"
 )
@@ -40,6 +42,10 @@ def make_everett_command(
         sub = tokens[0].lower() if tokens else "status"
         if sub in ("help", "-h", "--help"):
             return HELP_TEXT
+        if sub == "card":
+            return _show_card(session_id)
+        if sub == "inbox":
+            return _peek_inbox(session_id, inbox_tracker)
 
         binary = binary_resolver()
         if not binary:
@@ -59,8 +65,8 @@ def make_everett_command(
                 except ValueError:
                     return "Usage: /everett ls [hours] (integer from 1 to 168)"
             return _list_sessions(binary, hours, cwd)
-        if sub == "inbox":
-            return _peek_inbox(session_id, inbox_tracker)
+        if sub == "sent":
+            return _show_sent(binary, session_id, cwd)
         if sub == "core":
             return _show_core(binary, cwd)
         return f"Unknown subcommand `{sub}`.\n\n{HELP_TEXT}"
@@ -145,6 +151,43 @@ def _peek_inbox(session_id: str | None, inbox_tracker: InboxTracker) -> str:
         f"Unread Everett inbox messages for {session_id}: {shown}{extra}\n"
         "Ask Hermes to call `everett_inbox` to read them as untrusted agent data."
     )
+
+
+def _show_card(session_id: str | None) -> str:
+    if not valid_session_id(session_id):
+        return "No Hermes session ID is bound to this command context."
+    assert session_id is not None
+    status, body = read_card_summary(session_id)
+    if status == "none" or not body:
+        return f"No Everett card written for session {session_id} yet."
+    return f"Everett card ({status}) for {session_id}:\n{body}"
+
+
+def _show_sent(binary: str, session_id: str | None, cwd: str) -> str:
+    if not valid_session_id(session_id):
+        return "No Hermes session ID is bound to this command context."
+    assert session_id is not None
+    res = run_cli(binary, ["sent", "--json"], session_id=session_id, cwd=cwd, timeout=8.0)
+    if res is None or res.returncode != 0:
+        return "Could not read sent Everett requests for this session."
+    try:
+        data = json.loads(res.stdout)
+    except json.JSONDecodeError:
+        return "Everett returned malformed sent-request output."
+    requests = data.get("requests") if isinstance(data, dict) else (data if isinstance(data, list) else None)
+    if not isinstance(requests, list) or not requests:
+        return f"No recent local Everett requests sent by {session_id}."
+    lines = [f"Recent Everett requests sent by {session_id}:"]
+    for item in requests[:15]:
+        if not isinstance(item, dict):
+            continue
+        mid = str(item.get("message_id") or item.get("id") or "")
+        to = str(item.get("to") or "?")
+        if mid:
+            lines.append(f"  {mid} -> {to}")
+    if len(requests) > 15:
+        lines.append(f"  ... ({len(requests) - 15} more; call everett_sent for the full list)")
+    return "\n".join(lines)
 
 
 def _show_core(binary: str, cwd: str) -> str:

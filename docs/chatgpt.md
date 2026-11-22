@@ -91,7 +91,10 @@ Tunnel alone does not meet the public submission requirements in the official
 ## Messaging, session starts, and conversation identity
 
 The hosted gateway accepts `everett_send` only to owner-configured exact IDs or
-an authorized `reply_to`. It forces inbox-only delivery with `spawn=false` and
+an authorized `reply_to`. `everett_directory` labels those authorized IDs with
+their session, T3 Code thread, or conversation names and state, so a named
+existing thread resolves to its exact ID instead of a guess; a T3 thread ID
+delivers to the thread's provider session inbox. It forces inbox-only delivery with `spawn=false` and
 `wait=0`. A queued message does not start a T3 turn. The recipient must read its
 inbox and send a correlated reply. The default gateway cannot start sessions, wake T3,
 list arbitrary sessions, or read their transcripts. See [gateway permissions](gateway.md#allowed-tools-and-delivery).

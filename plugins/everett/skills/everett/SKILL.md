@@ -22,6 +22,18 @@ on `events/subscribe` to this Dot's private handle. Use the same handle for
 pickup and reply. If the handle is unavailable, pause the event workflow and
 report that the Dot's private inbox could not be selected.
 
+For a handoff to an existing session or T3 Code thread (for example "send this
+to my Teresis T3 Code session"), call `everett_directory` first. It lists only
+the destinations this connection is authorized to reach, each with its exact
+`id`, `kind`, `project`, `label`, `state`, and permitted `actions`. Pick the
+entry whose `label` or `project` matches what the user named, then call
+`everett_send` with that exact `id`; a T3 thread ID is valid and resolves to the
+thread's provider session inbox (`resolved_to`). Entries with empty `actions`
+are not sendable — read the `note` for the reason and report it instead of
+guessing another target. `everett_start`, when advertised, only starts a NEW run
+in the owner's fixed project and never reaches an existing thread; do not
+substitute it for an existing-thread handoff.
+
 On a `message.created` event, call `everett_inbox` with `message_id` from the
 event's `data.message_id` and the Dot's private `identity_handle`. If the client
 schema lacks `message_id`, pause and report that the existing app's tools need

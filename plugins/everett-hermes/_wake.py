@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 import threading
@@ -32,18 +33,32 @@ class InboxWakeWatcher:
         self._poll_seconds = max(1.0, min(float(poll_seconds), 60.0))
         self._tracker = InboxTracker(max_seen_per_session=max_nudged_per_session)
         self._lock = threading.Lock()
-        self._session_locks: dict[str, threading.Lock] = {}
+        self._session_locks: dict[str, list[Any]] = {}
         self._sessions: dict[str, _TrackedSession] = {}
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
 
-    def _session_lock(self, session_id: str) -> threading.Lock:
+    @contextmanager
+    def _session_lock(self, session_id: str):
         with self._lock:
-            lock = self._session_locks.get(session_id)
-            if lock is None:
-                lock = threading.Lock()
-                self._session_locks[session_id] = lock
-            return lock
+            entry = self._session_locks.get(session_id)
+            if entry is None:
+                entry = [threading.Lock(), 0]
+                self._session_locks[session_id] = entry
+            entry[1] += 1
+        entry[0].acquire()
+        try:
+            yield
+        finally:
+            entry[0].release()
+            with self._lock:
+                entry[1] -= 1
+                if (
+                    entry[1] == 0
+                    and session_id not in self._sessions
+                    and self._session_locks.get(session_id) is entry
+                ):
+                    self._session_locks.pop(session_id, None)
 
     @property
     def running(self) -> bool:

@@ -507,6 +507,17 @@ describe('OAuth resource-bound authorization', () => {
     expect((await exchange(code)).status).toBe(400);
     expect((await introspect(tokens.access_token)).active).toBe(false);
   });
+  it('denies an expired access token on introspection while its row is retained', async () => {
+    const browser = new Browser(); await browser.login();
+    const tokens = await (await exchange(await consent(browser))).json() as { access_token: string };
+    expect((await introspect(tokens.access_token)).active).toBe(true);
+    const auth = env.AUTH_STATE!.get(env.AUTH_STATE!.idFromName(issuer));
+    const rows = () => runInDurableObject(auth, (_instance, state) => state.storage.sql.exec<{ n: number }>("SELECT count(*) n FROM oauth_tokens WHERE kind='access' AND expires_at=0").one().n);
+    await runInDurableObject(auth, (_instance, state) => { state.storage.sql.exec("UPDATE oauth_tokens SET expires_at=0 WHERE kind='access'"); });
+    for (let i = 0; i < 20; i++) expect((await introspect(tokens.access_token)).active).toBe(false);
+    // Introspection skips the expiry sweep, so denial comes from its own expiry check.
+    expect(await rows()).toBeGreaterThan(0);
+  });
   it('serializes simultaneous code exchanges and revokes the issued family on replay', async () => {
     const browser = new Browser(); await browser.login();
     const code = await consent(browser);

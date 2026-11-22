@@ -40,6 +40,9 @@ class HostedReadiness(unittest.TestCase):
         result = self.run_check(require_native_start=True)
         self.assertTrue(result['checks_passed'], result)
         self.assertFalse(result['native_dispatch_verified'])
+        self.assertFalse(result['destination_directory_registered'])
+        self.catalog['tools'].append({'name': 'everett_directory'})
+        self.assertTrue(self.run_check()['destination_directory_registered'])
 
     def test_live_stale_catalog_failure_and_refresh(self):
         self.catalog['tools'] = [t for t in self.catalog['tools'] if t['name'] != 'everett_start']
