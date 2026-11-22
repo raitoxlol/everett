@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections import OrderedDict
+from contextlib import contextmanager
 import json
 import os
 from pathlib import Path
@@ -572,22 +573,66 @@ class McpPool:
         self._pending_creates = 0
         self._closed = False
         self._generation = 0
-        self._session_generations: dict[str, int] = {}
+        self._max_tracked_generations = 512
+        self._session_generations: OrderedDict[str, int] = OrderedDict()
+        self._gen_pins: dict[str, int] = {}
+
+    def _current_sid_gen_locked(self, session_id: str) -> int:
+        return self._session_generations.get(session_id, 0)
 
     @property
     def cached_count(self) -> int:
         with self._lock:
             return len(self._clients)
 
+    @contextmanager
+    def pin_generation(self, session_id: str | None):
+        """Pin `(pool_gen, sid_gen)` for the lifetime of a tool call so eviction never invalidates it."""
+        if not valid_session_id(session_id):
+            yield None
+            return
+        assert session_id is not None
+        with self._lock:
+            if self._closed:
+                closed = True
+                ticket = None
+            else:
+                closed = False
+                self._gen_pins[session_id] = self._gen_pins.get(session_id, 0) + 1
+                ticket = (self._generation, self._current_sid_gen_locked(session_id))
+        if closed:
+            yield None
+            return
+        try:
+            yield ticket
+        finally:
+            with self._lock:
+                remaining = self._gen_pins.get(session_id, 1) - 1
+                if remaining <= 0:
+                    self._gen_pins.pop(session_id, None)
+                    self._evict_generations_locked()
+                else:
+                    self._gen_pins[session_id] = remaining
+
+    def _evict_generations_locked(self, keep: str = "") -> None:
+        if len(self._session_generations) <= self._max_tracked_generations:
+            return
+        active_sids = {k[1] for k in self._clients}
+        for sid in list(self._session_generations.keys()):
+            if len(self._session_generations) <= self._max_tracked_generations:
+                break
+            if sid != keep and sid not in active_sids and sid not in self._gen_pins:
+                self._session_generations.pop(sid, None)
+
     def snapshot_generation(self, session_id: str | None) -> tuple[int, int] | None:
-        """Capture `(pool_gen, sid_gen)` at tool-handler entry, or None if already closed."""
+        """Capture `(pool_gen, sid_gen)` without pinning; prefer `pin_generation` for concurrent calls."""
         if not valid_session_id(session_id):
             return None
         assert session_id is not None
         with self._lock:
             if self._closed:
                 return None
-            return (self._generation, self._session_generations.get(session_id, 0))
+            return (self._generation, self._current_sid_gen_locked(session_id))
 
     def _reap_idle_locked(self, now: float) -> list[EverettMcpClient]:
         stale: list[EverettMcpClient] = []
@@ -625,7 +670,7 @@ class McpPool:
             if (
                 self._closed
                 or self._generation != expected_pool_gen
-                or self._session_generations.get(session_id, 0) != expected_sid_gen
+                or self._current_sid_gen_locked(session_id) != expected_sid_gen
             ):
                 raise EverettBridgeError("Everett MCP session was closed.")
             pool_gen = expected_pool_gen
@@ -675,7 +720,7 @@ class McpPool:
                 invalidated = (
                     self._closed
                     or self._generation != pool_gen
-                    or self._session_generations.get(session_id, 0) != sid_gen
+                    or self._current_sid_gen_locked(session_id) != sid_gen
                 )
             if invalidated:
                 created.close()
@@ -690,7 +735,7 @@ class McpPool:
             if (
                 self._closed
                 or self._generation != pool_gen
-                or self._session_generations.get(session_id, 0) != sid_gen
+                or self._current_sid_gen_locked(session_id) != sid_gen
             ):
                 discard = created
                 invalidated = True
@@ -754,62 +799,77 @@ class McpPool:
         assert session_id is not None
 
         # Pin the call's pool and session generation BEFORE resolving the binary (or accept a ticket
-        # captured at handler entry before session_cwd()) so teardown never leaves a new client cached.
+        # captured at handler entry before session_cwd()) so eviction or teardown never corrupts it.
+        own_pin = False
         if generation_ticket is not None:
             call_pool_gen, call_sid_gen = generation_ticket
             with self._lock:
                 if (
                     self._closed
                     or self._generation != call_pool_gen
-                    or self._session_generations.get(session_id, 0) != call_sid_gen
+                    or self._current_sid_gen_locked(session_id) != call_sid_gen
                 ):
                     return json.dumps({"error": "Everett MCP session was closed.", "isError": True})
+                self._gen_pins[session_id] = self._gen_pins.get(session_id, 0) + 1
+                own_pin = True
         else:
             with self._lock:
                 if self._closed:
                     return json.dumps({"error": "Everett MCP pool is closed.", "isError": True})
                 call_pool_gen = self._generation
-                call_sid_gen = self._session_generations.get(session_id, 0)
+                call_sid_gen = self._current_sid_gen_locked(session_id)
+                self._gen_pins[session_id] = self._gen_pins.get(session_id, 0) + 1
+                own_pin = True
 
-        binary = self._binary_resolver()
-        if not binary:
-            return json.dumps({
-                "error": "Everett executable was not found on PATH. Install Everett or set plugins.entries.everett-hermes.settings.binary.",
-                "isError": True,
-            })
+        try:
+            binary = self._binary_resolver()
+            if not binary:
+                return json.dumps({
+                    "error": "Everett executable was not found on PATH. Install Everett or set plugins.entries.everett-hermes.settings.binary.",
+                    "isError": True,
+                })
 
-        timeout = _call_timeout_seconds(name, arguments)
+            timeout = _call_timeout_seconds(name, arguments)
 
-        attempts = 2 if _is_retryable_call(name, arguments) else 1
-        last_error = ""
-        for attempt in range(attempts):
-            client: EverettMcpClient | None = None
-            ephemeral = False
-            broken = False
-            try:
-                client, ephemeral = self._acquire(
-                    binary,
-                    session_id,
-                    cwd,
-                    expected_pool_gen=call_pool_gen,
-                    expected_sid_gen=call_sid_gen,
-                )
-                result = client.call_tool(name, arguments, timeout=timeout)
-                return normalize_tool_result(name, result)
-            except (EverettBridgeError, OSError) as exc:
-                last_error = str(exc)
-                broken = True
-                if attempt + 1 < attempts:
-                    continue
-            finally:
-                if client is not None:
-                    self._release(client, ephemeral=ephemeral, broken=broken)
-        hint = (
-            " For handoffs, check everett_status or the target inbox before retrying."
-            if not _is_retryable_call(name, arguments)
-            else ""
-        )
-        return json.dumps({"error": f"{last_error}{hint}".strip(), "isError": True})
+            attempts = 2 if _is_retryable_call(name, arguments) else 1
+            last_error = ""
+            for attempt in range(attempts):
+                client: EverettMcpClient | None = None
+                ephemeral = False
+                broken = False
+                try:
+                    client, ephemeral = self._acquire(
+                        binary,
+                        session_id,
+                        cwd,
+                        expected_pool_gen=call_pool_gen,
+                        expected_sid_gen=call_sid_gen,
+                    )
+                    result = client.call_tool(name, arguments, timeout=timeout)
+                    return normalize_tool_result(name, result)
+                except (EverettBridgeError, OSError) as exc:
+                    last_error = str(exc)
+                    broken = True
+                    if attempt + 1 < attempts:
+                        continue
+                finally:
+                    if client is not None:
+                        self._release(client, ephemeral=ephemeral, broken=broken)
+            hint = (
+                " For handoffs, check everett_status or the target inbox before retrying."
+                if not _is_retryable_call(name, arguments)
+                else ""
+            )
+            return json.dumps({"error": f"{last_error}{hint}".strip(), "isError": True})
+        finally:
+            if own_pin:
+                with self._lock:
+                    remaining = self._gen_pins.get(session_id, 1) - 1
+                    if remaining <= 0:
+                        self._gen_pins.pop(session_id, None)
+                        self._evict_generations_locked()
+                    else:
+                        self._gen_pins[session_id] = remaining
 
     def close_session(self, session_id: str) -> None:
         if not session_id:
@@ -817,12 +877,14 @@ class McpPool:
         closing: list[EverettMcpClient] = []
         with self._lock:
             self._session_generations[session_id] = self._session_generations.get(session_id, 0) + 1
+            self._session_generations.move_to_end(session_id)
             for key in [k for k in self._clients if k[1] == session_id]:
                 client = self._clients.pop(key)
                 if client.in_flight == 0:
                     closing.append(client)
                 else:
                     client.retire_when_idle = True
+            self._evict_generations_locked(keep=session_id)
         for client in closing:
             client.close()
 
@@ -973,24 +1035,33 @@ def session_start_prompt_context(
     return combined[:max_chars]
 
 
-def card_status(session_id: str, home: Path | None = None) -> str:
-    """Return 'agent', 'auto', or 'none' for this session's Everett card."""
+def read_card_summary(session_id: str, home: Path | None = None) -> tuple[str, str]:
+    """Return `(status, body)` for this session's Everett card (`status` is 'agent', 'auto', or 'none')."""
     if not valid_session_id(session_id):
-        return "none"
+        return "none", ""
     base = home or everett_home()
     if base is None:
-        return "none"
+        return "none", ""
     path = base / ".everett" / "cards" / f"{session_id}.md"
     try:
         info = os.lstat(path)
         if not stat.S_ISREG(info.st_mode):
-            return "none"
-        first_line = path.read_text(encoding="utf-8", errors="replace").splitlines()[:1]
+            return "none", ""
+        raw = path.read_text(encoding="utf-8", errors="replace")
     except OSError:
-        return "none"
-    if not first_line:
-        return "none"
-    return "auto" if first_line[0].strip() == AUTO_CARD_MARKER else "agent"
+        return "none", ""
+    lines = raw.splitlines()
+    if not lines:
+        return "none", ""
+    if lines[0].strip() == AUTO_CARD_MARKER:
+        return "auto", "\n".join(lines[1:]).strip()[:1000]
+    return "agent", raw.strip()[:1000]
+
+
+def card_status(session_id: str, home: Path | None = None) -> str:
+    """Return 'agent', 'auto', or 'none' for this session's Everett card."""
+    status, _ = read_card_summary(session_id, home=home)
+    return status
 
 
 def write_fallback_auto_card(

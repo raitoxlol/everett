@@ -184,9 +184,21 @@ discoverable to local agents.
 - `everett_card`: writes only this binding's card.
 - `everett_send`: explicit destination or authorized `reply_to`, inbox-only,
   nonblocking, never spawn or headless resume. Idle recipients must check inboxes.
+- `everett_directory`: labels every authorized destination ID with its kind
+  (session, T3 Code thread, registered conversation, or bare inbox), project,
+  title, host, availability, and permitted actions. Only the binding's
+  allowlisted IDs appear; an agent-supplied `ids` argument is rejected, so the
+  owner's full session list is never exposed. Use it to resolve a named
+  existing session or T3 Code thread to the exact `to` ID instead of guessing.
 
 `everett_whoami.authorized_destinations` lists the binding's current exact owner
-allowlist. Read it before sending. Destination grants are live policy, not a tool
+allowlist; `capabilities.destination_directory` reports whether
+`everett_directory` is granted. Read the directory before sending. A T3 Code
+thread ID is a valid destination: the gateway resolves it to the thread's
+provider session inbox (`session_id` in the directory entry) and reports
+`resolved_from`/`resolved_to`. A destination that is not a live session or T3
+thread fails with an error naming `everett_directory` as the recovery path.
+Destination grants are live policy, not a tool
 schema enum: clients cache schemas, so an enum would reject a newly authorized
 target before the gateway can check it. The gateway still rejects every full ID
 outside its allowlist before calling the backend. Existing clients with an old

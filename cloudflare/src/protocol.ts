@@ -7,6 +7,7 @@ export const CROSS_OWNER_MAX_HOPS = 3;
 export const operations = [
   'whoami', 'register', 'device', 'devices', 'exposeSession', 'sessionDirectory',
   'registerInbox', 'grantInbox', 'revokeInboxGrant', 'resolveInbox',
+  'threadCreate', 'threadShow', 'threadSend', 'threadRead',
   'credentials', 'memberships', 'revokeAgent', 'revokeMember', 'rotate',
   'enqueue', 'pending', 'accept', 'observe', 'status',
 ] as const;
@@ -35,6 +36,46 @@ export const deviceSchema = z.strictObject({
   encryptionKey: hex(32), signature: hex(64),
 });
 export type Device = z.infer<typeof deviceSchema>;
+export const THREAD_MAX_TEXT_BYTES = 16 * 1024;
+export const THREAD_MAX_REQUEST_BYTES = 128_000;
+export const THREAD_MAX_CIPHERTEXT_HEX = (17 * 1024 + 16) * 2;
+export const threadRefSchema = z.strictObject({
+  creatorOwner: z.string().min(1).max(4096), threadId: z.uuid(),
+});
+export const threadMemberSchema = z.strictObject({
+  address: inboxAddress,
+  owner: z.string().min(1).max(4096),
+  agentId: identifier,
+  harness: identifier.max(128),
+  session: identifier.max(128),
+  fingerprint: hex(32),
+  grantId: identifier,
+  device: deviceSchema,
+});
+export type ThreadMember = z.infer<typeof threadMemberSchema>;
+export const threadContextSchema = z.strictObject({
+  creatorOwner: z.string().min(1).max(4096),
+  threadId: z.uuid(),
+  messageId: z.uuid(),
+  idempotencyKey: identifier,
+  authorOwner: z.string().min(1).max(4096),
+  authorDeviceId: identifier,
+  authorFingerprint: hex(32),
+  commitment: hex(32),
+});
+export const threadCopySchema = z.strictObject({
+  recipient: threadMemberSchema,
+  ephemeralKey: hex(32),
+  nonce: hex(12),
+  ciphertext: z.string().min(32).max(THREAD_MAX_CIPHERTEXT_HEX).regex(/^(?:[0-9a-f]{2})+$/),
+  signature: hex(64),
+});
+export const threadPostSchema = z.strictObject({
+  context: threadContextSchema,
+  copies: z.tuple([threadCopySchema, threadCopySchema]),
+  pairSignature: hex(64),
+});
+export type ThreadPost = z.infer<typeof threadPostSchema>;
 export const envelopeSchema = z.strictObject({
   owner: z.string().max(4096), recipientOwner: z.string().max(4096),
   grantId: identifier.nullable(), fromDevice: identifier, toDevice: identifier,
@@ -58,6 +99,37 @@ export const bytes = (value: string) => Uint8Array.from(value.match(/../g)!.map(
 export const digest = (value: Uint8Array) => hexString(sha256(value));
 export const deviceBytes = (d: Device) => encode(['everett-device-v2', d.owner, d.deviceId, d.signingKey, d.encryptionKey]);
 export const fingerprint = (d: Device) => digest(deviceBytes(d));
+const threadContextFields = (c: z.infer<typeof threadContextSchema>) => [
+  c.creatorOwner, c.threadId, c.messageId, c.idempotencyKey,
+  c.authorOwner, c.authorDeviceId, c.authorFingerprint, c.commitment,
+];
+const threadMemberFields = (m: ThreadMember) => [
+  m.address, m.owner, m.agentId, m.harness, m.session, m.fingerprint, m.grantId,
+];
+export const threadAadBytes = (context: z.infer<typeof threadContextSchema>, recipient: ThreadMember) =>
+  encode(['everett-thread-aad-v1', ...threadContextFields(context), ...threadMemberFields(recipient)]);
+export const threadCopyBytes = (context: z.infer<typeof threadContextSchema>, copy: z.infer<typeof threadCopySchema>) =>
+  encode(['everett-thread-copy-v1', ...threadContextFields(context), ...threadMemberFields(copy.recipient),
+    copy.ephemeralKey, copy.nonce, copy.ciphertext]);
+export const threadPairBytes = (context: z.infer<typeof threadContextSchema>, copies: readonly z.infer<typeof threadCopySchema>[]) =>
+  encode(['everett-thread-pair-v1', ...threadContextFields(context),
+    copies.map(copy => [...threadMemberFields(copy.recipient), copy.ephemeralKey, copy.nonce, copy.ciphertext, copy.signature])]);
+export function threadContentCommitment(blindingSecret: Uint8Array, text: string): string {
+  if (blindingSecret.length !== 32) throw new TypeError('invalid thread blinding secret');
+  const payload = new TextEncoder().encode(text);
+  if (payload.length > THREAD_MAX_TEXT_BYTES) throw new TypeError('thread text exceeds 16 KiB');
+  const length = new Uint8Array(4);
+  new DataView(length.buffer).setUint32(0, payload.length, false);
+  const domain = new TextEncoder().encode('everett-thread-content-v1\0');
+  const canonical = new TextEncoder().encode('everett-thread-payload-v1\0');
+  const input = new Uint8Array(domain.length + blindingSecret.length + canonical.length + length.length + payload.length);
+  let offset = 0;
+  for (const part of [domain, blindingSecret, canonical, length, payload]) {
+    input.set(part, offset);
+    offset += part.length;
+  }
+  return digest(input);
+}
 export const aadBytes = (e: Envelope) => encode([
   'everett-relay-v2', e.owner, e.recipientOwner, e.grantId, e.fromDevice, e.toDevice,
   e.messageId, e.idempotencyKey, e.parent === null ? null : [e.parent.owner, e.parent.messageId],

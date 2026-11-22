@@ -11,6 +11,8 @@ import { boundedText } from '../src/http-body';
 import {
   namespace, deviceBytes, fingerprint, envelopeBytes, aadBytes, observationBytes,
   rotationBytes, encode, hexString, bytes, verify, validateDevice,
+  threadAadBytes, threadCopyBytes, threadPairBytes, threadContentCommitment,
+  type ThreadMember, type ThreadPost,
   type Device, type Envelope, type Principal, type Identity, type Observation, type Operation,
 } from '../src/protocol';
 import fixture from './fixtures/relay-wire-v2.json';
@@ -60,6 +62,75 @@ function envelope(a: Awaited<ReturnType<typeof agent>>, b: Awaited<ReturnType<ty
   const key = hkdf(sha256, shared, encoder.encode('everett-relay-v2'), aadBytes(e), 32);
   e.ciphertext = hexString(chacha20poly1305(key, bytes(e.nonce), aadBytes(e)).encrypt(encode({ kind: 'test', text: 'synthetic worker relay' })));
   e.signature = sign(envelopeBytes(e), a.n); return e;
+}
+function threadPost(
+  author: Awaited<ReturnType<typeof agent>>,
+  members: [ThreadMember, ThreadMember],
+  threadRef: { creatorOwner: string; threadId: string },
+  idempotencyKey: string,
+  text: string,
+): ThreadPost {
+  const blindingSecret = crypto.getRandomValues(new Uint8Array(32));
+  const context = {
+    creatorOwner: threadRef.creatorOwner,
+    threadId: threadRef.threadId,
+    messageId: crypto.randomUUID(),
+    idempotencyKey,
+    authorOwner: namespace(author.p),
+    authorDeviceId: author.p.agentId,
+    authorFingerprint: fingerprint(author.d),
+    commitment: threadContentCommitment(blindingSecret, text),
+  };
+  const textBytes = encoder.encode(text);
+  const length = new Uint8Array(4);
+  new DataView(length.buffer).setUint32(0, textBytes.length, false);
+  const recordPrefix = encoder.encode('everett-thread-record-v1\0');
+  const payloadPrefix = encoder.encode('everett-thread-payload-v1\0');
+  const plaintext = new Uint8Array(recordPrefix.length + blindingSecret.length + payloadPrefix.length + length.length + textBytes.length);
+  let offset = 0;
+  for (const part of [recordPrefix, blindingSecret, payloadPrefix, length, textBytes]) {
+    plaintext.set(part, offset);
+    offset += part.length;
+  }
+  const copies = members.map(recipient => {
+    const ephemeralSecret = crypto.getRandomValues(new Uint8Array(32));
+    const ephemeralKey = hexString(x25519.getPublicKey(ephemeralSecret));
+    const aad = threadAadBytes(context, recipient);
+    const shared = x25519.getSharedSecret(ephemeralSecret, bytes(recipient.device.encryptionKey));
+    const key = hkdf(sha256, shared, encoder.encode('everett-thread-copy-v1'), aad, 32);
+    const nonce = crypto.getRandomValues(new Uint8Array(12));
+    const copy = {
+      recipient, ephemeralKey, nonce: hexString(nonce),
+      ciphertext: hexString(chacha20poly1305(key, nonce, aad).encrypt(plaintext)),
+      signature: '',
+    };
+    copy.signature = sign(threadCopyBytes(context, copy), author.n);
+    return copy;
+  }) as unknown as ThreadPost['copies'];
+  return { context, copies, pairSignature: sign(threadPairBytes(context, copies), author.n) };
+}
+function openThreadCopy(
+  recipient: Awaited<ReturnType<typeof agent>>,
+  context: ThreadPost['context'],
+  copy: ThreadPost['copies'][number],
+) {
+  const aad = threadAadBytes(context, copy.recipient);
+  const shared = x25519.getSharedSecret(secret(recipient.n + 1), bytes(copy.ephemeralKey));
+  const key = hkdf(sha256, shared, encoder.encode('everett-thread-copy-v1'), aad, 32);
+  const plaintext = chacha20poly1305(key, bytes(copy.nonce), aad).decrypt(bytes(copy.ciphertext));
+  const recordPrefix = encoder.encode('everett-thread-record-v1\0');
+  const payloadPrefix = encoder.encode('everett-thread-payload-v1\0');
+  expect(Array.from(plaintext.slice(0, recordPrefix.length))).toEqual(Array.from(recordPrefix));
+  const secretStart = recordPrefix.length;
+  const blindingSecret = plaintext.slice(secretStart, secretStart + 32);
+  const payloadStart = secretStart + 32;
+  expect(Array.from(plaintext.slice(payloadStart, payloadStart + payloadPrefix.length))).toEqual(Array.from(payloadPrefix));
+  const lengthOffset = payloadStart + payloadPrefix.length;
+  const textLength = new DataView(plaintext.buffer, plaintext.byteOffset + lengthOffset, 4).getUint32(0, false);
+  const text = new TextDecoder().decode(plaintext.slice(lengthOffset + 4));
+  expect(textLength).toBe(encoder.encode(text).length);
+  expect(threadContentCommitment(blindingSecret, text)).toBe(context.commitment);
+  return text;
 }
 function observe(b: Awaited<ReturnType<typeof agent>>, e: Envelope, state: Observation['state'] = 'delivered') {
   const o: Observation = { deviceId: b.p.agentId, senderOwner: e.owner, messageId: e.messageId, state, at: Date.now(), signature: '' };
@@ -857,5 +928,327 @@ describe('Cross-org named inbox and grant allowlist', () => {
     expect(await call(alice.p, 'enqueue', { envelope: msg })).toEqual({ messageId: msg.messageId, state: 'queued' });
     await call(bob.p, 'observe', observe(bob, msg, 'delivered'));
     expect(await call(alice.p, 'enqueue', { envelope: msg })).toEqual({ messageId: msg.messageId, state: 'delivered' });
+  });
+});
+
+describe('two-member shared threads', () => {
+  it('allows authenticated members to create only from their bound inbox device', async () => {
+    const alice = await agent(org(), 'alice', 'member', 71);
+    const otherMember = await agent(alice.p.org!, 'other', 'member', 73);
+    const bob = await agent(org(), 'bob', 'member', 75);
+    const outsider = await agent(org(), 'outsider', 'member', 77);
+    const suffix = crypto.randomUUID().replaceAll('-', '').slice(0, 8);
+    const aliceAddress = `alice${suffix}@member-zone-a`;
+    const bobAddress = `bob${suffix}@member-zone-b`;
+    await call(alice.p, 'registerInbox', { address: aliceAddress, harness: 'claude', session: 'alice-session' });
+    await call(bob.p, 'registerInbox', { address: bobAddress, harness: 'codex', session: 'bob-session' });
+    await call(alice.p, 'grantInbox', {
+      address: aliceAddress, senderOwner: namespace(bob.p), senderDeviceId: bob.p.agentId,
+    });
+    await call(bob.p, 'grantInbox', {
+      address: bobAddress, senderOwner: namespace(alice.p), senderDeviceId: alice.p.agentId,
+    });
+
+    const created = await call(alice.p, 'threadCreate', {
+      fromAddress: aliceAddress, toAddress: bobAddress, idempotencyKey: 'member-create',
+    });
+    expect(created.members[0]).toMatchObject({
+      address: aliceAddress, owner: namespace(alice.p), agentId: alice.p.agentId,
+    });
+    await expect(call(otherMember.p, 'threadCreate', {
+      fromAddress: aliceAddress, toAddress: bobAddress, idempotencyKey: 'wrong-device-create',
+    })).rejects.toThrow('creator_inbox_must_match_device');
+    await expect(call(outsider.p, 'threadCreate', {
+      fromAddress: aliceAddress, toAddress: bobAddress, idempotencyKey: 'unauthorized-create',
+    })).rejects.toThrow('creator_inbox_must_match_device');
+  });
+
+  it('requires reciprocal fixed members, stores an ordered encrypted pair once, and retains it after revoke', async () => {
+    const alice = await agent(org(), 'alice', 'admin', 31);
+    const bob = await agent(org(), 'bob', 'admin', 41);
+    const other = await agent(alice.p.org!, 'other', 'member', 51);
+    const outsider = await agent(org(), 'eve', 'admin', 61);
+    const suffix = crypto.randomUUID().replaceAll('-', '').slice(0, 8);
+    const aliceAddress = `alice${suffix}@zone-a`;
+    const bobAddress = `bob${suffix}@zone-b`;
+    const sameOwnerAddress = `same${suffix}@zone-a`;
+    await call(alice.p, 'registerInbox', { address: aliceAddress, harness: 'claude', session: 'alice-session' });
+    await call(bob.p, 'registerInbox', { address: bobAddress, harness: 'codex', session: 'bob-session' });
+    await call(alice.p, 'registerInbox', { address: sameOwnerAddress, harness: 'claude', session: 'same-session' });
+
+    const grantForAlice = await call(alice.p, 'grantInbox', {
+      address: aliceAddress, senderOwner: namespace(bob.p), senderDeviceId: bob.p.agentId,
+    });
+    await expect(call(alice.p, 'threadCreate', {
+      fromAddress: aliceAddress, toAddress: bobAddress, idempotencyKey: 'create-one-way',
+    })).rejects.toThrow('inbox_not_allowed');
+    await expect(call(alice.p, 'threadCreate', {
+      fromAddress: aliceAddress, toAddress: sameOwnerAddress, idempotencyKey: 'create-same-owner',
+    })).rejects.toThrow('thread_members_must_be_distinct_owners');
+
+    const grantForBob = await call(bob.p, 'grantInbox', {
+      address: bobAddress, senderOwner: namespace(alice.p), senderDeviceId: alice.p.agentId,
+    });
+    const created = await call(alice.p, 'threadCreate', {
+      fromAddress: aliceAddress, toAddress: bobAddress, idempotencyKey: 'create-stable',
+    });
+    const threadRef = created.threadRef as { creatorOwner: string; threadId: string };
+    const members = created.members as [ThreadMember, ThreadMember];
+    expect(threadRef.creatorOwner).toBe(namespace(alice.p));
+    expect(members.map(m => m.grantId)).toEqual([grantForAlice.grantId, grantForBob.grantId]);
+    expect(members.map(m => [m.address, m.owner, m.agentId, m.harness, m.session, m.fingerprint])).toEqual([
+      [aliceAddress, namespace(alice.p), alice.p.agentId, 'claude', 'alice-session', fingerprint(alice.d)],
+      [bobAddress, namespace(bob.p), bob.p.agentId, 'codex', 'bob-session', fingerprint(bob.d)],
+    ]);
+    expect((await call(alice.p, 'threadCreate', {
+      fromAddress: aliceAddress, toAddress: bobAddress, idempotencyKey: 'create-stable',
+    })).threadRef).toEqual(threadRef);
+    const concurrentCreates = await Promise.all([1, 2].map(() => call(alice.p, 'threadCreate', {
+      fromAddress: aliceAddress, toAddress: bobAddress, idempotencyKey: 'create-concurrent',
+    })));
+    expect(concurrentCreates[0].threadRef).toEqual(concurrentCreates[1].threadRef);
+    await expect(call(alice.p, 'threadCreate', {
+      fromAddress: aliceAddress, toAddress: sameOwnerAddress, idempotencyKey: 'create-stable',
+    })).rejects.toThrow('idempotency_conflict');
+
+    await expect(call(other.p, 'threadShow', { threadRef })).rejects.toThrow('thread_member_required');
+    await expect(call(outsider.p, 'threadShow', { threadRef })).rejects.toThrow('thread_member_required');
+    const spoofed = threadPost(alice, members, threadRef, 'spoof-key', 'not authored by caller');
+    await expect(call(bob.p, 'threadSend', { threadRef, post: spoofed })).rejects.toThrow('thread_author_mismatch');
+
+    const fromAlice = threadPost(alice, members, threadRef, 'alice-message', 'alpha private text');
+    const fromBob = threadPost(bob, members, threadRef, 'bob-message', 'beta private text');
+    const tampered = structuredClone(fromAlice);
+    tampered.context.commitment = '00'.repeat(32);
+    await expect(call(alice.p, 'threadSend', { threadRef, post: tampered })).rejects.toThrow('invalid_signature');
+    const swapped = structuredClone(fromAlice);
+    swapped.copies.reverse();
+    await expect(call(alice.p, 'threadSend', { threadRef, post: swapped })).rejects.toThrow('thread_copy_routing_mismatch');
+    const oversized = structuredClone(fromAlice);
+    oversized.copies[0].ciphertext = '00'.repeat(40_000);
+    await expect(call(alice.p, 'threadSend', { threadRef, post: oversized })).rejects.toThrow('invalid_request');
+    const [storedAlice, storedBob] = await Promise.all([
+      call(alice.p, 'threadSend', { threadRef, post: fromAlice }),
+      call(bob.p, 'threadSend', { threadRef, post: fromBob }),
+    ]);
+    expect([storedAlice.seq, storedBob.seq].sort()).toEqual([1, 2]);
+    expect(storedAlice.state).toBe('stored');
+    expect(await call(alice.p, 'threadSend', { threadRef, post: fromAlice })).toMatchObject({
+      state: 'stored', seq: storedAlice.seq, messageId: fromAlice.context.messageId,
+    });
+    const changedRetry = threadPost(alice, members, threadRef, 'alice-message', 'changed text');
+    await expect(call(alice.p, 'threadSend', { threadRef, post: changedRetry })).rejects.toThrow('idempotency_conflict');
+
+    const emptyPage = await call(alice.p, 'threadRead', { threadRef, afterSeq: 100, limit: 10 });
+    expect(emptyPage).toMatchObject({ messages: [], nextAfterSeq: 100, hasMore: false });
+    const firstPage = await call(alice.p, 'threadRead', { threadRef, afterSeq: 0, limit: 1 });
+    expect(firstPage.messages).toHaveLength(1);
+    expect(firstPage.hasMore).toBe(true);
+    const secondPage = await call(alice.p, 'threadRead', {
+      threadRef, afterSeq: firstPage.nextAfterSeq, limit: 1,
+    });
+    expect(secondPage.messages).toHaveLength(1);
+    expect(secondPage.hasMore).toBe(false);
+    await expect(call(alice.p, 'threadRead', { threadRef, afterSeq: 0, limit: 0 }))
+      .rejects.toThrow('invalid_request');
+    const readAsBob = await handleRequest(
+      request('threadRead', { threadRef, afterSeq: 0, limit: 10 }),
+      env,
+      { verify: async () => bob.p },
+    );
+    expect(readAsBob.status).toBe(200);
+    const bobHistory = (await readAsBob.json() as { result: { messages: Array<any> } }).result.messages;
+    expect(bobHistory).toHaveLength(2);
+    expect(bobHistory.every(message => !('copies' in message) && message.copy.recipient.owner === namespace(bob.p))).toBe(true);
+    expect(bobHistory.map(message => openThreadCopy(bob, message.context, message.copy)).sort())
+      .toEqual(['alpha private text', 'beta private text']);
+    const aliceHistory = await call(alice.p, 'threadRead', { threadRef, afterSeq: 0, limit: 10 });
+    expect(aliceHistory.messages.every((message: any) => message.copy.recipient.owner === namespace(alice.p))).toBe(true);
+    expect(aliceHistory.messages.map((message: any) => openThreadCopy(alice, message.context, message.copy)).sort())
+      .toEqual(['alpha private text', 'beta private text']);
+
+    const storedRows = await runInDurableObject(alice.stub, (_instance, state) =>
+      state.storage.sql.exec<{ post: string }>(
+        'SELECT post FROM thread_messages WHERE thread_id=? ORDER BY seq', threadRef.threadId,
+      ).toArray());
+    expect(storedRows).toHaveLength(2);
+    const storedJson = JSON.stringify(storedRows);
+    expect(storedJson).not.toContain('alpha private text');
+    expect(storedJson).not.toContain('beta private text');
+
+    await call(alice.p, 'revokeInboxGrant', { grantId: grantForAlice.grantId });
+    const replacement = await call(alice.p, 'grantInbox', {
+      address: aliceAddress, senderOwner: namespace(bob.p), senderDeviceId: bob.p.agentId,
+    });
+    expect(replacement.grantId).not.toBe(grantForAlice.grantId);
+    await expect(call(alice.p, 'threadCreate', {
+      fromAddress: aliceAddress, toAddress: bobAddress, idempotencyKey: 'create-stable',
+    })).rejects.toThrow('inbox_not_allowed');
+    await expect(call(alice.p, 'threadShow', { threadRef })).rejects.toThrow('inbox_not_allowed');
+    await expect(call(alice.p, 'threadRead', { threadRef, afterSeq: 0, limit: 10 })).rejects.toThrow('inbox_not_allowed');
+    await expect(call(bob.p, 'threadRead', { threadRef, afterSeq: 0, limit: 10 })).rejects.toThrow('inbox_not_allowed');
+    await expect(call(bob.p, 'threadSend', { threadRef, post: fromBob })).rejects.toThrow('inbox_not_allowed');
+    await expect(call(alice.p, 'threadCreate', {
+      fromAddress: aliceAddress, toAddress: bobAddress, idempotencyKey: 'create-stable',
+    })).rejects.toThrow('inbox_not_allowed');
+    const retained = await runInDurableObject(alice.stub, (_instance, state) =>
+      state.storage.sql.exec<{ count: number }>(
+        'SELECT COUNT(*) AS count FROM thread_messages WHERE thread_id=?', threadRef.threadId,
+      ).toArray()[0].count);
+    expect(retained).toBe(2);
+  });
+
+  it('scopes message idempotency by owner when two owners share a device ID', async () => {
+    const alice = await agent(org(), 'alice', 'admin', 101);
+    const bob = await agent(org(), 'bob', 'admin', 111);
+    const previousBobId = bob.p.agentId;
+    const sharedDeviceId = alice.p.agentId;
+    bob.p.agentId = sharedDeviceId;
+    bob.d = device(bob.p, bob.n);
+    await runInDurableObject(bob.stub, (_instance, state) => {
+      state.storage.sql.exec('UPDATE credentials SET agent_id=? WHERE agent_id=?', sharedDeviceId, previousBobId);
+      state.storage.sql.exec('UPDATE enrollments SET agent_id=? WHERE agent_id=?', sharedDeviceId, previousBobId);
+      state.storage.sql.exec(
+        'UPDATE devices SET agent_id=?,bundle=? WHERE agent_id=?',
+        sharedDeviceId, JSON.stringify(bob.d), previousBobId,
+      );
+    });
+
+    const suffix = crypto.randomUUID().replaceAll('-', '').slice(0, 8);
+    const aliceAddress = `alice${suffix}@zone-a`, bobAddress = `bob${suffix}@zone-b`;
+    await call(alice.p, 'registerInbox', { address: aliceAddress, harness: 'claude', session: 'alice-session' });
+    await call(bob.p, 'registerInbox', { address: bobAddress, harness: 'codex', session: 'bob-session' });
+    await call(alice.p, 'grantInbox', {
+      address: aliceAddress, senderOwner: namespace(bob.p), senderDeviceId: bob.p.agentId,
+    });
+    await call(bob.p, 'grantInbox', {
+      address: bobAddress, senderOwner: namespace(alice.p), senderDeviceId: alice.p.agentId,
+    });
+    const created = await call(alice.p, 'threadCreate', {
+      fromAddress: aliceAddress, toAddress: bobAddress, idempotencyKey: 'same-device-create',
+    });
+    const threadRef = created.threadRef as { creatorOwner: string; threadId: string };
+    const members = created.members as [ThreadMember, ThreadMember];
+    expect(members[0].agentId).toBe(members[1].agentId);
+    expect(members[0].owner).not.toBe(members[1].owner);
+
+    const fromAlice = threadPost(alice, members, threadRef, 'same-cross-org-key', 'Alice text');
+    const fromBob = threadPost(bob, members, threadRef, 'same-cross-org-key', 'Bob text');
+    const [storedAlice, storedBob] = await Promise.all([
+      call(alice.p, 'threadSend', { threadRef, post: fromAlice }),
+      call(bob.p, 'threadSend', { threadRef, post: fromBob }),
+    ]);
+    expect([storedAlice.seq, storedBob.seq].sort()).toEqual([1, 2]);
+    expect(await call(alice.p, 'threadSend', { threadRef, post: fromAlice })).toMatchObject({
+      seq: storedAlice.seq, messageId: fromAlice.context.messageId,
+    });
+    expect(await call(bob.p, 'threadSend', { threadRef, post: fromBob })).toMatchObject({
+      seq: storedBob.seq, messageId: fromBob.context.messageId,
+    });
+    const rows = await runInDurableObject(alice.stub, (_instance, state) =>
+      state.storage.sql.exec<{ author_owner: string; author_device: string; idempotency_key: string }>(
+        'SELECT author_owner,author_device,idempotency_key FROM thread_messages WHERE thread_id=? ORDER BY seq',
+        threadRef.threadId,
+      ).toArray());
+    expect(rows.map(row => row.author_owner).sort()).toEqual(
+      [members[0].owner, members[1].owner].sort(),
+    );
+    expect(rows.every(row =>
+      row.author_device === sharedDeviceId && row.idempotency_key === 'same-cross-org-key',
+    )).toBe(true);
+  });
+
+  it('denies both members after remote grant revocation completes and retains encrypted history', async () => {
+    const alice = await agent(org(), 'alice', 'admin', 121);
+    const bob = await agent(org(), 'bob', 'admin', 131);
+    const suffix = crypto.randomUUID().replaceAll('-', '').slice(0, 8);
+    const aliceAddress = `alice${suffix}@zone-a`, bobAddress = `bob${suffix}@zone-b`;
+    await call(alice.p, 'registerInbox', { address: aliceAddress, harness: 'claude', session: 'alice-session' });
+    await call(bob.p, 'registerInbox', { address: bobAddress, harness: 'codex', session: 'bob-session' });
+    await call(alice.p, 'grantInbox', {
+      address: aliceAddress, senderOwner: namespace(bob.p), senderDeviceId: bob.p.agentId,
+    });
+    const remoteGrant = await call(bob.p, 'grantInbox', {
+      address: bobAddress, senderOwner: namespace(alice.p), senderDeviceId: alice.p.agentId,
+    });
+    const created = await call(alice.p, 'threadCreate', {
+      fromAddress: aliceAddress, toAddress: bobAddress, idempotencyKey: 'remote-revoke-create',
+    });
+    const threadRef = created.threadRef as { creatorOwner: string; threadId: string };
+    const members = created.members as [ThreadMember, ThreadMember];
+    const fromAlice = threadPost(alice, members, threadRef, 'alice-before-revoke', 'Alice retained text');
+    const fromBob = threadPost(bob, members, threadRef, 'bob-before-revoke', 'Bob retained text');
+    await call(alice.p, 'threadSend', { threadRef, post: fromAlice });
+    await call(bob.p, 'threadSend', { threadRef, post: fromBob });
+
+    await call(bob.p, 'revokeInboxGrant', { grantId: remoteGrant.grantId });
+    const afterRevokeAlice = threadPost(alice, members, threadRef, 'alice-after-revoke', 'not stored');
+    const afterRevokeBob = threadPost(bob, members, threadRef, 'bob-after-revoke', 'not stored');
+    await expect(call(alice.p, 'threadSend', { threadRef, post: afterRevokeAlice })).rejects.toThrow('inbox_not_allowed');
+    await expect(call(bob.p, 'threadSend', { threadRef, post: afterRevokeBob })).rejects.toThrow('inbox_not_allowed');
+    await expect(call(alice.p, 'threadRead', { threadRef, afterSeq: 0, limit: 10 })).rejects.toThrow('inbox_not_allowed');
+    await expect(call(bob.p, 'threadRead', { threadRef, afterSeq: 0, limit: 10 })).rejects.toThrow('inbox_not_allowed');
+    const retained = await runInDurableObject(alice.stub, (_instance, state) =>
+      state.storage.sql.exec<{ post: string }>(
+        'SELECT post FROM thread_messages WHERE thread_id=? ORDER BY seq', threadRef.threadId,
+      ).toArray());
+    expect(retained).toHaveLength(2);
+    expect(JSON.stringify(retained)).not.toContain('Alice retained text');
+    expect(JSON.stringify(retained)).not.toContain('Bob retained text');
+  });
+
+  it('does not reactivate after member device keys rotate', async () => {
+    const alice = await agent(org(), 'alice', 'admin', 71);
+    const bob = await agent(org(), 'bob', 'admin', 81);
+    const suffix = crypto.randomUUID().replaceAll('-', '').slice(0, 8);
+    const aliceAddress = `alice${suffix}@zone-a`, bobAddress = `bob${suffix}@zone-b`;
+    await call(alice.p, 'registerInbox', { address: aliceAddress, harness: 'claude', session: 'alice-session' });
+    await call(bob.p, 'registerInbox', { address: bobAddress, harness: 'codex', session: 'bob-session' });
+    await call(alice.p, 'grantInbox', { address: aliceAddress, senderOwner: namespace(bob.p), senderDeviceId: bob.p.agentId });
+    await call(bob.p, 'grantInbox', { address: bobAddress, senderOwner: namespace(alice.p), senderDeviceId: alice.p.agentId });
+    const created = await call(alice.p, 'threadCreate', { fromAddress: aliceAddress, toAddress: bobAddress, idempotencyKey: 'rotate-create' });
+    const replacementDevice = device(bob.p, 91);
+    await call(bob.p, 'rotate', {
+      device: replacementDevice,
+      oldFingerprint: fingerprint(bob.d),
+      signature: sign(rotationBytes(replacementDevice, fingerprint(bob.d)), bob.n),
+    });
+    await expect(call(alice.p, 'threadCreate', {
+      fromAddress: aliceAddress, toAddress: bobAddress, idempotencyKey: 'rotate-create',
+    })).rejects.toThrow('device_key_changed');
+    await expect(call(bob.p, 'threadShow', { threadRef: created.threadRef })).rejects.toThrow('device_key_changed');
+  });
+
+  it('denies shared-history access after an inbox or owner membership is revoked', async () => {
+    const alice = await agent(org(), 'alice', 'admin', 101);
+    const bob = await agent(org(), 'bob', 'admin', 111);
+    const suffix = crypto.randomUUID().replaceAll('-', '').slice(0, 8);
+    const aliceAddress = `alice${suffix}@zone-a`, bobAddress = `bob${suffix}@zone-b`;
+    await call(alice.p, 'registerInbox', { address: aliceAddress, harness: 'claude', session: 'alice-session' });
+    await call(bob.p, 'registerInbox', { address: bobAddress, harness: 'codex', session: 'bob-session' });
+    await call(alice.p, 'grantInbox', { address: aliceAddress, senderOwner: namespace(bob.p), senderDeviceId: bob.p.agentId });
+    await call(bob.p, 'grantInbox', { address: bobAddress, senderOwner: namespace(alice.p), senderDeviceId: alice.p.agentId });
+    const created = await call(alice.p, 'threadCreate', {
+      fromAddress: aliceAddress, toAddress: bobAddress, idempotencyKey: 'revoke-snapshot',
+    });
+
+    await call(alice.p, 'registerInbox', {
+      address: aliceAddress, harness: 'claude', session: 'alice-session', remove: true,
+    });
+    await expect(call(bob.p, 'threadShow', { threadRef: created.threadRef })).rejects.toBeDefined();
+
+    const carol = await agent(org(), 'carol', 'admin', 121);
+    const dave = await agent(org(), 'dave', 'admin', 131);
+    const secondSuffix = crypto.randomUUID().replaceAll('-', '').slice(0, 8);
+    const carolAddress = `carol${secondSuffix}@zone-c`, daveAddress = `dave${secondSuffix}@zone-d`;
+    await call(carol.p, 'registerInbox', { address: carolAddress, harness: 'claude', session: 'carol-session' });
+    await call(dave.p, 'registerInbox', { address: daveAddress, harness: 'codex', session: 'dave-session' });
+    await call(carol.p, 'grantInbox', { address: carolAddress, senderOwner: namespace(dave.p), senderDeviceId: dave.p.agentId });
+    await call(dave.p, 'grantInbox', { address: daveAddress, senderOwner: namespace(carol.p), senderDeviceId: carol.p.agentId });
+    const second = await call(carol.p, 'threadCreate', {
+      fromAddress: carolAddress, toAddress: daveAddress, idempotencyKey: 'membership-snapshot',
+    });
+    await call(dave.p, 'revokeMember', { subject: dave.p.subject });
+    await expect(call(carol.p, 'threadShow', { threadRef: second.threadRef })).rejects.toBeDefined();
   });
 });

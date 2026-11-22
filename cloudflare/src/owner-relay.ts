@@ -4,7 +4,10 @@ import {
   CROSS_OWNER_MAX_HOPS, DEVICE_LABEL_LIMIT, deviceSchema, envelopeSchema, observationSchema, identitySchema, principalSchema,
   namespace, identifier, inboxAddress, validateDevice, fingerprint, rotationBytes, verify,
   envelopeBytes, observationBytes, digest, RelayError,
+  THREAD_MAX_REQUEST_BYTES, threadCopyBytes, threadPairBytes, threadPostSchema, threadRefSchema,
+  threadMemberSchema,
   type Device, type Envelope, type Observation, type Principal, type Identity, type MessageState, type Operation, type RelayResult,
+  type ThreadMember, type ThreadPost,
 } from './protocol';
 import type { AddressDirectory } from './address-directory';
 
@@ -47,6 +50,9 @@ export class OwnerRelay extends DurableObject<OwnerRelayEnv> {
       CREATE TABLE IF NOT EXISTS inbox_addresses (address TEXT PRIMARY KEY, agent_id TEXT NOT NULL, harness TEXT NOT NULL, session TEXT NOT NULL, status TEXT NOT NULL, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL);
       CREATE TABLE IF NOT EXISTS inbox_grants (grant_id TEXT PRIMARY KEY, address TEXT NOT NULL, recipient_agent_id TEXT NOT NULL, harness TEXT NOT NULL, session TEXT NOT NULL, sender_owner TEXT NOT NULL, sender_agent_id TEXT NOT NULL, status TEXT NOT NULL, created_at INTEGER NOT NULL, revoked_at INTEGER);
       CREATE INDEX IF NOT EXISTS inbox_grant_lookup ON inbox_grants(address, sender_owner, sender_agent_id, status);
+      CREATE TABLE IF NOT EXISTS threads (thread_id TEXT PRIMARY KEY, creator_device TEXT NOT NULL, create_key TEXT NOT NULL, create_digest TEXT NOT NULL, members TEXT NOT NULL, created_at INTEGER NOT NULL, UNIQUE(creator_device,create_key));
+      CREATE TABLE IF NOT EXISTS thread_messages (thread_id TEXT NOT NULL, seq INTEGER NOT NULL, message_id TEXT NOT NULL UNIQUE, author_owner TEXT NOT NULL, author_device TEXT NOT NULL, idempotency_key TEXT NOT NULL, digest TEXT NOT NULL, post TEXT NOT NULL, created_at INTEGER NOT NULL, PRIMARY KEY(thread_id,seq), UNIQUE(thread_id,author_owner,author_device,idempotency_key));
+      CREATE INDEX IF NOT EXISTS thread_message_history ON thread_messages(thread_id,seq);
       CREATE TABLE IF NOT EXISTS attempts (message_id TEXT PRIMARY KEY, from_device TEXT NOT NULL, idempotency_key TEXT NOT NULL, digest TEXT NOT NULL, state TEXT NOT NULL, expires_at INTEGER NOT NULL, to_device TEXT NOT NULL, metadata TEXT NOT NULL, UNIQUE(from_device, idempotency_key));
       CREATE INDEX IF NOT EXISTS attempt_recipient ON attempts(to_device, state, expires_at);
       CREATE TABLE IF NOT EXISTS messages (seq INTEGER PRIMARY KEY AUTOINCREMENT, message_id TEXT NOT NULL UNIQUE, to_device TEXT NOT NULL, expires_at INTEGER NOT NULL, envelope TEXT NOT NULL);
@@ -531,6 +537,320 @@ export class OwnerRelay extends DurableObject<OwnerRelayEnv> {
     return resolved.value;
   }
 
+  #threadLocalMember(member: ThreadMember, other: ThreadMember): Device {
+    if (member.owner !== this.#owner()) throw new RelayError('thread_owner_mismatch');
+    const device = this.#activeDevice(member.agentId);
+    validateDevice(member.device);
+    if (
+      device.owner !== member.owner || device.deviceId !== member.agentId
+      || fingerprint(device) !== member.fingerprint || fingerprint(member.device) !== member.fingerprint
+    ) throw new RelayError('device_key_changed');
+    const inbox = this.#row<InboxAddress>('SELECT * FROM inbox_addresses WHERE address=?', member.address);
+    if (
+      !inbox || inbox.status !== 'active' || inbox.agent_id !== member.agentId
+      || inbox.harness !== member.harness || inbox.session !== member.session
+    ) throw new RelayError('thread_binding_changed');
+    const { grant } = this.#activeGrant(member.grantId, other.owner, other.agentId, member.agentId);
+    if (
+      grant.address !== member.address || grant.harness !== member.harness
+      || grant.session !== member.session
+    ) throw new RelayError('thread_grant_changed');
+    return device;
+  }
+
+  async #revalidateCreatorThreadMembers(members: [ThreadMember, ThreadMember]) {
+    const localDevice = this.#threadLocalMember(members[0], members[1]);
+    const remote = await this.#ownerStub(members[1].owner).verifyThreadAccess(members[0], members[1]);
+    if (!remote.ok) throw new RelayError(remote.error, remote.status);
+    return { localDevice, remoteDevice: remote.value };
+  }
+
+  // Internal owner-to-owner RPC only. Public HTTP operations never accept a Principal here.
+  async verifyThreadAccess(creatorInput: unknown, peerInput: unknown): Promise<RpcResult<Device>> {
+    try {
+      const creator = threadMemberSchema.parse(creatorInput);
+      const peer = threadMemberSchema.parse(peerInput);
+      const owner = this.#owner();
+      if (!owner || peer.owner !== owner || creator.owner === owner || creator.owner === peer.owner) {
+        throw new RelayError('thread_owner_mismatch');
+      }
+      const device = this.#activeDevice(peer.agentId);
+      validateDevice(peer.device);
+      if (
+        device.owner !== peer.owner || device.deviceId !== peer.agentId
+        || fingerprint(device) !== peer.fingerprint || fingerprint(peer.device) !== peer.fingerprint
+      ) throw new RelayError('device_key_changed');
+      const { grant } = this.#activeGrant(peer.grantId, creator.owner, creator.agentId, peer.agentId);
+      const inbox = this.#row<InboxAddress>('SELECT * FROM inbox_addresses WHERE address=?', peer.address);
+      if (
+        grant.address !== peer.address || grant.harness !== peer.harness || grant.session !== peer.session
+        || !inbox || inbox.status !== 'active' || inbox.agent_id !== peer.agentId
+        || inbox.harness !== peer.harness || inbox.session !== peer.session
+      ) throw new RelayError('thread_binding_changed');
+      return { ok: true, value: device };
+    } catch (error) {
+      if (error instanceof RelayError) return { ok: false, error: error.code, status: error.status };
+      if (error instanceof ZodError) return { ok: false, error: 'invalid_request', status: 400 };
+      throw error;
+    }
+  }
+
+  // This RPC is called only by the authenticated member owner's relay after #authorize.
+  async threadFromOwnerRelay(principalInput: Principal, opInput: Operation, args: unknown): Promise<RpcResult<unknown>> {
+    try {
+      const p = principalSchema.parse(principalInput);
+      const owner = this.#owner();
+      const op = z.enum(['threadShow', 'threadSend', 'threadRead']).parse(opInput);
+      const { threadRef } = z.strictObject({ threadRef: threadRefSchema }).passthrough().parse(args);
+      if (!owner || threadRef.creatorOwner !== owner || namespace(p) === owner || p.expiresAt <= Date.now()) {
+        throw new RelayError('thread_owner_mismatch');
+      }
+      return { ok: true, value: await this.#threadOperation(p, op, args, true) };
+    } catch (error) {
+      if (error instanceof RelayError) return { ok: false, error: error.code, status: error.status };
+      if (error instanceof ZodError) return { ok: false, error: 'invalid_request', status: 400 };
+      throw error;
+    }
+  }
+
+  async #threadCreate(p: Principal, args: unknown) {
+    const owner = namespace(p);
+    this.#authorize(p);
+    this.#activeDevice(p.agentId);
+    this.#rate(JSON.stringify(['agent', p.agentId]), 120, Date.now());
+    this.#rate(JSON.stringify(['account', p.issuer, p.subject]), 120, Date.now());
+    this.#rate('org', 600, Date.now());
+    this.#rate(JSON.stringify(['thread-create', p.agentId]), 10, Date.now());
+    const a = z.strictObject({
+      fromAddress: inboxAddress,
+      toAddress: inboxAddress,
+      idempotencyKey: identifier,
+    }).parse(args);
+    const createDigest = digest(new TextEncoder().encode(JSON.stringify([a.fromAddress, a.toAddress])));
+    const previous = this.#row<{ thread_id: string; create_digest: string; members: string; created_at: number }>(
+      'SELECT thread_id,create_digest,members,created_at FROM threads WHERE creator_device=? AND create_key=?',
+      p.agentId, a.idempotencyKey,
+    );
+    if (previous) {
+      if (previous.create_digest !== createDigest) throw new RelayError('idempotency_conflict', 409);
+      const members = z.tuple([threadMemberSchema, threadMemberSchema]).parse(JSON.parse(previous.members));
+      if (
+        members[0].owner !== owner || members[0].agentId !== p.agentId
+        || members[0].address !== a.fromAddress || members[1].address !== a.toAddress
+      ) throw new RelayError('thread_corrupt', 500);
+      await this.#revalidateCreatorThreadMembers(members);
+      return {
+        threadRef: { creatorOwner: owner, threadId: previous.thread_id },
+        members,
+        createdAt: previous.created_at,
+        idempotencyKey: a.idempotencyKey,
+      };
+    }
+    const localDevice = this.#activeDevice(p.agentId);
+    const localInbox = this.#row<InboxAddress>('SELECT * FROM inbox_addresses WHERE address=?', a.fromAddress);
+    if (
+      !localInbox || localInbox.status !== 'active' || localInbox.agent_id !== p.agentId
+    ) throw new RelayError('creator_inbox_must_match_device');
+    const targetOwner = await this.#addresses().lookup(a.toAddress);
+    if (!targetOwner) throw new RelayError('inbox_not_allowed');
+    if (targetOwner === owner) throw new RelayError('thread_members_must_be_distinct_owners', 400);
+    const resolved = await this.#ownerStub(targetOwner).resolveCrossOwnerInbox(owner, p.agentId, a.toAddress);
+    if (!resolved.ok) throw new RelayError(resolved.error, resolved.status);
+    const remote = resolved.value;
+    if (remote.owner !== targetOwner || remote.address !== a.toAddress || remote.device.owner !== targetOwner) {
+      throw new RelayError('inbox_binding_changed');
+    }
+    const grant = this.#row<InboxGrant>(
+      "SELECT * FROM inbox_grants WHERE address=? AND sender_owner=? AND sender_agent_id=? AND recipient_agent_id=? AND status='active' ORDER BY created_at DESC LIMIT 1",
+      a.fromAddress, targetOwner, remote.device.deviceId, p.agentId,
+    );
+    if (!grant) throw new RelayError('reciprocal_grant_required');
+    const checked = this.#activeGrant(grant.grant_id, targetOwner, remote.device.deviceId, p.agentId);
+    if (
+      checked.inbox.address !== a.fromAddress || checked.inbox.harness !== localInbox.harness
+      || checked.inbox.session !== localInbox.session
+    ) throw new RelayError('thread_binding_changed');
+    const members: [ThreadMember, ThreadMember] = [
+      threadMemberSchema.parse({
+        address: a.fromAddress, owner, agentId: p.agentId, harness: localInbox.harness,
+        session: localInbox.session, fingerprint: fingerprint(localDevice), grantId: grant.grant_id, device: localDevice,
+      }),
+      threadMemberSchema.parse({
+        address: remote.address, owner: remote.owner, agentId: remote.device.deviceId,
+        harness: remote.harness, session: remote.session, fingerprint: fingerprint(remote.device),
+        grantId: remote.grantId, device: remote.device,
+      }),
+    ];
+    const remoteCheck = await this.#ownerStub(targetOwner).verifyThreadAccess(members[0], members[1]);
+    if (!remoteCheck.ok) throw new RelayError(remoteCheck.error, remoteCheck.status);
+    const now = Date.now(), threadId = crypto.randomUUID();
+    const result = this.ctx.storage.transactionSync(() => {
+      const existing = this.#row<{ thread_id: string; create_digest: string; members: string; created_at: number }>(
+        'SELECT thread_id,create_digest,members,created_at FROM threads WHERE creator_device=? AND create_key=?',
+        p.agentId, a.idempotencyKey,
+      );
+      if (existing) {
+        if (existing.create_digest !== createDigest) throw new RelayError('idempotency_conflict', 409);
+        return {
+          output: {
+            threadRef: { creatorOwner: owner, threadId: existing.thread_id },
+            members: JSON.parse(existing.members),
+            createdAt: existing.created_at,
+            idempotencyKey: a.idempotencyKey,
+          },
+          existingMembers: existing.members,
+        };
+      }
+      this.#threadLocalMember(members[0], members[1]);
+      this.ctx.storage.sql.exec(
+        'INSERT INTO threads(thread_id,creator_device,create_key,create_digest,members,created_at) VALUES(?,?,?,?,?,?)',
+        threadId, p.agentId, a.idempotencyKey, createDigest, JSON.stringify(members), now,
+      );
+      return {
+        output: { threadRef: { creatorOwner: owner, threadId }, members, createdAt: now, idempotencyKey: a.idempotencyKey },
+        existingMembers: null,
+      };
+    });
+    if (result.existingMembers) {
+      const members = z.tuple([threadMemberSchema, threadMemberSchema]).parse(JSON.parse(result.existingMembers));
+      if (
+        members[0].owner !== owner || members[0].agentId !== p.agentId
+        || members[0].address !== a.fromAddress || members[1].address !== a.toAddress
+      ) throw new RelayError('thread_corrupt', 500);
+      await this.#revalidateCreatorThreadMembers(members);
+    }
+    return result.output;
+  }
+
+  async #threadOperation(p: Principal, op: 'threadShow' | 'threadSend' | 'threadRead', args: unknown, callerValidated = false) {
+    if (!callerValidated) this.#authorize(p);
+    const threadRef = threadRefSchema.parse((args as { threadRef?: unknown } | null)?.threadRef);
+    if (op === 'threadShow') z.strictObject({ threadRef: threadRefSchema }).parse(args);
+    if (threadRef.creatorOwner !== this.#owner()) throw new RelayError('thread_not_found', 404);
+    const row = this.#row<{ members: string; created_at: number }>(
+      'SELECT members,created_at FROM threads WHERE thread_id=?', threadRef.threadId,
+    );
+    if (!row) throw new RelayError('thread_not_found', 404);
+    const members = z.tuple([threadMemberSchema, threadMemberSchema]).parse(JSON.parse(row.members));
+    if (members[0].owner === members[1].owner || members[0].owner !== threadRef.creatorOwner) throw new RelayError('thread_corrupt', 500);
+    const callerOwner = namespace(p);
+    const callerIndex = members.findIndex(m => m.owner === callerOwner && m.agentId === p.agentId);
+    if (callerIndex < 0) throw new RelayError('thread_member_required');
+    if (callerValidated && callerOwner === this.#owner()) throw new RelayError('thread_owner_mismatch');
+    const localIndex = members.findIndex(m => m.owner === this.#owner());
+    const peerIndex = 1 - localIndex;
+    const localMember = members[localIndex], peerMember = members[peerIndex];
+    const now = Date.now();
+    this.#rate(JSON.stringify(['agent', p.agentId]), 120, now);
+    this.#rate(JSON.stringify(['account', p.issuer, p.subject]), 120, now);
+    this.#rate('org', 600, now);
+    this.#rate(JSON.stringify(['thread', op, callerOwner, p.agentId]), op === 'threadRead' ? 60 : 30, now);
+    const localDevice = this.#threadLocalMember(localMember, peerMember);
+    const peerCheck = await this.#ownerStub(peerMember.owner).verifyThreadAccess(localMember, peerMember);
+    if (!peerCheck.ok) throw new RelayError(peerCheck.error, peerCheck.status);
+    const callerMember = members[callerIndex];
+    if (
+      callerValidated && (callerMember.owner !== callerOwner || callerMember.agentId !== p.agentId)
+    ) throw new RelayError('thread_member_required');
+
+    if (op === 'threadShow') {
+      return this.ctx.storage.transactionSync(() => {
+        this.#threadLocalMember(localMember, peerMember);
+        const latest = this.#row<{ last_seq: number | null }>(
+          'SELECT MAX(seq) AS last_seq FROM thread_messages WHERE thread_id=?', threadRef.threadId,
+        );
+        return { threadRef, members, createdAt: row.created_at, lastSeq: latest?.last_seq ?? 0, state: 'active' };
+      });
+    }
+    if (op === 'threadRead') {
+      const a = z.strictObject({
+        threadRef: threadRefSchema,
+        afterSeq: z.number().int().safe().nonnegative().default(0),
+        limit: z.number().int().min(1).max(32).default(20),
+      }).parse(args);
+      return this.ctx.storage.transactionSync(() => {
+        this.#threadLocalMember(localMember, peerMember);
+        const rows = this.ctx.storage.sql.exec<{ seq: number; post: string; created_at: number }>(
+          'SELECT seq,post,created_at FROM thread_messages WHERE thread_id=? AND seq>? ORDER BY seq LIMIT ?',
+          threadRef.threadId, a.afterSeq, a.limit + 1,
+        ).toArray();
+        const hasMore = rows.length > a.limit;
+        const visible = rows.slice(0, a.limit).map(message => {
+          const post = threadPostSchema.parse(JSON.parse(message.post));
+          const copy = post.copies.find(candidate => {
+            const recipient = candidate.recipient;
+            return recipient.owner === callerMember.owner && recipient.agentId === callerMember.agentId;
+          });
+          if (!copy) throw new RelayError('thread_corrupt', 500);
+          return { seq: message.seq, context: post.context, copy, pairSignature: post.pairSignature, createdAt: message.created_at };
+        });
+        return {
+          threadRef, members, messages: visible,
+          nextAfterSeq: visible.length ? visible[visible.length - 1].seq : a.afterSeq,
+          hasMore,
+        };
+      });
+    }
+
+    const a = z.strictObject({ threadRef: threadRefSchema, post: threadPostSchema }).parse(args);
+    const post = a.post;
+    const requestBytes = new TextEncoder().encode(JSON.stringify(args)).length;
+    if (requestBytes > THREAD_MAX_REQUEST_BYTES) throw new RelayError('thread_request_too_large', 413);
+    const author = members.find(m => m.owner === callerOwner && m.agentId === p.agentId);
+    if (!author || post.context.creatorOwner !== threadRef.creatorOwner || post.context.threadId !== threadRef.threadId) {
+      throw new RelayError('thread_member_required');
+    }
+    if (
+      post.context.authorOwner !== author.owner || post.context.authorDeviceId !== author.agentId
+      || post.context.authorFingerprint !== author.fingerprint
+    ) throw new RelayError('thread_author_mismatch');
+    for (let i = 0; i < 2; i++) {
+      const expected = members[i], copy = post.copies[i];
+      if (
+        copy.recipient.address !== expected.address || copy.recipient.owner !== expected.owner
+        || copy.recipient.agentId !== expected.agentId || copy.recipient.harness !== expected.harness
+        || copy.recipient.session !== expected.session || copy.recipient.fingerprint !== expected.fingerprint
+        || copy.recipient.grantId !== expected.grantId
+      ) throw new RelayError('thread_copy_routing_mismatch');
+      validateDevice(copy.recipient.device);
+      if (
+        copy.recipient.device.owner !== expected.owner
+        || copy.recipient.device.deviceId !== expected.agentId
+        || fingerprint(copy.recipient.device) !== expected.fingerprint
+      ) throw new RelayError('thread_copy_routing_mismatch');
+    }
+    const authorDevice = author.owner === this.#owner() ? localDevice : peerCheck.value;
+    if (fingerprint(authorDevice) !== author.fingerprint) throw new RelayError('device_key_changed');
+    for (const copy of post.copies) verify(authorDevice.signingKey, copy.signature, threadCopyBytes(post.context, copy));
+    verify(authorDevice.signingKey, post.pairSignature, threadPairBytes(post.context, post.copies));
+    const requestDigest = digest(new TextEncoder().encode(JSON.stringify(post)));
+    return this.ctx.storage.transactionSync(() => {
+      this.#threadLocalMember(localMember, peerMember);
+      const previous = this.#row<{ seq: number; message_id: string; digest: string }>(
+        'SELECT seq,message_id,digest FROM thread_messages WHERE thread_id=? AND author_owner=? AND author_device=? AND idempotency_key=?',
+        threadRef.threadId, author.owner, author.agentId, post.context.idempotencyKey,
+      );
+      if (previous) {
+        if (previous.digest !== requestDigest || previous.message_id !== post.context.messageId) {
+          throw new RelayError('idempotency_conflict', 409);
+        }
+        return { state: 'stored' as const, threadRef, seq: previous.seq, messageId: previous.message_id, idempotencyKey: post.context.idempotencyKey };
+      }
+      if (this.#row('SELECT message_id FROM thread_messages WHERE message_id=?', post.context.messageId)) {
+        throw new RelayError('message_id_conflict', 409);
+      }
+      const seq = (this.#row<{ last_seq: number | null }>(
+        'SELECT MAX(seq) AS last_seq FROM thread_messages WHERE thread_id=?', threadRef.threadId,
+      )?.last_seq ?? 0) + 1;
+      this.ctx.storage.sql.exec(
+        'INSERT INTO thread_messages(thread_id,seq,message_id,author_owner,author_device,idempotency_key,digest,post,created_at) VALUES(?,?,?,?,?,?,?,?,?)',
+        threadRef.threadId, seq, post.context.messageId, author.owner, author.agentId, post.context.idempotencyKey,
+        requestDigest, JSON.stringify(post), now,
+      );
+      return { state: 'stored' as const, threadRef, seq, messageId: post.context.messageId, idempotencyKey: post.context.idempotencyKey };
+    });
+  }
+
   async #enqueueCrossOwner(p: Principal, e: Envelope) {
     this.#authorize(p);
     const now = Date.now(), owner = namespace(p);
@@ -728,6 +1048,21 @@ export class OwnerRelay extends DurableObject<OwnerRelayEnv> {
     try {
       const p = principalSchema.parse(principalInput);
       const owner = namespace(p);
+      if (op === 'threadCreate') return { ok: true, value: await this.#threadCreate(p, args) } satisfies RelayResult;
+      if (op === 'threadShow' || op === 'threadSend' || op === 'threadRead') {
+        const { threadRef } = z.strictObject({ threadRef: threadRefSchema }).passthrough().parse(args);
+        if (threadRef.creatorOwner === owner) {
+          return { ok: true, value: await this.#threadOperation(p, op, args) } satisfies RelayResult;
+        }
+        this.#authorize(p);
+        this.#activeDevice(p.agentId);
+        const result = await this.#ownerStub(threadRef.creatorOwner).threadFromOwnerRelay(p, op, args);
+        const response = 'value' in result
+          ? { ok: true as const, value: result.value }
+          : { ok: false as const, error: result.error, status: result.status };
+        result[Symbol.dispose]();
+        return response;
+      }
       if (op === 'registerInbox') return { ok: true, value: await this.#registerInbox(p, args) } satisfies RelayResult;
       if (op === 'resolveInbox') return { ok: true, value: await this.#resolveInbox(p, args) } satisfies RelayResult;
       if (op === 'pending') return { ok: true, value: await this.#pending(p, args) } satisfies RelayResult;

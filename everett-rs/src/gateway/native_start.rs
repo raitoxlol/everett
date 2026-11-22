@@ -156,7 +156,7 @@ impl Policy {
 pub(super) fn tool(policy: &Policy) -> Tool {
     let mut schema = json!({
         "name":"everett_start",
-        "description":"Start a native T3 run in the owner's fixed project and provider. When advertised, choose an owner-authorized model and effort pair or omit both to use the default. This promotes text to a model prompt and may consume the owner's model allowance. Reuse the same request ID and inputs after an uncertain result. A dispatch receipt establishes only T3 dispatch.",
+        "description":"Start a NEW native T3 run in the owner's fixed project and provider; it cannot reach an existing thread -- for a handoff to an existing session or T3 Code thread, use everett_send with an ID from everett_directory. When advertised, choose an owner-authorized model and effort pair or omit both to use the default. This promotes text to a model prompt and may consume the owner's model allowance. Reuse the same request ID and inputs after an uncertain result. A dispatch receipt establishes only T3 dispatch.",
         "inputSchema":{"type":"object","additionalProperties":false,"required":["request_id","text","identity_handle"],"properties":{
             "request_id":{"type":"string","minLength":32,"maxLength":128},
             "text":{"type":"string","minLength":1,"maxLength":16000},
