@@ -23,15 +23,23 @@ change files, but can show agents that onboarding has not detected.
 Default onboarding installs the Pi extension and registers Devin MCP when detected.
 The Pi extension exposes Everett tools through Pi's `registerTool` API and binds the MCP bridge
 to each session. Run `everett install-hooks --devin --apply` to add Devin's session-binding hooks.
-For Hermes, follow the wizard to install and enable the [Hermes plugin](../plugins/everett-hermes/README.md),
-or add the `mcp_servers` block printed by `everett install-mcp --hermes` to `~/.hermes/config.yaml`.
-Choose one Hermes setup to avoid duplicate tool registrations.
+For Hermes, use the [native plugin](../plugins/everett-hermes/README.md): when Hermes is detected,
+onboarding prints its install and enable commands but does not run them. The separate
+`everett install-mcp --hermes` command prints native-plugin install/enable instructions and a
+separate manual stdio fallback; it does not edit Hermes configuration or support `--apply`. The
+fallback entry has no session-ID override, so process detection can bind one unambiguous
+interactive Hermes CLI session in its directory. An explicit `EVERETT_SESSION_ID` or
+`HERMES_SESSION_ID` in the MCP server's environment binds that one session instead; it does not
+provide the native plugin's per-session gateway binding, hooks, or commands. Choose one setup to
+avoid duplicate registrations.
 Restart the configured agents and run `everett ls`. An empty list means no sessions were
 found in the look-back window. Before using MCP tools, run `everett login` in this profile.
 Restart each MCP client and ask it to call `everett_ls`; a returned list, even empty,
 verifies that the tool works. Then use `everett_whoami` to check caller identity.
-A successful registration does not prove that a running agent has loaded the tools.
-Doctor checks configuration and the launcher, not whether the client loaded tools.
+A successful registration does not prove that a running agent has loaded the tools. When Hermes is
+detected, `everett doctor` also inspects its active profile for the native plugin's installed and
+enabled status and a duplicate manual `mcp_servers.everett` entry; it still cannot verify that a
+running Hermes client loaded the tools.
 If a tool reports that an account is required, run `everett login` and retry.
 
 The wizard welcomes you with "Local setup needs no Everett account. Sign in to use
