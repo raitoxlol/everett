@@ -60,13 +60,13 @@ the Pi extension and registers Devin MCP when those clients are detected. Run
 `everett install-hooks --devin --apply` to bind Devin MCP calls to their sessions.
 When Hermes is detected, the wizard prints instructions to install and enable the native
 [Hermes plugin](plugins/everett-hermes/README.md); it does not install the plugin itself.
-`everett install-mcp --hermes` prints a separate manual stdio entry (it does not edit Hermes
-configuration and does not support `--apply`). The printed entry has no session-ID override, so it
-relies on process detection, which can bind one unambiguous interactive Hermes CLI session in the
-server's directory. An explicit `EVERETT_SESSION_ID` or `HERMES_SESSION_ID` in the MCP server's
-environment binds that one session instead; it does not provide the native plugin's per-session
-gateway binding. Prefer the plugin for native Hermes features, and do not configure both because
-they expose duplicate tools.
+`everett install-mcp --hermes` prints native-plugin install/enable instructions plus a separate
+manual stdio fallback; it does not edit Hermes configuration or support `--apply`. The manual
+entry has no session-ID override, so process detection can bind one unambiguous interactive Hermes
+CLI session in the server's directory. An explicit `EVERETT_SESSION_ID` or `HERMES_SESSION_ID` in
+the MCP server's environment binds that one session instead; it does not provide the native
+plugin's per-session gateway binding. Prefer the plugin for native Hermes features, and do not
+configure both because they expose duplicate tools.
 Restart configured clients and run `everett ls`. Doctor checks registered launchers and lists next steps.
 Run `everett login`, restart each MCP client, and ask it to call `everett_ls`. A returned list,
 even empty, verifies the tool.
@@ -279,8 +279,8 @@ Done. MAX_RETRIES is now 5 and the backoff test covers the cap.
 | `everett onboard [--yes] [--span-days N] [--no-backfill] [--no-mcp]` | Human setup TUI (welcome, account approval, agents, guides, review/apply and instruction prompt; optional settings under Advanced); `--yes` runs it non-interactively for scripts. |
 | `everett install-hooks [--claude] [--codex] [--omp] [--grok] [--pi] [--devin] [--apply]` | Prints the hook registrations. `--apply` backs up the file, then merges idempotently. |
 | `everett mcp [--harness H]` | Runs the stdio MCP server (harnesses start it; see below). Tool calls require `everett login`. |
-| `everett install-mcp [--claude] [--codex] [--omp] [--grok] [--devin] [--pi] [--hermes] [--repair] [--apply]` | Prints or registers MCP. Pi uses its extension; `--hermes` prints a manual stdio config only and cannot apply it. Use the native Hermes plugin for native features. `--repair --apply` refreshes stale registrations. |
-| `everett doctor` | Installed CLIs, stores, hooks, live stdio/MCP registration checks, cards, router, and account diagnostics; SSH revocation remains explicit. |
+| `everett install-mcp [--claude] [--codex] [--omp] [--grok] [--devin] [--pi] [--hermes] [--repair] [--apply]` | Prints or registers MCP. Pi uses its extension; `--hermes` prints native-plugin install/enable guidance plus a manual stdio fallback, but does not edit Hermes config or support `--apply`. Use one setup path. `--repair --apply` refreshes stale registrations. |
+| `everett doctor` | Installed CLIs, stores, hooks, live stdio/MCP registration checks, cards, router, and account diagnostics; when Hermes is present, also checks the active profile's native plugin and duplicate manual MCP entry. SSH revocation remains explicit. |
 | `everett learn "<fact>" [--project P] [--scope global\|project]` | Queues a fact for shared core. Add `--ttl-seconds N` (1 to 31536000) to keep it only in local memory search until expiry. Secrets are rejected. |
 | `everett trunk merge [--llm claude\|codex\|none] [--dry-run]` | Distills the inbox into the shared core. |
 | `everett core [show\|edit-path\|history] [--project P]` | Shows the core a new session in this folder receives, the file to edit, or past merges. |
@@ -756,7 +756,7 @@ see [troubleshoot message delivery](docs/messaging-troubleshooting.md).
 | `No module named everett` / hooks call `python3` | A registration still points at the retired Python package. Run `everett install-hooks --apply` and `everett install-mcp --apply`. |
 | MCP client shows zero tools | Run `everett doctor`. Check that it reports a successful stdio tool listing. For a stale/disabled launcher, run `everett install-mcp --claude --repair --apply` (replace `--claude` with `--codex`, `--omp`, `--grok` or `--devin`), then restart/enable the server in the client. Fix malformed config before repair. |
 | OMP or Devin has an old `everett mcp` registration | Run `everett install-mcp --omp --devin --repair --apply` to back up and restore the harness-specific arguments. Restart the affected MCP clients, then run `everett doctor`. |
-| Hermes points to a missing Everett binary | Put `everett` on the PATH visible to Hermes or set `plugins.entries.everett-hermes.settings.binary` in `~/.hermes/config.yaml`, then restart Hermes. For the manual MCP setup, `everett install-mcp --hermes` prints a config entry but does not edit the file. |
+| Hermes points to a missing Everett binary | Put `everett` on the PATH visible to Hermes or set `plugins.entries.everett-hermes.settings.binary` in the active profile's `config.yaml` (the default profile uses `~/.hermes/config.yaml`), then restart Hermes. `everett install-mcp --hermes` prints native-plugin install/enable guidance and a separate manual fallback snippet; it does not edit Hermes configuration. |
 | Session not found / no live reply | Start a harness session or run `everett --hours 168 ls` for older ones; send to its exact id or title. In MCP, pass `hours: 168` to listing and sending. Hooks need to be enabled; the native Hermes plugin surfaces message-ID notices at hook events, so call `everett_inbox` to read contents. Opt-in local `live_wake` also sends ID-only nudges, while manual/portable MCP setups poll `everett_inbox`. A queued message is not a read receipt. |
 | Codex reports `Interrupted system call (os error 4)` | Delivery is unconfirmed. Check the target session before retrying; for an open session with Everett hooks, use `--mode inbox` (MCP: `mode: "inbox"`). Failed resumes are not retried automatically. |
 | Shared fact missing / scheduling unavailable | Run `everett trunk merge --llm none`, then `everett core`. Run `everett doctor` to inspect the macOS LaunchAgent or Linux systemd user timer. On Linux, inspect `systemctl --user status dev.everett.core-merge.timer` and the service journal; a missing user manager prevents automatic scheduling. |

@@ -5,6 +5,7 @@
 ### Added
 
 - Add the native Hermes plugin with per-session tools, inbox hooks, `/everett`, and opt-in local live wake (#247). Its portable Agent Plugins v1 fallback registers MCP only.
+- Add Hermes `/everett card` and `/everett sent`, reset/delete session cleanup, and active-profile plugin diagnostics with native install guidance (#253).
 - Add `everett_directory`, a read-only gateway and MCP tool that labels each authorized destination ID with its kind (session, T3 Code thread, registered conversation, or bare inbox), project, title, availability, and permitted actions, so a remote client resolves a named existing session or T3 Code thread to the exact `to` for `everett_send`. Gateway `everett_send` now accepts an exact T3 thread ID and resolves it to the thread's provider session inbox, reporting `resolved_from`/`resolved_to`; destinations outside the owner allowlist, agent-supplied `ids` arguments, and name/title targets remain rejected, and blocked sends name `everett_directory` as the recovery path (#255).
 
 ### Fixed
