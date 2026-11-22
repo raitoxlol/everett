@@ -93,7 +93,7 @@ fn run_inner(
     });
     let timed_out;
     let code;
-    match child.wait_timeout(Duration::from_secs_f64(timeout.max(0.001))) {
+    match child.wait_timeout(Duration::from_secs_f64(timeout.clamp(0.001, 365.0 * 86400.0))) {
         Ok(Some(status)) => {
             timed_out = false;
             code = status.code().unwrap_or(-1);
