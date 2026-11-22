@@ -110,9 +110,10 @@ fn gateway_worker_rejects_public_mcp_and_unscoped_operations() {
         &json!({"InboxMessage":{"peek":false,"message_id":"../foreign"}}).to_string(),
         &binding,
     );
-    assert_eq!(
-        serde_json::from_slice::<Value>(&output.stdout).unwrap(),
-        Value::Null
+    let response: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert!(
+        response["Err"].as_str().is_some_and(|s| !s.is_empty()),
+        "{response}"
     );
 
     let call =

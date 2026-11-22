@@ -254,6 +254,7 @@ Done. MAX_RETRIES is now 5 and the backoff test covers the cap.
 | `everett relay rename NAME` | Update this Cloudflare device's hosted label. Device ID, keys, and pins stay the same. |
 | `everett relay revoke-agent ID / revoke-member SUBJECT / rotate` | Revoke this or an admin-selected agent, remove org membership (admin), or rotate this agent's relay keys using its old signing key. |
 | `everett relay register-inbox / grant-inbox / revoke-inbox-grant / resolve-inbox` | Claim a `LOCAL@SCOPE` cross-org inbox, allow an exact sender owner/device to reach it, revoke a grant, or resolve an address to its verified recipient bundle. `--to LOCAL@SCOPE` with `--mode inbox` sends to it. |
+| `everett thread create / show / send / read` | CLI-first encrypted shared text history for exactly two addressed inboxes in distinct owners; see [shared threads](docs/shared-threads.md). |
 | `everett access [show \| set \| allow \| deny \| remove \| reset]` | Inspect or edit local cross-org permission settings in `~/.everett/access.json` (`mode`, `external-send`, `max-hops`, local allow/block lists; `--sync` pushes `grant-inbox` to the relay; alias `everett permissions`). |
 | `everett peer add-relay <name> --device ID --fingerprint HEX [--grant GRANT_ID]` | Pin a device on the selected relay after out-of-band bundle confirmation; fingerprint is raw 64-character lowercase hex, not the SSH `SHA256:` format. |
 | `everett peer identity / list / remove <name> / revoke <client-id>` | Inspect device keys/peers; remove a remote authorization or revoke a local tagged client key. |
@@ -390,6 +391,11 @@ claims the address (the first owner's SCOPE zone is never transferred), `relay g
 exact sender owner/device, and `everett send --to LOCAL@SCOPE --mode inbox` sends a hop-1 cross-org root
 message whose replies correlate to the same grant. SSH pairing uses an explicit address; cloud-agent OAuth is separate.
 
+Two owners can also create a stable, text-only shared thread on the CLI. Both inbox owners must grant
+the other exact device access; the thread snapshots both inbox bindings, keys, and original grant IDs.
+See [the shared-thread CLI guide](docs/shared-threads.md) for creation, history, revocation, and retry
+semantics. This first slice is CLI-only; it does not add UI, MCP, or gateway tools.
+
 Local harnesses that launch Everett with the same `HOME` and `EVERETT_HOME` use that
 home's account configuration and device credential. They do not each need a separate
 GitHub sign-in. `everett doctor` reports the selected provider's stored account without
@@ -461,6 +467,10 @@ See [agent support and wake](docs/agent-support.md) and the
 4. **Injection.** The hook adds at most 5 messages (2,000 characters each, 6,000 in total) as context, marked as coming from Everett with the sender's session and card, and marks exactly those delivered. The rest arrive at the next hook. The hook reads local files only, takes about 40 ms, and prints nothing on any error.
 5. **Replies.** The receiving agent answers with `everett_send(reply_to="<id>", text=…)` or `everett reply <id> "<text>"`. The reply lands in the sender's inbox and is injected there the same way. A sender can instead block on it: `everett send --wait 120 …` or `everett_send(wait=120)`. `everett inbox` / `everett_inbox` read an inbox directly.
 6. **Safety.** With the hop limit on, a thread can go back and forth at most 3 hops (exit 7); it is off by default (docs/hop-limit.md). The calling session is never a target, and headless `everett send` runs (`EVERETT_SEND=1`) never consume inbox messages.
+
+**Private local storage (Unix).** Inbox compaction and live-record writes use same-directory temporary files created with mode `0600` before writing, then atomically persist replacements. Compaction replaces the session `.jsonl` and `.done` files. Live-record replacements are at `~/.everett/inbox/live/<session-id>.json` (or `$EVERETT_HOME/.everett/inbox/live/` when `EVERETT_HOME` is set). The `live/` directory is created with mode `0700` and has group/other permission bits removed; associated lock files request mode `0600` at creation and reapply it when opened.
+
+These details cover Everett's Rust local inbox and live-record operations on Unix, when filesystem permission operations succeed. They do not claim non-Unix `0600`/`0700` semantics, permissions for provider-owned histories, or settings for every file under `~/.everett`.
 
 | Harness | Next turn | Mid-task | How |
 |---|---|---|---|
