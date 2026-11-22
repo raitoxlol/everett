@@ -174,9 +174,16 @@ pub fn read_db(profile: &str, path: &PathBuf, since_hours: f64) -> Result<Vec<Se
         };
         users.retain(|u| !u.is_empty());
         let last: String = if have_messages {
-            con.prepare("SELECT content FROM messages WHERE session_id = ?1 AND role = 'user' ORDER BY id DESC LIMIT 1")
-                .and_then(|mut st| st.query_row([&id], |r| r.get::<_, SqlValue>(0)))
-                .map(|v| text(&v))
+            con.prepare("SELECT content FROM messages WHERE session_id = ?1 AND role = 'user' ORDER BY id DESC LIMIT 5")
+                .and_then(|mut st| {
+                    st.query_map([&id], |r| r.get::<_, SqlValue>(0))
+                        .map(|rows| {
+                            rows.filter_map(|r| r.ok())
+                                .map(|v| text(&v))
+                                .find(|t| !t.is_empty())
+                                .unwrap_or_default()
+                        })
+                })
                 .unwrap_or_default()
         } else {
             String::new()
