@@ -16,7 +16,7 @@ pub(super) const LIFECYCLE_PATH: &str = "/mcp/identity";
 pub(super) fn is_tool(name: &str) -> bool {
     matches!(
         name,
-        "everett_whoami" | "everett_inbox" | "everett_card" | "everett_send"
+        "everett_whoami" | "everett_inbox" | "everett_card" | "everett_send" | "everett_directory"
     )
 }
 

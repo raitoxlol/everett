@@ -245,7 +245,7 @@ class NativePluginUnitTests(unittest.TestCase):
         self.assertEqual(ctx.tools["everett_whoami"]["toolset"], "everett")
         self.assertEqual(
             set(ctx.hooks.keys()),
-            {"on_session_start", "on_session_end", "on_session_finalize", "pre_llm_call", "transform_tool_result", "pre_verify"},
+            {"on_session_start", "on_session_end", "on_session_finalize", "on_session_reset", "on_session_delete", "pre_llm_call", "transform_tool_result", "pre_verify"},
         )
         self.assertIn("everett", ctx.prompt_sections)
         self.assertEqual(ctx.prompt_sections["everett"]["position"], "after_memory")
@@ -800,6 +800,191 @@ class NativePluginUnitTests(unittest.TestCase):
                 with patch.dict(os.environ, {"EVERETT_SEND": "1"}):
                     self.assertEqual(prompt_fn({"session_id": sid, "cwd": str(root)}), "")
                     self.assertIsNone(ctx.hooks["pre_llm_call"][0](session_id=sid))
+
+    def test_review_regressions_reset_route_delete_race_watermark_prune_and_offline_card(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            fake_bin = _write_fake_everett(root)
+            now = time.time()
+
+            # S7: /everett card works even when the everett binary is unavailable.
+            cards_dir = root / ".everett" / "cards"
+            cards_dir.mkdir(mode=0o700, parents=True)
+            (cards_dir / "hermes-offline.md").write_text("What: Offline card check\nState: Ok\nNext: Done\n", encoding="utf-8")
+            offline_ctx = FakeContext(settings={"binary": "/nonexistent/everett"}, cwd=str(root))
+            with patch.dict(os.environ, {"EVERETT_HOME": str(root), "HOME": str(root)}, clear=False):
+                PLUGIN.register(offline_ctx)
+                self.addCleanup(offline_ctx.unload)
+                self.assertIn("Offline card check", offline_ctx.commands["everett"]["handler"]("card", session_id="hermes-offline"))
+
+            # S3: Pinned generation keeps a pre-close ticket invalid across >512 other closes
+            # without invalidating unrelated sessions that have no tracked generation entry.
+            pool = EVERETT_MOD.McpPool(lambda: str(fake_bin), max_clients=2)
+            self.addCleanup(pool.close_all)
+            with pool.pin_generation("hermes-evicted") as stale_ticket, pool.pin_generation("hermes-unrelated") as live_ticket:
+                pool.close_session("hermes-evicted")
+                for i in range(550):
+                    pool.close_session(f"hermes-other-{i}")
+                rejected = json.loads(
+                    pool.call_tool("everett_whoami", {}, session_id="hermes-evicted", generation_ticket=stale_ticket)
+                )
+                self.assertTrue(rejected.get("isError"))
+                ok_unrelated = json.loads(
+                    pool.call_tool("everett_whoami", {}, session_id="hermes-unrelated", generation_ticket=live_ticket)
+                )
+                self.assertEqual(ok_unrelated["session_id"], "hermes-unrelated")
+
+            # S4: Temporary permission error on inbox directory must not wipe claims, and a
+            # continuously capped inbox (>64 unread) still prunes acknowledged IDs from `.done`.
+            sid_p = "hermes-prune-race"
+            inbox_path = _write_private_inbox(root, sid_p, [{"id": "mclaim1", "to": sid_p, "text": "a", "ts": now}])
+            tracker = INBOX_MOD.InboxTracker(max_seen_per_session=10)
+            self.assertEqual(tracker.claim_new_ids(sid_p, home=root), ["mclaim1"])
+            os.chmod(inbox_path, 0o644)
+            self.assertEqual(tracker.claim_new_ids(sid_p, home=root), [])
+            os.chmod(inbox_path, 0o600)
+            self.assertEqual(tracker.claim_new_ids(sid_p, home=root), [])
+            os.chmod(inbox_path.parent, 0o000)
+            try:
+                self.assertEqual(tracker.claim_new_ids(sid_p, home=root), [])
+            finally:
+                os.chmod(inbox_path.parent, 0o700)
+            self.assertEqual(tracker.claim_new_ids(sid_p, home=root), [])
+
+            sid_cap = "hermes-capped-prune"
+            cap_tracker = INBOX_MOD.InboxTracker(max_seen_per_session=4)
+            cap_records = [{"id": f"mcap{i:03d}", "to": sid_cap, "text": "x", "ts": now} for i in range(72)]
+            _write_private_inbox(root, sid_cap, cap_records)
+            first4 = cap_tracker.claim_new_ids(sid_cap, home=root, limit=4)
+            self.assertEqual(first4, [f"mcap{i:03d}" for i in range(4)])
+            _write_private_inbox(root, sid_cap, cap_records, done_ids=first4)
+            next4 = cap_tracker.claim_new_ids(sid_cap, home=root, limit=4)
+            self.assertEqual(next4, [f"mcap{i:03d}" for i in range(4, 8)])
+
+            # Expired claims also free capacity even while the inbox stays capped (>64 unread).
+            sid_exp = "hermes-capped-exp"
+            exp_tracker = INBOX_MOD.InboxTracker(max_seen_per_session=4)
+            old_ts = now - (INBOX_MOD.INBOX_TTL_SECONDS - 1.0)
+            exp_records = [
+                {"id": f"mexp{i:03d}", "to": sid_exp, "text": "x", "ts": old_ts if i < 4 else now + 60.0}
+                for i in range(72)
+            ]
+            _write_private_inbox(root, sid_exp, exp_records)
+            with patch.object(INBOX_MOD.time, "time", return_value=now):
+                self.assertEqual(exp_tracker.claim_new_ids(sid_exp, home=root, limit=4), [f"mexp{i:03d}" for i in range(4)])
+            with patch.object(INBOX_MOD.time, "time", return_value=now + 5.0):
+                self.assertEqual(exp_tracker.claim_new_ids(sid_exp, home=root, limit=4), [f"mexp{i:03d}" for i in range(4, 8)])
+
+            # S11: Records without `ts` stay claimed past INBOX_TTL_SECONDS instead of resurfacing.
+            sid_nots = "hermes-no-ts"
+            nots_tracker = INBOX_MOD.InboxTracker(max_seen_per_session=10)
+            _write_private_inbox(root, sid_nots, [{"id": "mnots1", "to": sid_nots, "text": "x"}])
+            with patch.object(INBOX_MOD.time, "time", return_value=now):
+                self.assertEqual(nots_tracker.claim_new_ids(sid_nots, home=root), ["mnots1"])
+            with patch.object(INBOX_MOD.time, "time", return_value=now + INBOX_MOD.INBOX_TTL_SECONDS + 3600.0):
+                self.assertEqual(nots_tracker.claim_new_ids(sid_nots, home=root), [])
+
+            scan_entered = threading.Event()
+            scan_release = threading.Event()
+            orig_read = INBOX_MOD._read_unread_entries
+            first_call = {"done": False}
+
+            def slow_first_read(s, home, *, local_only):
+                entries, capped, done_ids = orig_read(s, home, local_only=local_only)
+                if not first_call["done"]:
+                    first_call["done"] = True
+                    scan_entered.set()
+                    scan_release.wait(timeout=5.0)
+                return entries, capped, done_ids
+
+            tracker2 = INBOX_MOD.InboxTracker(max_seen_per_session=10)
+            _write_private_inbox(root, sid_p, [{"id": "mclaim1", "to": sid_p, "text": "a", "ts": now}])
+            with patch.object(INBOX_MOD, "_read_unread_entries", slow_first_read):
+                t_old = threading.Thread(target=lambda: tracker2.unseen_ids(sid_p, home=root))
+                t_old.start()
+                self.assertTrue(scan_entered.wait(timeout=3.0))
+                _write_private_inbox(root, sid_p, [
+                    {"id": "mclaim1", "to": sid_p, "text": "a", "ts": now},
+                    {"id": "mclaim2", "to": sid_p, "text": "b", "ts": now},
+                ])
+                claimed_fast = tracker2.claim_new_ids(sid_p, home=root)
+                self.assertEqual(claimed_fast, ["mclaim1", "mclaim2"])
+                scan_release.set()
+                t_old.join(timeout=5.0)
+            self.assertEqual(tracker2.claim_new_ids(sid_p, home=root), [])
+
+            # S1 + S2: Finalize-then-reset carries verified route key to the new session for live wake,
+            # and a paused on_session_end cannot write an auto-card after on_session_delete.
+            ctx = FakeContext(settings={"binary": str(fake_bin), "live_wake": True, "wake_poll_seconds": 60.0}, cwd=str(root))
+            with patch.dict(os.environ, {"EVERETT_HOME": str(root), "HOME": str(root)}, clear=False):
+                os.environ.pop("EVERETT_SEND", None)
+                PLUGIN.register(ctx)
+                self.addCleanup(ctx.unload)
+
+                ctx.hooks["on_session_start"][0](session_id="hermes-r-old", platform="telegram", session_key="tg:room:9")
+                ctx.hooks["on_session_finalize"][0](session_id="hermes-r-old", platform="telegram", completed=True)
+                ctx.hooks["on_session_reset"][0](
+                    session_id="hermes-r-new",
+                    old_session_id="hermes-r-old",
+                    new_session_id="hermes-r-new",
+                    platform="telegram",
+                )
+                watchers = [
+                    cell.cell_contents
+                    for cb in (ctx.hooks["on_session_reset"][0], ctx.hooks["on_session_finalize"][0], ctx.unload_callbacks[0])
+                    for cell in (cb.__closure__ or ())
+                    if isinstance(cell.cell_contents, WAKE_MOD.InboxWakeWatcher)
+                ]
+                self.assertTrue(watchers)
+                self.assertEqual(watchers[0].tracked_session_key("hermes-r-new"), "tg:room:9")
+                _write_private_inbox(root, "hermes-r-new", [{"id": "mreset1", "to": "hermes-r-new", "text": "wake", "ts": now}])
+                self.assertEqual(watchers[0].poll_once(), 1)
+                self.assertEqual(ctx.injected[-1]["session_key"], "tg:room:9")
+                self.assertIn("mreset1", ctx.injected[-1]["content"])
+
+                del_sid = "hermes-del-race"
+                end_entered = threading.Event()
+                end_release = threading.Event()
+                orig_cwd = ctx.session_cwd
+
+                def slow_end_cwd():
+                    end_entered.set()
+                    end_release.wait(timeout=5.0)
+                    return orig_cwd()
+
+                ctx.session_cwd = slow_end_cwd
+                try:
+                    t_end = threading.Thread(
+                        target=lambda: ctx.hooks["on_session_end"][0](session_id=del_sid, platform="cli", completed=True)
+                    )
+                    t_end.start()
+                    self.assertTrue(end_entered.wait(timeout=3.0))
+                    ctx.session_cwd = orig_cwd
+                    ctx.hooks["on_session_delete"][0](session_id=del_sid)
+                    end_release.set()
+                    t_end.join(timeout=5.0)
+                finally:
+                    ctx.session_cwd = orig_cwd
+                self.assertFalse((cards_dir / f"{del_sid}.md").exists())
+
+                # S8: Even after a bulk delete >512 IDs, a delayed on_session_reset for the first
+                # deleted ID must NOT write a fallback card.
+                bulk_ids = [f"hermes-bulk-{i}" for i in range(520)]
+                ctx.hooks["on_session_delete"][0](session_id=bulk_ids[0], deleted_ids=bulk_ids)
+                ctx.hooks["on_session_reset"][0](
+                    session_id="hermes-after-bulk-del",
+                    old_session_id=bulk_ids[0],
+                    new_session_id="hermes-after-bulk-del",
+                    platform="cli",
+                )
+                self.assertFalse((cards_dir / f"{bulk_ids[0]}.md").exists())
+
+                # S9: Invoking a registered tool handler after unload returns an error without deadlocking.
+                unload_ctx = FakeContext(settings={"binary": str(fake_bin)}, cwd=str(root))
+                PLUGIN.register(unload_ctx)
+                unload_ctx.unload()
+                after_unload = json.loads(unload_ctx.tools["everett_whoami"]["handler"]({}, session_id="hermes-closed"))
+                self.assertTrue(after_unload.get("isError"))
 
 
 class RealEverettIntegrationTests(unittest.TestCase):

@@ -304,6 +304,13 @@ pub fn run(hours: f64) -> i32 {
     if !missing_mcp.is_empty() || !stale_mcp.is_empty() {
         next_steps.push("Restart your MCP client after registering or repairing Everett, then run `everett doctor`.".to_string());
     }
+    if seen.iter().any(|s| s == "hermes") || crate::install::hermes_active_home().exists() {
+        let (hermes_ok, hermes_detail, hermes_step) = crate::install::hermes_plugin_status();
+        line(&mut warnings, hermes_ok, &format!("  {:<7} {}", "hermes", hermes_detail));
+        if let Some(step) = hermes_step {
+            next_steps.push(step.to_string());
+        }
+    }
 
     let sessions = crate::registry::scan(hours, false, None, "");
     let (_, totals) = crate::cards::coverage(&sessions);

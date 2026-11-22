@@ -363,7 +363,7 @@ fn gateway_requires_exact_unambiguous_destinations_and_inbox_only_delivery() {
     assert!(duplicate[0]["content"][0]["text"]
         .as_str()
         .unwrap()
-        .contains("one exact session id"));
+        .contains("one exact session or T3 thread id"));
 }
 
 #[test]

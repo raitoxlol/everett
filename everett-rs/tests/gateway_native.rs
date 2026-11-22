@@ -2,6 +2,8 @@
 //! backend (`--fixture-backend`), so no model, harness, or other runtime is involved.
 #[path = "gateway_native/conversation_identity.rs"]
 mod conversation_identity;
+#[path = "gateway_native/directory.rs"]
+mod directory;
 #[path = "gateway_native/events.rs"]
 mod events_acceptance;
 #[path = "gateway_native/identity_diagnostics.rs"]
@@ -25,7 +27,7 @@ const BIN: &str = env!("CARGO_BIN_EXE_everett");
 const TOKEN: &str = "synthetic-gateway-test-token-not-a-real-secret";
 const INTROSPECTION_SECRET: &str = "synthetic-introspection-secret-not-real-000";
 const RESOURCE: &str = "https://dot.example.com/mcp";
-const TOOLS: [&str; 6] = ["everett_identity", "everett_core", "everett_whoami", "everett_inbox", "everett_card", "everett_send"];
+const TOOLS: [&str; 7] = ["everett_identity", "everett_core", "everett_whoami", "everett_inbox", "everett_card", "everett_send", "everett_directory"];
 
 fn initialize() -> Value {
     json!({"protocolVersion": "2025-06-18", "capabilities": {}, "clientInfo": {"name": "synthetic-gateway-tests", "version": "0"}})
@@ -72,7 +74,7 @@ fn backend(args: &[String]) {
                     "everett_core" => json!({"core": format!("Synthetic global + project {}", a["project"].as_str().unwrap()), "pending_learnings": 99}),
                     "everett_inbox" => json!({"messages": rows()}),
                     "everett_send" => {
-                        assert!(a["mode"] == "inbox" && a["wait"] == 0 && a["spawn"] == false, "unsafe send arguments");
+                        assert!(a["mode"] == "inbox" && a["wait"] == 0 && a["spawn"] == false && a["hours"].is_number(), "unsafe send arguments");
                         let to = match a.get("reply_to") {
                             Some(r) => rows().into_iter().find(|row| &row["id"] == r).unwrap()["from"].clone(),
                             None => a["to"].clone(),
@@ -1079,6 +1081,7 @@ fn policy_rejects_foreign_identity_project_and_unsafe_arguments() {
         ("everett_send", json!({"text": "task"})), ("everett_send", json!({"text": "task", "to": "agent"})),
         ("everett_send", json!({"text": "task", "to": "dot-one"})), ("everett_send", json!({"text": "task", "to": "foreign"})),
         ("everett_send", json!({"text": "task", "to": "agent-two", "reply_to": "one"})),
+        ("everett_directory", json!({"ids": ["agent-two"]})),
         ("everett_card", json!({"what": "x", "state": " ", "next": "x"})),
         ("everett_send", json!({"text": "x".repeat(16001), "to": "agent-two"})),
     ]);
@@ -1672,6 +1675,8 @@ exec /bin/sleep 10
 const CASES: &[Case] = &[
     ("conversation_identity_bearer", conversation_identity::bearer),
     ("conversation_identity_oauth", conversation_identity::oauth),
+    ("directory_labels_and_thread_send", directory::labels_and_thread_send),
+    ("conversation_directory_resolves_thread_and_inbox", conversation_identity::directory),
     ("owner_agent_permission_journey", owner_agent_permission_journey),
     ("hosted_start_checks_model_effort_and_effective_receipt", hosted_start_checks_model_effort_and_effective_receipt),
     ("dot_picks_up_only_the_event_message_and_replies", dot_picks_up_only_the_event_message_and_replies),

@@ -17,6 +17,7 @@ const HELP_GROUPS: &[(&str, &[&str])] = &[
         "Work across sessions",
         &["send", "route", "inbox", "reply", "sent", "status", "retry", "proof", "event", "events", "subscribe"],
     ),
+    ("Cross-org shared threads", &["thread"]),
     ("Shared memory", &["learn", "core", "trunk", "cards", "skills"]),
     (
         "Setup and account",
@@ -78,6 +79,11 @@ enum Cmd {
     Relay {
         #[command(subcommand)]
         action: Option<RelayCmd>,
+    },
+    /// CLI-first encrypted shared text threads between two inboxes
+    Thread {
+        #[command(subcommand)]
+        action: ThreadCmd,
     },
     /// pair devices and make restricted SSH inbox requests
     Peer {
@@ -683,6 +689,47 @@ enum RelayCmd {
 }
 
 #[derive(Subcommand)]
+enum ThreadCmd {
+    /// create a stable two-member thread from reciprocal inbox grants
+    Create {
+        #[arg(long = "from")]
+        from_address: String,
+        #[arg(long = "to")]
+        to_address: String,
+        #[arg(long)]
+        idempotency_key: Option<String>,
+    },
+    /// show immutable thread membership and stored message count
+    Show {
+        #[arg(long)]
+        creator_owner: String,
+        #[arg(long)]
+        thread_id: String,
+    },
+    /// store one text message; retries reuse the encrypted local request
+    Send {
+        #[arg(long)]
+        creator_owner: String,
+        #[arg(long)]
+        thread_id: String,
+        text: String,
+        #[arg(long)]
+        idempotency_key: Option<String>,
+    },
+    /// read one bounded history page addressed to this authenticated device
+    Read {
+        #[arg(long)]
+        creator_owner: String,
+        #[arg(long)]
+        thread_id: String,
+        #[arg(long, default_value_t = 0)]
+        after_seq: u64,
+        #[arg(long, default_value_t = 20)]
+        limit: u8,
+    },
+}
+
+#[derive(Subcommand)]
 enum AccessCmd {
     /// show current local access and permission settings
     Show,
@@ -914,6 +961,20 @@ fn main() {
             ),
             Some(RelayCmd::ResolveInbox { address }) => peer_output(
                 everett::relay::resolve_inbox(&address)
+            ),
+        },
+        Cmd::Thread { action } => match action {
+            ThreadCmd::Create { from_address, to_address, idempotency_key } => peer_output(
+                everett::relay::thread_create(&from_address, &to_address, idempotency_key.as_deref())
+            ),
+            ThreadCmd::Show { creator_owner, thread_id } => peer_output(
+                everett::relay::thread_show(&creator_owner, &thread_id)
+            ),
+            ThreadCmd::Send { creator_owner, thread_id, text, idempotency_key } => peer_output(
+                everett::relay::thread_send(&creator_owner, &thread_id, &text, idempotency_key.as_deref())
+            ),
+            ThreadCmd::Read { creator_owner, thread_id, after_seq, limit } => peer_output(
+                everett::relay::thread_read(&creator_owner, &thread_id, after_seq, limit)
             ),
         },
         Cmd::Peer { action } => match action {

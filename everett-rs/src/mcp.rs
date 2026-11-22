@@ -89,6 +89,14 @@ pub fn tools() -> &'static Vec<Value> {
                 }, "required": ["text"], "additionalProperties": false},
             }),
             json!({
+                "name": "everett_directory",
+                "description": "Label exact destination IDs with readable context: kind (session, T3 Code thread, registered conversation, or bare inbox), project, title, host, availability and permitted actions. An owner-authorized gateway connection advertises this so remote clients can resolve a named existing session or T3 thread to the exact `to` for everett_send; locally it labels any IDs you already have.",
+                "annotations": {"readOnlyHint": true, "openWorldHint": false},
+                "inputSchema": {"type": "object", "properties": {
+                    "ids": {"type": "array", "minItems": 1, "maxItems": 64, "items": {"type": "string", "maxLength": 128}, "description": "Exact session, T3 thread or registered inbox IDs to label."},
+                }, "required": ["ids"], "additionalProperties": false},
+            }),
+            json!({
                 "name": "everett_inbox",
                 "description": "Read the Everett messages waiting for your session (requests, replies, events) and mark them delivered. Hooks normally inject these automatically; use this where they cannot.",
                 "inputSchema": {"type": "object", "properties": {
@@ -249,6 +257,16 @@ pub(crate) enum ToolFailure {
 impl From<EverettError> for ToolFailure {
     fn from(e: EverettError) -> Self {
         ToolFailure::Tool(e)
+    }
+}
+
+impl ToolFailure {
+    pub(crate) fn message(&self) -> String {
+        match self {
+            ToolFailure::Tool(error) => error.message.clone(),
+            ToolFailure::Ping(failure) => failure.error.message.clone(),
+            ToolFailure::Params(message) => message.clone(),
+        }
     }
 }
 
@@ -770,20 +788,51 @@ pub(crate) fn tool_send(
         }
         let sessions = crate::registry::scan(hours, true, None, "");
         let found = if exact_ids {
-            let mut matches = sessions.iter().filter(|s| s.id == to);
+            let mut matches = sessions
+                .iter()
+                .filter(|s| s.id == to || s.t3_thread_id.as_deref() == Some(to.as_str()));
             match (matches.next(), matches.next()) {
                 (Some(s), None) => Ok(s.clone()),
-                _ => Err(crate::error::EverettError::new(2, "Gateway destination must match one exact session id.")),
+                (None, None) => {
+                    let target = crate::directory::queue_target(&to);
+                    if target == to || !caller_bound {
+                        Err(crate::error::EverettError::new(2, "Gateway destination must match one exact session or T3 thread id."))
+                    } else {
+                        return crate::send::queue_conversation_inbox(
+                            &target,
+                            &text,
+                            caller.unwrap_or(""),
+                            caller_harness.unwrap_or(""),
+                        )
+                        .map(|mut out| {
+                            out.extend([
+                                ("resolved_from".into(), json!(to)),
+                                ("resolved_to".into(), json!(target)),
+                                ("decision".into(), json!("SESSION")),
+                                ("router".into(), json!("direct")),
+                                ("note".into(), json!("Queued in the T3 thread's provider session inbox; it is outside the session scan, so pickup happens when that session next reads its inbox. Read replies with everett_inbox.")),
+                            ]);
+                            out
+                        })
+                        .map_err(ToolFailure::Tool);
+                    }
+                }
+                _ => Err(crate::error::EverettError::new(2, "Gateway destination must match one exact session or T3 thread id.")),
             }
         } else {
             crate::registry::find(&to, &sessions)
         }.map_err(|e| {
-            err2(2, format!(
-                "{} In MCP, use everett_ls with a larger hours window (e.g. 168), then pass its exact session id and the same hours to everett_send.",
-                e.message
-            ))
+            err2(2, if exact_ids {
+                format!("{} Call everett_directory for the authorized destination IDs and their session, T3 thread or conversation labels.", e.message)
+            } else {
+                format!("{} In MCP, use everett_ls with a larger hours window (e.g. 168), then pass its exact session id and the same hours to everett_send.", e.message)
+            })
         })?;
         session = found;
+        if session.id != to {
+            decision.insert("resolved_from".into(), json!(to));
+            decision.insert("resolved_to".into(), json!(session.id.clone()));
+        }
         decision.insert("decision".into(), json!("SESSION"));
         decision.insert("router".into(), json!("direct"));
         decision.insert("confidence".into(), json!(1.0));
@@ -1469,6 +1518,31 @@ pub(crate) fn tool_whoami(
     Ok(out)
 }
 
+pub(crate) fn tool_directory(
+    args: &Map<String, Value>,
+) -> std::result::Result<Map<String, Value>, ToolFailure> {
+    let ids = args
+        .get("ids")
+        .and_then(Value::as_array)
+        .map(|ids| {
+            ids.iter()
+                .filter_map(Value::as_str)
+                .take(64)
+                .map(str::to_string)
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    if ids.is_empty() {
+        return Err(ToolFailure::Params(
+            "\"ids\" must list exact destination IDs".to_string(),
+        ));
+    }
+    Ok(Map::from_iter([(
+        "destinations".into(),
+        json!(crate::directory::resolve_all(&ids, false)),
+    )]))
+}
+
 fn call_handler(
     name: &str,
     args: &Map<String, Value>,
@@ -1566,6 +1640,7 @@ fn call_handler(
         "everett_card" => tool_card(args, identity),
         "everett_skill" => tool_skill(args),
         "everett_whoami" => tool_whoami(identity),
+        "everett_directory" => tool_directory(args),
         "everett_inbox" => tool_inbox(args, identity),
         "everett_sent" => tool_sent(args, identity),
         "everett_status" => tool_status(args, identity),
