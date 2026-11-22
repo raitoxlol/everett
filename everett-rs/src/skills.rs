@@ -135,7 +135,7 @@ fn roots(cwd: &Path) -> Vec<(PathBuf, String)> {
 /// Parse the YAML-ish frontmatter of a SKILL.md: `name` and `description`.
 /// Handles single-line values, quotes, and `>`/`|` block scalars.
 fn frontmatter(text: &str) -> (Option<String>, Option<String>) {
-    let mut lines = text.lines();
+    let mut lines = text.strip_prefix('\u{feff}').unwrap_or(text).lines();
     if lines.next().map(str::trim) != Some("---") {
         return (None, None);
     }
@@ -353,7 +353,7 @@ pub fn find(name: &str, source: Option<&str>) -> Vec<Skill> {
 }
 
 fn strip_frontmatter(text: &str) -> String {
-    let mut lines = text.lines();
+    let mut lines = text.strip_prefix('\u{feff}').unwrap_or(text).lines();
     if lines.next().map(str::trim) != Some("---") {
         return text.to_string();
     }
