@@ -960,6 +960,8 @@ impl Credential {
             "relay:exposeSession" => "exposeSession", "relay:sessionDirectory" => "sessionDirectory",
             "relay:registerInbox" => "registerInbox", "relay:grantInbox" => "grantInbox",
             "relay:revokeInboxGrant" => "revokeInboxGrant", "relay:resolveInbox" => "resolveInbox",
+            "relay:threadCreate" => "threadCreate", "relay:threadShow" => "threadShow",
+            "relay:threadSend" => "threadSend", "relay:threadRead" => "threadRead",
             _ => return Err(fail(2, "this operation is not supported by the Cloudflare relay; SSH publication and cross-owner grants are unavailable")),
         };
         self.validate_relay_binding()?;
@@ -976,8 +978,21 @@ impl Credential {
                 if body.get("error").and_then(Value::as_str) == Some("device_unavailable") {
                     return Err(fail(1, &format!("Cloudflare relay denied {operation} (HTTP {status}, device_unavailable): a device has no active registered key bundle. Verify the account and device registration; this is separate from account sign-in.")));
                 }
-                let detail = if matches!(operation, "registerInbox" | "grantInbox" | "revokeInboxGrant" | "resolveInbox") {
-                    body.get("error").and_then(Value::as_str).map(|code| format!(", {code}")).unwrap_or_default()
+                let detail = if matches!(
+                    operation,
+                    "registerInbox"
+                        | "grantInbox"
+                        | "revokeInboxGrant"
+                        | "resolveInbox"
+                        | "threadCreate"
+                        | "threadShow"
+                        | "threadSend"
+                        | "threadRead"
+                ) {
+                    body.get("error")
+                        .and_then(Value::as_str)
+                        .map(|code| format!(", {code}"))
+                        .unwrap_or_default()
                 } else {
                     String::new()
                 };
