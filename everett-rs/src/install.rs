@@ -379,6 +379,7 @@ pub fn snippet(harness: &str) -> String {
     let note = match harness {
         "claude" => "# merge into ~/.claude/settings.json (keep your existing hooks)".to_string(),
         "codex" => "# merge into ~/.codex/hooks.json; Codex needs `hooks = true` in ~/.codex/config.toml\n# and asks you to trust new hooks on first run".to_string(),
+        "devin" => format!("# merge into {} (keep your existing hooks)", settings_path("devin").display()),
         _ => "# write ~/.grok/hooks/everett.json (Grok loads every file in ~/.grok/hooks/)".to_string(),
     };
     let mut body = Map::new();
