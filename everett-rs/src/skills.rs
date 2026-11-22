@@ -135,7 +135,7 @@ fn roots(cwd: &Path) -> Vec<(PathBuf, String)> {
 /// Parse the YAML-ish frontmatter of a SKILL.md: `name` and `description`.
 /// Handles single-line values, quotes, and `>`/`|` block scalars.
 fn frontmatter(text: &str) -> (Option<String>, Option<String>) {
-    let mut lines = text.lines();
+    let mut lines = text.strip_prefix('\u{feff}').unwrap_or(text).lines();
     if lines.next().map(str::trim) != Some("---") {
         return (None, None);
     }
@@ -190,7 +190,7 @@ fn frontmatter(text: &str) -> (Option<String>, Option<String>) {
 }
 
 fn fallback_description(text: &str) -> String {
-    for line in text.lines() {
+    for line in text.strip_prefix('\u{feff}').unwrap_or(text).lines() {
         let line = line.trim();
         if line.is_empty() || line.starts_with('#') || line == "---" {
             continue;
@@ -353,7 +353,7 @@ pub fn find(name: &str, source: Option<&str>) -> Vec<Skill> {
 }
 
 fn strip_frontmatter(text: &str) -> String {
-    let mut lines = text.lines();
+    let mut lines = text.strip_prefix('\u{feff}').unwrap_or(text).lines();
     if lines.next().map(str::trim) != Some("---") {
         return text.to_string();
     }
@@ -511,4 +511,18 @@ pub fn prompt_skill(name: &str) -> Option<Skill> {
         .into_iter()
         .find(|(n, _)| n == name)
         .map(|(_, s)| s)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn fallback_description_ignores_bom() {
+        let body = "---\nname: x\n---\nBody line\n";
+        assert_eq!(
+            fallback_description(&format!("\u{feff}{body}")),
+            fallback_description(body)
+        );
+    }
 }

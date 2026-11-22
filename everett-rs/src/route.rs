@@ -77,7 +77,11 @@ const COORDINATOR_TERMS: &[&str] = &[
 pub fn is_coordinator(session: &Session) -> bool {
     let text = format!("{} {} {} {}", session.card, session.title, session.first_user, session.last_user)
         .to_lowercase();
-    COORDINATOR_TERMS.iter().any(|term| text.contains(term))
+    COORDINATOR_TERMS.iter().any(|term| {
+        text.match_indices(term).any(|(i, _)| {
+            i == 0 || !text.as_bytes()[i - 1].is_ascii_alphanumeric()
+        })
+    })
 }
 
 pub fn describe(session: &Session) -> String {
