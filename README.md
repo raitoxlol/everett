@@ -247,6 +247,7 @@ Done. MAX_RETRIES is now 5 and the backoff test covers the cap.
 | `everett relay rename NAME` | Update this Cloudflare device's hosted label. Device ID, keys, and pins stay the same. |
 | `everett relay revoke-agent ID / revoke-member SUBJECT / rotate` | Revoke this or an admin-selected agent, remove org membership (admin), or rotate this agent's relay keys using its old signing key. |
 | `everett relay register-inbox / grant-inbox / revoke-inbox-grant / resolve-inbox` | Claim a `LOCAL@SCOPE` cross-org inbox, allow an exact sender owner/device to reach it, revoke a grant, or resolve an address to its verified recipient bundle. `--to LOCAL@SCOPE` with `--mode inbox` sends to it. |
+| `everett thread create / show / send / read` | CLI-first encrypted shared text history for exactly two addressed inboxes in distinct owners; see [shared threads](docs/shared-threads.md). |
 | `everett access [show \| set \| allow \| deny \| remove \| reset]` | Inspect or edit local cross-org permission settings in `~/.everett/access.json` (`mode`, `external-send`, `max-hops`, local allow/block lists; `--sync` pushes `grant-inbox` to the relay; alias `everett permissions`). |
 | `everett peer add-relay <name> --device ID --fingerprint HEX [--grant GRANT_ID]` | Pin a device on the selected relay after out-of-band bundle confirmation; fingerprint is raw 64-character lowercase hex, not the SSH `SHA256:` format. |
 | `everett peer identity / list / remove <name> / revoke <client-id>` | Inspect device keys/peers; remove a remote authorization or revoke a local tagged client key. |
@@ -382,6 +383,11 @@ Cross-owner delivery uses named inboxes: `everett relay register-inbox LOCAL@SCO
 claims the address (the first owner's SCOPE zone is never transferred), `relay grant-inbox` authorizes an
 exact sender owner/device, and `everett send --to LOCAL@SCOPE --mode inbox` sends a hop-1 cross-org root
 message whose replies correlate to the same grant. SSH pairing uses an explicit address; cloud-agent OAuth is separate.
+
+Two owners can also create a stable, text-only shared thread on the CLI. Both inbox owners must grant
+the other exact device access; the thread snapshots both inbox bindings, keys, and original grant IDs.
+See [the shared-thread CLI guide](docs/shared-threads.md) for creation, history, revocation, and retry
+semantics. This first slice is CLI-only; it does not add UI, MCP, or gateway tools.
 
 Local harnesses that launch Everett with the same `HOME` and `EVERETT_HOME` use that
 home's account configuration and device credential. They do not each need a separate
