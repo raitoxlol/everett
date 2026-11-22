@@ -15,7 +15,8 @@ See [native MCP sign-in](auth.md#native-mcp-sign-in).
 | Pi | Everett's extension exposes tools through Pi's `registerTool` API and starts a session-bound MCP bridge with `EVERETT_SESSION_ID` (Unreleased) | `everett install-hooks --pi --apply`; do not also list Everett in `~/.pi/agent/mcp.json` |
 | OMP | `everett mcp --harness omp` + the OMP extension records the session the omp process holds (Unreleased) | `everett install-hooks --omp --apply` and `everett install-mcp --omp --repair --apply` |
 | Devin CLI | `everett mcp --harness devin` + `SessionStart`/`UserPromptSubmit` hooks record the session (Unreleased) | `everett install-hooks --devin --apply` and `everett install-mcp --devin --repair --apply` |
-| Hermes | `everett mcp --harness hermes`; binds only to the single interactive Hermes session created in the server's directory since the hermes process started (Unreleased) | add the entry printed by `everett install-mcp --hermes` to `~/.hermes/config.yaml`. Gateway mode cannot be bound |
+| Hermes Agent (native plugin) | Unreleased: the plugin starts a per-session MCP bridge with the Hermes session ID in `EVERETT_SESSION_ID`; supports CLI, TUI, Desktop, and shared gateway sessions | Install and enable the [native plugin](../plugins/everett-hermes/README.md), then restart Hermes |
+| Hermes Agent (manual MCP) | `--harness hermes` accepts `EVERETT_SESSION_ID` or `HERMES_SESSION_ID`; without either, it uses process detection | `everett install-mcp --hermes` prints native-plugin install/enable guidance plus a separate fallback entry with no explicit ID; it does not edit config or support `--apply`. Detection can bind only one unambiguous interactive Hermes CLI session in the server's directory. A static ID binds that one session but does not provide the native plugin's per-session gateway binding |
 | T3 Code | none | set `EVERETT_SESSION_ID` in the thread's MCP launch environment |
 | Remote connections | `everett gateway` supplies a fixed binding or verifies a private conversation handle | see [gateway.md](gateway.md#http-conversation-identity) |
 
@@ -32,6 +33,12 @@ See [native MCP sign-in](auth.md#native-mcp-sign-in).
 
 Anything else (no host, two candidate sessions, a rival process) is unbound. Identity-requiring
 tools then return a tool result with `isError: true` and a one-line fix, not a JSON-RPC error.
+
+The portable Agent Plugins v1 `plugin.json`/`mcp.json` pair is for hosts that support that format
+but not Hermes's native plugin manifest. It registers only the stdio MCP server; it does not add
+the native plugin's per-session bridge, hooks, or commands. Its MCP caller still needs a valid
+`EVERETT_SESSION_ID`/`HERMES_SESSION_ID` or a detectable Hermes process. Do not combine it with
+the native plugin or a manual Hermes MCP entry.
 
 ## `session_id` argument
 

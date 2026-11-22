@@ -58,8 +58,15 @@ Onboarding detects installed CLIs even before their first session. It backs up a
 hooks and MCP for detected Claude Code, Codex, OMP, and Grok installations. It also installs
 the Pi extension and registers Devin MCP when those clients are detected. Run
 `everett install-hooks --devin --apply` to bind Devin MCP calls to their sessions.
-For Hermes, follow the wizard to install and enable the [Hermes plugin](plugins/everett-hermes/README.md),
-or use the manual entry printed by `everett install-mcp --hermes` as an alternative.
+When Hermes is detected, the wizard prints instructions to install and enable the native
+[Hermes plugin](plugins/everett-hermes/README.md); it does not install the plugin itself.
+`everett install-mcp --hermes` prints native-plugin install/enable instructions plus a separate
+manual stdio fallback; it does not edit Hermes configuration or support `--apply`. The manual
+entry has no session-ID override, so process detection can bind one unambiguous interactive Hermes
+CLI session in the server's directory. An explicit `EVERETT_SESSION_ID` or `HERMES_SESSION_ID` in
+the MCP server's environment binds that one session instead; it does not provide the native
+plugin's per-session gateway binding. Prefer the plugin for native Hermes features, and do not
+configure both because they expose duplicate tools.
 Restart configured clients and run `everett ls`. Doctor checks registered launchers and lists next steps.
 Run `everett login`, restart each MCP client, and ask it to call `everett_ls`. A returned list,
 even empty, verifies the tool.
@@ -272,8 +279,8 @@ Done. MAX_RETRIES is now 5 and the backoff test covers the cap.
 | `everett onboard [--yes] [--span-days N] [--no-backfill] [--no-mcp]` | Human setup TUI (welcome, account approval, agents, guides, review/apply and instruction prompt; optional settings under Advanced); `--yes` runs it non-interactively for scripts. |
 | `everett install-hooks [--claude] [--codex] [--omp] [--grok] [--pi] [--devin] [--apply]` | Prints the hook registrations. `--apply` backs up the file, then merges idempotently. |
 | `everett mcp [--harness H]` | Runs the stdio MCP server (harnesses start it; see below). Tool calls require `everett login`. |
-| `everett install-mcp [--claude] [--codex] [--omp] [--grok] [--devin] [--pi] [--hermes] [--repair] [--apply]` | Prints or registers MCP. Pi uses its extension; Hermes prints a manual config entry. `--repair --apply` refreshes stale registrations. |
-| `everett doctor` | Installed CLIs, stores, hooks, live stdio/MCP registration checks, cards, router, and account diagnostics; SSH revocation remains explicit. |
+| `everett install-mcp [--claude] [--codex] [--omp] [--grok] [--devin] [--pi] [--hermes] [--repair] [--apply]` | Prints or registers MCP. Pi uses its extension; `--hermes` prints native-plugin install/enable guidance plus a manual stdio fallback, but does not edit Hermes config or support `--apply`. Use one setup path. `--repair --apply` refreshes stale registrations. |
+| `everett doctor` | Installed CLIs, stores, hooks, live stdio/MCP registration checks, cards, router, and account diagnostics; when Hermes is present, also checks the active profile's native plugin and duplicate manual MCP entry. SSH revocation remains explicit. |
 | `everett learn "<fact>" [--project P] [--scope global\|project]` | Queues a fact for shared core. Add `--ttl-seconds N` (1 to 31536000) to keep it only in local memory search until expiry. Secrets are rejected. |
 | `everett trunk merge [--llm claude\|codex\|none] [--dry-run]` | Distills the inbox into the shared core. |
 | `everett core [show\|edit-path\|history] [--project P]` | Shows the core a new session in this folder receives, the file to edit, or past merges. |
@@ -522,7 +529,9 @@ These details cover Everett's Rust local inbox and live-record operations on Uni
 | Codex (0.155+) | `UserPromptSubmit` | `PostToolUse` | the same contract (checked against the hook schemas embedded in the 0.155.1 binary) |
 | Grok CLI | no | `PostToolUse` | Grok discards an allowing `UserPromptSubmit` hook's context, so messages wait for the next tool call. A Grok session that runs no tool before stopping reads them with `everett_inbox`, or at its next tool call. |
 | OMP | `before_agent_start`; idle inbox watcher | `tool_result` (steered in with `pi.sendMessage(…, {deliverAs: "steer"})`) | the Everett extension; idle nudges use fixed ID-only text and `triggerTurn: true` |
-| Pi, Hermes, Devin | MCP polling | MCP polling | messages wait in the inbox; the agent reads them with `everett_inbox` |
+| Pi, Devin | MCP polling | MCP polling | messages wait in the inbox; the agent reads them with `everett_inbox` |
+| Hermes Agent (native plugin) | `pre_llm_call`, `pre_verify` | `transform_tool_result` | Default hooks surface notices with validated message IDs; call `everett_inbox` to read contents. Opt-in `live_wake` sends ID-only local inbox nudges. |
+| Hermes Agent (manual or portable MCP) | MCP polling | MCP polling | The agent reads waiting messages with `everett_inbox`; no native Hermes hooks or live wake. |
 
 Grok also runs the hooks in `~/.claude/settings.json`. Everett's Claude delivery hook recognizes Grok's camelCase input and leaves a Grok session's messages alone on `UserPromptSubmit`, so nothing is marked delivered that Grok would drop.
 
@@ -639,8 +648,9 @@ Run `everett login` in the client's Everett profile before calling tools. Regist
 the client. Even `everett_whoami` and `everett_agent_relay(action="diagnose")` require
 account verification. For offline diagnostics, use terminal `everett relay diagnose`.
 
-Hermes Agent users can install the [Hermes-supported plugin](plugins/everett-hermes/README.md)
-instead of manually adding an MCP entry. It uses the installed binary and the same account check.
+Hermes Agent users should install the [native Hermes plugin](plugins/everett-hermes/README.md)
+for per-session tool binding and native Hermes commands and hooks. It uses the installed binary
+and the same account check; the manual MCP entry is a more limited alternative.
 
 Everett is mostly used by agents. `everett mcp` is a native Rust stdio MCP server (JSON-RPC 2.0, protocol versions 2025-06-18, 2025-03-26, and 2024-11-05), so MCP-capable harnesses get Everett as native tools:
 
@@ -703,7 +713,7 @@ The registration launches the executable you ran it from with `["mcp"]`. A launc
 retired Python package (`["-m", "everett", "mcp"]`) is reported stale and replaced by `--apply`.
 For another MCP client, copy the launcher printed by a dry run. Restart clients after changing their registration.
 
-**Caller identity.** Claude Code supplies `CLAUDE_CODE_SESSION_ID` when it starts a stdio MCP server; Grok CLI 1.0.4+ supplies `GROK_SESSION_ID`; Codex supplies the current thread on every call as `_meta.threadId` (unreleased; on `main` after 1.6.0); and `everett gateway` supplies an immutable `EVERETT_SESSION_ID`. Pi, OMP, Devin, and Hermes use session-specific binding (unreleased): Pi's extension starts its MCP bridge with the session id; the OMP extension and Devin hooks record which session their host processes hold; and OMP, Devin, and Hermes MCP servers use `--harness <name>` to bind to the host process (Hermes only when one interactive session exists). Pi's extension exposes Everett tools through Pi's `registerTool` API and starts a session-bound MCP bridge with `EVERETT_SESSION_ID` set. When the binding is ambiguous or missing, identity-requiring tools return a readable tool error (`isError: true`) that says how to fix it; Everett never guesses. T3 Code threads still need `EVERETT_SESSION_ID` in their MCP launch environment. A model-supplied `session_id` cannot establish or replace a binding; the argument is deprecated, no longer advertised in tool schemas, and a conflicting value is a tool error. Details per harness: [docs/mcp-identity.md](docs/mcp-identity.md).
+**Caller identity.** Claude Code supplies `CLAUDE_CODE_SESSION_ID` when it starts a stdio MCP server; Grok CLI 1.0.4+ supplies `GROK_SESSION_ID`; Codex supplies the current thread on every call as `_meta.threadId` (Unreleased; on `main` after 1.6.0); and `everett gateway` supplies an immutable `EVERETT_SESSION_ID`. Pi, OMP, Devin, and Hermes use session-specific binding (Unreleased): Pi's extension starts its MCP bridge with the session id; the OMP extension and Devin hooks record which session their host processes hold; OMP and Devin MCP servers use `--harness <name>` to bind to their host process. The native Hermes plugin starts a per-session MCP bridge with `EVERETT_SESSION_ID` set. Manual `everett mcp --harness hermes` accepts an explicit `EVERETT_SESSION_ID` or `HERMES_SESSION_ID`; without one, process detection can bind only one unambiguous interactive Hermes CLI session. The printed `install-mcp --hermes` entry omits an explicit ID, and a static ID does not provide the native plugin's per-session gateway binding. The portable Agent Plugins v1 manifest only registers that MCP server; it does not provide the native session bridge or Hermes hooks. When binding is ambiguous or missing, identity-requiring tools return a readable tool error (`isError: true`) that says how to fix it; Everett never guesses. T3 Code threads still need `EVERETT_SESSION_ID` in their MCP launch environment. A model-supplied `session_id` cannot establish or replace a binding; the argument is deprecated, no longer advertised in tool schemas, and a conflicting value is a tool error. Details per harness: [docs/mcp-identity.md](docs/mcp-identity.md).
 
 **Safety.**
 - The server refuses self-send. If `everett_whoami` cannot identify you, have the owner bind the MCP launch environment before sending. Do not guess another session's identity from its folder or recency.
@@ -797,8 +807,8 @@ see [troubleshoot message delivery](docs/messaging-troubleshooting.md).
 | `No module named everett` / hooks call `python3` | A registration still points at the retired Python package. Run `everett install-hooks --apply` and `everett install-mcp --apply`. |
 | MCP client shows zero tools | Run `everett doctor`. Check that it reports a successful stdio tool listing. For a stale/disabled launcher, run `everett install-mcp --claude --repair --apply` (replace `--claude` with `--codex`, `--omp`, `--grok` or `--devin`), then restart/enable the server in the client. Fix malformed config before repair. |
 | OMP or Devin has an old `everett mcp` registration | Run `everett install-mcp --omp --devin --repair --apply` to back up and restore the harness-specific arguments. Restart the affected MCP clients, then run `everett doctor`. |
-| Hermes points to a missing Everett binary | Run `everett install-mcp --hermes` and merge its printed entry into `mcp_servers.everett` in `~/.hermes/config.yaml`, preserving other entries. Use the printed executable path and `mcp --harness hermes` arguments, then restart Hermes. This command does not edit Hermes configuration automatically. |
-| Session not found / no live reply | Start a harness session or run `everett --hours 168 ls` for older ones; send to its exact id or title. In MCP, pass `hours: 168` to listing and sending. Hook injection needs enabled/trusted hooks; Pi/Hermes poll `everett_inbox`. A queued message is not a read receipt. |
+| Hermes points to a missing Everett binary | Put `everett` on the PATH visible to Hermes or set `plugins.entries.everett-hermes.settings.binary` in the active profile's `config.yaml` (the default profile uses `~/.hermes/config.yaml`), then restart Hermes. `everett install-mcp --hermes` prints native-plugin install/enable guidance and a separate manual fallback snippet; it does not edit Hermes configuration. |
+| Session not found / no live reply | Start a harness session or run `everett --hours 168 ls` for older ones; send to its exact id or title. In MCP, pass `hours: 168` to listing and sending. Hooks need to be enabled; the native Hermes plugin surfaces message-ID notices at hook events, so call `everett_inbox` to read contents. Opt-in local `live_wake` also sends ID-only nudges, while manual/portable MCP setups poll `everett_inbox`. A queued message is not a read receipt. |
 | Codex reports `Interrupted system call (os error 4)` | Delivery is unconfirmed. Check the target session before retrying; for an open session with Everett hooks, use `--mode inbox` (MCP: `mode: "inbox"`). Failed resumes are not retried automatically. |
 | Shared fact missing / scheduling unavailable | Run `everett trunk merge --llm none`, then `everett core`. Run `everett doctor` to inspect the macOS LaunchAgent or Linux systemd user timer. On Linux, inspect `systemctl --user status dev.everett.core-merge.timer` and the service journal; a missing user manager prevents automatic scheduling. |
 
