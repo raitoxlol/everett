@@ -190,7 +190,7 @@ fn frontmatter(text: &str) -> (Option<String>, Option<String>) {
 }
 
 fn fallback_description(text: &str) -> String {
-    for line in text.lines() {
+    for line in text.strip_prefix('\u{feff}').unwrap_or(text).lines() {
         let line = line.trim();
         if line.is_empty() || line.starts_with('#') || line == "---" {
             continue;
@@ -511,4 +511,18 @@ pub fn prompt_skill(name: &str) -> Option<Skill> {
         .into_iter()
         .find(|(n, _)| n == name)
         .map(|(_, s)| s)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn fallback_description_ignores_bom() {
+        let body = "---\nname: x\n---\nBody line\n";
+        assert_eq!(
+            fallback_description(&format!("\u{feff}{body}")),
+            fallback_description(body)
+        );
+    }
 }
