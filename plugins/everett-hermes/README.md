@@ -9,8 +9,8 @@ It connects Hermes to your local Everett runtime with per-session caller identit
 - **Per-session bound Everett tools** (`everett` toolset): discovers every tool from `everett mcp --harness hermes` and runs a bounded per-`(session_id, cwd)` stdio pool so shared gateways bind each conversation to its real Hermes session ID without fabricating identity.
 - **Prompt-cache-safe shared core**: registers a bounded `everett` system prompt section frozen once per new session, injecting card guidance and Everett's compact shared core without mutating the cached prompt mid-conversation.
 - **Automatic inbox pickup**: checks a session's Everett inbox with a zero-subprocess `stat` fast path, streams validated `O_NOFOLLOW` + `0600` files directly with per-record bounds, and surfaces only validated message-ID notices in `pre_llm_call`, `transform_tool_result` (preserving JSON object structure), and `pre_verify`. Call `everett_inbox` to read message contents; raw sender text never enters hook nudges.
-- **Session lifecycle and fallback cards**: binds per-session liveness on `on_session_start` without clobbering sibling Hermes sessions in the same gateway process, keeps live wake active across idle gaps after `on_session_end`, tears down old sessions on `on_session_reset` (`/new`), `on_session_delete`, and `on_session_finalize` (releasing liveness and closing cached MCP processes), and atomically creates an `<!-- everett:auto -->` fallback card only when no card exists (skipping deleted sessions).
-- **Native `/everett` slash command**: `/everett status`, `/everett ls [hours]`, `/everett inbox`, `/everett card`, `/everett sent`, `/everett core`, and `/everett help` across CLI, TUI, Desktop, and gateway chats.
+- **Session lifecycle and fallback cards**: binds per-session liveness on `on_session_start` without clobbering sibling Hermes sessions in the same gateway process and keeps live wake active across idle gaps after `on_session_end`. On `/new`, `on_session_reset` tears down the old session and binds the replacement, carrying the route key when available; `on_session_delete` clears session tracking and MCP resources without writing a fallback card, and `on_session_finalize` releases liveness and closes cached MCP processes. An `<!-- everett:auto -->` fallback card is created only when no card exists.
+- **Native `/everett` slash command**: `/everett status`, `/everett ls [hours]`, `/everett inbox`, `/everett card`, `/everett sent`, `/everett core`, and `/everett help` across CLI, TUI, Desktop, and gateway chats. With a valid bound session ID, `/everett card` and `/everett inbox` work from local session state without the `everett` executable; `/everett sent` requires it.
 - **Opt-in live inbox wake**: when `live_wake: true` is enabled, a lightweight background watcher nudges active sessions via `ctx.inject_message` with validated local message IDs only (remote/relay traffic stays passive). Shared hosts need a session route key; the setting is off by default.
 - **Host-isolation ready**: runs cleanly under both `plugins.isolation: in_process` and `plugins.isolation: host`.
 
@@ -39,7 +39,13 @@ hermes plugins enable everett-hermes
 
 Restart Hermes (or the Hermes gateway) after enabling. Remove it with `hermes plugins remove everett-hermes`.
 
-If you previously added a manual `mcp_servers.everett` entry in `~/.hermes/config.yaml`, remove it so Hermes does not expose duplicate Everett tools. `everett install-mcp --hermes` prints that manual stdio entry but does not edit the config or support `--apply`. The printed entry has no session-ID override, so process detection can bind only one unambiguous interactive Hermes CLI session in the server's directory. An explicit `EVERETT_SESSION_ID` or `HERMES_SESSION_ID` binds that one session instead; it does not provide the native plugin's per-session gateway binding.
+If you previously added a manual `mcp_servers.everett` entry, remove it from the active profile's `config.yaml` so Hermes does not expose duplicate Everett tools. The default profile uses `~/.hermes/config.yaml`; `everett install-mcp --hermes` prints its manual fallback for that default path, so adapt it to the selected profile when using a named profile or custom `HERMES_HOME`. It does not edit configuration or support `--apply`. The manual entry has no session-ID override, so process detection can bind only one unambiguous interactive Hermes CLI session in the server's directory. An explicit `EVERETT_SESSION_ID` or `HERMES_SESSION_ID` binds that one session instead; it does not provide the native plugin's per-session gateway binding.
+
+## Active Hermes profile and doctor
+
+`everett doctor` inspects the selected profile's plugin files and `config.yaml`. It reports native plugin installation/enablement, recognizes an older portable package, and flags a manual `mcp_servers.everett` entry when it duplicates an enabled native plugin. It checks configuration state; it does not prove that a running Hermes client loaded the plugin or that a session call works.
+
+Profile selection follows Hermes's home settings: a non-empty `HERMES_HOME` overrides the default root, with `~/` (or `~\` on Windows) expanded against OS `$HOME`; otherwise the root is `$HOME/.hermes` (not `EVERETT_HOME`). A valid non-`default` name in that root's `active_profile` selects `profiles/<name>` when that directory exists; otherwise the root/default profile is inspected. Edit settings and remove duplicate MCP entries in the selected profile's `config.yaml`.
 
 ## Portable and manual MCP alternatives
 
@@ -58,7 +64,7 @@ binds only that one session.
 
 ## Settings
 
-Configure optional settings under `plugins.entries.everett-hermes.settings` in `~/.hermes/config.yaml`:
+Configure optional settings under `plugins.entries.everett-hermes.settings` in the active profile's `config.yaml` (the default profile uses `~/.hermes/config.yaml`):
 
 ```yaml
 plugins:
