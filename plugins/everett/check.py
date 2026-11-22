@@ -73,7 +73,9 @@ def check(whoami, catalog, resource, require_native_start=False, *, require_even
     elif require_native_start and not granted:
         errors.append('native_start_not_granted')
     return {'checks_passed': not errors, 'errors': errors, 'native_start_granted': granted is True,
-            'native_start_registered': 'everett_start' in names, 'native_dispatch_verified': False}
+            'native_start_registered': 'everett_start' in names,
+            'destination_directory_registered': 'everett_directory' in names,
+            'native_dispatch_verified': False}
 
 
 if __name__ == '__main__':

@@ -80,6 +80,84 @@ fn card(what: &str) -> Value {
     json!({"what":what,"state":"Testing","next":"Report"})
 }
 
+pub(super) fn directory() {
+    let c = ctx();
+    directory::t3(&c, "chat-teresis", "native-teresis", "Teresis refactor");
+    let binding = json!({
+        "conversation_identity": true,
+        "allow_shared_core": false,
+        "harness": "devin-bot",
+        "destinations": ["native-teresis", "chat-teresis", "queue-only-local", "missing-dest"]
+    });
+    let port = c.spawn_http(bearer_command(&c, &binding));
+    let identity = registered(port, TOKEN, &create('a'));
+    let handle = identity["identity_handle"].as_str().unwrap();
+
+    denied(&call(
+        port,
+        TOKEN,
+        None,
+        "everett_directory",
+        json!({})
+    ));
+    let listed = directory::entries(&call(
+        port,
+        TOKEN,
+        Some(handle),
+        "everett_directory",
+        json!({})
+    ));
+    assert_eq!(listed.len(), 4, "{listed:?}");
+    let thread = &listed["chat-teresis"];
+    assert_eq!(thread["kind"], "t3_thread");
+    assert_eq!(thread["label"], "Teresis refactor");
+    assert_eq!(thread["session_id"], "native-teresis");
+    assert_eq!(listed["native-teresis"]["kind"], "session");
+    for id in ["queue-only-local", "missing-dest"] {
+        assert_eq!(listed[id]["kind"], "inbox", "{id}");
+        assert_eq!(listed[id]["actions"], json!(["send"]));
+    }
+
+    denied(&call(
+        port,
+        TOKEN,
+        Some(handle),
+        "everett_directory",
+        json!({"ids": ["agent-two"]})
+    ));
+    denied(&call(
+        port,
+        TOKEN,
+        Some(handle),
+        "everett_send",
+        json!({"to": "agent-two", "text": "not authorized"})
+    ));
+    let sent = success(&call(
+        port,
+        TOKEN,
+        Some(handle),
+        "everett_send",
+        json!({"to": "chat-teresis", "text": "Continue the Teresis refactor"})
+    ));
+    assert_eq!(sent["resolved_from"], "chat-teresis");
+    assert_eq!(sent["resolved_to"], "native-teresis");
+    let inbox =
+        std::fs::read_to_string(c.home.join(".everett/inbox/native-teresis.jsonl")).unwrap();
+    assert!(inbox.contains("Continue the Teresis refactor"), "{inbox}");
+    let bare = success(&call(
+        port,
+        TOKEN,
+        Some(handle),
+        "everett_send",
+        json!({"to": "queue-only-local", "text": "Bare inbox"})
+    ));
+    assert_eq!(bare["queued"], true);
+    assert!(c
+        .home
+        .join(".everett/inbox/queue-only-local.jsonl")
+        .exists());
+}
+
 fn bearer_command(c: &Ctx, binding: &Value) -> Command {
     let path = c.config_path(binding);
     let mut command = c.command(&[
@@ -154,7 +232,8 @@ pub(super) fn bearer() {
             "everett_whoami",
             "everett_inbox",
             "everett_card",
-            "everett_send"
+            "everett_send",
+            "everett_directory"
         ]
     );
     assert_eq!(manage(port, OTHER_TOKEN, &create('a')).status, 401);
@@ -603,7 +682,8 @@ pub(super) fn oauth() {
             "everett_whoami",
             "everett_inbox",
             "everett_card",
-            "everett_send"
+            "everett_send",
+            "everett_directory"
         ]
     );
     assert_eq!(manage(port, &old, &create('a')).status, 401);

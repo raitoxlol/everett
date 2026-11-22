@@ -67,7 +67,7 @@ const SECURITY_HEADERS: &[&str] = &[
     conversation::ADMIN_HEADER,
 ];
 const BACKEND_ERROR: &str = "backend unavailable, incompatible, or request timed out";
-const INSTRUCTIONS: &str = "This connection authorizes owner-scoped gateway access. Read the selected inbox for handoffs; reply using reply_to. Send only to authorized full IDs. Delivery is inbox-only; no automatic routing or bot wake-up. Only when everett_start is advertised has the owner separately granted a fixed-project T3 start; it requires a private identity_handle and durable request_id, confirms dispatch only, and grants no additional send/read/control access. Shared core, when enabled, includes the owner's global core. To register this chat separately, call everett_identity(action=create, registration_key=<fresh private random key>, name=<chat name>, kind=chat|dot|codex). Keep identity_handle private and pass it on subsequent calls; omit session_id. A name or host conversation metadata never authenticates an inbox.";
+const INSTRUCTIONS: &str = "This connection authorizes owner-scoped gateway access. Read the selected inbox for handoffs; reply using reply_to. Send only to authorized full IDs. everett_directory labels those IDs with their session, T3 thread or conversation names and state; call it to resolve a named existing session or T3 Code thread instead of guessing an ID. Delivery is inbox-only; no automatic routing or bot wake-up. Only when everett_start is advertised has the owner separately granted a fixed-project T3 start; it requires a private identity_handle and durable request_id, confirms dispatch only, starts a NEW run (never reaches an existing thread), and grants no additional send/read/control access. Shared core, when enabled, includes the owner's global core. To register this chat separately, call everett_identity(action=create, registration_key=<fresh private random key>, name=<chat name>, kind=chat|dot|codex). Keep identity_handle private and pass it on subsequent calls; omit session_id. A name or host conversation metadata never authenticates an inbox.";
 
 #[derive(Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -157,7 +157,7 @@ fn bounded_file(path: &Path, limit: usize) -> Result<Vec<u8>, String> {
     Ok(raw)
 }
 
-fn valid_destination(id: &str) -> bool {
+pub(crate) fn valid_destination(id: &str) -> bool {
     !id.is_empty()
         && id.len() <= 128
         && id != "."
@@ -352,6 +352,7 @@ impl Binding {
             "everett_inbox" => &["session_id", "peek", "message_id"],
             "everett_card" => &["session_id", "what", "state", "next"],
             "everett_send" => &["session_id", "text", "to", "reply_to"],
+            "everett_directory" => &[],
             _ => return Err("tool is not allowed".into()),
         };
         if serde_json::to_vec(&args)
@@ -411,7 +412,7 @@ impl Binding {
                 }
                 _ => {
                     return Err(
-                        "provide exactly one authorized full destination ID or owned reply_to"
+                        "provide exactly one authorized destination ID from everett_directory or an owned reply_to; names and titles are not accepted"
                             .into(),
                     )
                 }
@@ -420,7 +421,11 @@ impl Binding {
                 ("mode".into(), json!("inbox")),
                 ("wait".into(), json!(0)),
                 ("spawn".into(), json!(false)),
+                ("hours".into(), json!(crate::directory::SCAN_HOURS)),
             ]);
+        }
+        if name == "everett_directory" {
+            args.insert("ids".into(), json!(self.destinations));
         }
         Ok(args)
     }
@@ -434,12 +439,13 @@ impl Binding {
         let own = json!({"type":"string", "description":"Must match the identity selected by identity_handle; omit to use that binding."});
         let short = json!({"type":"string", "minLength":1, "maxLength":2000});
         let specs = [
-            ("everett_identity", "Register a separate chat inbox under this connection. create requires a fresh private registration_key, name and kind; reuse the key only for a retry. list optionally filters public cards by kind and omits handles; revoke requires the private identity_handle. Names and kinds are self-declared.", json!({"action":{"type":"string","enum":["create","list","revoke"]},"registration_key":{"type":"string","minLength":32,"maxLength":128},"name":{"type":"string","minLength":1,"maxLength":100},"kind":{"type":"string","enum":["chat","dot","codex"]}}), vec!["action"]),
-            ("everett_whoami", "Read this connection's logical owner-scoped identity, not vendor-attested Bot identity.", json!({}), vec![]),
+            ("everett_identity", "Register a separate chat inbox under this connection. create requires a fresh private registration_key, name and kind; reuse the key only for a retry. list returns only this connection's registered conversation inboxes -- it is not a session or T3 thread directory; use everett_directory for send destinations. revoke requires the private identity_handle. Names and kinds are self-declared.", json!({"action":{"type":"string","enum":["create","list","revoke"]},"registration_key":{"type":"string","minLength":32,"maxLength":128},"name":{"type":"string","minLength":1,"maxLength":100},"kind":{"type":"string","enum":["chat","dot","codex"]}}), vec!["action"]),
+            ("everett_whoami", "Read this connection's logical owner-scoped identity, not vendor-attested Bot identity. authorized_destinations lists the exact IDs this connection may send to; everett_directory labels them.", json!({}), vec![]),
             ("everett_core", "Read owner-wide GLOBAL shared core plus this connection's fixed project core.", json!({"project":{"type":"string","enum":[self.project]}}), vec![]),
             ("everett_inbox", "Read only this agent's inbox. Use message_id from an MCP event to take only that message. Use peek=true to leave it pending.", json!({"session_id":own,"peek":{"type":"boolean"},"message_id":{"type":"string","minLength":1,"maxLength":128,"description":"Exact message ID in this inbox."}}), vec![]),
             ("everett_card", "Update only this agent's session card.", json!({"session_id":own,"what":short,"state":short,"next":short}), vec!["what","state","next"]),
-            ("everett_send", "Queue an inbox-only message to an authorized full ID, or reply to an owned message. No automatic bot wake-up.", json!({"session_id":own,"text":{"type":"string","minLength":1,"maxLength":16000},"to":{"type":"string","minLength":1,"maxLength":128,"description":"Exact full ID from everett_whoami.authorized_destinations. The gateway checks the current owner allowlist on every send."},"reply_to":{"type":"string","minLength":1,"maxLength":128}}), vec!["text"]),
+            ("everett_send", "Queue an inbox-only message to an authorized existing session, T3 Code thread or conversation inbox, or reply to an owned message. No automatic bot wake-up.", json!({"session_id":own,"text":{"type":"string","minLength":1,"maxLength":16000},"to":{"type":"string","minLength":1,"maxLength":128,"description":"Exact authorized ID from everett_directory or everett_whoami.authorized_destinations; names and titles are rejected. The gateway checks the owner allowlist on every send."},"reply_to":{"type":"string","minLength":1,"maxLength":128}}), vec!["text"]),
+            ("everett_directory", "List the destinations this connection may reach through everett_send, with each authorized ID's kind (session, T3 Code thread, registered conversation, or inbox), project, title, host, availability and permitted actions. Use it to resolve a named existing session or T3 Code thread to the exact ID instead of guessing. Only owner-authorized IDs appear.", json!({}), vec![]),
         ];
         specs.into_iter().filter(|(name, ..)| {
                 if self.conversation_identity {
@@ -460,7 +466,7 @@ impl Binding {
                 serde_json::from_value(json!({
                 "name":name,"description":description,
                 "inputSchema":{"type":"object","properties":properties,"required":required,"additionalProperties":false},
-                "annotations":{"readOnlyHint":matches!(name,"everett_core"|"everett_whoami"),"openWorldHint":false}
+                "annotations":{"readOnlyHint":matches!(name,"everett_core"|"everett_whoami"|"everett_directory"),"openWorldHint":false}
             })).expect("gateway tool definitions are valid") }).collect()
     }
 }
@@ -759,7 +765,12 @@ impl Gateway {
             });
             data["gateway_runtime"] = crate::build_info::value();
             data["authorized_destinations"] = json!(binding.destinations);
-            data["capabilities"] = json!({"native_session_start": binding.native_start.as_ref().is_some_and(|p| p.permits(agent)), "automatic_wake": false, "delivery": "inbox"});
+            let directory_granted = !binding.conversation_identity
+                || conversation::grant(binding)
+                    .ok()
+                    .flatten()
+                    .is_none_or(|grant| grant.permits("everett_directory"));
+            data["capabilities"] = json!({"native_session_start": binding.native_start.as_ref().is_some_and(|p| p.permits(agent)), "automatic_wake": false, "delivery": "inbox", "destination_directory": directory_granted});
             if binding.require_identity_handle || binding.conversation_identity {
                 data["capabilities"]["private_inbox_required"] = json!(true);
             }
@@ -1509,7 +1520,21 @@ mod tests {
             .is_err());
         b.allow_shared_core = false;
         assert!(b.authorize("everett_core", Map::new()).is_err());
-        assert_eq!(b.tools().len(), 5);
+        assert_eq!(b.tools().len(), 6);
+        assert!(b
+            .tools()
+            .iter()
+            .any(|tool| tool.name == "everett_directory"));
+        let ids = b
+            .authorize("everett_directory", Map::new())
+            .unwrap()["ids"]
+            .as_array()
+            .unwrap()
+            .clone();
+        assert_eq!(ids, vec![json!("agent-two")]);
+        assert!(b
+            .authorize("everett_directory", args(json!({"ids":["other"]})))
+            .is_err());
     }
 
     #[test]

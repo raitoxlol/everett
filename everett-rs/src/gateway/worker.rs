@@ -132,6 +132,10 @@ pub(super) enum Call {
         message: Map<String, Value>,
         text: String,
     },
+    Directory {
+        ids: Vec<String>,
+        conversation: bool,
+    },
 }
 
 impl Call {
@@ -186,6 +190,10 @@ impl Call {
                     .clone(),
                 text: string("text")?,
             },
+            "everett_directory" => Self::Directory {
+                ids: binding.destinations.iter().cloned().collect(),
+                conversation: binding.conversation_identity,
+            },
             _ => return Err("tool is not allowed".into()),
         })
     }
@@ -198,6 +206,7 @@ impl Call {
         ]);
         let args = |value: Value| value.as_object().expect("argument object").clone();
         use crate::mcp;
+        let precise = matches!(self, Self::Send { .. } | Self::Queue { .. });
         let data = match self {
             Self::Whoami => mcp::tool_whoami(&identity),
             Self::Core { project } => mcp::tool_core(&args(json!({"project": project}))),
@@ -213,13 +222,26 @@ impl Call {
                 &identity,
             ),
             Self::Send { to, text } if super::valid_destination(&to) => mcp::tool_send(
-                &args(json!({"mode":"inbox", "to":to, "text":text})),
+                &args(json!({"mode":"inbox", "to":to, "text":text, "hours": crate::directory::SCAN_HOURS})),
                 &identity,
                 true,
             ),
             Self::Queue { to, text } if super::valid_destination(&to) => {
-                crate::send::queue_conversation_inbox(&to, &text, session, harness).map_err(mcp::ToolFailure::from)
+                let target = crate::directory::queue_target(&to);
+                crate::send::queue_conversation_inbox(&target, &text, session, harness)
+                    .map(|mut data| {
+                        if target != to {
+                            data.insert("resolved_from".into(), json!(to));
+                            data.insert("resolved_to".into(), json!(target));
+                        }
+                        data
+                    })
+                    .map_err(mcp::ToolFailure::from)
             }
+            Self::Directory { ids, conversation } => Ok(Map::from_iter([(
+                "destinations".into(),
+                json!(crate::directory::resolve_all(&ids, conversation)),
+            )])),
             Self::Reply { message, text }
                 if message.get("to").and_then(Value::as_str) == Some(session)
                     && message
@@ -250,7 +272,13 @@ impl Call {
             }
             _ => return Err("backend rejected the tool call".into()),
         }
-        .map_err(|_| "backend rejected the tool call")?;
+        .map_err(|failure| {
+            if precise {
+                failure.message()
+            } else {
+                "backend rejected the tool call".into()
+            }
+        })?;
         Ok(Value::Object(data))
     }
 }
@@ -273,8 +301,9 @@ pub(super) async fn dispatch(call: Call, child: &mut Child) -> Result<Value, Str
     if response.len() > MAX_RESULT {
         return Err("backend result exceeds 256 KiB".into());
     }
-    let data: Option<Value> = serde_json::from_slice(&response).map_err(|_| BACKEND_ERROR)?;
-    data.ok_or_else(|| "backend rejected the tool call".into())
+    let result: Result<Value, String> =
+        serde_json::from_slice(&response).map_err(|_| BACKEND_ERROR)?;
+    result
 }
 
 fn binding() -> Option<(String, String)> {
@@ -324,7 +353,7 @@ pub fn run() -> i32 {
     let Ok(call) = serde_json::from_slice::<Call>(&input) else {
         return 2;
     };
-    let data = match call {
+    let data: Result<Value, String> = match call {
         Call::OwnerAgent { name, arguments }
             if std::env::var("EVERETT_GATEWAY_OWNER_AGENT").as_deref() == Ok("1") =>
         {
@@ -332,15 +361,17 @@ pub fn run() -> i32 {
                 "jsonrpc": "2.0", "id": 1, "method": "tools/call",
                 "params": {"name": name, "arguments": arguments}
             }), None);
-            response.map(|mut response| {
-                if let Some(message) = response["error"]["message"].as_str() {
-                    json!({"isError":true,"content":[{"type":"text","text":message}]})
-                } else {
-                    response["result"].take()
-                }
-            })
+            response
+                .map(|mut response| {
+                    if let Some(message) = response["error"]["message"].as_str() {
+                        json!({"isError":true,"content":[{"type":"text","text":message}]})
+                    } else {
+                        response["result"].take()
+                    }
+                })
+                .ok_or_else(|| "backend rejected the tool call".to_string())
         }
-        call => call.execute(&session, &harness).ok(),
+        call => call.execute(&session, &harness),
     };
     if serde_json::to_writer(io::stdout().lock(), &data).is_err() {
         2

@@ -11,7 +11,7 @@ use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
 use std::time::{Duration, SystemTime};
 
 const TOOLS: &[&str] = &[ "everett_agent_relay", "everett_agent_send", "everett_agent_status",
-    "everett_card", "everett_control", "everett_core", "everett_event", "everett_inbox", "everett_learn",
+    "everett_card", "everett_control", "everett_core", "everett_directory", "everett_event", "everett_inbox", "everett_learn",
     "everett_ls", "everett_retry", "everett_route", "everett_send", "everett_sent", "everett_skill", "everett_status", "everett_subscribe", "everett_whoami"];
 
 fn binary() -> PathBuf {
@@ -189,6 +189,11 @@ fn release_journey_over_cli_and_all_mcp_tools() {
     }
     let listed = wire.call("everett_ls", json!({}));
     assert_eq!(ids(&listed["sessions"]), ["verify-sender", "verify-worker"].map(String::from).into());
+    let directory = wire.call("everett_directory", json!({"ids": ["verify-worker", "missing-destination"]}))["destinations"].clone();
+    let worker_entry = directory.as_array().unwrap().iter().find(|e| e["id"] == "verify-worker").unwrap();
+    assert_eq!((worker_entry["kind"].clone(), worker_entry["label"].clone(), worker_entry["actions"].clone()),
+        (json!("session"), json!("Upload retries"), json!(["send"])), "{directory}");
+    assert!(directory.as_array().unwrap().iter().any(|e| e["id"] == "missing-destination" && e["kind"] == "unknown" && e["actions"] == json!([])), "{directory}");
     let routed = wire.call("everett_route", json!({"text": task, "router": "local", "session_id": "verify-sender"}));
     assert_eq!(routed["session"]["id"], "verify-worker");
 
