@@ -1,8 +1,8 @@
 # Agent support and wake
 
-This reference describes the code in the v2.2 candidate. A supported integration
-does not mean every agent can be woken. Candidate changes require an updated
-binary and, for Cloudflare changes, an updated Worker.
+This reference summarizes current local-agent capabilities. A supported integration
+does not mean every agent can be woken: inbox hooks run at hook events, while live
+wake is opt-in and depends on the host's session context.
 
 ## Local agents
 
@@ -16,16 +16,19 @@ against an idle session. It does not inject a prompt into an attached agent.
 | Codex | Codex session transcripts | Supported Codex hooks or MCP polling | No native wake |
 | OMP | OMP session files | Everett extension watcher, agent start, tool results, or MCP polling | Attached idle OMP 18.12.2 wakes through its live Everett extension; local `ping`/`auto` requires a fresh per-session capability |
 | Pi | Pi session files | MCP polling; the Pi extension binds identity and records activity | No native wake |
-| Hermes Agent | Profile session databases | MCP polling | No native wake; platform chats are list/route only |
+| Hermes Agent | Profile session databases | Default native plugin hooks surface validated message-ID notices at turn, tool-result, and verify events; call `everett_inbox` to read contents. Manual/portable MCP setups poll | Native plugin's opt-in `live_wake` sends ID-only nudges for local inbox messages when a session route is available; manual/portable MCP has no wake. CLI resume applies only to interactive CLI sessions; platform session records remain list/route only |
 | Grok CLI | Grok session files | `PostToolUse` or MCP polling | No native wake; Grok CLI is separate from Grok Bot |
 | Devin CLI | Devin database and transcripts | MCP polling; Devin hooks bind identity but do not inject inbox messages | No native wake |
 
-Hooks require installation and support from the running harness version. They
-consume messages when the agent reaches a hook event. They do not start a new
-turn in an idle agent, except for the OMP extension watcher described in the
-[delivery policy](message-delivery.md#attached-omp-sessions). `hooked: true` reports integration support, not an
-observed pickup. Hermes resume applies to interactive CLI sessions, not Telegram
-or Discord chats.
+Hooks require installation and support from the running harness version. Pickup
+behavior varies by integration: some hooks inject message contents, while native
+Hermes hooks surface message IDs that the agent reads with `everett_inbox`. Hooks do
+not start a new turn in an idle agent, except for the OMP extension watcher described in the
+[delivery policy](message-delivery.md#attached-omp-sessions) and the native Hermes
+plugin's opt-in, local-inbox `live_wake`. Shared Hermes hosts need a session route
+key for that wake. `hooked: true` reports integration support, not an observed
+pickup. Hermes CLI resume applies to interactive CLI sessions, not Telegram or
+Discord session records.
 
 T3 Code is an overlay on its Claude, Codex, or Grok sessions. Everett discovers
 those threads and sends a fixed inbox nudge through `t3 thread send` for local

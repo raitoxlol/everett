@@ -504,7 +504,7 @@ function homePage() {
       ${card(`${setup}codex`, use('codex'), 'Codex', 'Hooks + MCP', true)}
       ${card(`${setup}omp`, use('omp'), 'OMP', 'Extension + MCP', true)}
       ${card(`${setup}pi`, use('pi'), 'Pi', 'Extension tool bridge · no native MCP', true)}
-      ${card(`${setup}hermes`, use('hermes'), 'Hermes Agent', 'Manual MCP entry', true)}
+      ${card(`${setup}hermes`, use('hermes'), 'Hermes Agent', 'Native plugin · MCP-only fallback', true)}
       ${card(`${setup}grok-cli`, use('grok'), 'Grok CLI', 'Local CLI · not Grok Bot', true)}
       ${card(`${setup}devin-cli`, use('devin'), 'Devin CLI', 'Session hooks + MCP', true)}
       ${card(`${root}t3code/`, glyph('T3'), 'T3 Code', 'Overlay on its provider sessions')}
