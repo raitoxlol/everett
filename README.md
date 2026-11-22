@@ -253,9 +253,9 @@ Done. MAX_RETRIES is now 5 and the backoff test covers the cap.
 | `everett relay authors` | List exposed authenticated author/session cards across the account, without device pairing. |
 | `everett relay rename NAME` | Update this Cloudflare device's hosted label. Device ID, keys, and pins stay the same. |
 | `everett relay revoke-agent ID / revoke-member SUBJECT / rotate` | Revoke this or an admin-selected agent, remove org membership (admin), or rotate this agent's relay keys using its old signing key. |
-| `everett relay register-inbox / grant-inbox / revoke-inbox-grant / resolve-inbox` | Claim a `LOCAL@SCOPE` cross-org inbox, allow an exact sender owner/device to reach it, revoke a grant, or resolve an address to its verified recipient bundle. `--to LOCAL@SCOPE` with `--mode inbox` sends to it. |
+| `everett relay register-inbox / grant-inbox / revoke-inbox-grant / resolve-inbox` | Claim a private `LOCAL@SCOPE` inbox bound to one device and exact session; grant one sender owner/device, revoke that grant by ID, or resolve the address when authorized. See [cross-account inboxes](docs/agent-relay.md#cross-account-addressed-inboxes). |
 | `everett thread create / show / send / read` | CLI-first encrypted shared text history for exactly two addressed inboxes in distinct owners; see [shared threads](docs/shared-threads.md). |
-| `everett access [show \| set \| allow \| deny \| remove \| reset]` | Inspect or edit local cross-org permission settings in `~/.everett/access.json` (`mode`, `external-send`, `max-hops`, local allow/block lists; `--sync` pushes `grant-inbox` to the relay; alias `everett permissions`). |
+| `everett access [show \| set \| allow \| deny \| remove \| reset]` | Inspect or edit local cross-org policy in `~/.everett/access.json` (`mode`, `external-send`, `max-hops`, sender allow/block lists); this is an additional local gate, and `allow --sync` can also create the recipient-side relay grant. Alias: `everett permissions`. |
 | `everett peer add-relay <name> --device ID --fingerprint HEX [--grant GRANT_ID]` | Pin a device on the selected relay after out-of-band bundle confirmation; fingerprint is raw 64-character lowercase hex, not the SSH `SHA256:` format. |
 | `everett peer identity / list / remove <name> / revoke <client-id>` | Inspect device keys/peers; remove a remote authorization or revoke a local tagged client key. |
 | `everett dashboard [--port 7347] [--no-open]` | Native Rust binary only: read-only local browser dashboard with session cards, filters, activity state, and copyable CLI actions. |
@@ -384,12 +384,63 @@ to the local Worker. The [2.0.0 release notes](https://github.com/raitoxlol/ever
 first-run GitHub approval. Real public Mac/NUC delivery, idle Claude wake/reply and second-account isolation/revocation passed for 2.1.0.
 Choosing sign-in during fresh interactive onboarding opens `https://relay.raitox.tech` for account approval.
 Identity keys remain `https://everett.raitox.tech`.
-That service supports public enrollment; messaging stays within each account. Existing account configuration
-is preserved. Cloudflare's device protocol is custom, not RFC8628.
-Cross-owner delivery uses named inboxes: `everett relay register-inbox LOCAL@SCOPE --harness H --session S`
-claims the address (the first owner's SCOPE zone is never transferred), `relay grant-inbox` authorizes an
-exact sender owner/device, and `everett send --to LOCAL@SCOPE --mode inbox` sends a hop-1 cross-org root
-message whose replies correlate to the same grant. SSH pairing uses an explicit address; cloud-agent OAuth is separate.
+That service supports public enrollment. Same-owner discovery remains scoped to the
+authenticated account; cross-owner delivery is a separate, explicit inbox grant. Existing account
+configuration is preserved. Cloudflare's device protocol is custom, not RFC8628.
+
+The receiving account's inbox device (or an account admin) registers the private address:
+
+```sh
+# Receiving account
+everett relay register-inbox review@team --harness claude --session SESSION_ID
+```
+
+The sender account can provide its exact identity values with `everett relay whoami`; the
+output fields are named `owner` and `deviceId`. The receiving account's inbox device or admin
+uses those values to grant that sender:
+
+```sh
+# Receiving account
+everett relay grant-inbox review@team --sender-owner SENDER_OWNER --sender-device SENDER_DEVICE
+```
+
+The sender account starts a new hop-1 root request to the addressed inbox:
+
+```sh
+# Sender account
+everett send --to review@team --mode inbox "Please review this change"
+```
+
+To reply in correlation with that request and grant, the recipient uses its message ID:
+
+```sh
+# Receiving account
+everett reply MESSAGE_ID "This review looks good"
+```
+
+An active address is bound to one device and exact harness/session. The first account to claim a
+`SCOPE` owns that zone; removing its last address does not transfer the zone. Another account
+cannot resolve or send to the address without a live grant. A grant covers only its named inbox
+and exact sender owner/device, not the recipient account's other sessions or capabilities. The
+inbox owner can revoke one grant by ID:
+
+```sh
+# Receiving account
+everett relay revoke-inbox-grant GRANT_ID
+```
+
+Removing the address revokes all its active grants:
+
+```sh
+# Receiving account
+everett relay register-inbox review@team --harness claude --session SESSION_ID --remove
+```
+
+The sender's local `everett access` policy can independently block outbound traffic, and the
+receiver's local policy can reject inbound messages. General `everett_send` MCP calls can target a
+known address with `mode: "inbox"`; the `everett_agent_send` tool remains same-owner only. See the
+[relay threat model](docs/relay-threat-model.md) for metadata visibility and the limits of encryption
+and revocation. SSH pairing is separate; cloud-agent OAuth is unrelated.
 
 Two owners can also create a stable, text-only shared thread on the CLI. Both inbox owners must grant
 the other exact device access; the thread snapshots both inbox bindings, keys, and original grant IDs.

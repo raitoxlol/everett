@@ -57,8 +57,10 @@ The relay only imports into an existing exact session. It stores ciphertext in t
 with visible routing metadata. Fingerprint checks, signed observations, idempotency,
 private durable staging and the three-hop bound are shared with the existing relay.
 Cloudflare keys, pins and retry records live under `.everett/relay-cloudflare` beneath
-`EVERETT_HOME` or `HOME`. Retired backend state is never loaded. Selecting an unsupported
-registry or cross-owner operation returns an error rather than using a different account.
+`EVERETT_HOME` or `HOME`. Retired backend state is never loaded. This setup covers same-owner
+device messaging; cross-owner delivery is supported only through private, explicitly granted
+inboxes. See [cross-account addressed inboxes](agent-relay.md#cross-account-addressed-inboxes).
+SSH pairing remains independent.
 
 ## Optional receiver-side Claude wake
 

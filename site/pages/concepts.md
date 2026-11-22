@@ -103,6 +103,9 @@ A **peer** is another computer. Two transports exist, both inbox-only:
   other's signed key bundles automatically. Messages are end-to-end encrypted (X25519, HKDF-SHA256,
   ChaCha20-Poly1305, Ed25519). See [Cloudflare relay](/cloudflare-relay/) and the [threat model](/relay-threat-model/).
 
+Cross-account sends use private addressed inboxes and explicit grants scoped to one sender
+account/device and one recipient inbox; see the [cross-account relay guide](/agent-relay/#cross-account-addressed-inboxes).
+
 **Native MCP tools** require `everett login` in the client's Everett profile and online
 verification on each call, even for local work. Registration and discovery alone do
 not authorize tool calls.

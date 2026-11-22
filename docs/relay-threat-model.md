@@ -9,14 +9,24 @@ providers or SSH. See the [wire contract](../cloudflare/PROTOCOL.md) and
 The native credential binds one immutable agent to a server-derived owner namespace.
 Every hosted operation validates the credential and active membership. Same-owner
 discovery uses that authenticated namespace and an exact-device lookup, pins verified
-bundles on first use, and rejects changed keys. Cross-owner grants are not exposed by
-the Cloudflare native adapter. Authenticated authors/session cards are opt-in advisory
-metadata, not permission to run a session or download a transcript.
+bundles on first use, and rejects changed keys. Cross-owner delivery is limited to named
+`LOCAL@SCOPE` inboxes: an active address binds one recipient device and exact harness/session,
+and its grant names one sender owner/device. Another owner can resolve the address only while
+that grant is active. This does not add account membership or authorize other inboxes,
+sessions, or capabilities. The account service remains the authority for identities, bundles,
+address ownership and grants; the address flow adds no out-of-band fingerprint check.
+Authenticated authors/session cards are opt-in advisory metadata, not permission to run a
+session or download a transcript.
 
 Messages and replies use independent Ed25519 signing and X25519 encryption keys,
-HKDF-SHA256 and ChaCha20Poly1305. Signed routing binds owners, device IDs, fingerprints,
-parent/hop lineage, expiry and optional grant ID. Verify signatures, routing, key pins
-and hop limits before local inbox publication. Delivery observations are signed metadata.
+HKDF-SHA256 and ChaCha20Poly1305. The complete serialized message body is encrypted;
+signed routing binds owners, device IDs, fingerprints, parent/hop lineage, expiry and
+optional grant ID. Verify signatures, routing, key pins and hop limits before local inbox
+publication. Delivery observations are signed metadata. The relay checks active grants for
+address resolution, root-request enqueue, pickup, status/retries and root observations. Replies
+must correlate to the original root and carry the same grant; the relay rechecks that grant on
+reply enqueue, pickup and observations. Revocation blocks subsequent relay use but cannot recall
+content already delivered or decrypted.
 
 The listener polls outbound, rechecks identity before processing pages and discards
 cached ciphertext after authorization denial. Transient failures retain only encrypted
@@ -26,8 +36,10 @@ Revocation cannot recall data already decrypted on a device.
 ## Observable metadata and retention
 
 E2EE hides message/reply bodies, not account/agent identity, public bundles, fingerprints,
-message/idempotency IDs, recipient and sender, parent/hop lineage, timestamps, sizes,
-signatures or delivery state. Operators can see network timing and IP addresses.
+the addressed inbox and its device/session routing, message/idempotency IDs, parent/hop
+lineage, timestamps, sizes, signatures or delivery state. Operators can see network timing
+and IP addresses. A private address is grant-restricted, not anonymous or secret from the
+relay and its authorized sender/recipient.
 Opted-in authors cards also expose their published session metadata to the account.
 
 Signed delivery deletes live ciphertext; undelivered rows have a one-hour client TTL
