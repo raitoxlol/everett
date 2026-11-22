@@ -93,7 +93,12 @@ fn run_inner(
     });
     let timed_out;
     let code;
-    match child.wait_timeout(Duration::from_secs_f64(timeout.clamp(0.001, 365.0 * 86400.0))) {
+    let wait = if timeout.is_nan() {
+        0.001
+    } else {
+        timeout.clamp(0.001, 365.0 * 86400.0)
+    };
+    match child.wait_timeout(Duration::from_secs_f64(wait)) {
         Ok(Some(status)) => {
             timed_out = false;
             code = status.code().unwrap_or(-1);
@@ -299,5 +304,12 @@ mod tests {
         let out = within(15, vec!["sleep".into(), "30".into()], 0.5, input);
         assert!(out.timed_out);
         assert!(started.elapsed() < Duration::from_secs(10), "{:?}", started.elapsed());
+    }
+
+    #[test]
+    fn nan_timeout_does_not_panic() {
+        let out = run_capture(&["true".to_string()], None, &HashMap::new(), f64::NAN).unwrap();
+        assert_eq!(out.code, 0);
+        assert!(!out.timed_out);
     }
 }
