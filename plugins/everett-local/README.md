@@ -5,7 +5,8 @@ Uses the existing Everett account without a ChatGPT hosted OAuth connector.
 Run `everett login` in the same Everett profile before calling tools. Native MCP
 verifies the account online on every tool call, including `everett_whoami`.
 Requires Python 3.9+ and Everett 2.2.1+. Remote delivery still uses the configured
-Everett relay. Plugin version 0.3.1 makes the ChatGPT desktop layout the default.
+Everett relay. Plugin version 0.3.2 makes the ChatGPT desktop layout the default
+and adds `check.py`, a read-only install diagnostic.
 
 ## Install
 
@@ -46,9 +47,17 @@ Verified 2026-11-10 with ChatGPT desktop (Codex mode, GPT-6.1 Sol) and Everett 2
 ## Check startup
 
 ```sh
+python3 "$HOME/.local/share/everett-direct-plugin/plugins/everett-direct/check.py"
 python3 "$HOME/.local/share/everett-direct-plugin/plugins/everett-direct/scripts/launch.py" \
   --config "$HOME/.local/share/everett-direct-plugin/runtime.json" --doctor
 ```
+
+`check.py` verifies the installed layout without starting the MCP server: required
+files, no portable root manifests, the `.codex-plugin` and `.mcp.json` entries,
+the configured runtime (version check included), and marketplace registration.
+Each failed check prints its remedy; it exits nonzero until every check passes.
+It cannot prove the ChatGPT app loaded the server — only a real
+`mcp__everett_local__*` call in a fresh Codex-mode chat does that.
 
 Doctor checks the runtime, not account authorization or relay reachability.
 After restarting the client, call `everett_ls`; a returned list, even empty,
