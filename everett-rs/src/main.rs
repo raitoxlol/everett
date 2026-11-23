@@ -18,7 +18,7 @@ const HELP_GROUPS: &[(&str, &[&str])] = &[
         &["send", "route", "inbox", "reply", "sent", "status", "retry", "proof", "event", "events", "subscribe"],
     ),
     ("Cross-org shared threads", &["thread"]),
-    ("Shared memory", &["learn", "core", "trunk", "cards", "skills"]),
+    ("Shared memory", &["learn", "recall", "core", "trunk", "cards", "skills"]),
     (
         "Setup and account",
         &["install-hooks", "install-mcp", "mcp", "login", "whoami", "identity", "logout"],
@@ -340,6 +340,26 @@ enum Cmd {
         project: Option<String>,
         #[arg(long, value_parser = clap::builder::PossibleValuesParser::new(SCOPES.to_vec()))]
         scope: Option<String>,
+        /// Stable name for a fact that changes, such as user.editor; a new value replaces the old one in memory search
+        #[arg(long)]
+        key: Option<String>,
+    },
+    /// search every learned fact in the shared memory.db (word, stem, and typo-tolerant)
+    Recall {
+        query: String,
+        #[arg(long)]
+        project: Option<String>,
+        #[arg(long, value_parser = clap::builder::PossibleValuesParser::new(SCOPES.to_vec()))]
+        scope: Option<String>,
+        /// Maximum results (1 to 50)
+        #[arg(long, value_parser = clap::value_parser!(u8).range(1..=50), default_value_t = 5)]
+        limit: u8,
+        /// Print the result object on one line
+        #[arg(long)]
+        json: bool,
+        /// Show each memory's score and ranking detail
+        #[arg(long)]
+        explain: bool,
     },
     /// show or search local core memory, locate its file, or list merge history
     Core {
@@ -1190,12 +1210,28 @@ fn main() {
             fact,
             project,
             scope,
+            key,
         } => {
             a.fact = Some(fact);
             a.project = project;
             a.scope = scope;
-            cli::cmd_learn(&a, ttl_seconds)
+            cli::cmd_learn(&a, ttl_seconds, key.as_deref())
         }
+        Cmd::Recall {
+            query,
+            project,
+            scope,
+            limit,
+            json,
+            explain,
+        } => cli::cmd_recall(
+            &query,
+            project.as_deref(),
+            scope.as_deref(),
+            limit as usize,
+            json,
+            explain,
+        ),
         Cmd::Core { action, project } => {
             if let Some(CoreCmd::Search { query, json }) = action {
                 cli::cmd_core_search(&query, project.as_deref(), json)

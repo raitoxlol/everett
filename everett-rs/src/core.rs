@@ -243,6 +243,19 @@ pub fn learn(text: &str, project: Option<&str>, scope: Option<&str>, cwd: Option
 }
 
 pub fn learn_with_ttl(text: &str, project: Option<&str>, scope: Option<&str>, cwd: Option<&str>, ttl_seconds: Option<u64>) -> Result<Map<String, Value>> {
+    learn_keyed(text, project, scope, cwd, ttl_seconds, None)
+}
+
+/// Validate and append one learning, optionally under a stable key so a later
+/// value replaces it in memory.db.
+pub fn learn_keyed(text: &str, project: Option<&str>, scope: Option<&str>, cwd: Option<&str>, ttl_seconds: Option<u64>, key: Option<&str>) -> Result<Map<String, Value>> {
+    if let Some(key) = key {
+        let k = key.trim();
+        if k.is_empty() || k.chars().count() > 100 || k.chars().any(char::is_whitespace) {
+            return Err(EverettError::new(2, "key must be 1 to 100 characters with no spaces."));
+        }
+    }
+    let key = key.map(str::trim);
     let text = validated_fact(text)?;
     if ttl_seconds.is_some_and(|ttl| !(1..=MAX_TTL_SECONDS).contains(&ttl)) {
         return Err(EverettError::new(2, "ttl_seconds must be an integer between 1 and 31536000 (one year)."));
@@ -287,6 +300,21 @@ pub fn learn_with_ttl(text: &str, project: Option<&str>, scope: Option<&str>, cw
         f.write_all((serde_json::to_string(entry).unwrap() + "\n").as_bytes())
             .map_err(|e| EverettError::new(2, e.to_string()))
     })?;
+    drop(_guard);
+    drop(_merge_guard);
+    let harness = entry.get("harness").and_then(Value::as_str).unwrap_or_default();
+    let source = format!("everett:{}", if harness.is_empty() { "cli" } else { harness });
+    let memory = crate::memory::record(
+        &text,
+        &crate::memory::scope_name(&scope, &project),
+        key,
+        ttl_seconds,
+        &source,
+        json!({"session": entry["session"], "cwd": entry["cwd"]}),
+    );
+    if !memory.is_null() {
+        entry.insert("memory".into(), memory);
+    }
     Ok(entry)
 }
 
@@ -489,6 +517,46 @@ pub fn change(change: CoreChange<'_>, project: Option<&str>, scope: Option<&str>
     result.insert("removed_store".into(), json!(removed_store));
     result.insert("expires_at".into(), json!(expires_at));
     result.insert("mirror".into(), mirror.map(|p| json!(p.to_string_lossy())).unwrap_or(Value::Null));
+    drop(_inbox_guard);
+    drop(_merge_guard);
+    let scope_name = crate::memory::scope_name(scope.name(), scope.key());
+    // A mirror row the core already forgot still counts: retry the mirror write
+    // so a previously failed forget/correct completes now.
+    let mirror_pending = crate::memory::db_path().is_some() && crate::memory::has(fact, &scope_name);
+    if changed || mirror_pending {
+        match replacement {
+            None => {
+                if crate::memory::db_path().is_some() {
+                    match crate::memory::forget(fact, &scope_name) {
+                        Ok(removed) => {
+                            result.insert("memory_removed".into(), json!(removed));
+                        }
+                        Err(e) => {
+                            result.insert("memory_error".into(), json!(e.message));
+                        }
+                    }
+                }
+            }
+            Some(replacement) => {
+                let harness = detect_harness();
+                let source = format!("everett:{}", if harness.is_empty() { "cli" } else { &harness });
+                let cwd = std::env::current_dir()
+                    .map(|p| p.to_string_lossy().to_string())
+                    .unwrap_or_default();
+                let memory = crate::memory::correct(
+                    fact,
+                    &replacement,
+                    &scope_name,
+                    expires_at.map(|e| e as f64),
+                    &source,
+                    json!({"session": caller_session_id(), "cwd": cwd}),
+                );
+                if !memory.is_null() {
+                    result.insert("memory".into(), memory);
+                }
+            }
+        }
+    }
     Ok(result)
 }
 
@@ -534,7 +602,7 @@ fn norm_re() -> &'static Regex {
     RE.get_or_init(|| Regex::new(r"[\W_]+").unwrap())
 }
 
-fn norm(text: &str) -> String {
+pub(crate) fn norm(text: &str) -> String {
     norm_re().replace_all(&text.to_lowercase(), " ").trim().to_string()
 }
 

@@ -1,0 +1,1563 @@
+{
+ "now": 1763456000.0,
+ "ops": [
+  {
+   "status": "created",
+   "replaced": [],
+   "redacted": [],
+   "same_id_as": null
+  },
+  {
+   "status": "created",
+   "replaced": [],
+   "redacted": [],
+   "same_id_as": null
+  },
+  {
+   "status": "created",
+   "replaced": [],
+   "redacted": [],
+   "same_id_as": null
+  },
+  {
+   "status": "duplicate",
+   "replaced": [],
+   "redacted": [],
+   "same_id_as": 0
+  },
+  {
+   "status": "superseded",
+   "replaced": [
+    2
+   ],
+   "redacted": [],
+   "same_id_as": null
+  },
+  {
+   "status": "created",
+   "replaced": [],
+   "redacted": [],
+   "same_id_as": null
+  },
+  {
+   "status": "refined",
+   "replaced": [
+    5
+   ],
+   "redacted": [],
+   "same_id_as": null
+  },
+  {
+   "status": "created",
+   "replaced": [],
+   "redacted": [],
+   "same_id_as": null
+  },
+  {
+   "status": "created",
+   "replaced": [],
+   "redacted": [
+    "github_token"
+   ],
+   "same_id_as": null
+  },
+  {
+   "status": "created",
+   "replaced": [],
+   "redacted": [],
+   "same_id_as": null
+  },
+  {
+   "status": "created",
+   "replaced": [],
+   "redacted": [],
+   "same_id_as": null
+  },
+  {
+   "status": "created",
+   "replaced": [],
+   "redacted": [],
+   "same_id_as": null
+  },
+  {
+   "status": "created",
+   "replaced": [],
+   "redacted": [],
+   "same_id_as": null
+  },
+  {
+   "status": "created",
+   "replaced": [],
+   "redacted": [],
+   "same_id_as": null
+  },
+  {
+   "status": "created",
+   "replaced": [],
+   "redacted": [],
+   "same_id_as": null
+  },
+  {
+   "forgot": 1
+  },
+  {
+   "status": "created",
+   "replaced": [],
+   "redacted": [],
+   "same_id_as": null
+  },
+  {
+   "status": "superseded",
+   "replaced": [
+    1
+   ],
+   "redacted": [],
+   "same_id_as": null
+  },
+  {
+   "status": "created",
+   "replaced": [],
+   "redacted": [],
+   "same_id_as": null
+  },
+  {
+   "status": "duplicate",
+   "replaced": [],
+   "redacted": [],
+   "same_id_as": 4
+  },
+  {
+   "forgot": 0
+  }
+ ],
+ "state": [
+  {
+   "scope": "project/everett",
+   "kind": "fact",
+   "key": null,
+   "content": "Wright prefers squash merges on every Everett pull request.",
+   "tags": "git merge-policy",
+   "meta": {},
+   "source": null,
+   "importance": 0.9,
+   "pinned": 1,
+   "content_hash": "c9642f5ee0dae11d46b25cee1cec2fbc",
+   "created_at": 1760000000.0,
+   "updated_at": 1760172800.0,
+   "access_count": 1,
+   "expires_at": null,
+   "superseded_by_created_at": null,
+   "superseded_at": null,
+   "deleted_at": null
+  },
+  {
+   "scope": "project/everett",
+   "kind": "decision",
+   "key": null,
+   "content": "The relay runs on Cloudflare Durable Objects on the free tier.",
+   "tags": "",
+   "meta": {},
+   "source": null,
+   "importance": 0.5,
+   "pinned": 0,
+   "content_hash": "41eb81cb52a51a9ad011682b54c14d33",
+   "created_at": 1760000000.0,
+   "updated_at": 1760000000.0,
+   "access_count": 0,
+   "expires_at": null,
+   "superseded_by_created_at": 1761382400.0,
+   "superseded_at": 1761382400.0,
+   "deleted_at": null
+  },
+  {
+   "scope": "global",
+   "kind": "fact",
+   "key": "user.editor",
+   "content": "Editor is Neovim",
+   "tags": "",
+   "meta": {},
+   "source": null,
+   "importance": 0.5,
+   "pinned": 0,
+   "content_hash": "2fc98860f05423a92e5a8deba3641561",
+   "created_at": 1760086400.0,
+   "updated_at": 1760086400.0,
+   "access_count": 0,
+   "expires_at": null,
+   "superseded_by_created_at": 1760259200.0,
+   "superseded_at": 1760259200.0,
+   "deleted_at": null
+  },
+  {
+   "scope": "global",
+   "kind": "fact",
+   "key": "user.editor",
+   "content": "Editor is Zed since the Neovim config broke",
+   "tags": "",
+   "meta": {},
+   "source": null,
+   "importance": 0.5,
+   "pinned": 0,
+   "content_hash": "7bf3bf50851f7e0ef6856d2c0dbfa67e",
+   "created_at": 1760259200.0,
+   "updated_at": 1762678400.0,
+   "access_count": 1,
+   "expires_at": null,
+   "superseded_by_created_at": null,
+   "superseded_at": null,
+   "deleted_at": null
+  },
+  {
+   "scope": "project/everett",
+   "kind": "fact",
+   "key": null,
+   "content": "Run cargo clippy with warnings denied before each push.",
+   "tags": "",
+   "meta": {},
+   "source": null,
+   "importance": 0.5,
+   "pinned": 0,
+   "content_hash": "914662611b35957d42540f40e167e0a4",
+   "created_at": 1760345600.0,
+   "updated_at": 1760345600.0,
+   "access_count": 0,
+   "expires_at": null,
+   "superseded_by_created_at": 1760432000.0,
+   "superseded_at": 1760432000.0,
+   "deleted_at": null
+  },
+  {
+   "scope": "project/everett",
+   "kind": "fact",
+   "key": null,
+   "content": "Run cargo clippy with warnings denied before each push and also run the full cargo test suite locally.",
+   "tags": "",
+   "meta": {},
+   "source": null,
+   "importance": 0.5,
+   "pinned": 0,
+   "content_hash": "06f5995d32f3b1a8a8d70a766102155e",
+   "created_at": 1760432000.0,
+   "updated_at": 1760432000.0,
+   "access_count": 0,
+   "expires_at": null,
+   "superseded_by_created_at": null,
+   "superseded_at": null,
+   "deleted_at": null
+  },
+  {
+   "scope": "project/everett",
+   "kind": "fact",
+   "key": null,
+   "content": "The staging deploy token expires soon.",
+   "tags": "",
+   "meta": {},
+   "source": null,
+   "importance": 0.5,
+   "pinned": 0,
+   "content_hash": "300b4dd5cdbf29a977083843984ca007",
+   "created_at": 1760518400.0,
+   "updated_at": 1760518400.0,
+   "access_count": 0,
+   "expires_at": 1760691200.0,
+   "superseded_by_created_at": null,
+   "superseded_at": null,
+   "deleted_at": null
+  },
+  {
+   "scope": "project/everett",
+   "kind": "fact",
+   "key": null,
+   "content": "Deploy uses GITHUB_TOKEN=[REDACTED:github_token] from the vault.",
+   "tags": "",
+   "meta": {},
+   "source": null,
+   "importance": 0.5,
+   "pinned": 0,
+   "content_hash": "03a89286dfbb5c46661fc7b8253efdb0",
+   "created_at": 1760604800.0,
+   "updated_at": 1760604800.0,
+   "access_count": 0,
+   "expires_at": null,
+   "superseded_by_created_at": null,
+   "superseded_at": null,
+   "deleted_at": null
+  },
+  {
+   "scope": "global",
+   "kind": "fact",
+   "key": null,
+   "content": "Zoë's café résumé is stored under ﬁles/naïve — the Straße folder.",
+   "tags": "unicode",
+   "meta": {},
+   "source": null,
+   "importance": 0.5,
+   "pinned": 0,
+   "content_hash": "35d0ab122372234c047fa3b6957df16b",
+   "created_at": 1760691200.0,
+   "updated_at": 1760691200.0,
+   "access_count": 0,
+   "expires_at": null,
+   "superseded_by_created_at": null,
+   "superseded_at": null,
+   "deleted_at": null
+  },
+  {
+   "scope": "global",
+   "kind": "fact",
+   "key": null,
+   "content": "東京のサーバーは毎晩バックアップされる。",
+   "tags": "",
+   "meta": {},
+   "source": null,
+   "importance": 0.5,
+   "pinned": 0,
+   "content_hash": "f1bc38d787ef1736abf23fe78bbaf0be",
+   "created_at": 1760777600.0,
+   "updated_at": 1760777600.0,
+   "access_count": 0,
+   "expires_at": null,
+   "superseded_by_created_at": null,
+   "superseded_at": null,
+   "deleted_at": null
+  },
+  {
+   "scope": "project/teresis",
+   "kind": "fact",
+   "key": null,
+   "content": "Teresis stores agent memory in one SQLite file with WAL mode.",
+   "tags": "",
+   "meta": {},
+   "source": "cases",
+   "importance": 0.5,
+   "pinned": 0,
+   "content_hash": "5ab7f85b5f7132182568efda6778a1ff",
+   "created_at": 1760864000.0,
+   "updated_at": 1760864000.0,
+   "access_count": 0,
+   "expires_at": null,
+   "superseded_by_created_at": null,
+   "superseded_at": null,
+   "deleted_at": null
+  },
+  {
+   "scope": "global",
+   "kind": "episode",
+   "key": null,
+   "content": "The NUC's /tmp filesystem ran out of inodes on 2025-10-20.",
+   "tags": "",
+   "meta": {},
+   "source": null,
+   "importance": 0.5,
+   "pinned": 0,
+   "content_hash": "73fde5ae3627eb42f7ea676b9ecf7cd1",
+   "created_at": 1760950400.0,
+   "updated_at": 1760950400.0,
+   "access_count": 0,
+   "expires_at": null,
+   "superseded_by_created_at": null,
+   "superseded_at": null,
+   "deleted_at": null
+  },
+  {
+   "scope": "project/everett",
+   "kind": "fact",
+   "key": null,
+   "content": "Hermes plugin tests don't need a network connection.",
+   "tags": "",
+   "meta": {
+    "pr": 253
+   },
+   "source": null,
+   "importance": 0.5,
+   "pinned": 0,
+   "content_hash": "82d85c876b8c8d268942160ec9f42446",
+   "created_at": 1761036800.0,
+   "updated_at": 1761036800.0,
+   "access_count": 0,
+   "expires_at": null,
+   "superseded_by_created_at": null,
+   "superseded_at": null,
+   "deleted_at": null
+  },
+  {
+   "scope": "global",
+   "kind": "fact",
+   "key": null,
+   "content": "Old note about the fax machine.",
+   "tags": "",
+   "meta": {},
+   "source": null,
+   "importance": 0.5,
+   "pinned": 0,
+   "content_hash": "08940d083b0aa60892c23f3fcfcd121c",
+   "created_at": 1761123200.0,
+   "updated_at": 1761123200.0,
+   "access_count": 0,
+   "expires_at": null,
+   "superseded_by_created_at": null,
+   "superseded_at": null,
+   "deleted_at": 1761209600.0
+  },
+  {
+   "scope": "project/everett",
+   "kind": "fact",
+   "key": null,
+   "content": "Kubernetes migration was postponed until the relay cost review finishes.",
+   "tags": "",
+   "meta": {},
+   "source": null,
+   "importance": 0.3,
+   "pinned": 0,
+   "content_hash": "61823b4b67558680c6ddc0fea903aed0",
+   "created_at": 1761296000.0,
+   "updated_at": 1761296000.0,
+   "access_count": 0,
+   "expires_at": null,
+   "superseded_by_created_at": null,
+   "superseded_at": null,
+   "deleted_at": null
+  },
+  {
+   "scope": "project/everett",
+   "kind": "fact",
+   "key": null,
+   "content": "Relay cost review moved to the first week of November.",
+   "tags": "",
+   "meta": {},
+   "source": null,
+   "importance": 0.5,
+   "pinned": 0,
+   "content_hash": "f0c986a5c93f64aed7fb7e5a88487bf7",
+   "created_at": 1761382400.0,
+   "updated_at": 1761382400.0,
+   "access_count": 0,
+   "expires_at": null,
+   "superseded_by_created_at": null,
+   "superseded_at": null,
+   "deleted_at": null
+  },
+  {
+   "scope": "project/everett",
+   "kind": "decision",
+   "key": null,
+   "content": "PostgreSQL was rejected for the relay; SQLite inside Durable Objects stays.",
+   "tags": "database",
+   "meta": {},
+   "source": null,
+   "importance": 0.5,
+   "pinned": 0,
+   "content_hash": "371bd88ea44181ed7a7a44cee103120b",
+   "created_at": 1762592000.0,
+   "updated_at": 1762592000.0,
+   "access_count": 0,
+   "expires_at": null,
+   "superseded_by_created_at": null,
+   "superseded_at": null,
+   "deleted_at": null
+  }
+ ],
+ "recall": [
+  [
+   {
+    "id": "a38b42d011744532",
+    "score": 1.048939,
+    "content": "Wright prefers squash merges on every Everett pull request.",
+    "why": {
+     "channels": {
+      "fts": 1.0,
+      "trigram": 1.0
+     },
+     "relevance": 1.0,
+     "recency": 0.4156
+    }
+   }
+  ],
+  [
+   {
+    "id": "878555b4611b41df",
+    "score": 0.98531,
+    "content": "Editor is Zed since the Neovim config broke",
+    "why": {
+     "channels": {
+      "fts": 1.0,
+      "trigram": 1.0
+     },
+     "relevance": 1.0,
+     "recency": 0.8123
+    }
+   },
+   {
+    "id": "cd303374a8cc4f99",
+    "score": 0.329652,
+    "content": "Deploy uses GITHUB_TOKEN=[REDACTED:github_token] from the vault.",
+    "why": {
+     "channels": {
+      "fts": 0.484
+     },
+     "relevance": 0.3583,
+     "recency": 0.4665
+    }
+   }
+  ],
+  [
+   {
+    "id": "cd303374a8cc4f99",
+    "score": 0.919977,
+    "content": "Deploy uses GITHUB_TOKEN=[REDACTED:github_token] from the vault.",
+    "why": {
+     "channels": {
+      "fts": 1.0
+     },
+     "relevance": 1.0,
+     "recency": 0.4665
+    }
+   }
+  ],
+  [
+   {
+    "id": "8ae28ef3c89f4c4f",
+    "score": 0.916817,
+    "content": "Run cargo clippy with warnings denied before each push and also run the full cargo test suite locally.",
+    "why": {
+     "channels": {
+      "fts": 1.0,
+      "trigram": 1.0
+     },
+     "relevance": 1.0,
+     "recency": 0.4454
+    }
+   }
+  ],
+  [
+   {
+    "id": "142a0d581c5e4375",
+    "score": 0.969055,
+    "content": "PostgreSQL was rejected for the relay; SQLite inside Durable Objects stays.",
+    "why": {
+     "channels": {
+      "fts": 1.0
+     },
+     "relevance": 1.0,
+     "recency": 0.7937
+    }
+   }
+  ],
+  [
+   {
+    "id": "562b74341cfd44dd",
+    "score": 0.936152,
+    "content": "Relay cost review moved to the first week of November.",
+    "why": {
+     "channels": {
+      "fts": 1.0,
+      "trigram": 1.0
+     },
+     "relevance": 1.0,
+     "recency": 0.5743
+    }
+   },
+   {
+    "id": "351a4c27e6414406",
+    "score": 0.896817,
+    "content": "Kubernetes migration was postponed until the relay cost review finishes.",
+    "why": {
+     "channels": {
+      "fts": 1.0,
+      "trigram": 1.0
+     },
+     "relevance": 1.0,
+     "recency": 0.5612
+    }
+   }
+  ],
+  [
+   {
+    "id": "142a0d581c5e4375",
+    "score": 0.969055,
+    "content": "PostgreSQL was rejected for the relay; SQLite inside Durable Objects stays.",
+    "why": {
+     "channels": {
+      "fts": 1.0
+     },
+     "relevance": 1.0,
+     "recency": 0.7937
+    }
+   }
+  ],
+  [
+   {
+    "id": "cd303374a8cc4f99",
+    "score": 0.919977,
+    "content": "Deploy uses GITHUB_TOKEN=[REDACTED:github_token] from the vault.",
+    "why": {
+     "channels": {
+      "fts": 1.0,
+      "trigram": 1.0
+     },
+     "relevance": 1.0,
+     "recency": 0.4665
+    }
+   }
+  ],
+  [
+   {
+    "id": "1b6203be63ce42af",
+    "score": 1.158441,
+    "content": "The NUC's /tmp filesystem ran out of inodes on 2025-10-20.",
+    "why": {
+     "channels": {
+      "fts": 1.0,
+      "trigram": 1.0
+     },
+     "relevance": 1.0,
+     "recency": 0.5117,
+     "temporal": 1.25
+    }
+   }
+  ],
+  [
+   {
+    "id": "1b6203be63ce42af",
+    "score": 1.15804,
+    "content": "The NUC's /tmp filesystem ran out of inodes on 2025-10-20.",
+    "why": {
+     "channels": {
+      "fts": 1.0
+     },
+     "relevance": 1.0,
+     "recency": 0.5117,
+     "temporal": 1.2496
+    }
+   }
+  ],
+  [
+   {
+    "id": "351a4c27e6414406",
+    "score": 0.896817,
+    "content": "Kubernetes migration was postponed until the relay cost review finishes.",
+    "why": {
+     "channels": {
+      "fts": 1.0
+     },
+     "relevance": 1.0,
+     "recency": 0.5612
+    }
+   },
+   {
+    "id": "142a0d581c5e4375",
+    "score": 0.894811,
+    "content": "PostgreSQL was rejected for the relay; SQLite inside Durable Objects stays.",
+    "why": {
+     "channels": {
+      "fts": 0.923
+     },
+     "relevance": 0.9234,
+     "recency": 0.7937
+    }
+   }
+  ],
+  [
+   {
+    "id": "8ae28ef3c89f4c4f",
+    "score": 0.916817,
+    "content": "Run cargo clippy with warnings denied before each push and also run the full cargo test suite locally.",
+    "why": {
+     "channels": {
+      "fts": 1.0,
+      "trigram": 1.0
+     },
+     "relevance": 1.0,
+     "recency": 0.4454
+    }
+   },
+   {
+    "id": "562b74341cfd44dd",
+    "score": 0.870976,
+    "content": "Relay cost review moved to the first week of November.",
+    "why": {
+     "channels": {
+      "fts": 1.0,
+      "trigram": 1.0
+     },
+     "relevance": 1.0,
+     "recency": 0.5743,
+     "sub_query": "relay cost"
+    }
+   },
+   {
+    "id": "351a4c27e6414406",
+    "score": 0.83438,
+    "content": "Kubernetes migration was postponed until the relay cost review finishes.",
+    "why": {
+     "channels": {
+      "fts": 1.0,
+      "trigram": 1.0
+     },
+     "relevance": 1.0,
+     "recency": 0.5612,
+     "sub_query": "relay cost"
+    }
+   },
+   {
+    "id": "142a0d581c5e4375",
+    "score": 0.418762,
+    "content": "PostgreSQL was rejected for the relay; SQLite inside Durable Objects stays.",
+    "why": {
+     "channels": {
+      "fts": 0.347,
+      "trigram": 0.8
+     },
+     "relevance": 0.4645,
+     "recency": 0.7937,
+     "sub_query": "relay cost"
+    }
+   }
+  ],
+  [
+   {
+    "id": "cb1b39a8e6f94a59",
+    "score": 0.921613,
+    "content": "Zoë's café résumé is stored under ﬁles/naïve — the Straße folder.",
+    "why": {
+     "channels": {
+      "fts": 1.0
+     },
+     "relevance": 1.0,
+     "recency": 0.4774
+    }
+   }
+  ],
+  [
+   {
+    "id": "0d8bead5a3c84aae",
+    "score": 0.923287,
+    "content": "東京のサーバーは毎晩バックアップされる。",
+    "why": {
+     "channels": {
+      "trigram": 1.0
+     },
+     "relevance": 1.0,
+     "recency": 0.4886
+    }
+   }
+  ],
+  [
+   {
+    "id": "1b6203be63ce42af",
+    "score": 0.926753,
+    "content": "The NUC's /tmp filesystem ran out of inodes on 2025-10-20.",
+    "why": {
+     "channels": {
+      "fts": 1.0
+     },
+     "relevance": 1.0,
+     "recency": 0.5117
+    }
+   },
+   {
+    "id": "878555b4611b41df",
+    "score": 1e-06,
+    "content": "Editor is Zed since the Neovim config broke",
+    "why": {
+     "channels": {
+      "fts": 0.0
+     },
+     "relevance": 0.0,
+     "recency": 0.8123
+    }
+   },
+   {
+    "id": "cb1b39a8e6f94a59",
+    "score": 1e-06,
+    "content": "Zoë's café résumé is stored under ﬁles/naïve — the Straße folder.",
+    "why": {
+     "channels": {
+      "fts": 0.0
+     },
+     "relevance": 0.0,
+     "recency": 0.4774
+    }
+   }
+  ],
+  [
+   {
+    "id": "2079036d22bb4619",
+    "score": 0.925,
+    "content": "Teresis stores agent memory in one SQLite file with WAL mode.",
+    "why": {
+     "channels": {
+      "fts": 1.0,
+      "trigram": 1.0
+     },
+     "relevance": 1.0,
+     "recency": 0.5
+    }
+   }
+  ],
+  [
+   {
+    "id": "2079036d22bb4619",
+    "score": 0.925,
+    "content": "Teresis stores agent memory in one SQLite file with WAL mode.",
+    "why": {
+     "channels": {
+      "fts": 1.0,
+      "trigram": 1.0
+     },
+     "relevance": 1.0,
+     "recency": 0.5
+    }
+   },
+   {
+    "id": "142a0d581c5e4375",
+    "score": 0.549529,
+    "content": "PostgreSQL was rejected for the relay; SQLite inside Durable Objects stays.",
+    "why": {
+     "channels": {
+      "fts": 0.416,
+      "trigram": 1.0
+     },
+     "relevance": 0.5671,
+     "recency": 0.7937
+    }
+   }
+  ],
+  [
+   {
+    "id": "a38b42d011744532",
+    "score": null,
+    "content": "Wright prefers squash merges on every Everett pull request.",
+    "why": null
+   },
+   {
+    "id": "878555b4611b41df",
+    "score": null,
+    "content": "Editor is Zed since the Neovim config broke",
+    "why": null
+   },
+   {
+    "id": "142a0d581c5e4375",
+    "score": null,
+    "content": "PostgreSQL was rejected for the relay; SQLite inside Durable Objects stays.",
+    "why": null
+   },
+   {
+    "id": "562b74341cfd44dd",
+    "score": null,
+    "content": "Relay cost review moved to the first week of November.",
+    "why": null
+   }
+  ],
+  [
+   {
+    "id": "a38b42d011744532",
+    "score": null,
+    "content": "Wright prefers squash merges on every Everett pull request.",
+    "why": null
+   },
+   {
+    "id": "878555b4611b41df",
+    "score": null,
+    "content": "Editor is Zed since the Neovim config broke",
+    "why": null
+   },
+   {
+    "id": "0d8bead5a3c84aae",
+    "score": null,
+    "content": "東京のサーバーは毎晩バックアップされる。",
+    "why": null
+   }
+  ],
+  [],
+  [
+   {
+    "id": "a87198c1703a46ed",
+    "score": 0.996574,
+    "content": "Editor is Neovim",
+    "why": {
+     "channels": {
+      "fts": 1.0,
+      "trigram": 1.0
+     },
+     "relevance": 1.0,
+     "recency": 0.9772
+    }
+   }
+  ],
+  []
+ ],
+ "text": [
+  {
+   "in": "Wright's laptop isn't the NUC — it's the Mac.",
+   "normalize": "wright s laptop isn t the nuc it s the mac",
+   "hash": "1f7bdd2b6e04182f73f1b393a3f1d6ca",
+   "tokens": [
+    "wright",
+    "laptop",
+    "nuc",
+    "mac"
+   ],
+   "tokens_all": [
+    "wright",
+    "laptop",
+    "isn't",
+    "the",
+    "nuc",
+    "it",
+    "the",
+    "mac"
+   ],
+   "terms": [
+    "laptop",
+    "mac",
+    "nuc",
+    "wright"
+   ],
+   "fts": "\"wright\" OR \"laptop\" OR \"nuc\" OR \"mac\"",
+   "tri": "\"wri\" OR \"rig\" OR \"igh\" OR \"ght\" OR \"lap\" OR \"apt\" OR \"pto\" OR \"top\"",
+   "subs": [],
+   "est": 12
+  },
+  {
+   "in": "Run `cargo clippy --locked --all-targets -- -D warnings` first!",
+   "normalize": "run cargo clippy locked all targets d warnings first",
+   "hash": "e9e22b3d0488c5c564144a6d07638616",
+   "tokens": [
+    "run",
+    "cargo",
+    "clippy",
+    "locked",
+    "all-targets",
+    "d",
+    "warnings",
+    "first"
+   ],
+   "tokens_all": [
+    "run",
+    "cargo",
+    "clippy",
+    "locked",
+    "all-targets",
+    "d",
+    "warnings",
+    "first"
+   ],
+   "terms": [
+    "all-target",
+    "cargo",
+    "clippy",
+    "d",
+    "first",
+    "lock",
+    "run",
+    "warning"
+   ],
+   "fts": "\"run\" OR \"cargo\" OR \"clippy\" OR \"locked\" OR \"all-targets\" OR \"d\" OR \"warnings\" OR \"first\"",
+   "tri": "\"car\" OR \"arg\" OR \"rgo\" OR \"cli\" OR \"lip\" OR \"ipp\" OR \"ppy\" OR \"loc\" OR \"ock\" OR \"cke\" OR \"ked\" OR \"all\" OR \"ll-\" OR \"l-t\" OR \"-ta\" OR \"tar\" OR \"rge\" OR \"get\" OR \"ets\" OR \"war\" OR \"arn\" OR \"rni\" OR \"nin\" OR \"ing\" OR \"ngs\" OR \"fir\" OR \"irs\" OR \"rst\"",
+   "subs": [],
+   "est": 16
+  },
+  {
+   "in": "user.editor = Neovim (v0.10.2); e-mail: a.b@example.com",
+   "normalize": "user editor neovim v0 10 2 e mail a b example com",
+   "hash": "9f907050a904c048a9c1c04292aaef87",
+   "tokens": [
+    "user.editor",
+    "neovim",
+    "v0.10.2",
+    "e-mail",
+    "a.b",
+    "example.com"
+   ],
+   "tokens_all": [
+    "user.editor",
+    "neovim",
+    "v0.10.2",
+    "e-mail",
+    "a.b",
+    "example.com"
+   ],
+   "terms": [
+    "a.b",
+    "e-mail",
+    "example.com",
+    "neovim",
+    "user.editor",
+    "v0.10.2"
+   ],
+   "fts": "\"user.editor\" OR \"neovim\" OR \"v0.10.2\" OR \"e-mail\" OR \"a.b\" OR \"example.com\"",
+   "tri": "\"use\" OR \"ser\" OR \"er.\" OR \"r.e\" OR \".ed\" OR \"edi\" OR \"dit\" OR \"ito\" OR \"tor\" OR \"neo\" OR \"eov\" OR \"ovi\" OR \"vim\" OR \"v0.\" OR \"0.1\" OR \".10\" OR \"10.\" OR \"0.2\" OR \"e-m\" OR \"-ma\" OR \"mai\" OR \"ail\" OR \"exa\" OR \"xam\" OR \"amp\" OR \"mpl\" OR \"ple\" OR \"le.\" OR \"e.c\" OR \".co\" OR \"com\"",
+   "subs": [],
+   "est": 14
+  },
+  {
+   "in": "Zoë's café résumé is stored under ﬁles/naïve — the Straße folder.",
+   "normalize": "zoë s café résumé is stored under files naïve the strasse folder",
+   "hash": "35d0ab122372234c047fa3b6957df16b",
+   "tokens": [
+    "zoë",
+    "café",
+    "résumé",
+    "stored",
+    "files",
+    "naïve",
+    "strasse",
+    "folder"
+   ],
+   "tokens_all": [
+    "zoë",
+    "café",
+    "résumé",
+    "is",
+    "stored",
+    "under",
+    "files",
+    "naïve",
+    "the",
+    "strasse",
+    "folder"
+   ],
+   "terms": [
+    "café",
+    "fil",
+    "folder",
+    "naïve",
+    "résumé",
+    "stor",
+    "strasse",
+    "zoë"
+   ],
+   "fts": "\"zoë\" OR \"café\" OR \"résumé\" OR \"stored\" OR \"files\" OR \"naïve\" OR \"strasse\" OR \"folder\"",
+   "tri": "\"caf\" OR \"afé\" OR \"rés\" OR \"ésu\" OR \"sum\" OR \"umé\" OR \"sto\" OR \"tor\" OR \"ore\" OR \"red\" OR \"fil\" OR \"ile\" OR \"les\" OR \"naï\" OR \"aïv\" OR \"ïve\" OR \"str\" OR \"tra\" OR \"ras\" OR \"ass\" OR \"sse\" OR \"fol\" OR \"old\" OR \"lde\" OR \"der\"",
+   "subs": [],
+   "est": 17
+  },
+  {
+   "in": "東京のサーバーは毎晩バックアップされる。",
+   "normalize": "東京のサーバーは毎晩バックアップされる",
+   "hash": "f1bc38d787ef1736abf23fe78bbaf0be",
+   "tokens": [
+    "東京のサーバーは毎晩バックアップされる"
+   ],
+   "tokens_all": [
+    "東京のサーバーは毎晩バックアップされる"
+   ],
+   "terms": [
+    "東京のサーバーは毎晩バックアップされる"
+   ],
+   "fts": "\"東京のサーバーは毎晩バックアップされる\"",
+   "tri": "\"東京の\" OR \"京のサ\" OR \"のサー\" OR \"サーバ\" OR \"ーバー\" OR \"バーは\" OR \"ーは毎\" OR \"は毎晩\" OR \"毎晩バ\" OR \"晩バッ\" OR \"バック\" OR \"ックア\" OR \"クアッ\" OR \"アップ\" OR \"ップさ\" OR \"プされ\" OR \"される\"",
+   "subs": [],
+   "est": 5
+  },
+  {
+   "in": "ǅ İstanbul ΣΊΣΥΦΟΣ ½ ① Ⅻ x² 𝔘𝔫𝔦",
+   "normalize": "dž i stanbul σίσυφοσ 1 2 1 xii x2 uni",
+   "hash": "c80d6bf4ea5e13ffb6d2560af06e3a0a",
+   "tokens": [
+    "dž",
+    "stanbul",
+    "σίσυφοσ",
+    "1",
+    "2",
+    "1",
+    "xii",
+    "x2",
+    "uni"
+   ],
+   "tokens_all": [
+    "dž",
+    "i",
+    "stanbul",
+    "σίσυφοσ",
+    "1",
+    "2",
+    "1",
+    "xii",
+    "x2",
+    "uni"
+   ],
+   "terms": [
+    "1",
+    "2",
+    "dž",
+    "stanbul",
+    "uni",
+    "x2",
+    "xii",
+    "σίσυφοσ"
+   ],
+   "fts": "\"dž\" OR \"stanbul\" OR \"σίσυφοσ\" OR \"1\" OR \"2\" OR \"xii\" OR \"x2\" OR \"uni\"",
+   "tri": "\"sta\" OR \"tan\" OR \"anb\" OR \"nbu\" OR \"bul\" OR \"σίσ\" OR \"ίσυ\" OR \"συφ\" OR \"υφο\" OR \"φοσ\"",
+   "subs": [],
+   "est": 8
+  },
+  {
+   "in": "the of and",
+   "normalize": "the of and",
+   "hash": "24bc63ac944a5f15d949b917050eca40",
+   "tokens": [],
+   "tokens_all": [
+    "the",
+    "of",
+    "and"
+   ],
+   "terms": [],
+   "fts": "\"the\" OR \"of\" OR \"and\"",
+   "tri": null,
+   "subs": [],
+   "est": 3
+  },
+  {
+   "in": "a",
+   "normalize": "a",
+   "hash": "ca978112ca1bbdcafac231b39a23dc4d",
+   "tokens": [],
+   "tokens_all": [
+    "a"
+   ],
+   "terms": [],
+   "fts": "\"a\"",
+   "tri": null,
+   "subs": [],
+   "est": 1
+  },
+  {
+   "in": "",
+   "normalize": "",
+   "hash": "e3b0c44298fc1c149afbf4c8996fb924",
+   "tokens": [],
+   "tokens_all": [],
+   "terms": [],
+   "fts": null,
+   "tri": null,
+   "subs": [],
+   "est": 1
+  },
+  {
+   "in": "between the Mac and the NUC?",
+   "normalize": "between the mac and the nuc",
+   "hash": "db35bea6b1e434f9635ca3d5dec69038",
+   "tokens": [
+    "mac",
+    "nuc"
+   ],
+   "tokens_all": [
+    "between",
+    "the",
+    "mac",
+    "and",
+    "the",
+    "nuc"
+   ],
+   "terms": [
+    "mac",
+    "nuc"
+   ],
+   "fts": "\"mac\" OR \"nuc\"",
+   "tri": null,
+   "subs": [
+    "the Mac",
+    "the NUC"
+   ],
+   "est": 7
+  },
+  {
+   "in": "Which came first, the relay or the dashboard?",
+   "normalize": "which came first the relay or the dashboard",
+   "hash": "6413f2a85af6b34106122f3faa7c992b",
+   "tokens": [
+    "came",
+    "first",
+    "relay",
+    "dashboard"
+   ],
+   "tokens_all": [
+    "which",
+    "came",
+    "first",
+    "the",
+    "relay",
+    "or",
+    "the",
+    "dashboard"
+   ],
+   "terms": [
+    "came",
+    "dashboard",
+    "first",
+    "relay"
+   ],
+   "fts": "\"came\" OR \"first\" OR \"relay\" OR \"dashboard\"",
+   "tri": "\"cam\" OR \"ame\" OR \"fir\" OR \"irs\" OR \"rst\" OR \"rel\" OR \"ela\" OR \"lay\" OR \"das\" OR \"ash\" OR \"shb\" OR \"hbo\" OR \"boa\" OR \"oar\" OR \"ard\"",
+   "subs": [
+    "the relay",
+    "the dashboard"
+   ],
+   "est": 12
+  },
+  {
+   "in": "since November when did the tests fail?",
+   "normalize": "since november when did the tests fail",
+   "hash": "4a9ffdba2d53df1c8357d50751820749",
+   "tokens": [
+    "since",
+    "november",
+    "tests",
+    "fail"
+   ],
+   "tokens_all": [
+    "since",
+    "november",
+    "when",
+    "did",
+    "the",
+    "tests",
+    "fail"
+   ],
+   "terms": [
+    "fail",
+    "november",
+    "since",
+    "test"
+   ],
+   "fts": "\"since\" OR \"november\" OR \"tests\" OR \"fail\"",
+   "tri": "\"sin\" OR \"inc\" OR \"nce\" OR \"nov\" OR \"ove\" OR \"vem\" OR \"emb\" OR \"mbe\" OR \"ber\" OR \"tes\" OR \"est\" OR \"sts\" OR \"fai\" OR \"ail\"",
+   "subs": [
+    "November",
+    "did the tests fail"
+   ],
+   "est": 10
+  },
+  {
+   "in": "compare 'alpha beta' with \"gamma delta\" and 'epsilon'",
+   "normalize": "compare alpha beta with gamma delta and epsilon",
+   "hash": "8866bfb4d3ad492850b4c48e649b47da",
+   "tokens": [
+    "compare",
+    "alpha",
+    "beta",
+    "gamma",
+    "delta",
+    "epsilon"
+   ],
+   "tokens_all": [
+    "compare",
+    "alpha",
+    "beta",
+    "with",
+    "gamma",
+    "delta",
+    "and",
+    "epsilon"
+   ],
+   "terms": [
+    "alpha",
+    "beta",
+    "compare",
+    "delta",
+    "epsilon",
+    "gamma"
+   ],
+   "fts": "\"compare\" OR \"alpha\" OR \"beta\" OR \"gamma\" OR \"delta\" OR \"epsilon\"",
+   "tri": "\"com\" OR \"omp\" OR \"mpa\" OR \"par\" OR \"are\" OR \"alp\" OR \"lph\" OR \"pha\" OR \"bet\" OR \"eta\" OR \"gam\" OR \"amm\" OR \"mma\" OR \"del\" OR \"elt\" OR \"lta\" OR \"eps\" OR \"psi\" OR \"sil\" OR \"ilo\" OR \"lon\"",
+   "subs": [
+    "'alpha beta'",
+    "\"gamma delta\" and 'epsilon'"
+   ],
+   "est": 14
+  },
+  {
+   "in": "don't won't it's Wright’s boss's 's -- ... 'quoted' under_score co-op 3.14 v2.4.0-rc3",
+   "normalize": "don t won t it s wright s boss s s quoted under_score co op 3 14 v2 4 0 rc3",
+   "hash": "ab01d5cc9b9c9ddf73e3e50c047b2d03",
+   "tokens": [
+    "wright",
+    "boss",
+    "s",
+    "quoted",
+    "under_score",
+    "co-op",
+    "3.14",
+    "v2.4.0-rc3"
+   ],
+   "tokens_all": [
+    "don't",
+    "won't",
+    "it",
+    "wright",
+    "boss",
+    "s",
+    "quoted",
+    "under_score",
+    "co-op",
+    "3.14",
+    "v2.4.0-rc3"
+   ],
+   "terms": [
+    "3.14",
+    "bos",
+    "co-op",
+    "quot",
+    "s",
+    "under_score",
+    "v2.4.0-rc3",
+    "wright"
+   ],
+   "fts": "\"wright\" OR \"boss\" OR \"s\" OR \"quoted\" OR \"under_score\" OR \"co-op\" OR \"3.14\" OR \"v2.4.0-rc3\"",
+   "tri": "\"wri\" OR \"rig\" OR \"igh\" OR \"ght\" OR \"bos\" OR \"oss\" OR \"quo\" OR \"uot\" OR \"ote\" OR \"ted\" OR \"und\" OR \"nde\" OR \"der\" OR \"er_\" OR \"r_s\" OR \"_sc\" OR \"sco\" OR \"cor\" OR \"ore\" OR \"co-\" OR \"o-o\" OR \"-op\" OR \"3.1\" OR \".14\" OR \"v2.\" OR \"2.4\" OR \".4.\" OR \"4.0\" OR \".0-\" OR \"0-r\" OR \"-rc\" OR \"rc3\"",
+   "subs": [
+    "t won",
+    "s Wright’s boss",
+    "s -- ..."
+   ],
+   "est": 22
+  },
+  {
+   "in": "emoji 🚀 rocket🚀ship and tabs\tnewlines\n mixed   spaces",
+   "normalize": "emoji rocket ship and tabs newlines mixed spaces",
+   "hash": "c111bbc7de8a386697d386d0eec8be02",
+   "tokens": [
+    "emoji",
+    "rocket",
+    "ship",
+    "tabs",
+    "newlines",
+    "mixed",
+    "spaces"
+   ],
+   "tokens_all": [
+    "emoji",
+    "rocket",
+    "ship",
+    "and",
+    "tabs",
+    "newlines",
+    "mixed",
+    "spaces"
+   ],
+   "terms": [
+    "emoji",
+    "mix",
+    "newlin",
+    "rocket",
+    "ship",
+    "spac",
+    "tab"
+   ],
+   "fts": "\"emoji\" OR \"rocket\" OR \"ship\" OR \"tabs\" OR \"newlines\" OR \"mixed\" OR \"spaces\"",
+   "tri": "\"emo\" OR \"moj\" OR \"oji\" OR \"roc\" OR \"ock\" OR \"cke\" OR \"ket\" OR \"shi\" OR \"hip\" OR \"tab\" OR \"abs\" OR \"new\" OR \"ewl\" OR \"wli\" OR \"lin\" OR \"ine\" OR \"nes\" OR \"mix\" OR \"ixe\" OR \"xed\" OR \"spa\" OR \"pac\" OR \"ace\" OR \"ces\"",
+   "subs": [],
+   "est": 14
+  }
+ ],
+ "secrets": [
+  {
+   "out": "plain text with no credentials at all",
+   "kinds": [],
+   "first": null
+  },
+  {
+   "out": "key is [REDACTED:anthropic_key] ok",
+   "kinds": [
+    "anthropic_key"
+   ],
+   "first": "anthropic_key"
+  },
+  {
+   "out": "openai [REDACTED:openai_key].",
+   "kinds": [
+    "openai_key"
+   ],
+   "first": "openai_key"
+  },
+  {
+   "out": "stripe [REDACTED:stripe_key] and [REDACTED:stripe_key]",
+   "kinds": [
+    "stripe_key"
+   ],
+   "first": "stripe_key"
+  },
+  {
+   "out": "resend [REDACTED:resend_key]",
+   "kinds": [
+    "resend_key"
+   ],
+   "first": "resend_key"
+  },
+  {
+   "out": "token [REDACTED:github_token], and [REDACTED:github_token]",
+   "kinds": [
+    "github_token"
+   ],
+   "first": "github_token"
+  },
+  {
+   "out": "slack [REDACTED:slack_token]",
+   "kinds": [
+    "slack_token"
+   ],
+   "first": "slack_token"
+  },
+  {
+   "out": "hf [REDACTED:huggingface_token]",
+   "kinds": [
+    "huggingface_token"
+   ],
+   "first": "huggingface_token"
+  },
+  {
+   "out": "aws AKIAIOSFODNN7EXAMPLE is the docs key but [REDACTED:aws_access_key] is not",
+   "kinds": [
+    "aws_access_key"
+   ],
+   "first": "aws_access_key"
+  },
+  {
+   "out": "Authorization: Bearer [REDACTED:bearer_token] then jwt [REDACTED:bearer_token]",
+   "kinds": [
+    "bearer_token"
+   ],
+   "first": "bearer_token"
+  },
+  {
+   "out": "db postgres://admin:[REDACTED:uri_credential]@db.internal:5432/app and redis://:$REDIS_PASSWORD@cache",
+   "kinds": [
+    "uri_credential"
+   ],
+   "first": "uri_credential"
+  },
+  {
+   "out": "API_KEY=[REDACTED:env_secret]; password: \"[REDACTED:env_secret]\", TOKEN=your-api-token-here, MONKEY=bananabananabanana1",
+   "kinds": [
+    "env_secret"
+   ],
+   "first": "env_secret"
+  },
+  {
+   "out": "[REDACTED:private_key] trailing words",
+   "kinds": [
+    "private_key"
+   ],
+   "first": "private_key"
+  },
+  {
+   "out": "[REDACTED:private_key]",
+   "kinds": [
+    "private_key"
+   ],
+   "first": "private_key"
+  },
+  {
+   "out": "client_secret: [REDACTED:env_secret], export DB_PASSWORD='[REDACTED:env_secret]' # prod",
+   "kinds": [
+    "env_secret"
+   ],
+   "first": "env_secret"
+  }
+ ],
+ "temporal": [
+  [
+   1760832000.0,
+   1761091199.0,
+   432000.0
+  ],
+  [
+   1746489600.0,
+   1746921599.0,
+   604800.0
+  ],
+  [
+   1709683200.0,
+   1710115199.0,
+   604800.0
+  ],
+  [
+   1760993600.0,
+   1762289600.0,
+   1036800.0
+  ],
+  null,
+  [
+   1753502720.0,
+   1757649920.0,
+   2592000.0
+  ],
+  [
+   1695156800.0,
+   1705524800.0,
+   7776000.0
+  ],
+  null,
+  [
+   1762246400.0,
+   1763456000.0,
+   302400.0
+  ],
+  [
+   1760777600.0,
+   1763456000.0,
+   669600.0
+  ],
+  [
+   1731833600.0,
+   1763456000.0,
+   7905600.0
+  ],
+  [
+   1762505600.0,
+   1763283200.0,
+   604800.0
+  ],
+  [
+   1762505600.0,
+   1763283200.0,
+   604800.0
+  ],
+  [
+   1759276800.0,
+   1761955199.0,
+   864000.0
+  ],
+  [
+   1704067200.0,
+   1735689599.0,
+   5184000.0
+  ],
+  [
+   1763240000.0,
+   1763499200.0,
+   259200.0
+  ],
+  [
+   1763326400.0,
+   1763585600.0,
+   259200.0
+  ],
+  [
+   1733011200.0,
+   1735689599.0,
+   864000.0
+  ],
+  [
+   1759276800.0,
+   1761955199.0,
+   864000.0
+  ],
+  [
+   1725148800.0,
+   1727740799.0,
+   864000.0
+  ],
+  [
+   1704067200.0,
+   1735689599.0,
+   5184000.0
+  ],
+  null,
+  null,
+  null,
+  null
+ ]
+}

@@ -24,7 +24,7 @@
 <p align="center">
   <a href="#quickstart">Quickstart</a> ·
   <a href="#demo">Demo</a> ·
-  <a href="#for-agents-mcp">MCP (18 tools)</a> ·
+  <a href="#for-agents-mcp">MCP (19 tools)</a> ·
   <a href="docs/agent-support.md">Agent Support</a> ·
   <a href="docs/relay-threat-model.md">Threat Model</a> ·
   <a href="CHANGELOG.md">Changelog</a>
@@ -634,6 +634,8 @@ Local MCP sessions can update memory immediately with `everett_core(action="forg
 
 Changes default to global scope. Pass `project="atlas"` for project scope, or `scope="project"` for the current project. Forget/correct also update exact matches in the searchable store, including facts dropped from the compact core. They do not match semantic paraphrases. A running merge makes either action fail with a retry message. File and search-store writes are separate: a storage error can leave a partial change; retry the same action after resolving the error to finish it. Generated vault mirrors update after a successful change. History backups stay intact and are never merge inputs. Gateway connections remain read-only for compact shared core and reject local search or mutation arguments.
 
+Every learned fact is also saved to `memory.db`, a SQLite database Everett shares with Python Teresis clients, and `everett recall "cost reports" --project orbit` (or the `everett_recall` MCP tool) searches all of them with word, stem, and typo-tolerant matching. The database lives at `EVERETT_MEMORY_DB`, else `$EVERETT_HOME/.local/share/teresis/memory.db`, else `$TERESIS_DB`, else `$XDG_DATA_HOME/teresis/memory.db`, else `~/.local/share/teresis/memory.db`; `EVERETT_MEMORY_DB=off` disables it. `everett learn --key user.editor` names a fact that changes, so a new value replaces the old one in memory search while `everett recall` still returns only the latest. Forget and correct through `everett_core` update memory.db too. Everett uses word and fuzzy matching only; it does not write vectors or rerank.
+
 The project is the enclosing git repository's folder name, else the folder name. Your home folder is not a project. Default merge engine: `merge_llm` in the config, else `claude`.
 
 For storage boundaries, mid-session reads, and the relationship to Power Proxy and Basic Memory, see [Shared memory and other memory tools](docs/memory.md).
@@ -680,7 +682,8 @@ Everett is mostly used by agents. `everett mcp` is a native Rust stdio MCP serve
 | `everett_ls` | `hours?`, `harness?`, `all?` | Set `all: true` to include automation sessions. Your own session is marked `you`. Like local `everett ls --json`, this includes `t3_thread_id` alongside the native session `id` when a T3 thread mapping is available. Overview only -- not for picking a send target. |
 | `everett_route` | `text`, `router?`, `hours?` | `SESSION` / `NEW` / `ASK`, confidence, router used, candidates. Never sends; excludes the caller when known. |
 | `everett_send` | `text`, `to?`, `hours?`, `spawn?`, `dir?`, `harness?`, `timeout?`, `mode?`, `wait?`, `reply_to?` | Routes then pings by default. Dispatch is separate from inbox pickup. Unsupported immediate paths fail explicitly; `mode: "inbox"` opts into legacy hooks/polling/remote queues. `reply_to` queues a correlated answer. |
-| `everett_learn` | `fact`, `project?`, `scope?`, `ttl_seconds?` | Stores a secret-filtered fact. Durable facts queue for shared core; temporary facts stay in local search until expiry. |
+| `everett_learn` | `fact`, `project?`, `scope?`, `key?`, `ttl_seconds?` | Stores a secret-filtered fact. Durable facts queue for shared core; temporary facts stay in local search until expiry. `key` names a fact that changes so a new value replaces the old in memory search. |
+| `everett_recall` | `query`, `project?`, `scope?`, `limit?`, `explain?` | Searches every learned fact in the shared memory.db with word, stem, and typo-tolerant matching. Reads the same file Python Teresis clients use; `limit` defaults to 5 (1 to 50). |
 | `everett_core` | `action?`, `project?`, `query?`, `limit?`, `fact?`, `replacement?`, `scope?` | Reads the latest core by default. Local `search` ranks original learnings beyond the core cap. `forget` and `correct` update exact facts in active, pending, and searchable memory. |
 | `everett_card` | `what`, `state`, `next` | Writes the calling session's card. |
 | `everett_skill` | `action?`, `task?`, `name?`, `query?`, `source?` | The skill hub. `match` returns the one skill that fits `task`, or null; `get` returns a named skill's instructions, sibling files, and path; `list` (default) browses. Every skill is also an MCP prompt (`prompts/list`, `prompts/get`) for clients that support them. |
