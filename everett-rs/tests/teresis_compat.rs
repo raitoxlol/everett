@@ -124,6 +124,8 @@ fn replay_ops() -> Replay {
                 meta: if op["meta"].is_null() { None } else { Some(op["meta"].clone()) },
                 replaces: op["replaces_ref"].as_u64().map(|r| op_ids[r as usize].clone().unwrap()),
                 scrub_secrets: true,
+                fuzzy_dedupe: true,
+                update_expiry_on_duplicate: false,
             };
             let res = store.remember(&content, &opts).unwrap();
             op_ids.push(Some(res.id));
@@ -181,6 +183,8 @@ fn replaying_writes_matches_python() {
                 meta: if op["meta"].is_null() { None } else { Some(op["meta"].clone()) },
                 replaces: op["replaces_ref"].as_u64().map(|r| op_ids[r as usize].clone()),
                 scrub_secrets: true,
+                fuzzy_dedupe: true,
+                update_expiry_on_duplicate: false,
             };
             let res = store.remember(&content, &opts).unwrap();
             assert_eq!(res.status, e["status"].as_str().unwrap(), "ops[{i}].status");

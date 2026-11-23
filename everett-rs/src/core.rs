@@ -519,15 +519,22 @@ pub fn change(change: CoreChange<'_>, project: Option<&str>, scope: Option<&str>
     result.insert("mirror".into(), mirror.map(|p| json!(p.to_string_lossy())).unwrap_or(Value::Null));
     drop(_inbox_guard);
     drop(_merge_guard);
-    if changed {
-        let scope_name = crate::memory::scope_name(scope.name(), scope.key());
+    let scope_name = crate::memory::scope_name(scope.name(), scope.key());
+    // A mirror row the core already forgot still counts: retry the mirror write
+    // so a previously failed forget/correct completes now.
+    let mirror_pending = crate::memory::db_path().is_some() && crate::memory::has(fact, &scope_name);
+    if changed || mirror_pending {
         match replacement {
             None => {
                 if crate::memory::db_path().is_some() {
-                    result.insert(
-                        "memory_removed".into(),
-                        json!(crate::memory::forget(fact, &scope_name)),
-                    );
+                    match crate::memory::forget(fact, &scope_name) {
+                        Ok(removed) => {
+                            result.insert("memory_removed".into(), json!(removed));
+                        }
+                        Err(e) => {
+                            result.insert("memory_error".into(), json!(e.message));
+                        }
+                    }
                 }
             }
             Some(replacement) => {

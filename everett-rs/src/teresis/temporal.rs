@@ -10,7 +10,7 @@ pub const DAY: f64 = 86400.0;
 
 fn num_pat() -> String {
     format!(
-        r"(?:\d+|a\s+couple\s+(?:of\s+)?|a\s+few\s+|{})",
+        r"(?:[0-9]+|a\s+couple\s+(?:of\s+)?|a\s+few\s+|{})",
         NUM_WORDS_ORDER.join("|")
     )
 }
@@ -96,33 +96,33 @@ fn in_last_pat() -> String {
 }
 fn month_day_pat() -> String {
     format!(
-        r"(?i)\b(?:on\s+)?({})\s+(\d{{1,2}})(?:st|nd|rd|th)?(?:,?\s*(20\d{{2}}))?\b",
+        r"(?i)\b(?:on\s+)?({})\s+([0-9]{{1,2}})(?:st|nd|rd|th)?(?:,?\s*(20[0-9]{{2}}))?\b",
         month_pat()
     )
 }
 fn day_month_pat() -> String {
     format!(
-        r"(?i)\b(\d{{1,2}})(?:st|nd|rd|th)?\s+(?:of\s+)?({})(?:,?\s*(20\d{{2}}))?\b",
+        r"(?i)\b([0-9]{{1,2}})(?:st|nd|rd|th)?\s+(?:of\s+)?({})(?:,?\s*(20[0-9]{{2}}))?\b",
         month_pat()
     )
 }
 fn in_month_pat() -> String {
-    format!(r"(?i)\b(?:in|during|last|this)\s+({})(?:\s+(20\d{{2}}))?\b", month_pat())
+    format!(r"(?i)\b(?:in|during|last|this)\s+({})(?:\s+(20[0-9]{{2}}))?\b", month_pat())
 }
 fn month_year_pat() -> String {
-    format!(r"(?i)\b({})\s+(20\d{{2}})\b", month_pat())
+    format!(r"(?i)\b({})\s+(20[0-9]{{2}})\b", month_pat())
 }
 
 re_once!(re_ago, ago_pat);
 re_once!(re_in_last, in_last_pat);
 re_once!(re_last_unit, r"(?i)\blast\s+(week|month|year|weekend)\b", literal);
 re_once!(re_yesterday, r"(?i)\b(yesterday|today)\b", literal);
-re_once!(re_iso, r"\b(20\d{2})-(\d{1,2})-(\d{1,2})\b", literal);
+re_once!(re_iso, r"\b(20[0-9]{2})-([0-9]{1,2})-([0-9]{1,2})\b", literal);
 re_once!(re_month_day, month_day_pat);
 re_once!(re_day_month, day_month_pat);
 re_once!(re_in_month, in_month_pat);
 re_once!(re_month_year, month_year_pat);
-re_once!(re_in_year, r"\b(?:in|during)\s+(20\d{2})\b", literal);
+re_once!(re_in_year, r"\b(?:in|during)\s+(20[0-9]{2})\b", literal);
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct TimeWindow {
@@ -149,16 +149,10 @@ impl TimeWindow {
 /// Python: strip, lower; isdigit -> int; "couple" in s -> 2; "few" in s -> 3; else map or 1.
 fn parse_num(raw: &str) -> i64 {
     let s = raw.trim().to_lowercase();
-    if !s.is_empty() && s.chars().all(|c| c.is_numeric()) {
-        // Python str.isdigit + int() covers Unicode digits; ASCII fast path suffices here.
-        if let Ok(n) = s.parse::<i64>() {
-            return n;
-        }
-        let mut n: i64 = 0;
-        for c in s.chars() {
-            n = n * 10 + c.to_digit(10).unwrap_or(0) as i64;
-        }
-        return n;
+    if !s.is_empty() && s.chars().all(|c| c.is_ascii_digit()) {
+        // Captures come from `[0-9]` patterns; clamp pathological sizes instead
+        // of failing so a weird date never aborts the text search.
+        return s.parse::<i64>().unwrap_or(i64::MAX);
     }
     if s.contains("couple") {
         return 2;
@@ -218,9 +212,9 @@ pub fn parse_time_window(query: &str, now: f64) -> Option<TimeWindow> {
 
     // 1. Exact ISO date: 2023-05-08
     if let Some(m) = re_iso().captures(query) {
-        let y = get_i64(&m, 1).unwrap() as i32;
-        let mo = get_i64(&m, 2).unwrap() as u32;
-        let d = get_i64(&m, 3).unwrap() as u32;
+        let y = get_i64(&m, 1).unwrap_or(0) as i32;
+        let mo = get_i64(&m, 2).unwrap_or(0) as u32;
+        let d = get_i64(&m, 3).unwrap_or(0) as u32;
         if (1..=12).contains(&mo) && (1..=31).contains(&d) {
             if let (Some(start), Some(end)) = (utc(y, mo, d, false), utc(y, mo, d, true)) {
                 return Some(TimeWindow {
@@ -235,7 +229,7 @@ pub fn parse_time_window(query: &str, now: f64) -> Option<TimeWindow> {
     // 2. Month + day: "May 8", "on June 27, 2023", "8 May 2023"
     if let Some(m) = re_month_day().captures(query) {
         let mo = month_num(&m[1].to_lowercase()) as u32;
-        let d = get_i64(&m, 2).unwrap() as u32;
+        let d = get_i64(&m, 2).unwrap_or(0) as u32;
         let y = resolve_month_year(&now_dt, mo, get_i64(&m, 3).map(|v| v as i32));
         if let (Some(start), Some(end)) = (utc(y, mo, d, false), utc(y, mo, d, true)) {
             return Some(TimeWindow {
@@ -246,7 +240,7 @@ pub fn parse_time_window(query: &str, now: f64) -> Option<TimeWindow> {
         }
     }
     if let Some(m) = re_day_month().captures(query) {
-        let d = get_i64(&m, 1).unwrap() as u32;
+        let d = get_i64(&m, 1).unwrap_or(0) as u32;
         let mo = month_num(&m[2].to_lowercase()) as u32;
         let y = resolve_month_year(&now_dt, mo, get_i64(&m, 3).map(|v| v as i32));
         if let (Some(start), Some(end)) = (utc(y, mo, d, false), utc(y, mo, d, true)) {
@@ -371,13 +365,13 @@ pub fn parse_time_window(query: &str, now: f64) -> Option<TimeWindow> {
     }
     if let Some(m) = re_month_year().captures(query) {
         let mo = month_num(&m[1].to_lowercase()) as u32;
-        let y = get_i64(&m, 2).unwrap() as i32;
+        let y = get_i64(&m, 2).unwrap_or(0) as i32;
         return Some(month_window(y, mo));
     }
 
     // 7. Explicit year ("in 2022")
     if let Some(m) = re_in_year().captures(query) {
-        let y = get_i64(&m, 1).unwrap() as i32;
+        let y = get_i64(&m, 1).unwrap_or(0) as i32;
         return Some(TimeWindow {
             start: utc(y, 1, 1, false).unwrap(),
             end: utc(y, 12, 31, true).unwrap(),

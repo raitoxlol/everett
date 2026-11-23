@@ -570,3 +570,115 @@ print(json.dumps([(m.content, bool(m.superseded_by)) for m in s.history(scope="p
         ["Wright wants monthly cost reports", false],
     ]), "{history}");
 }
+
+#[test]
+fn relearned_duplicate_takes_the_new_expiry() {
+    let fx = fixture();
+    assert!(fx.run(&["learn", "Preview uses port 4200", "--ttl-seconds", "3600"]).status.success());
+    let con = rusqlite::Connection::open(db_path(&fx.home())).unwrap();
+    let expiry: Option<f64> = con.query_row("SELECT expires_at FROM memories", [], |r| r.get(0)).unwrap();
+    assert!(expiry.is_some(), "temporary fact must carry an expiry");
+    drop(con);
+    // Relearning the same fact without a TTL promotes it, like the core store does.
+    assert!(fx.run(&["learn", "Preview uses port 4200"]).status.success());
+    let con = rusqlite::Connection::open(db_path(&fx.home())).unwrap();
+    let expiry: Option<f64> = con.query_row("SELECT expires_at FROM memories", [], |r| r.get(0)).unwrap();
+    assert_eq!(expiry, None, "relearned fact must lose its expiry");
+}
+
+#[test]
+fn correction_to_an_existing_match_keeps_the_replacement() {
+    let fx = fixture();
+    assert!(fx.run(&["learn", "Use cargo test for builds"]).status.success());
+    assert!(fx.run(&["learn", "Use cargo_test for builds"]).status.success());
+    let res = common::mcp_calls(&fx, &[], &[], &[("everett_core",
+        json!({"action": "correct", "fact": "Use cargo_test for builds", "replacement": "Use cargo test for builds"}))]);
+    assert_eq!(res[0]["isError"], false, "{}", res[0]);
+    let got = recall_json(&fx, &["cargo builds"]);
+    let contents = memory_contents(&got);
+    assert_eq!(contents, vec!["Use cargo test for builds".to_string()], "{got}");
+}
+
+#[test]
+fn temporary_refinement_does_not_hide_the_permanent_fact() {
+    let fx = fixture();
+    assert!(fx.run(&["learn", "Use blue pipeline"]).status.success());
+    assert!(fx.run(&["learn", "Use blue pipeline for hotfixes", "--ttl-seconds", "1"]).status.success());
+    let got = recall_json(&fx, &["blue pipeline"]);
+    assert!(memory_contents(&got).iter().any(|c| c == "Use blue pipeline"), "{got}");
+    std::thread::sleep(std::time::Duration::from_millis(1200));
+    let got = recall_json(&fx, &["blue pipeline"]);
+    let contents = memory_contents(&got);
+    assert_eq!(contents, vec!["Use blue pipeline".to_string()], "{got}");
+}
+
+#[test]
+fn negated_facts_stay_distinct() {
+    let fx = fixture();
+    assert!(fx.run(&["learn", "Staging is ready"]).status.success());
+    assert!(fx.run(&["learn", "Staging is not ready"]).status.success());
+    let got = recall_json(&fx, &["staging ready"]);
+    let contents = memory_contents(&got);
+    assert!(contents.iter().any(|c| c == "Staging is ready"), "{got}");
+    assert!(contents.iter().any(|c| c == "Staging is not ready"), "{got}");
+}
+
+#[test]
+fn non_ascii_digits_do_not_crash_recall() {
+    let fx = fixture();
+    assert!(fx.run(&["learn", "Deploy notes live in the runbook"]).status.success());
+    for query in ["deploy notes from 2026-١١-٢٣", "deploy notes ٣ days ago", "deploy in march ٢٠٢٦"] {
+        let got = recall_json(&fx, &[query]);
+        assert!(memory_contents(&got).iter().any(|c| c.contains("runbook")), "{query}: {got}");
+    }
+}
+
+#[test]
+fn failed_forget_is_retried() {
+    let fx = fixture();
+    assert!(fx.run(&["learn", "Quartz builds use ccache"]).status.success());
+    let db = db_path(&fx.home());
+    // WAL mode keeps memory.db-shm/-wal beside the db; all three share the
+    // read-only state, so flip and restore them together.
+    let db_files = |suffix: &str| std::path::PathBuf::from(format!("{}{}", db.display(), suffix));
+    for suffix in ["", "-shm", "-wal"] {
+        let p = db_files(suffix);
+        if p.exists() {
+            std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o444)).unwrap();
+        }
+    }
+    let res = common::mcp_calls(&fx, &[], &[], &[("everett_core",
+        json!({"action": "forget", "fact": "Quartz builds use ccache"}))]);
+    assert_eq!(res[0]["isError"], false, "{}", res[0]);
+    let body = common::tool_json(&res[0]);
+    assert!(body.get("memory_error").is_some() || body["memory_removed"] == json!(0), "{body}");
+    for suffix in ["", "-shm", "-wal"] {
+        let p = db_files(suffix);
+        if p.exists() {
+            std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o600)).unwrap();
+        }
+    }
+    let res = common::mcp_calls(&fx, &[], &[], &[("everett_core",
+        json!({"action": "forget", "fact": "Quartz builds use ccache"}))]);
+    assert_eq!(res[0]["isError"], false, "{}", res[0]);
+    assert_eq!(common::tool_json(&res[0])["memory_removed"], json!(1), "{}", res[0]);
+    let got = recall_json(&fx, &["ccache"]);
+    assert!(!memory_contents(&got).iter().any(|c| c.contains("ccache")), "{got}");
+}
+
+#[test]
+fn explicit_project_scope_does_not_search_global() {
+    let fx = fixture();
+    assert!(fx.run(&["learn", "All hands meet on Fridays"]).status.success());
+    assert!(fx.run(&["learn", "Orbit hands meet on Mondays", "--project", "orbit"]).status.success());
+    let got = recall_json(&fx, &["hands meet", "--project", "orbit", "--scope", "project"]);
+    let contents = memory_contents(&got);
+    assert!(contents.iter().any(|c| c.contains("Orbit hands")), "{got}");
+    assert!(!contents.iter().any(|c| c.contains("All hands")), "{got}");
+    let scopes: Vec<String> = got["scopes"].as_array().unwrap().iter()
+        .map(|s| s.as_str().unwrap().to_string()).collect();
+    assert_eq!(scopes, vec!["project/orbit".to_string()], "{got}");
+    // The default search still inherits global.
+    let got = recall_json(&fx, &["hands meet", "--project", "orbit"]);
+    assert!(memory_contents(&got).iter().any(|c| c.contains("All hands")), "{got}");
+}

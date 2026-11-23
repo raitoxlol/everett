@@ -95,6 +95,8 @@ pub fn record(
             ttl_days: ttl_seconds.map(|s| s as f64 / 86400.0),
             source: Some(source.to_string()),
             meta: Some(meta),
+            fuzzy_dedupe: false,
+            update_expiry_on_duplicate: true,
             ..Default::default()
         },
     )
@@ -113,22 +115,32 @@ fn matching(store: &MemoryStore, text: &str, scope_name: &str) -> Vec<Memory> {
         .collect()
 }
 
-/// Soft-delete every active memory in `scope_name` whose content matches `text`.
-pub fn forget(text: &str, scope_name: &str) -> usize {
+/// Whether `scope_name` has an active memory whose content matches `text`.
+pub fn has(text: &str, scope_name: &str) -> bool {
     let Some(path) = db_path() else {
-        return 0;
+        return false;
     };
-    let Ok(Some(mut store)) = open_existing(&path) else {
-        return 0;
+    let Ok(Some(store)) = open_existing(&path) else {
+        return false;
+    };
+    !matching(&store, text, scope_name).is_empty()
+}
+
+/// Soft-delete every active memory in `scope_name` whose content matches `text`.
+/// Errors propagate so a failed forget can be told apart from a zero-match.
+pub fn forget(text: &str, scope_name: &str) -> Result<usize> {
+    let Some(path) = db_path() else {
+        return Ok(0);
+    };
+    let mut store = match open_existing(&path)? {
+        Some(store) => store,
+        None => return Ok(0),
     };
     let mut removed = 0;
     for memory in matching(&store, text, scope_name) {
-        match store.forget_id(&memory.id, false) {
-            Ok(n) => removed += n,
-            Err(_) => return 0,
-        }
+        removed += store.forget_id(&memory.id, false)?;
     }
-    removed
+    Ok(removed)
 }
 
 /// Replace the memory for `old` in `scope_name` with `new`, or record `new`
@@ -174,6 +186,7 @@ pub fn correct(
             source: Some(source.to_string()),
             meta: Some(meta),
             replaces: old_row.map(|m| m.id.clone()),
+            fuzzy_dedupe: false,
             ..Default::default()
         },
     ) {
@@ -189,7 +202,9 @@ pub fn correct(
             replaced.push(old.id.clone());
         }
         for extra in &matches[1..] {
-            let _ = store.forget_id(&extra.id, false);
+            if extra.id != result.id {
+                let _ = store.forget_id(&extra.id, false);
+            }
         }
     }
     json!({
@@ -237,7 +252,9 @@ pub fn recall(
                 .filter(|p| !p.is_empty())
                 .unwrap_or_else(|| crate::core::project_for(&cwd));
             if !project.is_empty() {
-                (vec![format!("project/{project}")], true)
+                // Inheritance is the default-search behavior; an explicit
+                // `--scope project` searches the project only.
+                (vec![format!("project/{project}")], scope.is_none())
             } else if scope == Some("project") {
                 return Err(EverettError::new(
                     2,
@@ -248,15 +265,19 @@ pub fn recall(
             }
         }
     };
-    let searched: Vec<String> = scopes
-        .iter()
-        .flat_map(|s| crate::teresis::store::scope_chain(s))
-        .fold(Vec::new(), |mut acc, s| {
-            if !acc.contains(&s) {
-                acc.push(s);
-            }
-            acc
-        });
+    let searched: Vec<String> = if inherit {
+        scopes
+            .iter()
+            .flat_map(|s| crate::teresis::store::scope_chain(s))
+            .fold(Vec::new(), |mut acc, s| {
+                if !acc.contains(&s) {
+                    acc.push(s);
+                }
+                acc
+            })
+    } else {
+        scopes.clone()
+    };
     let memories = match open_existing(&path)? {
         Some(mut store) => store.recall(
             query,

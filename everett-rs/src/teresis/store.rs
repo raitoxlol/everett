@@ -166,6 +166,12 @@ pub struct RememberOpts {
     pub meta: Option<Value>,
     pub replaces: Option<String>,
     pub scrub_secrets: bool,
+    /// Everett mirror writes disable near-duplicate fuzzy dedupe, so distinct
+    /// facts (negations, temporary refinements of permanent facts) each get a row.
+    pub fuzzy_dedupe: bool,
+    /// Everett mirror writes: an exact-duplicate relearn updates the stored
+    /// expiry to the new TTL (NULL promotes to permanent).
+    pub update_expiry_on_duplicate: bool,
 }
 
 impl Default for RememberOpts {
@@ -182,6 +188,8 @@ impl Default for RememberOpts {
             meta: None,
             replaces: None,
             scrub_secrets: true,
+            fuzzy_dedupe: true,
+            update_expiry_on_duplicate: false,
         }
     }
 }
@@ -509,7 +517,7 @@ impl MemoryStore {
             };
             let mut dup = dup;
             let mut replaces = replaces_opt.clone();
-            if dup.is_none() && key.is_none() && replaces.is_none() {
+            if opts.fuzzy_dedupe && dup.is_none() && key.is_none() && replaces.is_none() {
                 let near = Self::near_duplicate(c, &content, &scope, &kind, &active, &active_params, &w)?;
                 if let Some((row, verdict)) = near {
                     if verdict == "refine" {
@@ -523,17 +531,35 @@ impl MemoryStore {
             if let Some((dup_id, dup_key, _)) = &dup {
                 let is_dup = key.is_none() || dup_key.as_deref() == key.as_deref();
                 if is_dup {
-                    c.execute(
-                        "UPDATE memories SET access_count=access_count+1, updated_at=?, importance=max(importance, ?),\
-                         pinned=max(pinned, ?) WHERE id=?",
-                        params_from_iter([
-                            Param::Real(now),
-                            Param::Real(importance),
-                            Param::Integer(i64::from(pinned)),
-                            Param::Text(dup_id.clone()),
-                        ]),
-                    )
-                    .map_err(err)?;
+                    if opts.update_expiry_on_duplicate {
+                        c.execute(
+                            "UPDATE memories SET access_count=access_count+1, updated_at=?, importance=max(importance, ?),\
+                             pinned=max(pinned, ?), expires_at=? WHERE id=?",
+                            params_from_iter([
+                                Param::Real(now),
+                                Param::Real(importance),
+                                Param::Integer(i64::from(pinned)),
+                                match expires_at {
+                                    Some(e) => Param::Real(e),
+                                    None => Param::Null,
+                                },
+                                Param::Text(dup_id.clone()),
+                            ]),
+                        )
+                        .map_err(err)?;
+                    } else {
+                        c.execute(
+                            "UPDATE memories SET access_count=access_count+1, updated_at=?, importance=max(importance, ?),\
+                             pinned=max(pinned, ?) WHERE id=?",
+                            params_from_iter([
+                                Param::Real(now),
+                                Param::Real(importance),
+                                Param::Integer(i64::from(pinned)),
+                                Param::Text(dup_id.clone()),
+                            ]),
+                        )
+                        .map_err(err)?;
+                    }
                     return Ok(RememberResult {
                         id: dup_id.clone(),
                         status: "duplicate".to_string(),
