@@ -1221,3 +1221,7 @@ mod regressions;
 #[cfg(test)]
 #[path = "gateway_events_concurrency.rs"]
 mod concurrency_tests;
+
+#[cfg(test)]
+#[path = "gateway_events_model.rs"]
+mod model;
