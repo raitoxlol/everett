@@ -29,8 +29,11 @@ fn sources(dir: &Path, out: &mut Vec<PathBuf>) {
 /// and relay/mod.rs keep almost all of their production code after one.
 fn production_source(text: &str) -> String {
     let mut kept = String::new();
-    let mut lines = text.lines();
-    while let Some(line) = lines.next() {
+    let lines: Vec<&str> = text.lines().collect();
+    let mut i = 0usize;
+    while i < lines.len() {
+        let line = lines[i];
+        i += 1;
         if !line.trim_start().starts_with("#[cfg(test)]") {
             kept.push_str(line);
             kept.push('\n');
@@ -38,9 +41,9 @@ fn production_source(text: &str) -> String {
         }
         let mut depth = 0usize;
         let mut opened = false;
-        while let Some(item) = lines.next() {
-            let mut terminated = false;
-            for ch in item.chars() {
+        let mut terminated = false;
+        while i < lines.len() && !terminated && !(opened && depth == 0) {
+            for ch in lines[i].chars() {
                 match ch {
                     '{' => {
                         depth += 1;
@@ -51,9 +54,7 @@ fn production_source(text: &str) -> String {
                     _ => {}
                 }
             }
-            if terminated || (opened && depth == 0) {
-                break;
-            }
+            i += 1;
         }
     }
     kept
