@@ -336,6 +336,7 @@ pub(crate) fn adapter_fns(harness: &str) -> Option<Adapter> {
         "claude" => Some((claude::user_text, claude::assistant_text)),
         "codex" => Some((codex::user_text, codex::assistant_text)),
         "grok" => Some((grok::user_text, grok::assistant_text)),
+        "muse" => Some((crate::adapters::muse::user_text, crate::adapters::muse::assistant_text)),
         _ => None,
     }
 }

@@ -4,6 +4,7 @@ pub mod devin;
 pub mod external;
 pub mod grok;
 pub mod hermes;
+pub mod muse;
 pub mod omp;
 pub mod pi;
 pub(crate) mod t3_cli;
@@ -18,6 +19,7 @@ pub(crate) fn scan(name: &str, since_hours: f64) -> Vec<crate::session::Session>
         Some(Native::Omp) => omp::scan(since_hours),
         Some(Native::Pi) => pi::scan(since_hours),
         Some(Native::Hermes) => hermes::scan(since_hours),
+        Some(Native::Muse) => muse::scan(since_hours),
         Some(Native::Grok) => grok::scan(since_hours),
         Some(Native::Devin) => devin::scan(since_hours),
         None => Vec::new(),

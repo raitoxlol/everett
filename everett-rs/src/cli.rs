@@ -85,6 +85,7 @@ pub struct Args {
     pub devin: bool,
     pub pi: bool,
     pub hermes: bool,
+    pub muse: bool,
     pub repair: bool,
 }
 
@@ -1534,6 +1535,7 @@ fn harnesses(args: &Args, mcp: bool) -> Vec<&'static str> {
         ("pi", args.pi),
         ("devin", args.devin),
         ("hermes", mcp && args.hermes),
+        ("muse", args.muse),
     ];
     let explicit: Vec<_> = choices.iter().filter_map(|&(name, selected)| selected.then_some(name)).collect();
     if !explicit.is_empty() {

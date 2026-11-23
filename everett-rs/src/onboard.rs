@@ -9,7 +9,7 @@ use crate::session::home;
 /// "since forever": detection counts every session Everett can see, not just a recent window.
 pub const ALL_HOURS: f64 = 24.0 * 365.0 * 5.0;
 
-pub const MCP_HARNESSES: &[&str] = &["claude", "codex", "omp", "pi", "grok", "devin"];
+pub const MCP_HARNESSES: &[&str] = &["claude", "codex", "omp", "pi", "grok", "devin", "muse"];
 
 pub fn devin_hook_label(event: &str) -> &str {
     match event {
@@ -31,7 +31,7 @@ pub fn event_label(event: &str) -> &str {
 }
 
 pub const WELCOME_LINES: &[&str] = &[
-    "Everett lists recent Claude Code, Codex, OMP, Pi, Hermes Agent, Grok CLI, and Devin CLI sessions on this machine.",
+    "Everett lists recent Claude Code, Codex, OMP, Pi, Hermes Agent, Grok CLI, Devin CLI, and Muse Code sessions on this machine.",
     "Local setup needs no Everett account. Sign in to use Everett MCP tools.",
     "It lets those sessions hand work to each other instead of you copy-pasting between them.",
     "It shares merged memory through supported hooks, or agents can read it with everett_core.",

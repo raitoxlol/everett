@@ -269,7 +269,7 @@ pub fn setup_hint(harness: &str) -> String {
         "omp" => "Run `everett install-hooks --omp --apply` and `everett install-mcp --omp --repair --apply`, then restart omp.".into(),
         "devin" => "Run `everett install-hooks --devin --apply` and `everett install-mcp --devin --repair --apply`, then restart devin.".into(),
         "hermes" => "Install and enable the native everett-hermes plugin (`hermes plugins install raitoxlol/everett#plugins/everett-hermes --no-enable && hermes plugins enable everett-hermes`) and restart Hermes so each session binds its own Everett identity.".into(),
-        "claude" | "codex" | "grok" => format!("{} binds automatically; rerun `everett install-mcp --{} --repair --apply` and restart it.", harness, harness),
+        "claude" | "codex" | "grok" | "muse" => format!("{} binds automatically; rerun `everett install-mcp --{} --repair --apply` and restart it.", harness, harness),
         _ => "Register Everett with `everett install-mcp --<harness> --apply` (it writes the right launcher), or set EVERETT_SESSION_ID in this MCP server's launch environment; see docs/mcp-identity.md.".into(),
     }
 }
@@ -282,6 +282,7 @@ const IDENTITY_ENV: &[(&str, &str)] = &[
     ("HERMES_SESSION_ID", "hermes"),
     ("PI_SESSION_FILE", "pi"),
     ("GROK_SESSION_ID", "grok"),
+    ("MUSE_SESSION_ID", "muse"),
 ];
 
 /// {session_id, harness, source} of the session running this process, if detectable.

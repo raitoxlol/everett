@@ -76,6 +76,14 @@ pub fn command_for(session: &Session, text: &str) -> Result<Vec<String>> {
             ])
         }
         "grok" => Ok(vec!["grok".into(), "--resume".into(), session.id.clone(), "-p".into(), text.into()]),
+        "muse" => Ok(vec![
+            "muse".into(),
+            "exec".into(),
+            "--session-id".into(),
+            session.id.clone(),
+            "--allow-workspace-switch".into(),
+            text.into(),
+        ]),
         "devin" => Ok(vec!["devin".into(), "--resume".into(), session.id.clone(), "--print".into(), text.into()]),
         other => Err(EverettError::new(2, format!("Unsupported harness: {}", other))),
     }

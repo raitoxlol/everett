@@ -11,6 +11,7 @@ pub(crate) fn stores() -> &'static [(&'static str, &'static str)] {
         ("hermes", ".hermes"),
         ("grok", ".grok/sessions"),
         ("devin", devin_adapter::DEFAULT_REL),
+        ("muse", ".local/share/muse"),
         ("t3code", ".t3/userdata/state.sqlite"),
     ]
 }
@@ -20,6 +21,8 @@ pub(crate) fn store_path(harness: &str, relative: &str) -> std::path::PathBuf {
         crate::adapters::pi::agent_dir().join("sessions")
     } else if harness == "hermes" {
         crate::adapters::hermes::profile_home(&home())
+    } else if harness == "muse" {
+        crate::adapters::muse::data_dir()
     } else {
         home().join(relative)
     }

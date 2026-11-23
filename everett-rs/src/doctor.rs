@@ -204,7 +204,7 @@ pub fn run(hours: f64) -> i32 {
     }
 
     println!("hooks:");
-    for harness in ["claude", "codex", "omp", "grok"] {
+    for harness in ["claude", "codex", "omp", "grok", "muse"] {
         if !seen.iter().any(|h| h == harness) {
             continue;
         }
@@ -246,7 +246,7 @@ pub fn run(hours: f64) -> i32 {
         problems += 1;
     }
     line(&mut warnings, Some(ok), &format!("  server: {}", detail));
-    let mcp_harnesses: Vec<&str> = ["claude", "codex", "omp", "grok", "devin"]
+    let mcp_harnesses: Vec<&str> = ["claude", "codex", "omp", "grok", "devin", "muse"]
         .iter()
         .filter(|h| seen.iter().any(|s| s == *h) || crate::install::mcp_path(h).exists())
         .cloned()

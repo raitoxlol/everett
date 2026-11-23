@@ -45,6 +45,15 @@ const HOOKS: &[(&str, &[HookSpec])] = &[
         "devin",
         &[("SessionStart", "devin_bind", 3), ("UserPromptSubmit", "devin_bind", 3)],
     ),
+    (
+        "muse",
+        &[
+            ("SessionStart", "muse_session_start", 3),
+            ("Stop", "muse_stop", 3),
+            ("UserPromptSubmit", "muse_inbox", 3),
+            ("PostToolUse", "muse_inbox", 3),
+        ],
+    ),
 ];
 
 fn hooks_for(harness: &str) -> &'static [(&'static str, &'static str, i64)] {
@@ -78,6 +87,7 @@ pub fn settings_path(harness: &str) -> PathBuf {
         "claude" => ".claude/settings.json",
         "codex" => ".codex/hooks.json",
         "devin" => return mcp_path("devin").with_file_name("config.json"),
+        "muse" => return home().join(".config").join("muse").join("settings.json"),
         _ => ".grok/hooks/everett.json",
     })
 }
@@ -94,9 +104,12 @@ pub fn pi_extension_source() -> String {
 pub fn harness_present(harness: &str) -> bool {
     let dir = match harness {
         "devin" => mcp_path("devin").parent().map(PathBuf::from).unwrap_or_default(),
+        "muse" => home().join(".config").join("muse"),
         other => home().join(format!(".{}", other)),
     };
-    dir.is_dir() || crate::proc::which(harness, &std::env::var("PATH").unwrap_or_default()).is_some()
+    dir.is_dir()
+        || (harness == "muse" && crate::adapters::muse::data_dir().join("session-index.db").is_file())
+        || crate::proc::which(harness, &std::env::var("PATH").unwrap_or_default()).is_some()
 }
 
 pub fn omp_extension_path() -> PathBuf {
@@ -384,6 +397,7 @@ pub fn snippet(harness: &str) -> String {
         "claude" => "# merge into ~/.claude/settings.json (keep your existing hooks)".to_string(),
         "codex" => "# merge into ~/.codex/hooks.json; Codex needs `hooks = true` in ~/.codex/config.toml\n# and asks you to trust new hooks on first run".to_string(),
         "devin" => format!("# merge into {} (keep your existing hooks)", settings_path("devin").display()),
+        "muse" => format!("# merge into {} under \"hooks\" (keep your existing hooks and mcp_servers)", settings_path("muse").display()),
         _ => "# write ~/.grok/hooks/everett.json (Grok loads every file in ~/.grok/hooks/)".to_string(),
     };
     let mut body = Map::new();
@@ -418,7 +432,11 @@ pub fn apply(harness: &str, events: Option<&[String]>) -> std::result::Result<St
         ));
     }
     let path = settings_path(harness);
-    let data = load(&path)?;
+    let mut data = load(&path)?;
+    if harness == "muse" && data.get("schema_version").is_none() {
+        // Muse refuses every command on a settings file without schema_version 1.
+        data.insert("schema_version".into(), json!(1));
+    }
     let (merged, added, migrated) = merge(&data, harness, events)?;
     if added.is_empty() && migrated.is_empty() {
         return Ok(format!("{}: already installed ({})", harness, path.display()));
@@ -461,7 +479,11 @@ fn mcp_json_entry(harness: &str) -> Map<String, Value> {
     let (command, _, env) = mcp_launch();
     let args = mcp_args(harness);
     let mut entry = Map::new();
-    entry.insert("type".into(), json!("stdio"));
+    if harness == "muse" {
+        entry.insert("transport".into(), json!("stdio"));
+    } else {
+        entry.insert("type".into(), json!("stdio"));
+    }
     entry.insert("command".into(), json!(command));
     entry.insert("args".into(), json!(args));
     if !env.is_empty() {
@@ -490,6 +512,7 @@ pub fn mcp_path(harness: &str) -> PathBuf {
             };
             root.join("devin").join("mcp_config.json")
         }
+        "muse" => home().join(".config").join("muse").join("settings.json"),
         _ => home().join(".omp").join("agent").join("mcp.json"),
     }
 }
@@ -537,8 +560,13 @@ pub fn mcp_config(harness: &str) -> std::result::Result<Map<String, Value>, Stri
     load(&path)
 }
 
+/// JSON config files that keep MCP servers under `mcp_servers` instead of `mcpServers`.
+fn mcp_snake_key(harness: &str) -> bool {
+    TOML_MCP.contains(&harness) || harness == "muse"
+}
+
 pub fn mcp_entry(harness: &str, data: &Map<String, Value>) -> std::result::Result<Option<Value>, String> {
-    let key = if TOML_MCP.contains(&harness) { "mcp_servers" } else { "mcpServers" };
+    let key = if mcp_snake_key(harness) { "mcp_servers" } else { "mcpServers" };
     match data.get(key) {
         None => return Ok(None),
         Some(v) if !v.is_object() => return Err(format!("{} must be an object", key)),
@@ -736,6 +764,17 @@ pub fn mcp_snippet(harness: &str) -> String {
             )
         }
         "codex" => format!("# append to ~/.codex/config.toml\n{}", codex_block()),
+        "muse" => {
+            let mut entry = Map::new();
+            let mut servers = Map::new();
+            servers.insert("everett".into(), Value::Object(mcp_json_entry(harness)));
+            entry.insert("mcp_servers".into(), Value::Object(servers));
+            format!(
+                "# merge into {}\n{}\n",
+                mcp_path(harness).display(),
+                serde_json::to_string_pretty(&entry).unwrap()
+            )
+        }
         "grok" => {
             let env_flags = env
                 .iter()
@@ -818,14 +857,15 @@ pub fn apply_mcp(harness: &str, repair: bool) -> std::result::Result<String, Str
         write_preserving_mode(&path, &updated).map_err(|e| e.to_string())?;
     } else {
         let mut data = data.clone();
-        match data.get("mcpServers") {
+        let key = if mcp_snake_key(harness) { "mcp_servers" } else { "mcpServers" };
+        match data.get(key) {
             None => {}
             Some(v) if !v.is_object() => {
-                return Err(format!("\"mcpServers\" in {} is not an object", path.display()))
+                return Err(format!("\"{}\" in {} is not an object", key, path.display()))
             }
             _ => {}
         }
-        let servers = data.entry("mcpServers".to_string()).or_insert(Value::Object(Map::new()));
+        let servers = data.entry(key.to_string()).or_insert(Value::Object(Map::new()));
         let servers = servers.as_object_mut().unwrap();
         if old.as_ref().map(|o| o == &Value::Object(entry.clone())).unwrap_or(false) {
             return Ok(format!("{}: everett MCP server already registered ({})", harness, path.display()));

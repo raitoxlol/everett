@@ -34,8 +34,8 @@
 
 | Area | Current support and limits |
 | --- | --- |
-| Local CLIs (7) | Claude Code · Codex · OMP · Pi · Hermes Agent · Grok CLI · Devin CLI. Read-only discovery, headless resume and spawn, plus native hooks, extensions, or the Hermes plugin where supported. |
-| GUI and cloud | T3 Code threads are recognized through their underlying harness sessions. OpenAI dots and Grok Bot connect through registered external MCP inboxes. ChatGPT uses the [Everett hosted plugin](plugins/everett/README.md), Everett Local, or gateway HTTPS / Secure MCP Tunnel ([ChatGPT setup](docs/chatgpt.md)). Hark and Muse compatibility is unverified. |
+| Local CLIs (8) | Claude Code · Codex · OMP · Pi · Hermes Agent · Grok CLI · Devin CLI · Muse Code. Read-only discovery, headless resume and spawn, plus native hooks, extensions, or the Hermes plugin where supported. |
+| GUI and cloud | T3 Code threads are recognized through their underlying harness sessions. OpenAI dots and Grok Bot connect through registered external MCP inboxes. ChatGPT uses the [Everett hosted plugin](plugins/everett/README.md), Everett Local, or gateway HTTPS / Secure MCP Tunnel ([ChatGPT setup](docs/chatgpt.md)). Muse Code is supported as a local CLI below; the Meta Muse VM agent and Hark compatibility is unverified. |
 | Wake support | Claude Code has native local wake and an optional relay receiver policy. Dots and Grok Bot can use owner-configured webhook nudges. Other harnesses use headless resume or inbox pickup. See [agent support and wake](docs/agent-support.md). |
 | Proof bar | The maintainer waived the v2.2.0 live proof bar; live same-org, cross-org, and external-binding evidence is not recorded. See [proof-bar status](docs/v2.2-proof-bar.md) and [Grok Bot 0.77 reachability](docs/grok-bot.md#grok-bot-077-reachability). |
 
@@ -182,6 +182,7 @@ preserving every other key). The same step has a "merge shared memory nightly" t
 Everett reads the session stores the harnesses already write: `~/.claude/projects`,
 `~/.codex/sessions`, `~/.omp/agent/sessions`, `~/.pi/agent/sessions`, `~/.grok/sessions`,
 Hermes' `state.db` files, the Devin CLI's `sessions.db` (plus `transcripts/*.json`),
+Muse Code's `~/.local/share/muse/session-index.db` (honors `XDG_DATA_HOME`),
 and T3 Code's `~/.t3/userdata/statev2.sqlite` (legacy `state.sqlite` fallback). Every database is opened read-only.
 
 Cloud agents use explicit local registrations and the native restricted MCP gateway, not fabricated
@@ -295,9 +296,9 @@ Done. MAX_RETRIES is now 5 and the backoff test covers the cap.
 | `everett cards [--regenerate-auto] [--dry-run] [--hours N]` | Card coverage per harness; optionally refresh existing automatic cards. |
 | `everett skills [QUERY] [--match TASK] [--get NAME] [--source S] [--shortlist] [--json]` | The skill hub over every harness's `SKILL.md` playbooks. `--match` prints the one skill that fits a task (exit 1 when none does); `--get` prints a named skill from the best source that has it; `--shortlist` shows what sessions in this project are told up front; a bare query lists. |
 | `everett onboard [--yes] [--span-days N] [--no-backfill] [--no-mcp]` | Human setup TUI (welcome, account approval, agents, guides, review/apply and instruction prompt; optional settings under Advanced); `--yes` runs it non-interactively for scripts. |
-| `everett install-hooks [--claude] [--codex] [--omp] [--grok] [--pi] [--devin] [--apply]` | Prints the hook registrations. `--apply` backs up the file, then merges idempotently. |
+| `everett install-hooks [--claude] [--codex] [--omp] [--grok] [--pi] [--devin] [--muse] [--apply]` | Prints the hook registrations. `--apply` backs up the file, then merges idempotently. |
 | `everett mcp [--harness H]` | Runs the stdio MCP server (harnesses start it; see below). Tool calls require `everett login`. |
-| `everett install-mcp [--claude] [--codex] [--omp] [--grok] [--devin] [--pi] [--hermes] [--repair] [--apply]` | Prints or registers MCP. Pi uses its extension; `--hermes` prints native-plugin install/enable guidance plus a manual stdio fallback, but does not edit Hermes config or support `--apply`. Use one setup path. `--repair --apply` refreshes stale registrations. |
+| `everett install-mcp [--claude] [--codex] [--omp] [--grok] [--devin] [--pi] [--hermes] [--muse] [--repair] [--apply]` | Prints or registers MCP. Pi uses its extension; `--hermes` prints native-plugin install/enable guidance plus a manual stdio fallback, but does not edit Hermes config or support `--apply`. Use one setup path. `--repair --apply` refreshes stale registrations. |
 | `everett doctor` | Installed CLIs, stores, hooks, live stdio/MCP registration checks, cards, router, and account diagnostics; when Hermes is present, also checks the active profile's native plugin and duplicate manual MCP entry. SSH revocation remains explicit. |
 | `everett learn "<fact>" [--project P] [--scope global\|project] [--key K]` | Queues a fact for shared core and saves it to `memory.db` (see [Shared core](#shared-core-one-mind-many-sessions)). Add `--ttl-seconds N` (1 to 31536000) to keep it only in local memory search until expiry. `--key` names a fact that changes, such as `user.editor`, so a new value replaces the old one in memory search. Secrets are rejected. |
 | `everett recall "<query>" [--project P] [--scope global\|project] [--limit N] [--json] [--explain]` | Searches every learned fact in `memory.db` with word, stem, and typo-tolerant matching. Defaults to the current or named project plus global, five results (`--limit` 1 to 50). `--explain` shows each score. |
@@ -329,6 +330,7 @@ transcripts support recent user/assistant reads; Devin SQLite sessions do not ye
 | Hermes Agent | `hermes -p <profile> chat --resume <id> -Q -q <text>` | `hermes chat -Q -q <text>` |
 | Grok CLI | `grok --resume <id> -p <text>` | `grok --session-id <new uuid> -p <text>` |
 | Devin CLI | `devin --resume <id> --print <text>` | `devin -p <text>` |
+| Muse Code | `muse exec --session-id <id> --allow-workspace-switch <text>` | `muse exec <text>` |
 | T3 Code | Inbox; hooks where supported, otherwise explicit MCP polling; no CLI resume | not supported |
 | OpenAI dots / Grok Bot | Registered external inbox via owner-authorized MCP; no provider resume. Optional owner webhook nudge: [Wake a Grok Bot](#wake-a-grok-bot). | not supported |
 

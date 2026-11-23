@@ -218,6 +218,36 @@ fn stop_event_inner(raw: &str, harness: &str) {
     crate::events::maybe_escalate(None);
 }
 
+/// Muse's Stop payload carries `transcript_path: null`; resolve the session
+/// log from the session index, then run the common card/event hooks.
+pub fn muse_stop_hook(raw: &str) {
+    let _ = muse_stop_inner(raw);
+}
+
+fn muse_stop_inner(raw: &str) -> Option<()> {
+    let data: Value = serde_json::from_str(raw).ok()?;
+    let map = data.as_object()?;
+    let session_id = map.get("session_id").and_then(|v| v.as_str()).unwrap_or("");
+    static SID_RE: OnceLock<Regex> = OnceLock::new();
+    let sid_re = SID_RE.get_or_init(|| Regex::new(r"^[A-Za-z0-9._-]+$").unwrap());
+    if session_id.is_empty() || !sid_re.is_match(session_id) {
+        return None;
+    }
+    if let Some(path) = crate::adapters::muse::transcript_path(session_id) {
+        stop_hook_inner(
+            &serde_json::to_string(&json!({
+                "session_id": session_id,
+                "transcript_path": path.to_string_lossy(),
+                "cwd": map.get("cwd").and_then(|v| v.as_str()).unwrap_or(""),
+            }))
+            .unwrap_or_default(),
+            "muse",
+        );
+    }
+    stop_event_inner(raw, "muse");
+    Some(())
+}
+
 /// Grok's Stop payload -> the common stop hook (it has no transcript path of its own).
 pub fn grok_stop_hook(raw: &str) {
     let _ = grok_stop_inner(raw);
@@ -368,6 +398,12 @@ fn hook_main_inner(stem: &str, args: &[String]) -> i32 {
                 emit(&format!("{out}\n"));
             }
         }
+        "muse_session_start" => {
+            let out = session_start_output(&stdin_raw());
+            if !out.is_empty() {
+                emit(&format!("{out}\n"));
+            }
+        }
         "claude_stop" => {
             let raw = stdin_raw();
             stop_hook(&raw, "claude");
@@ -391,8 +427,15 @@ fn hook_main_inner(stem: &str, args: &[String]) -> i32 {
             }
         }
         "grok_stop" => grok_stop_hook(&stdin_raw()),
+        "muse_stop" => muse_stop_hook(&stdin_raw()),
         "grok_inbox" => {
             let out = deliver_output(&stdin_raw(), "grok");
+            if !out.is_empty() {
+                emit(&format!("{out}\n"));
+            }
+        }
+        "muse_inbox" => {
+            let out = deliver_output(&stdin_raw(), "muse");
             if !out.is_empty() {
                 emit(&format!("{out}\n"));
             }

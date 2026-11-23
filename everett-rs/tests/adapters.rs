@@ -293,3 +293,48 @@ fn pasted_content_counts_as_user_text() {
     let _l = fx.ls_json(); let s = session(&_l, "p-1");
     assert_eq!(s["first_user"], "Help me orchestrate work");
 }
+
+#[test]
+fn muse_store_listed() {
+    let fx = fixture();
+    let data = fx.home().join(".local/share/muse");
+    let log_dir = data.join("sessions/2026/11/23/m-1");
+    std::fs::create_dir_all(&log_dir).unwrap();
+    let log = log_dir.join("session.jsonl");
+    let intent = |text: &str| {
+        json!({
+            "payload_type": "runtime.user_intent.accepted",
+            "payload": {"model_messages": [{"content": [{"kind": "text", "text": text}]}]}
+        })
+        .to_string()
+    };
+    std::fs::write(&log, format!("{}\n{}\n", intent("fix the muse adapter"), intent("now add tests"))).unwrap();
+    let db = data.join("session-index.db");
+    let con = rusqlite::Connection::open(&db).unwrap();
+    let now_us = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_micros() as i64;
+    con.execute_batch(
+        "CREATE TABLE sessions (
+            session_id TEXT PRIMARY KEY, session_stream_id TEXT, session_dir TEXT,
+            session_log_path TEXT, layout TEXT, workspace_root TEXT, workspace_key TEXT,
+            provider_id TEXT, model_id TEXT, git_branch TEXT, title TEXT,
+            first_user_prompt TEXT, created_at_us INTEGER, updated_at_us INTEGER);",
+    )
+    .unwrap();
+    con.execute(
+        "INSERT INTO sessions (session_id, session_stream_id, session_dir, session_log_path,
+            layout, workspace_root, title, first_user_prompt, created_at_us, updated_at_us)
+         VALUES ('m-1','s-1',?1,?2,'v1','/work/muse','Muse task','fix the muse adapter',?3,?3)",
+        rusqlite::params![log_dir.to_string_lossy().to_string(), log.to_string_lossy().to_string(), now_us - 60_000_000],
+    )
+    .unwrap();
+    drop(con);
+    let _l = fx.ls_json(); let s = session(&_l, "m-1");
+    assert_eq!(s["harness"], "muse");
+    assert_eq!(s["cwd"], "/work/muse");
+    assert_eq!(s["title"], "Muse task");
+    assert_eq!(s["first_user"], "fix the muse adapter");
+    assert_eq!(s["last_user"], "now add tests");
+}

@@ -315,7 +315,17 @@ fn spawn_commands() {
     assert_eq!(spawn_command("claude", "hi", "u-1", "").unwrap(), ["claude", "--session-id", "u-1", "--print", "hi"]);
     assert_eq!(spawn_command("codex", "hi", "", "/t/o").unwrap(), ["codex", "exec", "--skip-git-repo-check", "-o", "/t/o", "hi"]);
     assert_eq!(spawn_command("omp", "hi", "", "").unwrap(), ["omp", "-p", "hi"]);
+    assert_eq!(spawn_command("muse", "hi", "", "").unwrap(), ["muse", "exec", "hi"]);
     assert!(spawn_command("vim", "hi", "", "").is_err());
+}
+
+#[test]
+fn muse_resume_command() {
+    let s = Session::new("muse", "m-1", "/work/muse", "", "", 0.0);
+    assert_eq!(
+        command_for(&s, "go").unwrap(),
+        ["muse", "exec", "--session-id", "m-1", "--allow-workspace-switch", "go"]
+    );
 }
 
 fn bin_env(bin: &Path) -> HashMap<String, String> {

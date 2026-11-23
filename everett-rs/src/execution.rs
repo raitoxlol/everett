@@ -58,6 +58,7 @@ pub fn spawn_command(harness: &str, text: &str, session_id: &str, out_file: &str
             vec!["grok".into(), "--session-id".into(), session_id.into(), "-p".into(), text.into()]
         }),
         "devin" => Ok(vec!["devin".into(), "-p".into(), text.into()]),
+        "muse" => Ok(vec!["muse".into(), "exec".into(), text.into()]),
         other => Err(EverettError::new(
             2,
             format!("Cannot spawn harness {:?}; choose one of {}.", other, crate::harness::SPAWNABLE.join(", ")),
