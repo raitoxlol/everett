@@ -25,6 +25,13 @@
 - Resolve inferred project-scoped memory to the enclosing Git repository from deeply nested directories; outside a repository, keep the current-directory-name fallback (#238).
 - Fix regeneration of Grok CLI AUTO cards from their session transcripts (#240).
 - Fix docs-site search results so heading links target the rendered section anchors (#240).
+- Cap CLI `everett send` and `spawn` subprocess waits at one year (#260).
+- Strip `Next steps:` as well as `Next step:` when deriving a card's next step (#260).
+- Name the Devin config file in the `install-hooks --devin` snippet (#260).
+- Keep the existing file mode when `install-mcp --codex --apply` rewrites `~/.codex/config.toml` (#260).
+- Read `SKILL.md` name, description, and body correctly when the file starts with a UTF-8 BOM (#260).
+- Match coordinator routing terms only at the start of a word, so words that merely contain a term no longer mark a session as a coordinator (#260).
+- Show the latest non-empty user message for Hermes sessions, skipping empty user rows (#260).
 
 ## 2.4.0
 
