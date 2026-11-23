@@ -79,6 +79,7 @@ fn lock(path: &Path) -> Result<fs::File> {
     let file = fs::OpenOptions::new()
         .create(true)
         .write(true)
+        .truncate(true)
         .open(&lock_path)
         .map_err(|e| EverettError::new(4, format!("cannot lock {}: {e}", lock_path.display())))?;
     file.lock_exclusive()
