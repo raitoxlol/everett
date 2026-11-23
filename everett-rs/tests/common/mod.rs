@@ -57,6 +57,7 @@ impl Fixture {
             .env_remove("EVERETT_SKILL_DIRS")
             .env_remove("EVERETT_MEMORY_DB")
             .env_remove("TERESIS_DB");
+        scrub_sandbox(&mut cmd);
         scrub_caller_identity(&mut cmd);
         cmd
     }
