@@ -346,8 +346,8 @@ inlineMarkdown.use({ renderer: inlineRenderer });
 const readingMinutes = (md) => Math.max(1, Math.round(md.split(/\s+/).filter(Boolean).length / 220));
 const groupNo = (g) => String(groups.indexOf(g) + 1).padStart(2, '0');
 
-// The Everett pixel mark from raitox.tech/everett.
-const PI = (cls = 'pi') => `<svg class="${cls}" viewBox="0 0 16 16" aria-hidden="true" shape-rendering="crispEdges"><path fill="currentColor" d="M7 6h2v1h-2zM3 7h10v1h-10zM3 8h1v1h-1zM7 8h2v1h-2zM12 8h1v1h-1zM3 9h1v1h-1zM7 9h2v1h-2zM12 9h1v1h-1zM1 10h4v1h-4zM6 10h4v1h-4zM11 10h4v1h-4zM1 11h1v1h-1zM4 11h1v1h-1zM6 11h1v1h-1zM9 11h1v1h-1zM11 11h1v1h-1zM14 11h1v1h-1zM1 12h1v1h-1zM4 12h1v1h-1zM6 12h1v1h-1zM9 12h1v1h-1zM11 12h1v1h-1zM14 12h1v1h-1zM1 13h4v1h-4zM6 13h4v1h-4zM11 13h4v1h-4z"/><path class="o" d="M3 1h10v1h-10zM2 2h1v1h-1zM13 2h1v1h-1zM2 3h1v1h-1zM4 3h6v1h-6zM13 3h1v1h-1zM2 4h1v1h-1zM13 4h1v1h-1zM3 5h10v1h-10z"/></svg>`;
+// Canonical Everett M6 Many-Worlds Horizon Balloon mark (brand/assets/everett-mark.svg).
+const PI = (cls = 'pi') => `<svg class="${cls}" viewBox="0 0 128 128" fill="none" aria-hidden="true"><path class="o" d="M23.22 54.00H104.78Q106.58 54.00 106.29 52.20A43.00 43.00 0 0 0 21.71 52.20Q21.42 54.00 23.22 54.00Z"/><path fill="currentColor" d="M13.50 62.00H114.50A3.50 3.50 0 0 1 114.50 69.00H35.51A4.00 4.00 0 0 0 35.51 77.00H100.90Q103.50 77.00 102.57 79.00A43.00 43.00 0 0 1 85.50 97.24L66.75 108.06A5.50 5.50 0 0 1 61.25 108.06L42.50 97.24A43.00 43.00 0 0 1 37.68 94.00Q35.28 92.00 37.88 92.00H84.13A4.00 4.00 0 0 0 84.13 84.00H30.92Q28.32 84.00 27.05 82.00A43.00 43.00 0 0 1 22.95 72.80Q21.95 69.00 18.15 69.00H13.50A3.50 3.50 0 0 1 13.50 62.00Z"/></svg>`;
 
 function navHtml(root, current) {
   return groups.map((g) => `
@@ -378,9 +378,10 @@ function layout({ root, title, description, current, body, mdHref, bodyClass = '
 <meta name="color-scheme" content="dark">
 <meta property="og:title" content="${esc(title)}">
 <meta property="og:description" content="${esc(description)}">
+<meta property="og:image" content="${SITE_URL ? `${SITE_URL}/` : root}assets/og-card.png">
 ${mdHref ? `<link rel="alternate" type="text/markdown" href="${esc(mdHref)}" title="Markdown">\n` : ''}<link rel="alternate" type="text/plain" href="${root}llms.txt" title="llms.txt">
 <link rel="icon" href="${root}assets/favicon.svg" type="image/svg+xml">
-<link rel="preload" href="${root}assets/fonts/Geist-var.woff2" as="font" type="font/woff2" crossorigin>
+<link rel="preload" href="${root}assets/fonts/Sora-var.woff2" as="font" type="font/woff2" crossorigin>
 <link rel="stylesheet" href="${root}assets/style.css">
 </head>
 <body class="${bodyClass}" data-root="${root}">

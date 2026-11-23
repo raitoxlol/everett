@@ -1,25 +1,43 @@
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/assets/brand/everett-hero-dark.svg" />
+    <source media="(prefers-color-scheme: light)" srcset="docs/assets/brand/everett-hero-light.svg" />
+    <img alt="Everett: one layer above all your coding-agent sessions" src="docs/assets/brand/everett-hero-light.svg" width="560" />
+  </picture>
+</p>
+
+<h3 align="center">One layer above all your coding-agent sessions.</h3>
+
+<p align="center">
+  Route requests, messages, <code>SKILL.md</code> playbooks, and shared memory across your coding-agent sessions from a CLI or MCP client.
+</p>
+
+<p align="center">
+  <a href="https://github.com/raitoxlol/everett/releases"><img alt="Release" src="https://img.shields.io/github/v/release/raitoxlol/everett?style=flat-square&color=b64f1a&labelColor=242825" /></a>
+  <a href="https://github.com/raitoxlol/everett/actions/workflows/rust.yml"><img alt="Rust CI" src="https://img.shields.io/github/actions/workflow/status/raitoxlol/everett/rust.yml?style=flat-square&label=CI&labelColor=242825&color=216b4c" /></a>
+  <img alt="Rust 1.89+" src="https://img.shields.io/badge/Rust-1.89%2B-b64f1a?style=flat-square&labelColor=242825" />
+  <img alt="Platforms" src="https://img.shields.io/badge/platform-macOS%20%7C%20Linux-5d625d?style=flat-square&labelColor=242825" />
+  <img alt="MCP Tools" src="https://img.shields.io/badge/MCP-18%20tools-b64f1a?style=flat-square&labelColor=242825" />
+  <a href="LICENSE"><img alt="License: MIT" src="https://img.shields.io/badge/license-MIT-216b4c?style=flat-square&labelColor=242825" /></a>
+</p>
+
+<p align="center">
+  <a href="#quickstart">Quickstart</a> ·
+  <a href="#demo">Demo</a> ·
+  <a href="#for-agents-mcp">MCP (18 tools)</a> ·
+  <a href="docs/agent-support.md">Agent Support</a> ·
+  <a href="docs/relay-threat-model.md">Threat Model</a> ·
+  <a href="CHANGELOG.md">Changelog</a>
+</p>
+
 # Everett
 
-Route requests, messages, and shared memory across your coding-agent sessions—from a CLI or MCP client.
-
-**Works with:** Claude Code · Codex · OMP · Pi · Hermes Agent · Grok CLI · Devin CLI.
-T3 Code threads are recognized through their underlying harness sessions.
-OpenAI dots and Grok Bot connect through registered external MCP inboxes.
-Hark and Muse compatibility is unverified.
-
-The [Everett hosted plugin](plugins/everett/README.md) builds one versioned package
-around one existing owner app, with no desktop interaction during builds.
-Everett Local packages the installed runtime for local plugin clients. ChatGPT
-custom MCP connections use the gateway over HTTPS or Secure MCP Tunnel. See
-[ChatGPT setup, supported modes, and verification](docs/chatgpt.md).
-
-**Wake support:** Claude Code has native local wake and an optional relay receiver policy.
-Dots and Grok Bot can use owner-configured webhook nudges. Other harnesses use
-headless resume or inbox pickup. See [agent support and wake](docs/agent-support.md).
-
-The maintainer waived the v2.2.0 live proof bar; live same-org, cross-org, and
-external-binding evidence is not recorded. See the [proof-bar status](docs/v2.2-proof-bar.md).
-See also [Grok Bot 0.77 reachability](docs/grok-bot.md#grok-bot-077-reachability).
+| Area | Current support and limits |
+| --- | --- |
+| Local CLIs (7) | Claude Code · Codex · OMP · Pi · Hermes Agent · Grok CLI · Devin CLI. Read-only discovery, headless resume and spawn, plus native hooks, extensions, or the Hermes plugin where supported. |
+| GUI and cloud | T3 Code threads are recognized through their underlying harness sessions. OpenAI dots and Grok Bot connect through registered external MCP inboxes. ChatGPT uses the [Everett hosted plugin](plugins/everett/README.md), Everett Local, or gateway HTTPS / Secure MCP Tunnel ([ChatGPT setup](docs/chatgpt.md)). Hark and Muse compatibility is unverified. |
+| Wake support | Claude Code has native local wake and an optional relay receiver policy. Dots and Grok Bot can use owner-configured webhook nudges. Other harnesses use headless resume or inbox pickup. See [agent support and wake](docs/agent-support.md). |
+| Proof bar | The maintainer waived the v2.2.0 live proof bar; live same-org, cross-org, and external-binding evidence is not recorded. See [proof-bar status](docs/v2.2-proof-bar.md) and [Grok Bot 0.77 reachability](docs/grok-bot.md#grok-bot-077-reachability). |
 
 ## Quickstart
 

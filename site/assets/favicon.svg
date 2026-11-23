@@ -1,1 +1,7 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" shape-rendering="crispEdges"><rect width="16" height="16" fill="#0E0C0B"/><path fill="#EDE6DC" d="M7 6h2v1h-2zM3 7h10v1h-10zM3 8h1v1h-1zM7 8h2v1h-2zM12 8h1v1h-1zM3 9h1v1h-1zM7 9h2v1h-2zM12 9h1v1h-1zM1 10h4v1h-4zM6 10h4v1h-4zM11 10h4v1h-4zM1 11h1v1h-1zM4 11h1v1h-1zM6 11h1v1h-1zM9 11h1v1h-1zM11 11h1v1h-1zM14 11h1v1h-1zM1 12h1v1h-1zM4 12h1v1h-1zM6 12h1v1h-1zM9 12h1v1h-1zM11 12h1v1h-1zM14 12h1v1h-1zM1 13h4v1h-4zM6 13h4v1h-4zM11 13h4v1h-4z"/><path fill="#FF5A1F" d="M3 1h10v1h-10zM2 2h1v1h-1zM13 2h1v1h-1zM2 3h1v1h-1zM4 3h6v1h-6zM13 3h1v1h-1zM2 4h1v1h-1zM13 4h1v1h-1zM3 5h10v1h-10z"/></svg>
+<svg viewBox="0 0 128 128" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <rect width="128" height="128" rx="28" fill="#0E0C0B"/>
+  <g transform="translate(16 16) scale(0.75)">
+    <path d="M23.22 54.00H104.78Q106.58 54.00 106.29 52.20A43.00 43.00 0 0 0 21.71 52.20Q21.42 54.00 23.22 54.00Z" fill="#FF5A1F"/>
+    <path d="M13.50 62.00H114.50A3.50 3.50 0 0 1 114.50 69.00H35.51A4.00 4.00 0 0 0 35.51 77.00H100.90Q103.50 77.00 102.57 79.00A43.00 43.00 0 0 1 85.50 97.24L66.75 108.06A5.50 5.50 0 0 1 61.25 108.06L42.50 97.24A43.00 43.00 0 0 1 37.68 94.00Q35.28 92.00 37.88 92.00H84.13A4.00 4.00 0 0 0 84.13 84.00H30.92Q28.32 84.00 27.05 82.00A43.00 43.00 0 0 1 22.95 72.80Q21.95 69.00 18.15 69.00H13.50A3.50 3.50 0 0 1 13.50 62.00Z" fill="#EDE6DC"/>
+  </g>
+</svg>
