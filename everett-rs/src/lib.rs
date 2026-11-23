@@ -25,6 +25,7 @@ pub mod harness;
 pub mod inbox;
 pub mod install;
 pub mod mcp;
+pub mod memory;
 pub mod messaging;
 pub mod onboard;
 pub mod onboard_handoff;
