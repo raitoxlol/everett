@@ -27,6 +27,7 @@ def install(destination, binary, portable=False):
     plugin.mkdir(parents=True, exist_ok=True)
     for name in ['.codex-plugin', 'skills', 'scripts']:
         shutil.copytree(SOURCE / name, plugin / name, dirs_exist_ok=True, ignore=shutil.ignore_patterns('__pycache__'))
+    shutil.copyfile(SOURCE / 'check.py', plugin / 'check.py')
     config = destination / 'runtime.json'
     config.write_text(json.dumps({'binary': str(selected)}, indent=2) + '\n')
     command = {'command': sys.executable, 'args': [str(plugin / 'scripts/launch.py'), '--config', str(config)]}
@@ -45,8 +46,9 @@ def install(destination, binary, portable=False):
     (market / 'marketplace.json').write_text(json.dumps({'name': 'everett-direct-local', 'interface': {'displayName': 'Everett Local'}, 'plugins': [{'name': 'everett-direct', 'source': {'source': 'local', 'path': './plugins/everett-direct'}, 'policy': {'installation': 'AVAILABLE', 'authentication': 'ON_INSTALL'}, 'category': 'Developer Tools'}]}, indent=2) + '\n')
     return {'marketplace': str(destination), 'plugin': str(plugin), 'runtime': str(selected), 'version': version,
             'portable': portable,
-            'next': 'Restart the ChatGPT or Codex app, start a new Codex-mode chat, and check that tool calls are '
-                    'named mcp__everett_local__*.' + (' ChatGPT desktop ignores the local server in --portable mode.' if portable else '')}
+            'next': 'Run plugins/everett-direct/check.py to verify the install, then restart the ChatGPT or Codex app, '
+                    'start a new Codex-mode chat, and check that tool calls are named mcp__everett_local__*.'
+                    + (' ChatGPT desktop ignores the local server in --portable mode.' if portable else '')}
 
 
 if __name__ == '__main__':
