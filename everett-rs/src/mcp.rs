@@ -266,7 +266,7 @@ pub fn tools() -> &'static Vec<Value> {
             json!({
                 "name": "everett_peers",
                 "description": "Paired remote devices. action=list (default) returns every paired SSH and relay peer with its transport config; action=sessions lists one peer's recent sessions over SSH (peer name required, harness/hours/all filter). Cloudflare peers have no remote ls; send to their sessions with everett_send instead.",
-                "annotations": {"readOnlyHint": true, "openWorldHint": false},
+                "annotations": {"readOnlyHint": true, "openWorldHint": true},
                 "inputSchema": {"type": "object", "properties": {
                     "action": {"type": "string", "enum": ["list", "sessions"], "default": "list"},
                     "peer": s("Peer name for action=sessions."),
@@ -284,6 +284,7 @@ pub fn tools() -> &'static Vec<Value> {
                     "mode": {"type": "string", "enum": crate::send::MODES, "description": "Delivery mode passed to each send (default ping)."},
                     "timeout": {"type": "number", "minimum": 1, "maximum": 1800, "description": "Per-target reply wait in seconds (default 300). Sends run sequentially."},
                     "wait": {"type": "number", "minimum": 0, "maximum": 1800, "description": "Explicit inbox mode: seconds to wait per target (default 0)."},
+                    "hours": hours_prop(),
                 }, "required": ["text", "targets"], "additionalProperties": false},
             }),
             json!({
@@ -1647,7 +1648,7 @@ fn tool_search(args: &Map<String, Value>) -> std::result::Result<Map<String, Val
     if terms.is_empty() {
         return Ok(Map::from_iter([("results".into(), json!([]))]));
     }
-    let sessions = crate::registry::scan(hours, include_auto, Some(crate::registry::CAP), &harness);
+    let sessions = crate::registry::scan(hours, include_auto, None, &harness);
     let mut scored: Vec<(f64, &Session, Vec<String>)> = sessions
         .iter()
         .filter_map(|s| {
@@ -1756,7 +1757,19 @@ fn tool_broadcast(
                 results.push(json!({"target": target, "ok": true, "result": value}));
             }
             Err(e) => {
-                results.push(json!({"target": target, "ok": false, "error": e.message()}));
+                let mut entry = Map::from_iter([
+                    ("target".into(), json!(target)),
+                    ("ok".into(), json!(false)),
+                    ("error".into(), json!(e.message())),
+                ]);
+                if let ToolFailure::Ping(failure) = &e {
+                    if let Some(receipt) = failure.recovery_receipt() {
+                        for (k, v) in receipt {
+                            entry.insert(k, v);
+                        }
+                    }
+                }
+                results.push(Value::Object(entry));
             }
         }
     }
