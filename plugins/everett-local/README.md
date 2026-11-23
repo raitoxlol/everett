@@ -19,7 +19,9 @@ codex plugin add everett-direct@everett-direct-local --json
 ```
 
 The installer checks the runtime before modifying the package and generates
-machine-specific paths under `~/.local/share/everett-direct-plugin`. No credentials
+machine-specific paths under `~/.local/share/everett-direct-plugin` (or
+`--destination`). It prints the exact `codex plugin` and `check.py` commands for
+that destination. No credentials
 are included. `EVERETT_BIN`, if set, must be an absolute executable path and pass
 the same version check. An invalid override fails instead of choosing a stale binary.
 The generated plugin has `.codex-plugin/plugin.json` and `.mcp.json`. Do not add
@@ -53,10 +55,17 @@ python3 "$HOME/.local/share/everett-direct-plugin/plugins/everett-direct/scripts
   --config "$HOME/.local/share/everett-direct-plugin/runtime.json" --doctor
 ```
 
-`check.py` verifies the installed layout without starting the MCP server: required
-files, no portable root manifests, the `.codex-plugin` and `.mcp.json` entries,
-the configured runtime (version check included), and marketplace registration.
+`check.py` verifies the install without starting the MCP server: required files,
+no portable root manifests, the `.codex-plugin` manifest, a `.mcp.json` entry that
+runs an executable Python with this plugin's `scripts/launch.py` and
+`runtime.json`, the configured runtime (version check included), the generated
+`marketplace.json`, and the Codex registration in `~/.codex/config.toml` (or
+`$CODEX_HOME/config.toml`): the `everett-direct-local` marketplace pointing at
+this install and the `everett-direct@everett-direct-local` plugin enabled.
 Each failed check prints its remedy; it exits nonzero until every check passes.
+It warns when a cached copy under
+`~/.codex/plugins/cache/everett-direct-local/everett-direct/` has a root
+`plugin.json`. With a custom `--destination`, run that install's `check.py`.
 It cannot prove the ChatGPT app loaded the server — only a real
 `mcp__everett_local__*` call in a fresh Codex-mode chat does that.
 

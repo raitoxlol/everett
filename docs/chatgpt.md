@@ -12,7 +12,7 @@ HTTPS or Secure MCP Tunnel. They have different installation and account checks.
 | Client or mode | Connection | Current evidence |
 | --- | --- | --- |
 | Codex with local plugin support | Everett Local, stdio | Installer, launcher, identity and listing verified with isolated fixtures. |
-| ChatGPT desktop, Codex mode | Everett Local, stdio | Verified 2026-11-10: fresh chat called `mcp__everett_local__everett_whoami` (bound session id) and `mcp__everett_local__everett_ls`. Requires an app restart after install and no root `plugin.json`. |
+| ChatGPT desktop, Codex mode | Everett Local, stdio | Verified 2026-11-10: fresh chat called `mcp__everett_local__everett_whoami` (bound session id) and `mcp__everett_local__everett_ls`. Requires an app restart after install and no root `plugin.json`. That check predates Everett Local 0.3.2; a fresh 0.3.2 check is pending ([issue 132](https://github.com/raitoxlol/everett/issues/132)). |
 | ChatGPT desktop, ChatGPT mode | — | Local plugins do not run here; use Codex mode. |
 | ChatGPT custom MCP connection | Existing HTTPS gateway or Secure MCP Tunnel | OAuth compatibility tests pass. A fresh ChatGPT identity/listing call remains required. |
 | ChatGPT web/mobile | Remote MCP connection | The local installer does not deploy a remote server or install into these clients. |
@@ -25,7 +25,7 @@ published as a release asset. From a checkout of this repository, follow the
 contains no runtime path or credentials. The installer validates your binary and
 generates the Codex/ChatGPT desktop manifest in a machine-local marketplace.
 Register that marketplace, install Everett Local, and run the installed `check.py`
-([layout check](../plugins/everett-local/README.md#check-startup)). Then **quit and
+([install check](../plugins/everett-local/README.md#check-startup)). Then **quit and
 reopen ChatGPT**, start a new chat in **Codex mode** and confirm the tool calls are
 named `mcp__everett_local__*`; `check.py` passing does not prove the app loaded the
 server. See the [step-by-step check](../plugins/everett-local/README.md#use-it-in-the-chatgpt-desktop-app).
@@ -68,9 +68,12 @@ executed neither identity nor listing. A separate hosted reconnect reached conse
 after the OAuth repair but still showed an expired connection after callback.
 These are open app verification gates, tracked in
 [issue 132](https://github.com/raitoxlol/everett/issues/132) and
-[issue 114](https://github.com/raitoxlol/everett/issues/114). Everett Local 0.3.2
-adds `check.py` and skill guidance that names the cause when no local tools appear;
-issue 132 stays open until a live client check passes.
+[issue 114](https://github.com/raitoxlol/everett/issues/114). ChatGPT mode is not
+a supported route for Everett Local; Codex mode is, and passed the 2026-11-10
+check in the table above, before 0.3.2. Everett Local 0.3.2 adds `check.py` and skill guidance
+that names the cause when no local tools appear. Issue 132 stays open until a
+fresh live Codex-mode check on Everett Local 0.3.2 passes in ChatGPT desktop; a
+passing `check.py` alone does not prove the app loaded the server.
 
 Public remote plugin submission requires a stable HTTPS MCP endpoint. Secure MCP
 Tunnel alone does not meet the public submission requirements in the official

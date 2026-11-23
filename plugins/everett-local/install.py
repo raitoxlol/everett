@@ -4,6 +4,7 @@ import argparse
 import importlib.util
 import json
 from pathlib import Path
+import shlex
 import shutil
 import sys
 
@@ -44,9 +45,12 @@ def install(destination, binary, portable=False):
     market = destination / '.agents/plugins'
     market.mkdir(parents=True, exist_ok=True)
     (market / 'marketplace.json').write_text(json.dumps({'name': 'everett-direct-local', 'interface': {'displayName': 'Everett Local'}, 'plugins': [{'name': 'everett-direct', 'source': {'source': 'local', 'path': './plugins/everett-direct'}, 'policy': {'installation': 'AVAILABLE', 'authentication': 'ON_INSTALL'}, 'category': 'Developer Tools'}]}, indent=2) + '\n')
+    commands = [f'codex plugin marketplace add {shlex.quote(str(destination))} --json',
+                'codex plugin add everett-direct@everett-direct-local --json',
+                f'python3 {shlex.quote(str(plugin / "check.py"))}']
     return {'marketplace': str(destination), 'plugin': str(plugin), 'runtime': str(selected), 'version': version,
-            'portable': portable,
-            'next': 'Run plugins/everett-direct/check.py to verify the install, then restart the ChatGPT or Codex app, '
+            'portable': portable, 'commands': commands,
+            'next': 'Run: ' + '; then '.join(commands) + '. Then quit and reopen the ChatGPT or Codex app, '
                     'start a new Codex-mode chat, and check that tool calls are named mcp__everett_local__*.'
                     + (' ChatGPT desktop ignores the local server in --portable mode.' if portable else '')}
 

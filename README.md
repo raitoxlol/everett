@@ -702,7 +702,7 @@ Everett is mostly used by agents. `everett mcp` is a native Rust stdio MCP serve
 | `everett_agent_send` | `agent`, `session`, `harness`, `text`, `idempotency_key` | Device-side encrypted send to an explicit named agent. No sender-requested wake or implicit routing; receiver policies are separate. |
 | `everett_agent_status` | `message_id` | Sender-only status from signed delivery/pickup/reply observations. |
 
-The `everett_send` MCP tool bounds `timeout` and `wait` to 1,800 seconds (30 minutes); values above that are capped. `wait` applies only to explicit `mode: "inbox"` and does not ping or wake the target. These MCP tool bounds do not add a 30-minute cap to the CLI `everett send` options. CLI `send` and `spawn` `--timeout` values must be finite and positive; subprocess waits are capped at one year.
+The `everett_send` MCP tool bounds `timeout` and `wait` to 1,800 seconds (30 minutes); values above that are capped. `wait` applies only to explicit `mode: "inbox"` and does not ping or wake the target. These MCP tool bounds do not add a 30-minute cap to the CLI `everett send` options. CLI `everett send` `--timeout` values, with or without `--spawn`, must be finite and positive; subprocess waits are capped at one year.
 
 See [agent-facing relay MCP](docs/agent-relay.md), [cross-device deployment](docs/cross-device.md)
 and [relay threat model](docs/relay-threat-model.md). Cloudflare binds account/agent identity;
