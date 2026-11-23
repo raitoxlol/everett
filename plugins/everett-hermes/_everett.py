@@ -371,6 +371,7 @@ FALLBACK_TOOLS: tuple[dict[str, Any], ...] = (
                 "mode": {"type": "string"},
                 "timeout": {"type": "number"},
                 "wait": {"type": "number"},
+                "hours": {"type": "number"},
             },
             "required": ["text", "targets"],
             "additionalProperties": False,
@@ -1004,6 +1005,21 @@ def _call_timeout_seconds(name: str, arguments: Mapping[str, Any]) -> float:
         idle_budget = SEND_IDLE_WAIT_SECONDS if mode in ("resume", "auto", "ping") else 0.0
         return min(
             max(reply_budget + idle_budget + TIMEOUT_HEADROOM_SECONDS, CALL_TIMEOUT_SECONDS),
+            MAX_SEND_TIMEOUT_SECONDS,
+        )
+
+    if name == "everett_broadcast":
+        targets = arguments.get("targets")
+        target_count = len(targets) if isinstance(targets, list) and targets else 1
+        mode = str(arguments.get("mode") or "ping").strip().lower()
+        if mode == "inbox":
+            per_target = _positive_number(arguments.get("wait")) or 0.0
+        else:
+            reply_budget = explicit_timeout if explicit_timeout is not None else SEND_REPLY_DEFAULT_SECONDS
+            idle_budget = SEND_IDLE_WAIT_SECONDS if mode in ("resume", "auto", "ping") else 0.0
+            per_target = reply_budget + idle_budget
+        return min(
+            max(per_target * target_count + TIMEOUT_HEADROOM_SECONDS, CALL_TIMEOUT_SECONDS),
             MAX_SEND_TIMEOUT_SECONDS,
         )
 
