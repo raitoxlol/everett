@@ -766,6 +766,7 @@ pub fn mcp_snippet(harness: &str) -> String {
         "codex" => format!("# append to ~/.codex/config.toml\n{}", codex_block()),
         "muse" => {
             let mut entry = Map::new();
+            entry.insert("schema_version".into(), json!(1));
             let mut servers = Map::new();
             servers.insert("everett".into(), Value::Object(mcp_json_entry(harness)));
             entry.insert("mcp_servers".into(), Value::Object(servers));
@@ -813,10 +814,19 @@ pub fn apply_mcp(harness: &str, repair: bool) -> std::result::Result<String, Str
     let data = mcp_config(harness)?;
     let old = mcp_entry(harness, &data)?;
     let legacy = old.as_ref().and_then(|o| o.as_object()).map(is_legacy_mcp).unwrap_or(false);
+    // Muse rejects a settings file without schema_version even when the MCP
+    // entry itself is already current, so repair it on any apply path.
+    let needs_schema = harness == "muse" && data.get("schema_version").is_none();
     if old.is_some() && !repair && !legacy {
         let (state, detail) = mcp_status(harness);
         if state != "ready" {
             return Err(format!("{}; run `everett install-mcp --{} --repair --apply`", detail, harness));
+        }
+        if needs_schema {
+            let mut fixed = data.clone();
+            fixed.insert("schema_version".into(), json!(1));
+            backup(&path);
+            write_json(&path, &fixed).map_err(|e| e.to_string())?;
         }
         return Ok(format!("{}: everett MCP server already registered ({})", harness, path.display()));
     }
@@ -857,6 +867,10 @@ pub fn apply_mcp(harness: &str, repair: bool) -> std::result::Result<String, Str
         write_preserving_mode(&path, &updated).map_err(|e| e.to_string())?;
     } else {
         let mut data = data.clone();
+        if harness == "muse" && data.get("schema_version").is_none() {
+            // Muse refuses every command on a settings file without schema_version 1.
+            data.insert("schema_version".into(), json!(1));
+        }
         let key = if mcp_snake_key(harness) { "mcp_servers" } else { "mcpServers" };
         match data.get(key) {
             None => {}
@@ -867,7 +881,7 @@ pub fn apply_mcp(harness: &str, repair: bool) -> std::result::Result<String, Str
         }
         let servers = data.entry(key.to_string()).or_insert(Value::Object(Map::new()));
         let servers = servers.as_object_mut().unwrap();
-        if old.as_ref().map(|o| o == &Value::Object(entry.clone())).unwrap_or(false) {
+        if !needs_schema && old.as_ref().map(|o| o == &Value::Object(entry.clone())).unwrap_or(false) {
             return Ok(format!("{}: everett MCP server already registered ({})", harness, path.display()));
         }
         servers.insert("everett".into(), Value::Object(entry));

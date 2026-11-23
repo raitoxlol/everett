@@ -186,6 +186,11 @@ pub fn resume_command(session: &Session, text: &str) -> String {
             cd,
             shlex_quote(&session.id)
         ),
+        "muse" => format!(
+            "{} && muse resume {}   # then paste the text",
+            cd,
+            shlex_quote(&session.id)
+        ),
         _ => format!("{} && omp -r {}   # then paste the text", cd, shlex_quote(&session.id)),
     }
 }
