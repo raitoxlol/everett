@@ -531,7 +531,9 @@ impl MemoryStore {
             if let Some((dup_id, dup_key, _)) = &dup {
                 let is_dup = key.is_none() || dup_key.as_deref() == key.as_deref();
                 if is_dup {
-                    if opts.update_expiry_on_duplicate {
+                    // Expiry updates are for unkeyed Everett facts: a temporary
+                    // relearn must never shorten the life of a keyed memory.
+                    if opts.update_expiry_on_duplicate && dup_key.is_none() {
                         c.execute(
                             "UPDATE memories SET access_count=access_count+1, updated_at=?, importance=max(importance, ?),\
                              pinned=max(pinned, ?), expires_at=? WHERE id=?",
@@ -1220,5 +1222,35 @@ mod tests {
         store.remember("after the race", &RememberOpts::default()).unwrap();
         let hits = store.recall("after the race", &RecallOpts::default()).unwrap();
         assert_eq!(hits.len(), 1);
+    }
+
+    #[test]
+    fn relearn_never_expires_a_keyed_memory() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("memory.db");
+        let clock = Arc::new(Mutex::new(1_700_000_000.0));
+        let mut store = store_at(&path, clock);
+        let keyed = store
+            .remember(
+                "the keyed fact",
+                &RememberOpts {
+                    key: Some("fact-key".to_string()),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        let res = store
+            .remember(
+                "the keyed fact",
+                &RememberOpts {
+                    ttl_days: Some(1.0),
+                    update_expiry_on_duplicate: true,
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        assert_eq!(res.status, "duplicate");
+        let row = store.get(&keyed.id).unwrap().unwrap();
+        assert!(row.expires_at.is_none(), "keyed memory gained an expiry");
     }
 }
