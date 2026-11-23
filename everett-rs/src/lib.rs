@@ -47,6 +47,7 @@ mod spawn_history;
 mod search_terms;
 mod nudge;
 pub mod t3_wake;
+pub mod teresis;
 pub mod timefmt;
 pub mod trunk;
 pub mod trunk_schedule;
