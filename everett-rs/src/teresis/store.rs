@@ -333,6 +333,22 @@ pub struct MemoryStore {
     clock: Box<dyn Fn() -> f64 + Send>,
 }
 
+/// Create the empty file SQLite initializes, tolerating a lost create race.
+fn create_empty_db(path: &Path) -> Result<()> {
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    match options.open(path) {
+        Ok(_) => Ok(()),
+        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => Ok(()),
+        Err(e) => Err(err(e)),
+    }
+}
+
 impl MemoryStore {
     pub fn open(path: &Path) -> Result<Self> {
         Self::open_with_clock(path, Box::new(crate::session::now))
@@ -343,20 +359,7 @@ impl MemoryStore {
             std::fs::create_dir_all(parent).map_err(err)?;
         }
         if !path.exists() {
-            #[cfg(unix)]
-            {
-                use std::os::unix::fs::OpenOptionsExt;
-                std::fs::OpenOptions::new()
-                    .write(true)
-                    .create_new(true)
-                    .mode(0o600)
-                    .open(path)
-                    .map_err(err)?;
-            }
-            #[cfg(not(unix))]
-            {
-                std::fs::OpenOptions::new().write(true).create_new(true).open(path).map_err(err)?;
-            }
+            create_empty_db(path)?;
         }
         let conn = Connection::open(path).map_err(err)?;
         let version: i64 = conn
@@ -819,7 +822,8 @@ impl MemoryStore {
             return self.browse(&base_where, base_params, opts.k, opts.budget_tokens, opts.touch);
         }
 
-        let now = opts.as_of.unwrap_or_else(|| self.now());
+        // Python `as_of or self.clock()`: 0.0 still means "now" for ranking.
+        let now = opts.as_of.filter(|a| *a != 0.0).unwrap_or_else(|| self.now());
         let tw = if w.temporal > 0.0 {
             temporal::parse_time_window(&query, now)
         } else {
@@ -1163,5 +1167,20 @@ mod tests {
         a.remember("more from a", &opts("global")).unwrap();
         let hits = b.recall("", &RecallOpts { k: 8, touch: false, ..Default::default() }).unwrap();
         assert_eq!(hits.len(), 3);
+    }
+
+    #[test]
+    fn create_empty_db_tolerates_a_lost_create_race() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("memory.db");
+        create_empty_db(&path).unwrap();
+        // A second creator finding the same file must not fail.
+        create_empty_db(&path).unwrap();
+        // A pre-created empty file is a valid new database.
+        let clock = Arc::new(Mutex::new(1_700_000_000.0));
+        let mut store = store_at(&path, clock);
+        store.remember("after the race", &RememberOpts::default()).unwrap();
+        let hits = store.recall("after the race", &RecallOpts::default()).unwrap();
+        assert_eq!(hits.len(), 1);
     }
 }

@@ -255,6 +255,7 @@ pub fn learn_keyed(text: &str, project: Option<&str>, scope: Option<&str>, cwd: 
             return Err(EverettError::new(2, "key must be 1 to 100 characters with no spaces."));
         }
     }
+    let key = key.map(str::trim);
     let text = validated_fact(text)?;
     if ttl_seconds.is_some_and(|ttl| !(1..=MAX_TTL_SECONDS).contains(&ttl)) {
         return Err(EverettError::new(2, "ttl_seconds must be an integer between 1 and 31536000 (one year)."));
@@ -516,6 +517,8 @@ pub fn change(change: CoreChange<'_>, project: Option<&str>, scope: Option<&str>
     result.insert("removed_store".into(), json!(removed_store));
     result.insert("expires_at".into(), json!(expires_at));
     result.insert("mirror".into(), mirror.map(|p| json!(p.to_string_lossy())).unwrap_or(Value::Null));
+    drop(_inbox_guard);
+    drop(_merge_guard);
     if changed {
         let scope_name = crate::memory::scope_name(scope.name(), scope.key());
         match replacement {

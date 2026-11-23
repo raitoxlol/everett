@@ -108,9 +108,11 @@ pub fn forget(text: &str, scope_name: &str) -> usize {
     let Ok(Some(mut store)) = open_existing(&path) else {
         return 0;
     };
+    // Stored content is scrubbed, so look up the scrubbed text.
+    let text = crate::teresis::secrets::redact_secrets(text).0;
     let mut removed = 0;
     loop {
-        match store.find(text, Some(scope_name)) {
+        match store.find(&text, Some(scope_name)) {
             Ok(Some(memory)) => match store.forget_id(&memory.id, false) {
                 Ok(n) => removed += n,
                 Err(_) => return 0,
@@ -126,10 +128,11 @@ pub fn correct(old: &str, new: &str, scope_name: &str, source: &str, meta: Value
     let Some(path) = db_path() else {
         return Value::Null;
     };
+    let scrubbed = crate::teresis::secrets::redact_secrets(old).0;
     let existing = open_existing(&path)
         .ok()
         .flatten()
-        .and_then(|store| store.find(old, Some(scope_name)).ok().flatten());
+        .and_then(|store| store.find(&scrubbed, Some(scope_name)).ok().flatten());
     let (replaces, key) = existing
         .map(|memory| (Some(memory.id), memory.key))
         .unwrap_or((None, None));

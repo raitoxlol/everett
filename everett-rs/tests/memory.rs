@@ -346,6 +346,38 @@ fn core_forget_and_correct_reach_memory() {
 }
 
 #[test]
+fn forget_and_correct_find_redacted_memories() {
+    let fx = fixture();
+    // Teresis redacts this token, but Everett's own filter accepts the fact.
+    let fact = format!("webhook signing secret {}{}", "whsec", "_AbCdEfGh12345678");
+    let out = fx.run(&["learn", &fact]);
+    assert_eq!(out.status.code(), Some(0), "{}", String::from_utf8_lossy(&out.stderr));
+    let con = rusqlite::Connection::open(db_path(&fx.home())).unwrap();
+    let stored: String = con.query_row("SELECT content FROM memories", [], |r| r.get(0)).unwrap();
+    assert!(stored.contains("[REDACTED:"), "{stored}");
+    drop(con);
+
+    let res = common::mcp_calls(&fx, &[], &[], &[("everett_core",
+        json!({"action": "forget", "fact": fact}))]);
+    assert_eq!(res[0]["isError"], false, "{}", res[0]);
+    assert_eq!(common::tool_json(&res[0])["memory_removed"], json!(1), "{}", res[0]);
+    let got = recall_json(&fx, &["webhook signing"]);
+    assert!(!memory_contents(&got).iter().any(|c| c.contains("webhook signing")), "{got}");
+
+    assert!(fx.run(&["learn", &fact]).status.success());
+    let res = common::mcp_calls(&fx, &[], &[], &[("everett_core",
+        json!({"action": "correct", "fact": fact, "replacement": "webhook signing secret rotated"}))]);
+    assert_eq!(res[0]["isError"], false, "{}", res[0]);
+    let got = recall_json(&fx, &["webhook signing"]);
+    assert!(memory_contents(&got).iter().any(|c| c == "webhook signing secret rotated"), "{got}");
+    let con = rusqlite::Connection::open(db_path(&fx.home())).unwrap();
+    let superseded: i64 = con.query_row(
+        "SELECT COUNT(*) FROM memories WHERE content LIKE '%[REDACTED:%' AND superseded_by IS NOT NULL",
+        [], |r| r.get(0)).unwrap();
+    assert_eq!(superseded, 1);
+}
+
+#[test]
 fn memory_off_and_broken_db_never_block_learning() {
     let fx = fixture();
     let out = fx.run_stdin(&["learn", "Fact while memory off"], "", &[("EVERETT_MEMORY_DB", "off")]);
