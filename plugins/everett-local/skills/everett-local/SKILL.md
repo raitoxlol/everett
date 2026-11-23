@@ -22,8 +22,10 @@ server such as `mcp__everett__*`, or startup fails, do not substitute hosted
 results or claim the local route worked. Distinguish the cause for the user:
 
 - No `everett_local` tools at all: the local server did not start. Run the
-  installed `check.py`, then have the user quit and reopen ChatGPT and start a
-  new Codex-mode chat. Regular (non-Codex) ChatGPT mode cannot run local
+  installed `check.py`
+  (`python3 "$HOME/.local/share/everett-direct-plugin/plugins/everett-direct/check.py"`
+  for the default install location), then have the user quit and reopen
+  ChatGPT and start a new Codex-mode chat. Regular (non-Codex) ChatGPT mode cannot run local
   plugins; use Codex mode there or the hosted Everett connector.
 - `mcp__everett__*` answers instead: a different Everett server is bound. The
   local plugin did not load for this thread; the result is not local-plugin

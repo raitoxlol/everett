@@ -13,7 +13,8 @@
 - Add the native Hermes plugin with per-session tools, inbox hooks, `/everett`, and opt-in local live wake (#247). Its portable Agent Plugins v1 fallback registers MCP only.
 - Add Hermes `/everett card` and `/everett sent`, reset/delete session cleanup, and active-profile plugin diagnostics with native install guidance (#253).
 - Add `everett_directory`, a read-only gateway and MCP tool that labels each authorized destination ID with its kind (session, T3 Code thread, registered conversation, or bare inbox), project, title, availability, and permitted actions, so a remote client resolves a named existing session or T3 Code thread to the exact `to` for `everett_send`. Gateway `everett_send` now accepts an exact T3 thread ID and resolves it to the thread's provider session inbox, reporting `resolved_from`/`resolved_to`; destinations outside the owner allowlist, agent-supplied `ids` arguments, and name/title targets remain rejected, and blocked sends name `everett_directory` as the recovery path (#255).
-- Everett Local 0.3.2: add `check.py`, a read-only install diagnostic that verifies the package layout, portable-manifest absence, `.mcp.json` launch command, configured runtime version, and marketplace registration, each with a remedy; the skill now distinguishes a missing local server, a substituted hosted `mcp__everett__*` answer, and a runtime/account failure instead of letting the gap pass silently (#262; diagnoses #132, which stays open).
+- Everett Local 0.3.2: add `check.py`, a read-only install diagnostic that verifies the package layout, portable-manifest absence, `.mcp.json` launch command, configured runtime version, and the generated `marketplace.json`, each with a remedy; the skill now distinguishes a missing local server, an answer from a different Everett MCP server (`mcp__everett__*`), and a runtime/account failure instead of letting the gap pass silently (#262; diagnoses #132, which stays open).
+- Everett Local `check.py` also requires the Codex registration in `~/.codex/config.toml` (the `everett-direct-local` marketplace pointing at this install and an enabled `everett-direct@everett-direct-local` plugin), so an install that skipped `codex plugin marketplace add`/`codex plugin add` no longer reports ready. It requires `.mcp.json` to run an executable Python with this plugin's own `launch.py`, reports wrong-typed JSON as a failed check with a remedy instead of a traceback, and warns about a cached root `plugin.json`. Remedies for a missing generated marketplace say to rerun `install.py` (with the install's `--destination`) before the `codex plugin` commands. `install.py` now prints both `codex plugin` commands and a runnable `python3 /absolute/path/check.py`.
 
 ### Fixed
 
@@ -28,10 +29,10 @@
 - Resolve inferred project-scoped memory to the enclosing Git repository from deeply nested directories; outside a repository, keep the current-directory-name fallback (#238).
 - Fix regeneration of Grok CLI AUTO cards from their session transcripts (#240).
 - Fix docs-site search results so heading links target the rendered section anchors (#240).
-- Cap CLI `everett send` and `spawn` subprocess waits at one year (#260).
+- Cap CLI `everett send` subprocess waits, including `everett send --spawn`, at one year (#260).
 - Strip `Next steps:` as well as `Next step:` when deriving a card's next step (#260).
 - Name the Devin config file in the `install-hooks --devin` snippet (#260).
-- Keep the existing file mode when `install-mcp --codex --apply` rewrites `~/.codex/config.toml` (#260).
+- Keep the existing file mode when `install-mcp --codex --apply` rewrites `~/.codex/config.toml` or `install-mcp --grok --apply` rewrites `~/.grok/config.toml` (#260).
 - Read `SKILL.md` name, description, and body correctly when the file starts with a UTF-8 BOM (#260).
 - Match coordinator routing terms only at the start of a word, so words that merely contain a term no longer mark a session as a coordinator (#260).
 - Show the latest non-empty user message for Hermes sessions, skipping empty user rows (#260).
