@@ -235,6 +235,19 @@ class CheckTests(unittest.TestCase):
         row = self.row(plugin, 'runtime')
         self.assertFalse(row['ok'])
 
+    def test_runtime_fails_when_doctor_output_is_not_the_report(self):
+        """A launcher that exits 0 without the doctor fields must fail, not crash."""
+        plugin = self.plugin_dir()
+        fake = self.root / 'empty-doctor.py'
+        fake.write_text('print("{}")\n')
+        self.mcp(plugin, lambda d: d['mcpServers']['everett_local']['args'].__setitem__(0, str(fake)))
+        run = self.run_installed(plugin)
+        self.assertEqual(run.returncode, 1, run.stdout + run.stderr)
+        self.assertNotIn('Traceback', run.stderr)
+        row = next(r for r in json.loads(run.stdout)['checks'] if r['name'] == 'runtime')
+        self.assertFalse(row['ok'])
+        self.assertIn('remedy', row)
+
     def test_binary_failing_version_check_reports_remedy_not_traceback(self):
         plugin = self.plugin_dir()
         self.binary.write_text('#!/bin/sh\nexit 1\n')

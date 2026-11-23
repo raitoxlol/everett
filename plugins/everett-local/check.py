@@ -196,10 +196,14 @@ def check(plugin):
         except (OSError, subprocess.SubprocessError) as failure:
             add('runtime', False, str(failure))
         else:
+            doctor = None
             try:
-                doctor = json.loads(run.stdout) if run.returncode == 0 else None
+                parsed = json.loads(run.stdout) if run.returncode == 0 else None
+                if isinstance(parsed, dict) and isinstance(parsed.get('version'), str) \
+                        and isinstance(parsed.get('runtime'), str):
+                    doctor = parsed
             except ValueError:
-                doctor = None
+                pass
             add('runtime', doctor is not None,
                 f"{doctor['version']} at {doctor['runtime']}" if doctor
                 else (run.stderr.strip() or f'{program} exited {run.returncode}'))
