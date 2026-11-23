@@ -1,6 +1,7 @@
 mod common;
 
 use common::{fixture, lib_home};
+use everett::teresis::store::MemoryStore;
 use everett::core;
 use everett::proc::RunOutput;
 use everett::registry;
@@ -8,6 +9,7 @@ use everett::session::{now, Session};
 use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::os::unix::fs::PermissionsExt;
+use std::process::Command;
 use std::path::Path;
 
 type Runner<'a> = dyn Fn(&[String], Option<&str>, &HashMap<String, String>, f64) -> Result<RunOutput, String> + Sync + 'a;
@@ -231,4 +233,252 @@ fn plain_titles_resolve_and_duplicates_require_an_id() {
     b.title = "Limen".into();
     let err = registry::find("Limen", &[a, b]).unwrap_err().to_string();
     assert!(err.contains("matches 2 sessions"), "{err}");
+}
+
+// ---------------------------------------------------------------------------
+// Teresis memory.db wiring: `everett learn` also lands in the shared store and
+// `everett recall` searches it.
+// ---------------------------------------------------------------------------
+
+fn db_path(home: &Path) -> std::path::PathBuf {
+    home.join(".local/share/teresis/memory.db")
+}
+
+fn recall_json(fx: &common::Fixture, args: &[&str]) -> serde_json::Value {
+    let mut argv = vec!["recall"];
+    argv.extend_from_slice(args);
+    argv.push("--json");
+    let out = fx.run(&argv);
+    assert_eq!(out.status.code(), Some(0), "recall failed: {}", String::from_utf8_lossy(&out.stderr));
+    serde_json::from_str(&fx.stdout(&out)).unwrap()
+}
+
+fn memory_contents(out: &serde_json::Value) -> Vec<String> {
+    out["memories"].as_array().unwrap().iter()
+        .map(|m| m["content"].as_str().unwrap().to_string()).collect()
+}
+
+#[test]
+fn learn_is_saved_and_recalled() {
+    let fx = fixture();
+    let out = fx.run(&["learn", "Deploys go through the blue pipeline", "--project", "orbit"]);
+    assert_eq!(out.status.code(), Some(0), "{}", String::from_utf8_lossy(&out.stderr));
+    assert!(fx.stdout(&out).starts_with("learned (project orbit)"), "{}", fx.stdout(&out));
+    let db = db_path(&fx.home());
+    assert!(db.exists(), "memory.db not created");
+    #[cfg(unix)]
+    assert_eq!(std::fs::metadata(&db).unwrap().permissions().mode() & 0o777, 0o600);
+
+    let got = recall_json(&fx, &["blue pipeline", "--project", "orbit"]);
+    let memories = got["memories"].as_array().unwrap();
+    assert_eq!(memories.len(), 1, "{got}");
+    assert_eq!(memories[0]["content"], "Deploys go through the blue pipeline");
+    assert_eq!(memories[0]["scope"], "project/orbit");
+
+    // Global learnings are found from a project scope (inheritance)...
+    assert!(fx.run(&["learn", "All hands meet on Fridays"]).status.success());
+    let got = recall_json(&fx, &["hands meet", "--project", "orbit"]);
+    assert!(memory_contents(&got).contains(&"All hands meet on Fridays".to_string()), "{got}");
+    // ...but a project fact is not found in a global-only search.
+    let got = recall_json(&fx, &["blue pipeline", "--scope", "global"]);
+    assert!(!memory_contents(&got).iter().any(|c| c.contains("blue pipeline")), "{got}");
+}
+
+#[test]
+fn recall_tolerates_typos_and_stems() {
+    let fx = fixture();
+    assert!(fx.run(&["learn", "Run cargo clippy with warnings denied before each push"]).status.success());
+    for query in ["clipy warnigns", "pushing"] {
+        let got = recall_json(&fx, &[query]);
+        assert!(memory_contents(&got).iter().any(|c| c.contains("cargo clippy")), "{query}: {got}");
+    }
+}
+
+#[test]
+fn keyed_learn_replaces_old_value() {
+    let fx = fixture();
+    assert!(fx.run(&["learn", "Editor is Neovim", "--key", "user.editor"]).status.success());
+    assert!(fx.run(&["learn", "Editor is Zed", "--key", "user.editor"]).status.success());
+    let got = recall_json(&fx, &["editor"]);
+    let contents = memory_contents(&got);
+    assert!(contents.iter().any(|c| c.contains("Zed")), "{got}");
+    assert!(!contents.iter().any(|c| c.contains("Neovim")), "{got}");
+    let store = MemoryStore::open(&db_path(&fx.home())).unwrap();
+    let history = store.history_key("global", "user.editor").unwrap();
+    assert_eq!(history.len(), 2, "{history:?}");
+}
+
+#[test]
+fn ttl_sets_expiry() {
+    let fx = fixture();
+    let out = fx.run(&["learn", "Preview window closes tonight", "--ttl-seconds", "3600"]);
+    assert_eq!(out.status.code(), Some(0), "{}", String::from_utf8_lossy(&out.stderr));
+    let con = rusqlite::Connection::open(db_path(&fx.home())).unwrap();
+    let (created, expires): (f64, f64) = con
+        .query_row("SELECT created_at, expires_at FROM memories", [], |r| Ok((r.get(0)?, r.get(1)?)))
+        .unwrap();
+    assert!((expires - created - 3600.0).abs() <= 1.0, "created {created} expires {expires}");
+}
+
+#[test]
+fn core_forget_and_correct_reach_memory() {
+    let fx = fixture();
+    assert!(fx.run(&["learn", "Quartz builds use ccache"]).status.success());
+    let res = common::mcp_calls(&fx, &[], &[], &[("everett_core",
+        json!({"action": "forget", "fact": "Quartz builds use ccache"}))]);
+    assert_eq!(res[0]["isError"], false, "{}", res[0]);
+    let got = recall_json(&fx, &["ccache"]);
+    assert!(!memory_contents(&got).iter().any(|c| c.contains("ccache")), "{got}");
+
+    assert!(fx.run(&["learn", "Atlas uses npm for builds"]).status.success());
+    let res = common::mcp_calls(&fx, &[], &[], &[("everett_core",
+        json!({"action": "correct", "fact": "Atlas uses npm for builds", "replacement": "Atlas uses pnpm for builds"}))]);
+    assert_eq!(res[0]["isError"], false, "{}", res[0]);
+    let got = recall_json(&fx, &["Atlas"]);
+    let contents = memory_contents(&got);
+    assert!(contents.iter().any(|c| c == "Atlas uses pnpm for builds"), "{got}");
+    assert!(!contents.iter().any(|c| c == "Atlas uses npm for builds"), "{got}");
+    let con = rusqlite::Connection::open(db_path(&fx.home())).unwrap();
+    let superseded: i64 = con.query_row(
+        "SELECT COUNT(*) FROM memories WHERE content='Atlas uses npm for builds' AND superseded_by IS NOT NULL",
+        [], |r| r.get(0)).unwrap();
+    assert_eq!(superseded, 1);
+}
+
+#[test]
+fn memory_off_and_broken_db_never_block_learning() {
+    let fx = fixture();
+    let out = fx.run_stdin(&["learn", "Fact while memory off"], "", &[("EVERETT_MEMORY_DB", "off")]);
+    assert_eq!(out.status.code(), Some(0), "{}", String::from_utf8_lossy(&out.stderr));
+    assert!(!db_path(&fx.home()).exists());
+    let out = fx.run_stdin(&["recall", "anything"], "", &[("EVERETT_MEMORY_DB", "off")]);
+    assert_eq!(out.status.code(), Some(2));
+    assert!(String::from_utf8_lossy(&out.stderr).contains("Memory is off"), "{}", String::from_utf8_lossy(&out.stderr));
+
+    let broken = fx.write("broken.db", "not a sqlite file at all");
+    let out = fx.run_stdin(&["learn", "Fact despite broken memory"], "",
+        &[("EVERETT_MEMORY_DB", broken.to_str().unwrap())]);
+    assert_eq!(out.status.code(), Some(0), "{}", String::from_utf8_lossy(&out.stderr));
+    assert!(fx.stdout(&out).starts_with("learned ("), "{}", fx.stdout(&out));
+    assert!(String::from_utf8_lossy(&out.stderr).contains("memory.db was not updated"),
+        "{}", String::from_utf8_lossy(&out.stderr));
+    let inbox = std::fs::read_to_string(fx.home().join(".everett/core/inbox.jsonl")).unwrap();
+    assert!(inbox.contains("Fact despite broken memory"), "{inbox}");
+}
+
+#[test]
+fn sandboxed_home_ignores_teresis_db() {
+    let fx = fixture();
+    let other = fx.home().join("other/memory.db");
+    let out = fx.run_stdin(&["learn", "Sandboxed fact"], "",
+        &[("TERESIS_DB", other.to_str().unwrap())]);
+    assert_eq!(out.status.code(), Some(0));
+    assert!(!other.exists(), "TERESIS_DB must be ignored when EVERETT_HOME is set");
+    assert!(db_path(&fx.home()).exists());
+
+    let custom = fx.home().join("custom/mem.db");
+    let out = fx.run_stdin(&["learn", "Custom path fact"], "",
+        &[("EVERETT_MEMORY_DB", custom.to_str().unwrap())]);
+    assert_eq!(out.status.code(), Some(0));
+    assert!(custom.exists());
+    let got = recall_json(&fx, &["Sandboxed"]);
+    assert!(memory_contents(&got).iter().any(|c| c.contains("Sandboxed fact")), "{got}");
+}
+
+#[test]
+fn mcp_recall_round_trip() {
+    let fx = fixture();
+    let list = common::mcp_exchange(&fx, &[], &[],
+        &[("tools/list".to_string(), json!({}))]);
+    let tools = list[0]["result"]["tools"].as_array().unwrap();
+    let recall = tools.iter().find(|t| t["name"] == "everett_recall").expect("everett_recall advertised");
+    assert!(recall["description"].as_str().unwrap().contains("memory.db"), "{recall}");
+    let schema = &recall["inputSchema"];
+    assert_eq!(schema["required"], json!(["query"]));
+    assert_eq!(schema["properties"]["query"]["maxLength"], 500);
+    assert_eq!(schema["properties"]["limit"]["minimum"], 1);
+    assert_eq!(schema["properties"]["limit"]["maximum"], 50);
+    assert_eq!(schema["properties"]["scope"]["enum"], json!(["global", "project"]));
+
+    let res = common::mcp_calls(&fx, &[], &[], &[
+        ("everett_learn", json!({"fact": "MCP memories persist across calls", "key": "mcp.persist"})),
+        ("everett_recall", json!({"query": "persist across calls"})),
+        ("everett_recall", json!({"query": "x", "scope": "project"})),
+    ]);
+    let learned = common::tool_json(&res[0]);
+    assert_eq!(res[0]["isError"], false, "{}", res[0]);
+    assert_eq!(learned["memory"]["status"], "created", "{learned}");
+    let recalled = common::tool_json(&res[1]);
+    assert!(recalled["memories"].as_array().unwrap().iter()
+        .any(|m| m["content"] == "MCP memories persist across calls"), "{recalled}");
+    assert_eq!(res[2]["isError"], true, "scope=project with no project must fail: {}", res[2]);
+
+    let call = |limit: serde_json::Value| ("tools/call".to_string(),
+        json!({"name": "everett_recall", "arguments": {"query": "q", "limit": limit}}));
+    let res = common::mcp_exchange(&fx, &[], &[],
+        &[call(json!(0)), call(json!(51)), call(json!("x"))]);
+    for r in &res {
+        assert_eq!(r["error"]["code"], -32602, "{r}");
+    }
+}
+
+#[test]
+fn python_teresis_reads_everett_and_back() {
+    let src = std::env::var("TERESIS_SRC").ok().map(std::path::PathBuf::from)
+        .or_else(|| {
+            let p = std::path::PathBuf::from("/home/nuc/Projects/teresis/src");
+            p.exists().then_some(p)
+        });
+    let Some(src) = src else {
+        eprintln!("skipped: no Teresis checkout (set TERESIS_SRC)");
+        return;
+    };
+    if Command::new("python3").arg("--version").output().is_err() {
+        eprintln!("skipped: python3 not available");
+        return;
+    }
+    let fx = fixture();
+    let out = fx.run(&["learn", "The relay bill is capped at five dollars", "--project", "orbit"]);
+    assert_eq!(out.status.code(), Some(0), "{}", String::from_utf8_lossy(&out.stderr));
+    let db = db_path(&fx.home());
+    let script = r#"
+import json, sys
+sys.path.insert(0, sys.argv[1])
+from teresis.store import MemoryStore
+s = MemoryStore(sys.argv[2], embedder=None, reranker=None)
+hits = s.recall("relay bill", scope="project/orbit", explain=False)
+print(json.dumps([{"content": m.content, "source": m.source} for m in hits]))
+r = s.remember("Wright wants weekly cost reports", scope="project/orbit", key="reports.cadence")
+print(json.dumps({"id": r.id, "status": r.status}))
+"#;
+    let out = Command::new("python3").arg("-c").arg(script)
+        .arg(&src).arg(&db).output().unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let mut lines = stdout.lines();
+    let hits: serde_json::Value = serde_json::from_str(lines.next().unwrap()).unwrap();
+    assert!(hits.as_array().unwrap().iter().any(|m|
+        m["content"] == "The relay bill is capped at five dollars"
+        && m["source"].as_str().unwrap_or("").starts_with("everett:")), "{hits}");
+
+    let got = recall_json(&fx, &["cost reports", "--project", "orbit"]);
+    assert!(memory_contents(&got).iter().any(|c| c.contains("weekly cost reports")), "{got}");
+
+    let out = fx.run(&["learn", "Wright wants monthly cost reports", "--project", "orbit", "--key", "reports.cadence"]);
+    assert_eq!(out.status.code(), Some(0), "{}", String::from_utf8_lossy(&out.stderr));
+    let script = r#"
+import json, sys
+sys.path.insert(0, sys.argv[1])
+from teresis.store import MemoryStore
+s = MemoryStore(sys.argv[2], embedder=None, reranker=None)
+print(json.dumps([(m.content, bool(m.superseded_by)) for m in s.history(scope="project/orbit", key="reports.cadence")]))
+"#;
+    let out = Command::new("python3").arg("-c").arg(script)
+        .arg(&src).arg(&db).output().unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let history: serde_json::Value = serde_json::from_str(String::from_utf8_lossy(&out.stdout).trim()).unwrap();
+    assert_eq!(history, json!([
+        ["Wright wants weekly cost reports", true],
+        ["Wright wants monthly cost reports", false],
+    ]), "{history}");
 }
