@@ -128,8 +128,8 @@ restricted tool set. See [MCP gateway](/gateway/).
 | `~/.everett/config.toml` | [Configuration](/configuration/) |
 | `~/.everett/cards/` | Session cards |
 | `~/.everett/inbox/` | Per-session inboxes and `.done` receipts |
-| `~/.everett/events.jsonl`, `state/` | Events and current session state |
-| `~/.everett/subscriptions.json` | Event subscriptions |
+| `~/.everett/events.jsonl`, `state/` | Events and current session state (`state/*.json` mode 0600) |
+| `~/.everett/subscriptions.json` | Event subscriptions (mode 0600) |
 | `~/.everett/core/` | Shared core, pending inbox, search store, history |
 | `~/.local/share/teresis/memory.db` | Every learned fact, shared with Teresis clients (path set by `EVERETT_MEMORY_DB`; see [Shared core](/shared-core/)) |
 | `~/.everett/spawned.jsonl` | Sessions Everett started headless |
