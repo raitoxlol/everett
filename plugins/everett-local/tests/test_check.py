@@ -86,6 +86,12 @@ class CheckTests(unittest.TestCase):
             ready, statuses = self.statuses(plugin)
             self.assertFalse(ready)
             self.assertFalse(statuses['codex_plugin'])
+            # A following [[array.table]] must not leak its keys into the plugin table.
+            config = self.codex / 'config.toml'
+            config.write_text(config.read_text() + '\n[[skills.config]]\npath = "x"\nenabled = true\n')
+            ready, statuses = self.statuses(plugin)
+            self.assertFalse(ready)
+            self.assertFalse(statuses['codex_plugin'])
 
     def test_install_without_codex_registration_is_not_ready(self):
         plugin = Path(self.install(register=False)['plugin'])

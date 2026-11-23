@@ -96,9 +96,11 @@ def _scan_toml(text):
     tables = {'marketplaces': {}, 'plugins': {}}
     current = None
     for line in text.splitlines():
-        header = _HEADER.match(line)
-        if header:
+        if line.lstrip().startswith('['):  # any header, including [[array.tables]], ends the table
             current = None
+            header = _HEADER.match(line)
+            if not header or line.lstrip().startswith('[['):
+                continue
             root, dot, name = header.group(1).partition('.')
             if dot and root.strip() in tables:
                 name = name.strip()
