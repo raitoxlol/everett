@@ -39,8 +39,9 @@ generated package; source alone has no configured MCP launch command.
 4. The calls must be named `mcp__everett_local__everett_whoami` and
    `mcp__everett_local__everett_ls`, and `session_id` must not be empty. If they
    are named `mcp__everett__…`, another Everett MCP server answered instead; if
-   no `everett_local` tools exist, recheck step 1 and that no root `plugin.json`
-   is in `~/.codex/plugins/cache/everett-direct-local/everett-direct/<version>/`.
+   no `everett_local` tools exist, run `check.py` ([Check startup](#check-startup)),
+   recheck step 1 and that no root `plugin.json` is in
+   `~/.codex/plugins/cache/everett-direct-local/everett-direct/<version>/`.
 
 Verified 2026-11-10 with ChatGPT desktop (Codex mode, GPT-6.1 Sol) and Everett 2.2.1.
 
