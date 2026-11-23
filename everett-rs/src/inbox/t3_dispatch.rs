@@ -91,7 +91,14 @@ pub(crate) fn forget_retired_dispatches(target: &str, live_ids: &HashSet<&str>, 
 pub(crate) fn dispatch_once(
     target: &str, message_id: &str, dispatch: impl FnOnce() -> std::result::Result<String, DispatchFailure>,
 ) -> std::result::Result<(String, bool), DispatchFailure> {
-    let mut journal = Connection::open(journal_path())
+    dispatch_once_at(&journal_path(), target, message_id, dispatch)
+}
+
+fn dispatch_once_at(
+    journal: &Path, target: &str, message_id: &str,
+    dispatch: impl FnOnce() -> std::result::Result<String, DispatchFailure>,
+) -> std::result::Result<(String, bool), DispatchFailure> {
+    let mut journal = Connection::open(journal)
         .map_err(journal_error)?;
     journal.busy_timeout(Duration::from_secs(1)).map_err(journal_error)?;
     journal.execute_batch("CREATE TABLE IF NOT EXISTS dispatch (
@@ -129,3 +136,6 @@ pub(crate) fn dispatch_once(
         Err(failure) => Err(failure),
     }
 }
+
+#[cfg(test)]
+mod model;

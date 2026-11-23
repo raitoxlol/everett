@@ -48,6 +48,13 @@ jobs:
       - name: The same check fails at the commit before #230 was fixed
         run: scripts/check-fixture-isolation.py --known-bad ebb13b2
 
+  dispatch-model:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: The dispatch model passes and catches each historical mistake
+        run: scripts/check-dispatch-model.py
+
   relay:
     if: startsWith(github.ref, 'refs/tags/v') || inputs.build_artifacts == true
     uses: ./.github/workflows/cloudflare.yml
