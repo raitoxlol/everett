@@ -34,7 +34,9 @@ There is no automatic import, bidirectional reconciliation, or shared deletion b
 
 Everett stores the active core, pending learnings, project files, and merge history under `~/.everett/core/`. `EVERETT_HOME` selects the home containing that directory. A configured vault receives a generated mirror.
 
-The current encrypted device relay carries messages and replies. It does not synchronize core files, the memory inbox, or the vault. Pairing devices or signing into the same account does not copy their memory. The existing [cross-device trust and revocation rules](cross-device.md) remain in effect.
+Every learned fact is also saved to the Teresis `memory.db`, by default `~/.local/share/teresis/memory.db`. Python Teresis clients such as Hermes and the Teresis CLI and MCP server read and write the same file, so a fact learned through Everett is visible to them and `everett recall` finds facts they saved in the searched scopes. `EVERETT_MEMORY_DB` sets another path or `off`; the full lookup order is in [Shared core](../README.md#shared-core-one-mind-many-sessions).
+
+The current encrypted device relay carries messages and replies. It does not synchronize core files, the memory inbox, memory.db, or the vault. Pairing devices or signing into the same account does not copy their memory. The existing [cross-device trust and revocation rules](cross-device.md) remain in effect.
 
 Encrypted memory synchronization is still tracked in #68. It needs a distinct authenticated payload, approved device pins, replay protection, and versioned changes that carry corrections, deletions, and expiry. A stale device must not restore a forgotten fact. Project names, fact bodies, source paths, and memory indexes must remain inside the encrypted payload. The hub may retain ciphertext and routing metadata, with account ownership derived from authenticated identity.
 

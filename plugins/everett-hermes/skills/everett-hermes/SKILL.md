@@ -14,7 +14,7 @@ This plugin binds every Everett tool call to your active Hermes session ID and w
 - Call `everett_ls` for an overview of recent sessions across harnesses (pass `harness: "hermes"` to filter). Use `everett_route` to preview routing without sending.
 - Call `everett_card(what, state, next)` whenever your topic or status changes so other sessions can route work to you.
 - Call `everett_event(kind, message)` to report `done`, `blocked`, `needs-input`, or `info`.
-- Call `everett_core` to read or search shared memory, and `everett_learn` to save durable facts.
+- Call `everett_core` to read or search shared memory, `everett_recall` to search every learned fact, and `everett_learn` to save durable facts.
 - Call `everett_skill` to find and load skills installed for other harnesses on this machine.
 
 ## Inbox safety

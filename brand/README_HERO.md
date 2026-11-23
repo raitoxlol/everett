@@ -37,7 +37,7 @@ Uses GitHub `<picture>` theme switching so light mode sits on warm paper (`#f3ee
 <p align="center">
   <a href="#quickstart">Quickstart</a> ·
   <a href="#demo">Demo and Dashboard</a> ·
-  <a href="#for-agents-mcp">MCP (18 tools)</a> ·
+  <a href="#for-agents-mcp">MCP (19 tools)</a> ·
   <a href="docs/agent-support.md">Agent Support</a> ·
   <a href="docs/relay-threat-model.md">Threat Model</a> ·
   <a href="CHANGELOG.md">Changelog</a>
@@ -56,7 +56,7 @@ Keep the shelf to 6 flat-square badges in Everett's exact colors:
 | CI (`rust.yml`) | Live macOS and Linux test status | `#242825` | `#216b4c` |
 | Rust 1.89+ | Native binary signal | `#242825` | `#b64f1a` |
 | Platform | Supported operating systems | `#242825` | `#5d625d` |
-| MCP (18 tools) | Agent integration surface | `#242825` | `#b64f1a` |
+| MCP (19 tools) | Agent integration surface | `#242825` | `#b64f1a` |
 | License (MIT) | Open-source license | `#242825` | `#216b4c` |
 
 Skip vanity badges (stars, repo size, downloads, lines of code, social counters).

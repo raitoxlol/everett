@@ -34,7 +34,7 @@ A supported integration does not mean every agent can be woken. See
 - **Report.** Sessions record `done`, `blocked`, `needs-input`, or `info` [events](/events/);
   blocked sessions notify you.
 - **Remember.** `everett learn` feeds a [shared core](/shared-core/) that every new session
-  receives at start and can search mid-session.
+  receives at start and can search mid-session; `everett recall` searches every learned fact.
 - **Reach other devices.** Inbox-only [SSH peers](/cross-device/) or the end-to-end encrypted
   [Cloudflare relay](/cloudflare-relay/) connect sessions on other computers.
 
@@ -50,7 +50,8 @@ A supported integration does not mean every agent can be woken. See
  T3 Code statev2.sqlite    ─┘   peers  SSH · Cloudflare relay  hooks inject messages + core
 ```
 
-Everything Everett writes lives under `~/.everett/` (or `EVERETT_HOME`). Harness stores are
+Everything Everett writes lives under `~/.everett/` (or `EVERETT_HOME`), except the shared
+`memory.db` that every learned fact is also saved to (see [Shared core](/shared-core/)). Harness stores are
 opened read-only; a headless resume lets the harness append to its own history.
 
 ## Where to go next
