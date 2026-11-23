@@ -11,8 +11,8 @@ use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
 use std::time::{Duration, SystemTime};
 
 const TOOLS: &[&str] = &[ "everett_agent_relay", "everett_agent_send", "everett_agent_status",
-    "everett_card", "everett_control", "everett_core", "everett_directory", "everett_event", "everett_inbox", "everett_learn",
-    "everett_ls", "everett_recall", "everett_retry", "everett_route", "everett_send", "everett_sent", "everett_skill", "everett_status", "everett_subscribe", "everett_whoami"];
+    "everett_broadcast", "everett_card", "everett_control", "everett_core", "everett_directory", "everett_event", "everett_inbox", "everett_learn",
+    "everett_ls", "everett_peers", "everett_recall", "everett_retry", "everett_route", "everett_search", "everett_send", "everett_sent", "everett_skill", "everett_status", "everett_subscribe", "everett_tasks", "everett_whoami"];
 
 fn binary() -> PathBuf {
     let path = std::env::var_os("EVERETT_VERIFY_BINARY").map(PathBuf::from).unwrap_or_else(|| env!("CARGO_BIN_EXE_everett").into());
@@ -237,6 +237,16 @@ fn release_journey_over_cli_and_all_mcp_tools() {
     let core = shared["core"].as_str().unwrap();
     assert!(core.contains(fact) && core.contains("Retry caps are five") && shared["pending_learnings"] == 0, "{shared}");
     assert!(root.join(".everett/core/core.md").is_file() && root.join(".everett/core/projects/verification.md").is_file());
+
+    let found = wire.call("everett_search", json!({"query": "upload retries"}));
+    assert!(found["results"].as_array().unwrap().iter().any(|r| r["id"] == "verify-worker"), "{found}");
+    wire.call("everett_peers", json!({"action": "list"}));
+    let board = wire.call("everett_tasks", json!({"action": "add", "title": "Verify capability tools"}));
+    let tid = board["added"]["id"].as_str().unwrap();
+    wire.call("everett_tasks", json!({"action": "claim", "id": tid}));
+    wire.call("everett_tasks", json!({"action": "done", "id": tid}));
+    let cast = wire.call("everett_broadcast", json!({"text": "Broadcast ping", "targets": ["verify-worker"], "mode": "inbox"}));
+    assert_eq!(cast["sent"], 1, "{cast}");
 
     // A child that reads stdin must see EOF while the MCP pipe stays open.
     home.stub("codex", "#!/bin/sh\nin=$(cat)\nprintf '{\"stdin\":\"%s\",\"thread_id\":\"verify-spawned\"}\\n' \"$in\"\n");

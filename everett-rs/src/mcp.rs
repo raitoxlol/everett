@@ -251,6 +251,50 @@ pub fn tools() -> &'static Vec<Value> {
                 "description":"Sender-only status: unconfirmed when enqueue acknowledgement is missing; expired when its retry window ends; queued after enqueue acknowledgement; delivered after durable recipient acceptance; claimed after inbox pickup; replied after an authenticated correlated reply is received locally or a signed relay observation. Never inferred from a connection or wake-up. posted reports whether a local enqueue acknowledgement was recorded.",
                 "inputSchema":{"type":"object","properties":{"message_id":s("Outgoing message ID.")},"required":["message_id"],"additionalProperties":false}
             }),
+            json!({
+                "name": "everett_search",
+                "description": "Search recent agent sessions by what they worked on: titles, first/last requests, and session cards across every harness. Returns the best-matching sessions with a score and the query terms each matched. Use it to find which session owns a topic before sending work to it; everett_send still routes by itself when you just have a task.",
+                "annotations": {"readOnlyHint": true, "openWorldHint": false},
+                "inputSchema": {"type": "object", "properties": {
+                    "query": {"type": "string", "description": "Words to look for in session titles, requests, and cards.", "maxLength": 500},
+                    "hours": hours_prop(),
+                    "harness": {"type": "string", "enum": crate::harness::ALL, "description": "Only this harness."},
+                    "all": {"type": "boolean", "description": "Include automation sessions. Defaults to false."},
+                    "limit": {"type": "integer", "minimum": 1, "maximum": 50, "default": 10},
+                }, "required": ["query"], "additionalProperties": false},
+            }),
+            json!({
+                "name": "everett_peers",
+                "description": "Paired remote devices. action=list (default) returns every paired SSH and relay peer with its transport config; action=sessions lists one peer's recent sessions over SSH (peer name required, harness/hours/all filter). Cloudflare peers have no remote ls; send to their sessions with everett_send instead.",
+                "annotations": {"readOnlyHint": true, "openWorldHint": false},
+                "inputSchema": {"type": "object", "properties": {
+                    "action": {"type": "string", "enum": ["list", "sessions"], "default": "list"},
+                    "peer": s("Peer name for action=sessions."),
+                    "hours": hours_prop(),
+                    "all": {"type": "boolean", "description": "Include automation sessions."},
+                    "harness": {"type": "string", "enum": crate::harness::ALL, "description": "Only this harness."},
+                }, "additionalProperties": false},
+            }),
+            json!({
+                "name": "everett_broadcast",
+                "description": "Send the same request to several explicit session targets at once (max 16). Each target goes through the normal everett_send path, so routing rules, caller identity, hop limits, and per-target errors are unchanged; results are reported per target and one failure does not stop the rest. For a routed single send use everett_send instead.",
+                "inputSchema": {"type": "object", "properties": {
+                    "text": {"type": "string", "description": "The request, sent verbatim to every target.", "maxLength": 65536},
+                    "targets": {"type": "array", "minItems": 1, "maxItems": 16, "items": {"type": "string", "maxLength": 256}, "description": "Exact session ids, T3 thread ids, titles, cards, or peer/harness/session targets — same values everett_send accepts for `to`."},
+                    "mode": {"type": "string", "enum": crate::send::MODES, "description": "Delivery mode passed to each send (default ping)."},
+                    "timeout": {"type": "number", "minimum": 1, "maximum": 1800, "description": "Per-target reply wait in seconds (default 300). Sends run sequentially."},
+                    "wait": {"type": "number", "minimum": 0, "maximum": 1800, "description": "Explicit inbox mode: seconds to wait per target (default 0)."},
+                }, "required": ["text", "targets"], "additionalProperties": false},
+            }),
+            json!({
+                "name": "everett_tasks",
+                "description": "The shared per-project task board at <project>/.everett/tasks.json, visible to every agent working in the project. action=list (default) shows open/claimed/done tasks; add creates one with title; claim marks it yours (owner is your session id); done closes it; remove deletes it. Check the board before duplicating work another session may already own.",
+                "inputSchema": {"type": "object", "properties": {
+                    "action": {"type": "string", "enum": ["list", "add", "claim", "done", "remove"], "default": "list"},
+                    "id": s("Task id like t3, for claim/done/remove."),
+                    "title": s("Task text for add."),
+                }, "additionalProperties": false},
+            }),
         ]
     })
 }
@@ -1583,6 +1627,162 @@ pub(crate) fn tool_directory(
     )]))
 }
 
+fn tool_search(args: &Map<String, Value>) -> std::result::Result<Map<String, Value>, ToolFailure> {
+    let query = str_arg(args, "query", true)?;
+    let hours = hours_arg(args)?;
+    let harness = str_arg(args, "harness", false)?;
+    let include_auto = args.get("all").and_then(Value::as_bool).unwrap_or(false);
+    let limit = args
+        .get("limit")
+        .and_then(Value::as_u64)
+        .unwrap_or(10)
+        .clamp(1, 50) as usize;
+    let terms: Vec<String> = {
+        let mut seen = std::collections::HashSet::new();
+        crate::search_terms::tokens(&query)
+            .into_iter()
+            .filter(|t| seen.insert(t.clone()))
+            .collect()
+    };
+    if terms.is_empty() {
+        return Ok(Map::from_iter([("results".into(), json!([]))]));
+    }
+    let sessions = crate::registry::scan(hours, include_auto, Some(crate::registry::CAP), &harness);
+    let mut scored: Vec<(f64, &Session, Vec<String>)> = sessions
+        .iter()
+        .filter_map(|s| {
+            // Field weights: a term in the title or card says more than one in a request.
+            let fields: [(&str, f64); 5] = [
+                (s.title.as_str(), 3.0),
+                (s.card.as_str(), 2.0),
+                (s.first_user.as_str(), 1.0),
+                (s.last_user.as_str(), 1.0),
+                (s.cwd.as_str(), 0.5),
+            ];
+            let field_tokens: Vec<(f64, std::collections::HashSet<String>)> = fields
+                .iter()
+                .map(|(text, weight)| {
+                    (*weight, crate::search_terms::tokens(text).into_iter().collect())
+                })
+                .collect();
+            let mut score = 0.0;
+            let mut matched = Vec::new();
+            for term in &terms {
+                let mut hit = false;
+                for (weight, tokens) in &field_tokens {
+                    if tokens.contains(term) {
+                        score += weight;
+                        hit = true;
+                    }
+                }
+                if hit {
+                    matched.push(term.clone());
+                }
+            }
+            (score > 0.0).then_some((score, s, matched))
+        })
+        .collect();
+    scored.sort_by(|a, b| b.0.total_cmp(&a.0).then(b.1.last_active.total_cmp(&a.1.last_active)));
+    let results: Vec<Value> = scored
+        .into_iter()
+        .take(limit)
+        .map(|(score, s, matched)| {
+            let mut b = brief(s);
+            b.insert("score".into(), json!(score));
+            b.insert("matched".into(), json!(matched));
+            Value::Object(b)
+        })
+        .collect();
+    Ok(Map::from_iter([("results".into(), json!(results))]))
+}
+
+fn tool_peers(args: &Map<String, Value>) -> std::result::Result<Map<String, Value>, ToolFailure> {
+    let action = str_arg(args, "action", false)?;
+    let action = if action.is_empty() { "list" } else { action.as_str() };
+    match action {
+        "list" => Ok(Map::from_iter([(
+            "peers".into(),
+            json!(crate::peer::listing().map_err(ToolFailure::Tool)?),
+        )])),
+        "sessions" => {
+            let peer = str_arg(args, "peer", true)?;
+            let hours = hours_arg(args)?;
+            let all = args.get("all").and_then(Value::as_bool).unwrap_or(false);
+            let harness = str_arg(args, "harness", false)?;
+            let rows = crate::peer::ls(&peer, hours, all, &harness).map_err(ToolFailure::Tool)?;
+            Ok(Map::from_iter([("sessions".into(), rows)]))
+        }
+        _ => Err(ToolFailure::Params(
+            "\"action\" must be list or sessions".to_string(),
+        )),
+    }
+}
+
+fn tool_broadcast(
+    args: &Map<String, Value>,
+    identity: &Map<String, Value>,
+    exact_ids: bool,
+) -> std::result::Result<Map<String, Value>, ToolFailure> {
+    str_arg(args, "text", true)?;
+    let targets = args
+        .get("targets")
+        .and_then(Value::as_array)
+        .ok_or_else(|| ToolFailure::Params("\"targets\" must be a list of destination strings".to_string()))?;
+    if targets.is_empty() || targets.len() > 16 {
+        return Err(ToolFailure::Params(
+            "\"targets\" must contain 1 to 16 destinations".to_string(),
+        ));
+    }
+    let mut names = Vec::with_capacity(targets.len());
+    for t in targets {
+        names.push(
+            t.as_str()
+                .filter(|s| !s.trim().is_empty() && s.len() <= 256)
+                .ok_or_else(|| {
+                    ToolFailure::Params("each \"targets\" entry must be a non-empty string".to_string())
+                })?
+                .to_string(),
+        );
+    }
+    let mut results = Vec::with_capacity(names.len());
+    let mut sent = 0usize;
+    for target in names {
+        let mut sub = args.clone();
+        sub.insert("to".into(), json!(target));
+        sub.remove("targets");
+        match tool_send(&sub, identity, exact_ids) {
+            Ok(value) => {
+                sent += 1;
+                results.push(json!({"target": target, "ok": true, "result": value}));
+            }
+            Err(e) => {
+                results.push(json!({"target": target, "ok": false, "error": e.message()}));
+            }
+        }
+    }
+    Ok(Map::from_iter([
+        ("sent".into(), json!(sent)),
+        ("failed".into(), json!(results.len() - sent)),
+        ("results".into(), json!(results)),
+    ]))
+}
+
+fn tool_tasks(
+    args: &Map<String, Value>,
+    identity: &Map<String, Value>,
+) -> std::result::Result<Map<String, Value>, ToolFailure> {
+    let action = str_arg(args, "action", false)?;
+    let action = if action.is_empty() { "list" } else { action.as_str() };
+    let id = str_arg(args, "id", false)?;
+    let title = str_arg(args, "title", false)?;
+    let (caller, _) = caller_session(args, identity)?;
+    let cwd = std::env::current_dir()
+        .map(|p| p.to_string_lossy().to_string())
+        .unwrap_or_default();
+    let value = crate::tasks::call(action, &cwd, &id, &title, &caller).map_err(ToolFailure::Tool)?;
+    Ok(value.as_object().cloned().unwrap_or_default())
+}
+
 fn call_handler(
     name: &str,
     args: &Map<String, Value>,
@@ -1689,6 +1889,10 @@ fn call_handler(
         "everett_event" => tool_event(args, identity),
         "everett_subscribe" => tool_subscribe(args, identity),
         "everett_control" => tool_control(args, identity),
+        "everett_search" => tool_search(args),
+        "everett_peers" => tool_peers(args),
+        "everett_broadcast" => tool_broadcast(args, identity, std::env::var("EVERETT_GATEWAY_EXACT_IDS").as_deref() == Ok("1")),
+        "everett_tasks" => tool_tasks(args, identity),
         _ => Err(ToolFailure::Params(format!("unknown tool: {}", name))),
     }
 }

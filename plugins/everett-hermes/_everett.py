@@ -52,6 +52,8 @@ _READ_ONLY_TOOLS = frozenset({
     "everett_whoami",
     "everett_skill",
     "everett_agent_status",
+    "everett_search",
+    "everett_peers",
 })
 
 # Fallback catalog used only if Everett is missing or unreachable during register(ctx).
@@ -324,6 +326,66 @@ FALLBACK_TOOLS: tuple[dict[str, Any], ...] = (
             "type": "object",
             "properties": {"message_id": {"type": "string"}},
             "required": ["message_id"],
+            "additionalProperties": False,
+        },
+    },
+    {
+        "name": "everett_search",
+        "description": "Search recent agent sessions by title, requests, and cards.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "query": {"type": "string"},
+                "hours": {"type": "number"},
+                "harness": {"type": "string"},
+                "all": {"type": "boolean"},
+                "limit": {"type": "integer"},
+            },
+            "required": ["query"],
+            "additionalProperties": False,
+        },
+    },
+    {
+        "name": "everett_peers",
+        "description": "List paired remote devices or one SSH peer's sessions.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "action": {"type": "string", "enum": ["list", "sessions"]},
+                "peer": {"type": "string"},
+                "hours": {"type": "number"},
+                "all": {"type": "boolean"},
+                "harness": {"type": "string"},
+            },
+            "additionalProperties": False,
+        },
+    },
+    {
+        "name": "everett_broadcast",
+        "description": "Send one request to up to 16 explicit session targets.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "text": {"type": "string"},
+                "targets": {"type": "array", "items": {"type": "string"}},
+                "mode": {"type": "string"},
+                "timeout": {"type": "number"},
+                "wait": {"type": "number"},
+            },
+            "required": ["text", "targets"],
+            "additionalProperties": False,
+        },
+    },
+    {
+        "name": "everett_tasks",
+        "description": "Shared per-project task board: list, add, claim, done, remove.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "action": {"type": "string", "enum": ["list", "add", "claim", "done", "remove"]},
+                "id": {"type": "string"},
+                "title": {"type": "string"},
+            },
             "additionalProperties": False,
         },
     },

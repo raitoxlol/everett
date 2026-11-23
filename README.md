@@ -701,6 +701,10 @@ Everett is mostly used by agents. `everett mcp` is a native Rust stdio MCP serve
 | `everett_agent_relay` | `action`, `id?`, `name?`, `fingerprint?` | Verified identity, registration, directory/pins and scoped revocation controls. |
 | `everett_agent_send` | `agent`, `session`, `harness`, `text`, `idempotency_key` | Device-side encrypted send to an explicit named agent. No sender-requested wake or implicit routing; receiver policies are separate. |
 | `everett_agent_status` | `message_id` | Sender-only status from signed delivery/pickup/reply observations. |
+| `everett_search` | `query`, `hours?`, `harness?`, `all?`, `limit?` | Searches recent sessions' titles, first/last requests, and cards across every harness; returns scored matches with the query terms each hit. |
+| `everett_peers` | `action?`, `peer?`, `hours?`, `all?`, `harness?` | `list` (default) returns paired SSH and relay devices; `sessions` lists one SSH peer's recent sessions (`everett ls --peer` over MCP). |
+| `everett_broadcast` | `text`, `targets`, `mode?`, `timeout?`, `wait?` | Sends one request to up to 16 explicit `everett_send` destinations sequentially; per-target results, one failure does not stop the rest. |
+| `everett_tasks` | `action?`, `id?`, `title?` | Shared per-project task board at `<project>/.everett/tasks.json`: `list` (default), `add`, `claim` (owner = your session), `done`, `remove`. |
 
 The `everett_send` MCP tool bounds `timeout` and `wait` to 1,800 seconds (30 minutes); values above that are capped. `wait` applies only to explicit `mode: "inbox"` and does not ping or wake the target. These MCP tool bounds do not add a 30-minute cap to the CLI `everett send` options. CLI `send` and `spawn` `--timeout` values must be finite and positive; subprocess waits are capped at one year.
 

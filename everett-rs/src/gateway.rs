@@ -1508,6 +1508,10 @@ mod tests {
             "everett_recall",
             "everett_event",
             "everett_subscribe",
+            "everett_search",
+            "everett_peers",
+            "everett_broadcast",
+            "everett_tasks",
         ] {
             assert!(b.authorize(name, Map::new()).is_err());
         }

@@ -241,7 +241,7 @@ class NativePluginUnitTests(unittest.TestCase):
         PLUGIN.register(ctx)
         self.addCleanup(ctx.unload)
 
-        self.assertEqual(len(ctx.tools), 19)
+        self.assertEqual(len(ctx.tools), 23)
         self.assertEqual(ctx.tools["everett_whoami"]["toolset"], "everett")
         self.assertEqual(
             set(ctx.hooks.keys()),
