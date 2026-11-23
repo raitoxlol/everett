@@ -80,11 +80,8 @@ fn parallel_cli_learnings_produce_complete_unique_json_lines() {
             .map(|n| {
                 let home = home.clone();
                 scope.spawn(move || {
-                    std::process::Command::new(env!("CARGO_BIN_EXE_everett"))
+                    common::fixture_command(&home)
                         .args(["learn", &format!("Convention number {}", n)])
-                        .env("HOME", &home)
-                        .env("EVERETT_HOME", &home)
-                        .current_dir(&home)
                         .output()
                         .unwrap()
                 })

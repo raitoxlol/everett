@@ -2,7 +2,7 @@ mod common;
 
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
-use std::process::{Child, Command, Stdio};
+use std::process::{Child, Stdio};
 use std::time::Duration;
 
 struct Dashboard(Child);
@@ -71,16 +71,11 @@ fn dashboard_serves_local_sessions_without_mutating_stores() {
     let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
     let port = listener.local_addr().unwrap().port();
     drop(listener);
-    let mut command = Command::new(env!("CARGO_BIN_EXE_everett"));
+    let mut command = common::fixture_command(&fixture.home());
     command
         .args(["dashboard", "--no-open", "--port", &port.to_string()])
-        .env("HOME", fixture.home())
-        .env("EVERETT_HOME", fixture.home())
-        .env("EVERETT_NOTIFY", "none")
         .stdout(Stdio::null())
         .stderr(Stdio::null());
-    common::scrub_sandbox(&mut command);
-    common::scrub_caller_identity(&mut command);
     let child = command.spawn().unwrap();
     let _dashboard = Dashboard(child);
     let host = format!("127.0.0.1:{port}");

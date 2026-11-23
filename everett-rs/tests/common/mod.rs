@@ -7,19 +7,18 @@ use std::process::{Command, Output};
 /// Host-installed harness CLIs (omp, devin, pi, ...) must not leak into tests.
 pub const HERMETIC_PATH: &str = "/usr/bin:/bin";
 
-pub fn scrub_caller_identity(command: &mut Command) {
-    for name in CALLER_IDENTITY_UNSET {
-        command.env_remove(name);
-    }
-}
-
-/// Clear the harness home overrides (T3CODE_HOME, DEVIN_HOME, ...) a test's
-/// parent shell may carry, so a child pointed at a temp HOME cannot read the
-/// developer's real session stores.
-pub fn scrub_sandbox(command: &mut Command) {
-    for name in SANDBOX_UNSET {
-        command.env_remove(name);
-    }
+/// A child `everett` that sees only the fixture: nothing inherited, so no host
+/// session store, harness home override or caller identity can reach it.
+pub fn fixture_command(home: &Path) -> Command {
+    let mut cmd = Command::new(env!("CARGO_BIN_EXE_everett"));
+    cmd.env_clear()
+        .current_dir(home)
+        .env("HOME", home)
+        .env("EVERETT_HOME", home)
+        .env("EVERETT_NOTIFY", "none")
+        .env("EVERETT_HOP_LIMIT", "on")
+        .env("PATH", HERMETIC_PATH);
+    cmd
 }
 
 pub struct Fixture {
@@ -37,27 +36,8 @@ impl Fixture {
     }
 
     fn command(&self, args: &[&str]) -> Command {
-        let mut cmd = Command::new(env!("CARGO_BIN_EXE_everett"));
-        cmd.args(args)
-            .current_dir(self.home())
-            .env("EVERETT_HOME", self.home())
-            .env_remove("DEVIN_HOME")
-            .env_remove("PI_CODING_AGENT_DIR")
-            .env_remove("HERMES_HOME")
-            .env_remove("T3CODE_HOME")
-            .env_remove("EVERETT_T3_BIN")
-            .env("HOME", self.home())
-            .env("EVERETT_NOTIFY", "none")
-            .env("PATH", HERMETIC_PATH)
-            .env_remove("TYPESAFE_API_KEY")
-            .env_remove("EVERETT_SEND")
-            .env("EVERETT_HOP_LIMIT", "on")
-            .env_remove("EVERETT_HOPS")
-            .env_remove("EVERETT_SESSION_ID")
-            .env_remove("EVERETT_SKILL_DIRS")
-            .env_remove("EVERETT_MEMORY_DB")
-            .env_remove("TERESIS_DB");
-        scrub_caller_identity(&mut cmd);
+        let mut cmd = fixture_command(&self.home());
+        cmd.args(args);
         cmd
     }
 

@@ -112,32 +112,18 @@ impl Pair {
     }
 
     fn command(&self, remote: bool) -> Command {
-        let mut cmd = Command::new(BIN);
         let home = if remote {
             self.remote.path()
         } else {
             self.local.path()
         };
-        cmd.env("HOME", home)
-            .env("EVERETT_HOME", home)
-            .env("EVERETT_NOTIFY", "none").env("EVERETT_HOP_LIMIT", "on")
-            .env_remove("EVERETT_SESSION_ID")
-            .env_remove("EVERETT_HARNESS_NAME")
-            .env_remove("EVERETT_HOPS")
-            .env_remove("EVERETT_SEND")
-            .env_remove("TYPESAFE_API_KEY")
-            .env(
-                "PATH",
-                format!(
-                    "{}:{}",
-                    self.fixture_bin.path().display(),
-                    std::env::var("PATH").unwrap()
-                ),
-            )
-            .env("FAKE_REMOTE", self.remote.path())
-            .env("FAKE_LOCAL", self.local.path());
-        common::scrub_caller_identity(&mut cmd);
-        common::scrub_sandbox(&mut cmd);
+        let mut cmd = common::fixture_command(home);
+        cmd.env(
+            "PATH",
+            format!("{}:{}", self.fixture_bin.path().display(), common::HERMETIC_PATH),
+        )
+        .env("FAKE_REMOTE", self.remote.path())
+        .env("FAKE_LOCAL", self.local.path());
         cmd
     }
 
@@ -261,14 +247,7 @@ fn fake_ssh(args: &[String]) -> i32 {
     if args.last().map(String::as_str) == Some("true") {
         return 0;
     }
-    let mut cmd = Command::new(BIN);
-    cmd.env("HOME", &remote)
-        .env("EVERETT_HOME", &remote)
-        .env_remove("EVERETT_SESSION_ID")
-        .env_remove("EVERETT_HARNESS_NAME")
-        .env_remove("EVERETT_HOPS");
-    common::scrub_caller_identity(&mut cmd);
-    common::scrub_sandbox(&mut cmd);
+    let mut cmd = common::fixture_command(&remote);
     if args.last().unwrap().ends_with(" peer identity") {
         cmd.args(["peer", "identity"]);
     } else if args.last().unwrap().ends_with(" peer install") {
