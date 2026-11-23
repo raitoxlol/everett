@@ -607,6 +607,7 @@ everett install-hooks --apply    # back up, then merge into the real config file
 - **Claude Code**: adds `SessionStart`, `Stop`, `UserPromptSubmit`, and `PostToolUse` entries to `~/.claude/settings.json`. The last two deliver [live messages](#live-delivery); `Stop` also records [events](#events).
 - **Codex** (0.155+): adds the same four entries to `~/.codex/hooks.json`. Codex needs `hooks = true` in `~/.codex/config.toml` and asks you to trust new hooks the first time they run.
 - **Grok CLI**: writes `~/.grok/hooks/everett.json` with a `Stop` hook for automatic cards and events, and a `PostToolUse` hook for live delivery. Grok ignores `SessionStart` output, so Grok sessions get no card instruction or shared core at start. Grok also runs the hooks in `~/.claude/settings.json`; Everett's Claude hooks do nothing there: they need `session_id` and `transcript_path`, and Grok's documented hook input uses camelCase `sessionId` with no transcript path. `--grok` is included by default when `~/.grok` exists.
+- **Devin CLI**: adds `SessionStart` and `UserPromptSubmit` entries to `~/.config/devin/config.json` (Windows: `%APPDATA%/devin/config.json`) that record the session the Devin process holds, so MCP calls bind to it. The printed snippet names that file.
 - **OMP**: writes `~/.omp/agent/extensions/everett.ts`, which re-exports Everett's extension. OMP loads that folder at startup. You can also pass it per launch: `omp --hook=<path printed by install-hooks>`.
 
 `--apply` writes a backup (`<file>.everett-bak-<timestamp>`) before any change. It never removes other hooks and never adds a second Everett entry. The hooks run `everett hook <name>` through the binary you ran it from. Hooks registered by the retired Python package are replaced in place.
@@ -695,7 +696,7 @@ Everett is mostly used by agents. `everett mcp` is a native Rust stdio MCP serve
 | `everett_agent_send` | `agent`, `session`, `harness`, `text`, `idempotency_key` | Device-side encrypted send to an explicit named agent. No sender-requested wake or implicit routing; receiver policies are separate. |
 | `everett_agent_status` | `message_id` | Sender-only status from signed delivery/pickup/reply observations. |
 
-The `everett_send` MCP tool bounds `timeout` and `wait` to 1,800 seconds (30 minutes); values above that are capped. `wait` applies only to explicit `mode: "inbox"` and does not ping or wake the target. These MCP tool bounds do not add a 30-minute cap to the CLI `everett send` options.
+The `everett_send` MCP tool bounds `timeout` and `wait` to 1,800 seconds (30 minutes); values above that are capped. `wait` applies only to explicit `mode: "inbox"` and does not ping or wake the target. These MCP tool bounds do not add a 30-minute cap to the CLI `everett send` options. CLI `send` and `spawn` `--timeout` values must be finite and positive; subprocess waits are capped at one year.
 
 See [agent-facing relay MCP](docs/agent-relay.md), [cross-device deployment](docs/cross-device.md)
 and [relay threat model](docs/relay-threat-model.md). Cloudflare binds account/agent identity;
