@@ -1345,13 +1345,14 @@ fn cmd_trunk_schedule(args: &Args) -> i32 {
     }
 }
 
-pub fn cmd_learn(args: &Args, ttl_seconds: Option<u64>) -> i32 {
-    match crate::core::learn_with_ttl(
+pub fn cmd_learn(args: &Args, ttl_seconds: Option<u64>, key: Option<&str>) -> i32 {
+    match crate::core::learn_keyed(
         args.fact.as_deref().unwrap_or(""),
         args.project.as_deref(),
         args.scope.as_deref(),
         None,
         ttl_seconds,
+        key,
     ) {
         Ok(entry) => {
             let where_ = if entry.get("scope").and_then(|v| v.as_str()) == Some("project") {
@@ -1363,6 +1364,49 @@ pub fn cmd_learn(args: &Args, ttl_seconds: Option<u64>) -> i32 {
                 println!("learned ({where_}) for local search; expires at Unix time {expires_at}");
             } else {
                 println!("learned ({}); it joins the shared core at the next `everett trunk merge`", where_);
+            }
+            if let Some(memory) = entry.get("memory") {
+                if let Some(error) = memory.get("error").and_then(Value::as_str) {
+                    eprintln!("everett: learned, but memory.db was not updated: {error}");
+                }
+                let redacted: Vec<&str> = memory
+                    .get("redacted")
+                    .and_then(Value::as_array)
+                    .map(|kinds| kinds.iter().filter_map(Value::as_str).collect())
+                    .unwrap_or_default();
+                if !redacted.is_empty() {
+                    eprintln!("everett: memory.db copy had {} redacted", redacted.join(", "));
+                }
+            }
+            0
+        }
+        Err(e) => {
+            eprintln!("everett: {}", e.message);
+            e.code
+        }
+    }
+}
+
+pub fn cmd_recall(query: &str, project: Option<&str>, scope: Option<&str>, limit: usize, json: bool, explain: bool) -> i32 {
+    match crate::memory::recall(query, project, scope, limit, explain) {
+        Ok(result) if json => {
+            println!("{}", Value::Object(result));
+            0
+        }
+        Ok(result) => {
+            let memories = result["memories"].as_array().expect("recall returns a memories array");
+            if memories.is_empty() {
+                println!("No matching memories.");
+            }
+            for memory in memories {
+                println!(
+                    "{}  [{}]",
+                    memory["content"].as_str().expect("memories contain content"),
+                    memory["scope"].as_str().expect("memories contain scope")
+                );
+                if explain {
+                    println!("    score {} {}", memory["score"], memory["why"]);
+                }
             }
             0
         }

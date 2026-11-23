@@ -84,6 +84,9 @@ been read: check status before retrying.
   should know: deploy rules, ports, conventions, decisions. Facts are capped at 500 characters and
   secrets are rejected; never try to store credentials.
 - `everett_learn(fact, ttl_seconds=3600)` stores a temporary fact that stays searchable until it expires.
+- `everett_learn(fact, key="user.editor")` names a fact that changes; a new value replaces the old
+  one in memory search.
+- `everett_recall(query)` searches every learned fact, with word, stem, and typo-tolerant matching.
 - `everett_core(action="search", query="…")` finds facts beyond the compact core.
 - `everett_core(action="forget" | "correct", fact="…", replacement="…")` fixes a wrong fact.
   Copy the whole fact exactly. `changed=false` means no match.
@@ -113,7 +116,7 @@ been read: check status before retrying.
 | Your identity | `everett_whoami` |
 | Your card | `everett_card` |
 | Status events | `everett_event`, `everett_subscribe` |
-| Shared memory | `everett_learn`, `everett_core` |
+| Shared memory | `everett_learn`, `everett_recall`, `everett_core` |
 | A playbook for the task at hand | `everett_skill` with `action: "match"`; `get` when the user names one |
 | Track sent requests | `everett_sent`, `everett_status`, `everett_retry` |
 | Drive T3 threads or other harnesses | `everett_control` |
