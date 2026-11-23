@@ -43,7 +43,7 @@ Draft wireframe and copy for review. Nothing is deployed. Grounded in Everett 2.
 
 ### Subheadline
 
-> Everett is a single native Rust binary that reads your existing Claude Code, Codex, OMP, Pi, Hermes, Grok, Devin, and T3 Code sessions read-only. Route requests, send messages with explicit delivery states, match `SKILL.md` playbooks, and share durable project memory through a CLI, 18 MCP tools, or a local dashboard.
+> Everett is a single native Rust binary that reads your existing Claude Code, Codex, OMP, Pi, Hermes, Grok, Devin, and T3 Code sessions read-only. Route requests, send messages with explicit delivery states, match `SKILL.md` playbooks, and share durable project memory through a CLI, 19 MCP tools, or a local dashboard.
 
 ### Primary and secondary buttons
 
@@ -221,7 +221,7 @@ Footnote: `Task completion is separate from transport receipts. Run everett proo
 | Routes to 1 matching session | Local BM25 + optional Jev | Manual tab switching | Broadcast | Manual |
 | Cross-harness `SKILL.md` hub | Yes (`everett skills`) | Single app | No | No |
 | Shared project memory across harnesses | Core + SQLite BM25 + TTL | Single app | Shared log | No |
-| Native stdio MCP and owner control | 18 tools (`rmcp`) | Varies | Rarely | No |
+| Native stdio MCP and owner control | 19 tools (`rmcp`) | Varies | Rarely | No |
 | Single native binary, MIT open source | Yes (macOS + Linux) | Usually Electron | Python or Node | Yes |
 
 ---

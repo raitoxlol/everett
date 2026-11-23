@@ -299,7 +299,8 @@ Done. MAX_RETRIES is now 5 and the backoff test covers the cap.
 | `everett mcp [--harness H]` | Runs the stdio MCP server (harnesses start it; see below). Tool calls require `everett login`. |
 | `everett install-mcp [--claude] [--codex] [--omp] [--grok] [--devin] [--pi] [--hermes] [--repair] [--apply]` | Prints or registers MCP. Pi uses its extension; `--hermes` prints native-plugin install/enable guidance plus a manual stdio fallback, but does not edit Hermes config or support `--apply`. Use one setup path. `--repair --apply` refreshes stale registrations. |
 | `everett doctor` | Installed CLIs, stores, hooks, live stdio/MCP registration checks, cards, router, and account diagnostics; when Hermes is present, also checks the active profile's native plugin and duplicate manual MCP entry. SSH revocation remains explicit. |
-| `everett learn "<fact>" [--project P] [--scope global\|project]` | Queues a fact for shared core. Add `--ttl-seconds N` (1 to 31536000) to keep it only in local memory search until expiry. Secrets are rejected. |
+| `everett learn "<fact>" [--project P] [--scope global\|project] [--key K]` | Queues a fact for shared core and saves it to `memory.db` (see [Shared core](#shared-core-one-mind-many-sessions)). Add `--ttl-seconds N` (1 to 31536000) to keep it only in local memory search until expiry. `--key` names a fact that changes, such as `user.editor`, so a new value replaces the old one in memory search. Secrets are rejected. |
+| `everett recall "<query>" [--project P] [--scope global\|project] [--limit N] [--json] [--explain]` | Searches every learned fact in `memory.db` with word, stem, and typo-tolerant matching. Defaults to the current or named project plus global, five results (`--limit` 1 to 50). `--explain` shows each score. |
 | `everett trunk merge [--llm claude\|codex\|none] [--dry-run]` | Distills the inbox into the shared core. |
 | `everett core [show\|edit-path\|history] [--project P]` | Shows the core a new session in this folder receives, the file to edit, or past merges. |
 | `everett core search "<query>" [--project P] [--json]` | Prints up to five matching learned facts from global memory and the current or named project. Includes unexpired temporary facts. Use `--json` for fact scope and expiry. |
@@ -636,6 +637,8 @@ Changes default to global scope. Pass `project="atlas"` for project scope, or `s
 
 Every learned fact is also saved to `memory.db`, a SQLite database Everett shares with Python Teresis clients, and `everett recall "cost reports" --project orbit` (or the `everett_recall` MCP tool) searches all of them with word, stem, and typo-tolerant matching. The database lives at `EVERETT_MEMORY_DB`, else `$EVERETT_HOME/.local/share/teresis/memory.db`, else `$TERESIS_DB`, else `$XDG_DATA_HOME/teresis/memory.db`, else `~/.local/share/teresis/memory.db`; `EVERETT_MEMORY_DB=off` disables it. `everett learn --key user.editor` names a fact that changes, so a new value replaces the old one in memory search while `everett recall` still returns only the latest. Forget and correct through `everett_core` update memory.db too. Everett uses word and fuzzy matching only; it does not write vectors or rerank.
 
+Facts are stored in memory.db under scope `global` or `project/<project>`. Recall searches the current or named project plus `global` by default; `--scope project` searches only the project and `--scope global` only global. Outside a project, recall searches global. Writing to memory.db is best effort: a missing, locked, or broken file never fails `everett learn`, which prints a warning instead, and secrets are scrubbed before the copy is written. Gateway connections do not get `everett_recall`.
+
 The project is the enclosing git repository's folder name, else the folder name. Your home folder is not a project. Default merge engine: `merge_llm` in the config, else `claude`.
 
 For storage boundaries, mid-session reads, and the relationship to Power Proxy and Basic Memory, see [Shared memory and other memory tools](docs/memory.md).
@@ -769,7 +772,7 @@ base_url = "https://relay.raitox.tech"  # EVERETT_AUTH_BASE_URL; optional relay 
 
 ```
 
-Environment overrides: `EVERETT_VAULT`, `EVERETT_VAULT_DIR`, `EVERETT_HARNESS`, `EVERETT_ROUTER`, `TYPESAFE_API_KEY`, `EVERETT_NOTIFY`, `EVERETT_NOTIFY_COMMAND`, `EVERETT_ESCALATE_MINUTES`, `EVERETT_AUTH_ISSUER`, `EVERETT_AUTH_BASE_URL`, `EVERETT_AUTH_RELAY_ALIASES`, and `EVERETT_HOME` (the root used in place of `~`). Existing configs that set only `issuer` keep using that origin as the connect URL. GitHub sign-in stays on the issuer. Pins treat every origin in `relay_aliases` as the same relay; an explicit list replaces the public pair above.
+Environment overrides: `EVERETT_VAULT`, `EVERETT_VAULT_DIR`, `EVERETT_HARNESS`, `EVERETT_ROUTER`, `TYPESAFE_API_KEY`, `EVERETT_NOTIFY`, `EVERETT_NOTIFY_COMMAND`, `EVERETT_ESCALATE_MINUTES`, `EVERETT_AUTH_ISSUER`, `EVERETT_AUTH_BASE_URL`, `EVERETT_AUTH_RELAY_ALIASES`, `EVERETT_MEMORY_DB` (the memory.db path, or `off`; see [Shared core](#shared-core-one-mind-many-sessions)), and `EVERETT_HOME` (the root used in place of `~`). Existing configs that set only `issuer` keep using that origin as the connect URL. GitHub sign-in stays on the issuer. Pins treat every origin in `relay_aliases` as the same relay; an explicit list replaces the public pair above.
 
 ## Accounts
 
