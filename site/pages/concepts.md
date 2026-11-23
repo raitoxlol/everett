@@ -82,7 +82,9 @@ hooks classify the last assistant message automatically; agents can report one w
 The **shared core** is the memory every session shares. `everett learn` queues a secret-filtered
 fact; `everett trunk merge` distills queued facts into a global core and per-project cores of at
 most 300 words each; SessionStart hooks inject them into new sessions. Facts are also searchable
-beyond the cap, can be forgotten or corrected, and can be temporary with a TTL. See [Shared core](/shared-core/).
+beyond the cap, can be forgotten or corrected, and can be temporary with a TTL. Every learned fact is
+also saved to a Teresis `memory.db` that `everett recall` searches, for the project plus global by
+default. See [Shared core](/shared-core/).
 
 ## Project
 
@@ -129,9 +131,11 @@ restricted tool set. See [MCP gateway](/gateway/).
 | `~/.everett/events.jsonl`, `state/` | Events and current session state |
 | `~/.everett/subscriptions.json` | Event subscriptions |
 | `~/.everett/core/` | Shared core, pending inbox, search store, history |
+| `~/.local/share/teresis/memory.db` | Every learned fact, shared with Teresis clients (path set by `EVERETT_MEMORY_DB`; see [Shared core](/shared-core/)) |
 | `~/.everett/spawned.jsonl` | Sessions Everett started headless |
 | `~/.everett/mcp.log` | MCP call log (names and status, never argument values) |
 | `~/.everett/cloudflare-auth.json` | Device credential (mode 0600) |
 | `~/.everett/relay-cloudflare/` | Relay keys and pins |
 
-Set `EVERETT_HOME` to use a different root.
+Set `EVERETT_HOME` to use a different root; memory.db then moves to
+`$EVERETT_HOME/.local/share/teresis/memory.db` unless `EVERETT_MEMORY_DB` is set.
