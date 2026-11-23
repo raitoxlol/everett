@@ -24,9 +24,11 @@ published as a release asset. From a checkout of this repository, follow the
 [installer instructions](../plugins/everett-local/README.md). The plugin source
 contains no runtime path or credentials. The installer validates your binary and
 generates the Codex/ChatGPT desktop manifest in a machine-local marketplace.
-Register that marketplace, install Everett Local, **quit and reopen ChatGPT**, then
-start a new chat in **Codex mode** and confirm the tool calls are named
-`mcp__everett_local__*`. See the [step-by-step check](../plugins/everett-local/README.md#use-it-in-the-chatgpt-desktop-app).
+Register that marketplace, install Everett Local, and run the installed `check.py`
+([layout check](../plugins/everett-local/README.md#check-startup)). Then **quit and
+reopen ChatGPT**, start a new chat in **Codex mode** and confirm the tool calls are
+named `mcp__everett_local__*`; `check.py` passing does not prove the app loaded the
+server. See the [step-by-step check](../plugins/everett-local/README.md#use-it-in-the-chatgpt-desktop-app).
 
 The official [desktop-only plugin guide](https://developers.openai.com/plugins/deploy/desktop-only/)
 says local MCP plugins require a local desktop thread. Public directory submission
@@ -66,7 +68,9 @@ executed neither identity nor listing. A separate hosted reconnect reached conse
 after the OAuth repair but still showed an expired connection after callback.
 These are open app verification gates, tracked in
 [issue 132](https://github.com/raitoxlol/everett/issues/132) and
-[issue 114](https://github.com/raitoxlol/everett/issues/114).
+[issue 114](https://github.com/raitoxlol/everett/issues/114). Everett Local 0.3.2
+adds `check.py` and skill guidance that names the cause when no local tools appear;
+issue 132 stays open until a live client check passes.
 
 Public remote plugin submission requires a stable HTTPS MCP endpoint. Secure MCP
 Tunnel alone does not meet the public submission requirements in the official
