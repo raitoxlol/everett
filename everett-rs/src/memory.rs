@@ -9,7 +9,7 @@ use serde_json::{json, Map, Value};
 
 use crate::error::{EverettError, Result};
 use crate::paths::expanduser;
-use crate::teresis::store::{MemoryStore, RecallOpts, RememberOpts};
+use crate::teresis::store::{Memory, MemoryStore, RecallOpts, RememberOpts};
 
 fn home_dir() -> PathBuf {
     std::env::var("HOME").map(PathBuf::from).unwrap_or_else(|_| PathBuf::from("/"))
@@ -100,6 +100,19 @@ pub fn record(
     )
 }
 
+/// Active memories in `scope_name` matching `text` the way core matches facts:
+/// scrubbed, then normalized (so `cargo_test` and `cargo test` are the same).
+fn matching(store: &MemoryStore, text: &str, scope_name: &str) -> Vec<Memory> {
+    let scrubbed = crate::teresis::secrets::redact_secrets(text).0;
+    let target = crate::core::norm(&scrubbed);
+    store
+        .active_in_scope(scope_name)
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|m| crate::core::norm(&m.content) == target)
+        .collect()
+}
+
 /// Soft-delete every active memory in `scope_name` whose content matches `text`.
 pub fn forget(text: &str, scope_name: &str) -> usize {
     let Some(path) = db_path() else {
@@ -108,47 +121,78 @@ pub fn forget(text: &str, scope_name: &str) -> usize {
     let Ok(Some(mut store)) = open_existing(&path) else {
         return 0;
     };
-    // Stored content is scrubbed, so look up the scrubbed text.
-    let text = crate::teresis::secrets::redact_secrets(text).0;
     let mut removed = 0;
-    loop {
-        match store.find(&text, Some(scope_name)) {
-            Ok(Some(memory)) => match store.forget_id(&memory.id, false) {
-                Ok(n) => removed += n,
-                Err(_) => return 0,
-            },
-            Ok(None) => return removed,
+    for memory in matching(&store, text, scope_name) {
+        match store.forget_id(&memory.id, false) {
+            Ok(n) => removed += n,
             Err(_) => return 0,
         }
     }
+    removed
 }
 
-/// Replace an existing memory for `old` in `scope_name`, or record `new` plainly.
-pub fn correct(old: &str, new: &str, scope_name: &str, source: &str, meta: Value) -> Value {
+/// Replace the memory for `old` in `scope_name` with `new`, or record `new`
+/// plainly. `expires_at` carries a corrected fact's absolute expiry; an
+/// already-expired deadline writes nothing.
+pub fn correct(
+    old: &str,
+    new: &str,
+    scope_name: &str,
+    expires_at: Option<f64>,
+    source: &str,
+    meta: Value,
+) -> Value {
     let Some(path) = db_path() else {
         return Value::Null;
     };
-    let scrubbed = crate::teresis::secrets::redact_secrets(old).0;
-    let existing = open_existing(&path)
-        .ok()
-        .flatten()
-        .and_then(|store| store.find(&scrubbed, Some(scope_name)).ok().flatten());
-    let (replaces, key) = existing
-        .map(|memory| (Some(memory.id), memory.key))
-        .unwrap_or((None, None));
-    remember(
-        &path,
+    let mut store = match open_existing(&path) {
+        Ok(Some(store)) => store,
+        _ => return record(new, scope_name, None, None, source, meta),
+    };
+    let matches = matching(&store, old, scope_name);
+    let old_row = matches.first();
+    let expiry = old_row.and_then(|m| m.expires_at).or(expires_at);
+    let now = crate::session::now();
+    if let Some(e) = expiry {
+        if e <= now {
+            return json!({"db": path, "status": "expired"});
+        }
+    }
+    let result = match store.remember(
         new,
         &RememberOpts {
             scope: scope_name.to_string(),
             kind: "fact".to_string(),
-            key,
+            key: old_row.and_then(|m| m.key.clone()),
+            ttl_days: expiry.map(|e| (e - now) / 86400.0),
             source: Some(source.to_string()),
             meta: Some(meta),
-            replaces,
+            replaces: old_row.map(|m| m.id.clone()),
             ..Default::default()
         },
-    )
+    ) {
+        Ok(result) => result,
+        Err(e) => return json!({"db": path, "error": e.message}),
+    };
+    let mut replaced = result.replaced.clone();
+    if let Some(old) = old_row {
+        // Python reports a duplicate before applying `replaces`; the old row is
+        // still active, so retire it here.
+        if result.status == "duplicate" && result.id != old.id {
+            let _ = store.forget_id(&old.id, false);
+            replaced.push(old.id.clone());
+        }
+        for extra in &matches[1..] {
+            let _ = store.forget_id(&extra.id, false);
+        }
+    }
+    json!({
+        "db": path,
+        "id": result.id,
+        "status": result.status,
+        "replaced": replaced,
+        "redacted": result.redacted,
+    })
 }
 
 /// Search memory.db. Missing database reads as empty; disabled is an error.

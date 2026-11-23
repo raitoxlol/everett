@@ -540,6 +540,7 @@ pub fn change(change: CoreChange<'_>, project: Option<&str>, scope: Option<&str>
                     fact,
                     &replacement,
                     &scope_name,
+                    expires_at.map(|e| e as f64),
                     &source,
                     json!({"session": caller_session_id(), "cwd": cwd}),
                 );
@@ -594,7 +595,7 @@ fn norm_re() -> &'static Regex {
     RE.get_or_init(|| Regex::new(r"[\W_]+").unwrap())
 }
 
-fn norm(text: &str) -> String {
+pub(crate) fn norm(text: &str) -> String {
     norm_re().replace_all(&text.to_lowercase(), " ").trim().to_string()
 }
 

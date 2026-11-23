@@ -755,6 +755,18 @@ impl MemoryStore {
         Ok(self.q(&sql, all)?.into_iter().next())
     }
 
+    /// Every active memory in exactly `scope`, newest first (the same active
+    /// filter `find` uses: not superseded, not deleted, not expired).
+    pub fn active_in_scope(&self, scope: &str) -> Result<Vec<Memory>> {
+        let (active, mut params) = self.active_sql("m", None);
+        let sql = format!(
+            "SELECT * FROM memories m WHERE scope=? AND {active} ORDER BY updated_at DESC"
+        );
+        let mut all = vec![Param::Text(scope.trim_matches('/').to_string())];
+        all.append(&mut params);
+        self.q(&sql, all)
+    }
+
     /// All versions of a keyed fact, oldest first.
     pub fn history_key(&self, scope: &str, key: &str) -> Result<Vec<Memory>> {
         self.q(

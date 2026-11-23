@@ -378,6 +378,62 @@ fn forget_and_correct_find_redacted_memories() {
 }
 
 #[test]
+fn forget_matches_like_core() {
+    let fx = fixture();
+    assert!(fx.run(&["learn", "Use cargo_test for builds"]).status.success());
+    let res = common::mcp_calls(&fx, &[], &[], &[("everett_core",
+        json!({"action": "forget", "fact": "Use cargo test for builds"}))]);
+    assert_eq!(res[0]["isError"], false, "{}", res[0]);
+    assert_eq!(common::tool_json(&res[0])["memory_removed"], json!(1), "{}", res[0]);
+    let got = recall_json(&fx, &["cargo_test builds"]);
+    assert!(got["memories"].as_array().unwrap().is_empty(), "{got}");
+
+    assert!(fx.run(&["learn", "Use cargo_test for builds"]).status.success());
+    let res = common::mcp_calls(&fx, &[], &[], &[("everett_core",
+        json!({"action": "correct", "fact": "Use cargo test for builds", "replacement": "Use cargo_nextest for builds"}))]);
+    assert_eq!(res[0]["isError"], false, "{}", res[0]);
+    let got = recall_json(&fx, &["cargo builds"]);
+    assert!(memory_contents(&got).iter().any(|c| c == "Use cargo_nextest for builds"), "{got}");
+    let con = rusqlite::Connection::open(db_path(&fx.home())).unwrap();
+    let active_old: i64 = con.query_row(
+        "SELECT COUNT(*) FROM memories WHERE content='Use cargo_test for builds' AND superseded_by IS NULL AND deleted_at IS NULL",
+        [], |r| r.get(0)).unwrap();
+    assert_eq!(active_old, 0, "old row must not stay active");
+}
+
+#[test]
+fn correct_to_an_existing_fact_retires_the_old_one() {
+    let fx = fixture();
+    assert!(fx.run(&["learn", "Atlas uses npm for builds", "--project", "orbit"]).status.success());
+    assert!(fx.run(&["learn", "Atlas uses pnpm for builds", "--project", "orbit"]).status.success());
+    let res = common::mcp_calls(&fx, &[], &[], &[("everett_core",
+        json!({"action": "correct", "project": "orbit", "fact": "Atlas uses npm for builds", "replacement": "Atlas uses pnpm for builds"}))]);
+    assert_eq!(res[0]["isError"], false, "{}", res[0]);
+    let got = recall_json(&fx, &["Atlas builds", "--project", "orbit"]);
+    let contents = memory_contents(&got);
+    assert_eq!(contents, vec!["Atlas uses pnpm for builds".to_string()], "{got}");
+}
+
+#[test]
+fn correcting_a_temporary_fact_keeps_its_expiry() {
+    let fx = fixture();
+    let out = fx.run(&["learn", "Preview closes tonight", "--ttl-seconds", "3600"]);
+    assert_eq!(out.status.code(), Some(0), "{}", String::from_utf8_lossy(&out.stderr));
+    let res = common::mcp_calls(&fx, &[], &[], &[("everett_core",
+        json!({"action": "correct", "fact": "Preview closes tonight", "replacement": "Preview closes tomorrow"}))]);
+    assert_eq!(res[0]["isError"], false, "{}", res[0]);
+    let con = rusqlite::Connection::open(db_path(&fx.home())).unwrap();
+    let old_expiry: f64 = con.query_row(
+        "SELECT expires_at FROM memories WHERE content='Preview closes tonight'", [], |r| r.get(0)).unwrap();
+    let (new_content, new_expiry): (String, Option<f64>) = con.query_row(
+        "SELECT content, expires_at FROM memories WHERE superseded_by IS NULL AND deleted_at IS NULL",
+        [], |r| Ok((r.get(0)?, r.get(1)?))).unwrap();
+    assert_eq!(new_content, "Preview closes tomorrow");
+    let new_expiry = new_expiry.expect("the corrected copy must keep an expiry");
+    assert!((new_expiry - old_expiry).abs() <= 2.0, "old {old_expiry} new {new_expiry}");
+}
+
+#[test]
 fn memory_off_and_broken_db_never_block_learning() {
     let fx = fixture();
     let out = fx.run_stdin(&["learn", "Fact while memory off"], "", &[("EVERETT_MEMORY_DB", "off")]);
