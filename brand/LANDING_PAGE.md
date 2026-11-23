@@ -43,7 +43,7 @@ Draft wireframe and copy for review. Nothing is deployed. Grounded in Everett 2.
 
 ### Subheadline
 
-> Everett is a single native Rust binary that reads your existing Claude Code, Codex, OMP, Pi, Hermes, Grok, Devin, and T3 Code sessions read-only. Route requests, send messages with explicit delivery states, match `SKILL.md` playbooks, and share durable project memory through a CLI, 19 MCP tools, or a local dashboard.
+> Everett is a single native Rust binary that reads your existing Claude Code, Codex, OMP, Pi, Hermes, Grok, Devin, and T3 Code sessions read-only. Route requests, send messages with explicit delivery states, match `SKILL.md` playbooks, and share durable project memory through a CLI, 24 MCP tools, or a local dashboard.
 
 ### Primary and secondary buttons
 
@@ -155,12 +155,12 @@ SessionStart hooks inject up to 350 words of core in about 40 ms from local file
 **Hand each agent the one playbook it needs.**
 Everett indexes `SKILL.md` files across `~/.claude/skills`, `~/.codex/skills`, `~/.agents/skills`, `~/.devin/skills`, project directories, and custom roots (`EVERETT_SKILL_DIRS`). Local zero-LLM matching (`everett skills --match` or `everett_skill`) returns the single matching skill, deduplicates copies across harnesses, and exposes every skill as an MCP prompt. Claude Code and Codex prompt hooks inject named skills automatically.
 
-### 6. 19 native stdio MCP tools and owner-local control
+### 6. 24 native stdio MCP tools and owner-local control
 
 **Let your agents coordinate over Rust MCP.**
-Built on the official Rust MCP SDK (`rmcp`), `everett mcp` exposes 19 tools with host-bound caller identity, closed child stdin, audit logs that omit argument values, and owner-local `everett_control` to list, start, send, wake, and read T3 Code threads and supported local transcripts.
+Built on the official Rust MCP SDK (`rmcp`), `everett mcp` exposes 24 tools with host-bound caller identity, closed child stdin, audit logs that omit argument values, and owner-local `everett_control` to list, start, send, wake, and read T3 Code threads and supported local transcripts.
 
-Tools: `everett_ls` · `everett_route` · `everett_send` · `everett_status` · `everett_sent` · `everett_retry` · `everett_inbox` · `everett_card` · `everett_skill` · `everett_event` · `everett_subscribe` · `everett_learn` · `everett_recall` · `everett_core` · `everett_whoami` · `everett_control` · `everett_agent_relay` · `everett_agent_send` · `everett_agent_status`
+Tools: `everett_ls` · `everett_route` · `everett_send` · `everett_status` · `everett_sent` · `everett_retry` · `everett_inbox` · `everett_card` · `everett_skill` · `everett_event` · `everett_subscribe` · `everett_learn` · `everett_recall` · `everett_core` · `everett_whoami` · `everett_directory` · `everett_control` · `everett_agent_relay` · `everett_agent_send` · `everett_agent_status` · `everett_search` · `everett_peers` · `everett_broadcast` · `everett_tasks`
 
 ### 7. Local dispatch dashboard (`everett dashboard`)
 
@@ -221,7 +221,7 @@ Footnote: `Task completion is separate from transport receipts. Run everett proo
 | Routes to 1 matching session | Local BM25 + optional Jev | Manual tab switching | Broadcast | Manual |
 | Cross-harness `SKILL.md` hub | Yes (`everett skills`) | Single app | No | No |
 | Shared project memory across harnesses | Core + SQLite BM25 + TTL | Single app | Shared log | No |
-| Native stdio MCP and owner control | 19 tools (`rmcp`) | Varies | Rarely | No |
+| Native stdio MCP and owner control | 24 tools (`rmcp`) | Varies | Rarely | No |
 | Single native binary, MIT open source | Yes (macOS + Linux) | Usually Electron | Python or Node | Yes |
 
 ---

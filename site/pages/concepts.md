@@ -136,6 +136,7 @@ restricted tool set. See [MCP gateway](/gateway/).
 | `~/.everett/mcp.log` | MCP call log (names and status, never argument values) |
 | `~/.everett/cloudflare-auth.json` | Device credential (mode 0600) |
 | `~/.everett/relay-cloudflare/` | Relay keys and pins |
+| `<project>/.everett/tasks.json`, `tasks.lock` | Shared task board from `everett_tasks`, in the project's Git root (or the MCP server's working directory when no `.git` ancestor exists) |
 
 Set `EVERETT_HOME` to use a different root; memory.db then moves to
 `$EVERETT_HOME/.local/share/teresis/memory.db` unless `EVERETT_MEMORY_DB` is set.

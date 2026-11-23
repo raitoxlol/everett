@@ -51,7 +51,8 @@ A supported integration does not mean every agent can be woken. See
 ```
 
 Everything Everett writes lives under `~/.everett/` (or `EVERETT_HOME`), except the shared
-`memory.db` that every learned fact is also saved to (see [Shared core](/shared-core/)). Harness stores are
+`memory.db` that every learned fact is also saved to (see [Shared core](/shared-core/)) and the
+`everett_tasks` board at `<project>/.everett/tasks.json`. Harness stores are
 opened read-only; a headless resume lets the harness append to its own history.
 
 ## Where to go next

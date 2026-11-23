@@ -17,14 +17,14 @@
   <a href="https://github.com/raitoxlol/everett/actions/workflows/rust.yml"><img alt="Rust CI" src="https://img.shields.io/github/actions/workflow/status/raitoxlol/everett/rust.yml?style=flat-square&label=CI&labelColor=242825&color=216b4c" /></a>
   <img alt="Rust 1.89+" src="https://img.shields.io/badge/Rust-1.89%2B-b64f1a?style=flat-square&labelColor=242825" />
   <img alt="Platforms" src="https://img.shields.io/badge/platform-macOS%20%7C%20Linux-5d625d?style=flat-square&labelColor=242825" />
-  <img alt="MCP Tools" src="https://img.shields.io/badge/MCP-18%20tools-b64f1a?style=flat-square&labelColor=242825" />
+  <img alt="MCP Tools" src="https://img.shields.io/badge/MCP-24%20tools-b64f1a?style=flat-square&labelColor=242825" />
   <a href="LICENSE"><img alt="License: MIT" src="https://img.shields.io/badge/license-MIT-216b4c?style=flat-square&labelColor=242825" /></a>
 </p>
 
 <p align="center">
   <a href="#quickstart">Quickstart</a> ·
   <a href="#demo">Demo</a> ·
-  <a href="#for-agents-mcp">MCP (19 tools)</a> ·
+  <a href="#for-agents-mcp">MCP (24 tools)</a> ·
   <a href="docs/agent-support.md">Agent Support</a> ·
   <a href="docs/relay-threat-model.md">Threat Model</a> ·
   <a href="CHANGELOG.md">Changelog</a>
@@ -685,6 +685,7 @@ Everett is mostly used by agents. `everett mcp` is a native Rust stdio MCP serve
 | `everett_ls` | `hours?`, `harness?`, `all?` | Set `all: true` to include automation sessions. Your own session is marked `you`. Like local `everett ls --json`, this includes `t3_thread_id` alongside the native session `id` when a T3 thread mapping is available. Overview only -- not for picking a send target. |
 | `everett_route` | `text`, `router?`, `hours?` | `SESSION` / `NEW` / `ASK`, confidence, router used, candidates. Never sends; excludes the caller when known. |
 | `everett_send` | `text`, `to?`, `hours?`, `spawn?`, `dir?`, `harness?`, `timeout?`, `mode?`, `wait?`, `reply_to?` | Routes then pings by default. Dispatch is separate from inbox pickup. Unsupported immediate paths fail explicitly; `mode: "inbox"` opts into legacy hooks/polling/remote queues. `reply_to` queues a correlated answer. |
+| `everett_directory` | `ids` | Labels exact destination IDs (session, T3 thread, registered conversation, bare inbox) with kind, project, title, host, availability, and permitted actions — it labels IDs you already have, it does not search by name; unbound inbox IDs report as unknown. |
 | `everett_learn` | `fact`, `project?`, `scope?`, `key?`, `ttl_seconds?` | Stores a secret-filtered fact. Durable facts queue for shared core; temporary facts stay in local search until expiry. `key` names a fact that changes so a new value replaces the old in memory search. |
 | `everett_recall` | `query`, `project?`, `scope?`, `limit?`, `explain?` | Searches every learned fact in the shared memory.db with word, stem, and typo-tolerant matching. Reads the same file Python Teresis clients use; `limit` defaults to 5 (1 to 50). |
 | `everett_core` | `action?`, `project?`, `query?`, `limit?`, `fact?`, `replacement?`, `scope?` | Reads the latest core by default. Local `search` ranks original learnings beyond the core cap. `forget` and `correct` update exact facts in active, pending, and searchable memory. |
@@ -703,8 +704,12 @@ Everett is mostly used by agents. `everett mcp` is a native Rust stdio MCP serve
 | `everett_agent_status` | `message_id` | Sender-only status from signed delivery/pickup/reply observations. |
 | `everett_search` | `query`, `hours?`, `harness?`, `all?`, `limit?` | Searches recent sessions' titles, first/last requests, and cards across every harness; returns scored matches with the query terms each hit. |
 | `everett_peers` | `action?`, `peer?`, `hours?`, `all?`, `harness?` | `list` (default) returns paired SSH and relay devices; `sessions` lists one SSH peer's recent sessions (`everett ls --peer` over MCP). |
-| `everett_broadcast` | `text`, `targets`, `mode?`, `timeout?`, `wait?` | Sends one request to up to 16 explicit `everett_send` destinations sequentially; per-target results, one failure does not stop the rest. |
+| `everett_broadcast` | `text`, `targets`, `mode?`, `timeout?`, `wait?`, `hours?` | Sends one request to up to 16 explicit `everett_send` destinations sequentially; `timeout` and `wait` apply per target. Returns `sent`, `failed`, and per-target results; one failure does not stop the rest, and a ping that fails after its inbox write keeps a recovery receipt (`message_id`, dispatch state). |
 | `everett_tasks` | `action?`, `id?`, `title?` | Shared per-project task board at `<project>/.everett/tasks.json`: `list` (default), `add`, `claim` (owner = your session), `done`, `remove`. |
+
+**Shared task board.** `everett_tasks` keeps one board per project at `<project>/.everett/tasks.json`, where the project is the nearest ancestor of the MCP server's working directory that contains `.git` (else that directory). Task ids (`t1`, `t2`, ...) come from a persisted counter and are never reused after `remove`. `claim` needs a host-bound caller and an `open` task; it does not take over a claimed task or reopen a done one. The board holds at most 500 tasks and titles are cut to 200 characters. Writes run under an exclusive lock on `tasks.lock` and replace the file atomically; `list` does not create the board. A symlinked `.everett` directory or `tasks.json` is refused.
+
+`everett_search` scores each term by where it matches: title 3, card 2, first or last request 1, working directory 0.5. `everett_peers` with `action: "sessions"` runs `everett ls` on an SSH peer; Cloudflare relay peers have no remote listing, so send to their sessions with `everett_send` using a peer-qualified `PEER/HARNESS/SESSION` destination id you already have (`sessions` only lists SSH peers; relay ids come from the peer device); remote sends are inbox-only — `mode: "ping"` queues nothing. Gateway bindings deny all four tools unless the owner grants them in the binding's `agent_tool_permissions` file — an `all` grant already covers them (see [MCP gateway](docs/gateway.md#owner-agent-access-over-https)).
 
 The `everett_send` MCP tool bounds `timeout` and `wait` to 1,800 seconds (30 minutes); values above that are capped. `wait` applies only to explicit `mode: "inbox"` and does not ping or wake the target. These MCP tool bounds do not add a 30-minute cap to the CLI `everett send` options. CLI `everett send` `--timeout` values, with or without `--spawn`, must be finite and positive; subprocess waits are capped at one year.
 
