@@ -35,6 +35,19 @@ jobs:
           EVERETT_VERIFY_BINARY: ${{ github.workspace }}/everett-rs/target/debug/everett
         run: python3 -m unittest discover -s plugins/everett-local/tests -v
 
+  fixture-isolation:
+    runs-on: ubuntu-latest
+    env:
+      CARGO_TARGET_DIR: ${{ github.workspace }}/everett-rs/target
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - name: Fixtures ignore an exported DEVIN_HOME
+        run: scripts/check-fixture-isolation.py
+      - name: The same check fails at the commit before #230 was fixed
+        run: scripts/check-fixture-isolation.py --known-bad ebb13b2
+
   relay:
     if: startsWith(github.ref, 'refs/tags/v') || inputs.build_artifacts == true
     uses: ./.github/workflows/cloudflare.yml
