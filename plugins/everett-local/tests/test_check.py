@@ -214,6 +214,27 @@ class CheckTests(unittest.TestCase):
         self.assertFalse(row['ok'])
         self.assertIn('executable', row['detail'])
 
+    def test_mcp_manifest_requires_python_command(self):
+        """An executable that is not Python (like /bin/true) must fail."""
+        plugin = self.plugin_dir()
+        program = self.root / 'not-python'
+        program.write_text('#!/bin/sh\nexit 0\n')
+        program.chmod(0o700)
+        self.mcp(plugin, lambda d: d['mcpServers']['everett_local'].__setitem__('command', str(program)))
+        row = self.row(plugin, 'mcp_manifest')
+        self.assertFalse(row['ok'])
+        self.assertIn('Python', row['detail'])
+
+    def test_runtime_runs_the_manifest_command(self):
+        """runtime goes through .mcp.json's command, not an in-process import."""
+        plugin = self.plugin_dir()
+        program = self.root / 'not-python'
+        program.write_text('#!/bin/sh\nexit 0\n')
+        program.chmod(0o700)
+        self.mcp(plugin, lambda d: d['mcpServers']['everett_local'].__setitem__('command', str(program)))
+        row = self.row(plugin, 'runtime')
+        self.assertFalse(row['ok'])
+
     def test_binary_failing_version_check_reports_remedy_not_traceback(self):
         plugin = self.plugin_dir()
         self.binary.write_text('#!/bin/sh\nexit 1\n')

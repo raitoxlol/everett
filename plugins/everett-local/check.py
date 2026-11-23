@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
 """Verify an installed Everett Local package without starting its MCP server."""
 import argparse
-import importlib.util
 import json
 import os
 from pathlib import Path
@@ -41,13 +40,6 @@ REMEDIES = {
 }
 
 
-def load_launcher(plugin):
-    spec = importlib.util.spec_from_file_location('everett_local_launcher', plugin / 'scripts' / 'launch.py')
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
-
-
 def read_json(path):
     try:
         return json.loads(path.read_text()), None
@@ -80,6 +72,17 @@ def executable(value):
     try:
         return Path(value).is_file() and os.access(value, os.X_OK)
     except (OSError, ValueError):
+        return False
+
+
+def python_interpreter(value):
+    """True when the executable really is Python; an arbitrary program like /bin/true passes executable()."""
+    if not executable(value):
+        return False
+    try:
+        run = subprocess.run([value, '--version'], capture_output=True, text=True, timeout=5)
+        return run.returncode == 0 and (run.stdout + run.stderr).strip().startswith('Python ')
+    except (OSError, subprocess.SubprocessError):
         return False
 
 
@@ -176,6 +179,8 @@ def check(plugin):
         problems = []
         if not executable(program):
             problems.append(f'command is not an executable file: {program!r}')
+        elif not python_interpreter(program):
+            problems.append(f'command is not a Python interpreter: {program!r}')
         if not same_path(launcher_arg, plugin / 'scripts' / 'launch.py'):
             problems.append(f'first argument is not this plugin\'s scripts/launch.py: {launcher_arg!r}')
         if not same_path(config_arg, destination / 'runtime.json'):
@@ -183,11 +188,23 @@ def check(plugin):
     add('mcp_manifest', not problems,
         'everett_local launches scripts/launch.py --config runtime.json' if not problems else '; '.join(problems))
 
-    try:
-        binary, version = load_launcher(plugin).runtime(destination / 'runtime.json')
-        add('runtime', True, f'{version} at {binary}')
-    except (OSError, ValueError, KeyError, subprocess.SubprocessError) as failure:
-        add('runtime', False, str(failure))
+    # Run the manifest's own command so the checked path is the one Codex launches.
+    if isinstance(command, dict) and executable(program) and isinstance(launcher_arg, str):
+        try:
+            run = subprocess.run([program, launcher_arg, '--config', str(config_arg or ''), '--doctor'],
+                                 capture_output=True, text=True, timeout=15)
+        except (OSError, subprocess.SubprocessError) as failure:
+            add('runtime', False, str(failure))
+        else:
+            try:
+                doctor = json.loads(run.stdout) if run.returncode == 0 else None
+            except ValueError:
+                doctor = None
+            add('runtime', doctor is not None,
+                f"{doctor['version']} at {doctor['runtime']}" if doctor
+                else (run.stderr.strip() or f'{program} exited {run.returncode}'))
+    else:
+        add('runtime', False, 'cannot run the manifest command; fix .mcp.json first')
 
     market, error = read_json(destination / '.agents' / 'plugins' / 'marketplace.json')
     plugins = market.get('plugins') if isinstance(market, dict) else None
