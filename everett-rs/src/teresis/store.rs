@@ -269,8 +269,8 @@ impl Default for Weights {
 
 type Param = rusqlite::types::Value;
 
-/// (id, key, content, expires_at) of a candidate memory row.
-type DupRow = (String, Option<String>, String, Option<f64>);
+/// (id, key, content) of a candidate memory row.
+type DupRow = (String, Option<String>, String);
 
 /// `json.dumps(meta)` with CPython's default separators and `ensure_ascii`.
 fn py_dumps(v: &Value) -> String {
@@ -506,12 +506,7 @@ impl MemoryStore {
                 let mut stmt = c.prepare(&sql).map_err(err)?;
                 let mut rows = stmt
                     .query_map(params_from_iter(params.iter()), |r| {
-                        Ok((
-                            r.get::<_, String>("id")?,
-                            r.get::<_, Option<String>>("key")?,
-                            r.get::<_, String>("content")?,
-                            r.get::<_, Option<f64>>("expires_at")?,
-                        ))
+                        Ok((r.get::<_, String>("id")?, r.get::<_, Option<String>>("key")?, r.get::<_, String>("content")?))
                     })
                     .map_err(err)?;
                 match rows.next() {
@@ -533,16 +528,13 @@ impl MemoryStore {
                     }
                 }
             }
-            if let Some((dup_id, dup_key, _, dup_expires)) = &dup {
+            if let Some((dup_id, dup_key, _)) = &dup {
                 let is_dup = key.is_none() || dup_key.as_deref() == key.as_deref();
                 if is_dup {
-                    // A relearn may extend a memory's life, never shorten it:
-                    // permanent (NULL) wins, otherwise the later deadline.
-                    if opts.update_expiry_on_duplicate {
-                        let keep = match (*dup_expires, expires_at) {
-                            (None, _) | (_, None) => None,
-                            (Some(a), Some(b)) => Some(a.max(b)),
-                        };
+                    // The relearn's lifetime wins when it carries the row's
+                    // explicit key or the row is unkeyed; an unkeyed relearn
+                    // must never shorten a keyed memory's life.
+                    if opts.update_expiry_on_duplicate && (key.is_some() || dup_key.is_none()) {
                         c.execute(
                             "UPDATE memories SET access_count=access_count+1, updated_at=?, importance=max(importance, ?),\
                              pinned=max(pinned, ?), expires_at=? WHERE id=?",
@@ -550,7 +542,7 @@ impl MemoryStore {
                                 Param::Real(now),
                                 Param::Real(importance),
                                 Param::Integer(i64::from(pinned)),
-                                match keep {
+                                match expires_at {
                                     Some(e) => Param::Real(e),
                                     None => Param::Null,
                                 },
@@ -704,7 +696,6 @@ impl MemoryStore {
                     r.get::<_, String>("id")?,
                     r.get::<_, Option<String>>("key")?,
                     r.get::<_, String>("content")?,
-                    r.get::<_, Option<f64>>("expires_at")?,
                 ))
             })
             .map_err(err)?
@@ -1293,5 +1284,41 @@ mod tests {
         assert_eq!(res.status, "duplicate");
         let row = store.get(&keyed.id).unwrap().unwrap();
         assert!(row.expires_at.is_none(), "permanent relearn did not clear the expiry");
+    }
+
+    #[test]
+    fn keyed_relearn_applies_a_shorter_life() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("memory.db");
+        let clock = Arc::new(Mutex::new(1_700_000_000.0));
+        let mut store = store_at(&path, clock);
+        let keyed = store
+            .remember(
+                "the keyed fact",
+                &RememberOpts {
+                    key: Some("fact-key".to_string()),
+                    ttl_days: Some(10.0),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        let res = store
+            .remember(
+                "the keyed fact",
+                &RememberOpts {
+                    key: Some("fact-key".to_string()),
+                    ttl_days: Some(1.0),
+                    update_expiry_on_duplicate: true,
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        assert_eq!(res.status, "duplicate");
+        let row = store.get(&keyed.id).unwrap().unwrap();
+        let expiry = row.expires_at.unwrap();
+        assert!(
+            expiry < 1_700_000_000.0 + 2.0 * 86_400.0,
+            "shorter relearn did not shorten the expiry"
+        );
     }
 }
