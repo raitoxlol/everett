@@ -54,7 +54,9 @@ impl Fixture {
             .env("EVERETT_HOP_LIMIT", "on")
             .env_remove("EVERETT_HOPS")
             .env_remove("EVERETT_SESSION_ID")
-            .env_remove("EVERETT_SKILL_DIRS");
+            .env_remove("EVERETT_SKILL_DIRS")
+            .env_remove("EVERETT_MEMORY_DB")
+            .env_remove("TERESIS_DB");
         scrub_caller_identity(&mut cmd);
         cmd
     }
@@ -357,6 +359,8 @@ const SANDBOX_UNSET: &[&str] = &[
     "EVERETT_HOPS",
     "EVERETT_MERGE_LLM",
     "EVERETT_SKILL_DIRS",
+    "EVERETT_MEMORY_DB",
+    "TERESIS_DB",
     "CLAUDE_CODE_ENTRYPOINT",
     "CLAUDECODE",
     "EVERETT_NOTIFY_COMMAND",
