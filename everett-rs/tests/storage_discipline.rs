@@ -22,6 +22,43 @@ fn sources(dir: &Path, out: &mut Vec<PathBuf>) {
     }
 }
 
+/// Drop `#[cfg(test)]`-gated items so test code never counts. The attribute's
+/// item ends at the first `;` outside braces (a `use` or `mod` declaration) or
+/// when its braces balance (a `mod tests { ... }` or `fn` body). Splitting at
+/// the first `#[cfg(test)]` would silently skip the rest of a file — gateway.rs
+/// and relay/mod.rs keep almost all of their production code after one.
+fn production_source(text: &str) -> String {
+    let mut kept = String::new();
+    let mut lines = text.lines();
+    while let Some(line) = lines.next() {
+        if !line.trim_start().starts_with("#[cfg(test)]") {
+            kept.push_str(line);
+            kept.push('\n');
+            continue;
+        }
+        let mut depth = 0usize;
+        let mut opened = false;
+        while let Some(item) = lines.next() {
+            let mut terminated = false;
+            for ch in item.chars() {
+                match ch {
+                    '{' => {
+                        depth += 1;
+                        opened = true;
+                    }
+                    '}' => depth = depth.saturating_sub(1),
+                    ';' if !opened && depth == 0 => terminated = true,
+                    _ => {}
+                }
+            }
+            if terminated || (opened && depth == 0) {
+                break;
+            }
+        }
+    }
+    kept
+}
+
 fn is_test_file(name: &str) -> bool {
     name == "tests.rs"
         || ["_tests.rs", "_model.rs", "_concurrency.rs", "_regressions.rs"].iter().any(|suffix| name.ends_with(suffix))
@@ -38,7 +75,7 @@ fn production_counts() -> BTreeMap<String, usize> {
             continue;
         }
         let text = std::fs::read_to_string(&file).unwrap();
-        let production = text.split("\n#[cfg(test)]").next().unwrap();
+        let production = production_source(&text);
         let count: usize = CALLS.iter().map(|call| production.matches(call).count()).sum();
         if count > 0 {
             counts.insert(file.strip_prefix(root).unwrap().to_string_lossy().to_string(), count);

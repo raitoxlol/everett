@@ -14,10 +14,18 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 FILES = ["everett-rs/tests/storage_discipline.rs", "everett-rs/tests/storage_discipline.baseline"]
+# Each entry checks the commit before the fix actually landed (the SHAs in the
+# first version of this check belonged to commits that were rewritten by a
+# squash merge). `baseline_overrides` raises a file's limit to the calls that
+# remained after the fix, so a missed replacement — not an unrelated older
+# call — is what makes the ratchet name the file.
 KNOWN_BAD = [
-    ("051b05c^", "#236 inbox compaction files", ["src/inbox.rs"]),
-    ("db19c1f^", "#246 live record writes", ["src/inbox.rs", "src/omp_wake.rs"]),
-    ("e7e1bae^", "#260 codex config rewrite", ["src/install.rs"]),
+    ("e9d596b^", "#236 inbox compaction files", ["src/inbox.rs"], {}),
+    # At 86c464e the fix left two fs::rename calls in src/inbox.rs (the #236
+    # compaction bug, fixed later); allowing exactly those two means only the
+    # live-record replacements trip the ratchet.
+    ("86c464e^", "#246 live record writes", ["src/inbox.rs", "src/omp_wake.rs"], {"src/inbox.rs": 2}),
+    ("4b1348a^", "#260 codex config rewrite", ["src/install.rs"], {}),
 ]
 
 
@@ -40,7 +48,7 @@ def main() -> int:
     if code:
         print(out[-2000:])
         failed = True
-    for rev, name, expected in KNOWN_BAD:
+    for rev, name, expected, baseline_overrides in KNOWN_BAD:
         with tempfile.TemporaryDirectory(dir=scratch) as tmp:
             tree = Path(tmp) / "old"
             subprocess.run(["git", "worktree", "add", "--detach", str(tree), rev], cwd=ROOT, check=True,
@@ -48,6 +56,12 @@ def main() -> int:
             try:
                 for rel in FILES:
                     shutil.copy(ROOT / rel, tree / rel)
+                if baseline_overrides:
+                    baseline_path = tree / FILES[1]
+                    lines = baseline_path.read_text().splitlines()
+                    merged = dict(line.split(" ", 1) for line in lines)
+                    merged.update(baseline_overrides)
+                    baseline_path.write_text("".join(f"{p} {c}\n" for p, c in sorted(merged.items())))
                 code, out = run(tree / "everett-rs", target)
             finally:
                 subprocess.run(["git", "worktree", "remove", "--force", str(tree)], cwd=ROOT, check=True)
