@@ -17,11 +17,22 @@ recipient when the user names one. Preserve a remote request's idempotency key
 when delivery is uncertain. A dispatch acknowledgement does not prove pickup,
 wake-up, a reply, or completion.
 
-If runtime startup fails, run the installed launcher's `--doctor` command from
-the plugin README. A missing or old binary is a local installation problem,
-not a reason to reconnect a ChatGPT OAuth connector. Account authorization
-errors still require the owner's normal Everett login or renewal. Do not copy
-credentials, create a new account home, replace keys, or switch providers.
+If `everett_local` tools are absent, calls are answered by another `everett`
+server such as `mcp__everett__*`, or startup fails, do not substitute hosted
+results or claim the local route worked. Distinguish the cause for the user:
+
+- No `everett_local` tools at all: the local server did not start. Run the
+  installed `check.py`, then have the user quit and reopen ChatGPT and start a
+  new Codex-mode chat. Regular (non-Codex) ChatGPT mode cannot run local
+  plugins; use Codex mode there or the hosted Everett connector.
+- `mcp__everett__*` answers instead: a different Everett server is bound. The
+  local plugin did not load for this thread; the result is not local-plugin
+  proof.
+- A runtime or account error: run the launcher's `--doctor` command from the
+  plugin README. A missing or old binary is a local installation problem,
+  not a reason to reconnect a ChatGPT OAuth connector. Account authorization
+  errors still require the owner's normal Everett login or renewal. Do not copy
+  credentials, create a new account home, replace keys, or switch providers.
 
 This package creates no background poller, receiver, or wake hook. It does not
 install into ChatGPT web/mobile or repair hosted connector tokens. Only claim
