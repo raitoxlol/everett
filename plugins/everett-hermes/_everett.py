@@ -52,6 +52,8 @@ _READ_ONLY_TOOLS = frozenset({
     "everett_whoami",
     "everett_skill",
     "everett_agent_status",
+    "everett_search",
+    "everett_peers",
 })
 
 # Fallback catalog used only if Everett is missing or unreachable during register(ctx).
@@ -324,6 +326,67 @@ FALLBACK_TOOLS: tuple[dict[str, Any], ...] = (
             "type": "object",
             "properties": {"message_id": {"type": "string"}},
             "required": ["message_id"],
+            "additionalProperties": False,
+        },
+    },
+    {
+        "name": "everett_search",
+        "description": "Search recent agent sessions by title, requests, and cards.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "query": {"type": "string"},
+                "hours": {"type": "number"},
+                "harness": {"type": "string"},
+                "all": {"type": "boolean"},
+                "limit": {"type": "integer"},
+            },
+            "required": ["query"],
+            "additionalProperties": False,
+        },
+    },
+    {
+        "name": "everett_peers",
+        "description": "List paired remote devices or one SSH peer's sessions.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "action": {"type": "string", "enum": ["list", "sessions"]},
+                "peer": {"type": "string"},
+                "hours": {"type": "number"},
+                "all": {"type": "boolean"},
+                "harness": {"type": "string"},
+            },
+            "additionalProperties": False,
+        },
+    },
+    {
+        "name": "everett_broadcast",
+        "description": "Send one request to up to 16 explicit session targets.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "text": {"type": "string"},
+                "targets": {"type": "array", "items": {"type": "string"}},
+                "mode": {"type": "string"},
+                "timeout": {"type": "number"},
+                "wait": {"type": "number"},
+                "hours": {"type": "number"},
+            },
+            "required": ["text", "targets"],
+            "additionalProperties": False,
+        },
+    },
+    {
+        "name": "everett_tasks",
+        "description": "Shared per-project task board: list, add, claim, done, remove.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "action": {"type": "string", "enum": ["list", "add", "claim", "done", "remove"]},
+                "id": {"type": "string"},
+                "title": {"type": "string"},
+            },
             "additionalProperties": False,
         },
     },
@@ -944,6 +1007,20 @@ def _call_timeout_seconds(name: str, arguments: Mapping[str, Any]) -> float:
             max(reply_budget + idle_budget + TIMEOUT_HEADROOM_SECONDS, CALL_TIMEOUT_SECONDS),
             MAX_SEND_TIMEOUT_SECONDS,
         )
+
+    if name == "everett_broadcast":
+        targets = arguments.get("targets")
+        # Rust accepts at most 16 targets and clamps each send's wait to 1800s.
+        target_count = min(len(targets), 16) if isinstance(targets, list) else 1
+        max_wait = MAX_CALL_TIMEOUT_SECONDS - TIMEOUT_HEADROOM_SECONDS
+        mode = str(arguments.get("mode") or "ping").strip().lower()
+        if mode == "inbox":
+            per_target = min(_positive_number(arguments.get("wait")) or 0.0, max_wait)
+        else:
+            reply_budget = min(explicit_timeout or SEND_REPLY_DEFAULT_SECONDS, max_wait)
+            idle_budget = SEND_IDLE_WAIT_SECONDS if mode in ("resume", "auto", "ping") else 0.0
+            per_target = reply_budget + idle_budget
+        return max(per_target * target_count + TIMEOUT_HEADROOM_SECONDS, CALL_TIMEOUT_SECONDS)
 
     if name == "everett_control":
         if explicit_timeout is not None:

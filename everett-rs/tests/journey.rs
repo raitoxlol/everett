@@ -284,7 +284,7 @@ fn mcp_stdio_roundtrip() {
         .iter()
         .map(|t| t["name"].as_str().unwrap())
         .collect();
-    assert_eq!(names.len(), 20, "{names:?}");
+    assert_eq!(names.len(), 24, "{names:?}");
     for want in [
         "everett_ls",
         "everett_send",
@@ -295,6 +295,10 @@ fn mcp_stdio_roundtrip() {
         "everett_retry",
         "everett_learn",
         "everett_directory",
+        "everett_search",
+        "everett_peers",
+        "everett_broadcast",
+        "everett_tasks",
     ] {
         assert!(names.contains(&want), "{names:?}");
     }

@@ -36,6 +36,10 @@ provides_tools:
   - everett_agent_relay
   - everett_agent_send
   - everett_agent_status
+  - everett_search
+  - everett_peers
+  - everett_broadcast
+  - everett_tasks
 provides_hooks:
   - on_session_start
   - on_session_end

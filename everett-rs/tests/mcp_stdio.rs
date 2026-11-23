@@ -223,6 +223,7 @@ fn round_trip_over_pipes() {
             "everett_agent_relay",
             "everett_agent_send",
             "everett_agent_status",
+            "everett_broadcast",
             "everett_card",
             "everett_control",
             "everett_core",
@@ -231,14 +232,17 @@ fn round_trip_over_pipes() {
             "everett_inbox",
             "everett_learn",
             "everett_ls",
+            "everett_peers",
             "everett_recall",
             "everett_retry",
             "everett_route",
+            "everett_search",
             "everett_send",
             "everett_sent",
             "everett_skill",
             "everett_status",
             "everett_subscribe",
+            "everett_tasks",
             "everett_whoami"
         ]
     );
