@@ -34,11 +34,11 @@ struct Board {
 
 /// Nearest ancestor of `cwd` holding a `.git` entry (the project root), else `cwd`.
 fn project_root(cwd: &str) -> PathBuf {
-    let mut dir = PathBuf::from(if cwd.is_empty() {
+    let mut dir = if cwd.is_empty() {
         std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."))
     } else {
         PathBuf::from(cwd)
-    });
+    };
     loop {
         if dir.join(".git").exists() {
             return dir;
@@ -71,11 +71,21 @@ fn save(path: &Path, board: &Board) -> Result<()> {
         fs::create_dir_all(parent)
             .map_err(|e| EverettError::new(4, format!("cannot create {}: {e}", parent.display())))?;
     }
-    let tmp = path.with_extension("json.tmp");
     let text = serde_json::to_string_pretty(board).unwrap_or_else(|_| "{}".to_string());
-    fs::write(&tmp, format!("{text}\n"))
-        .and_then(|_| fs::rename(&tmp, path))
-        .map_err(|e| EverettError::new(4, format!("cannot write {}: {e}", path.display())))
+    let parent = path.parent().unwrap_or_else(|| Path::new("."));
+    let tmp = tempfile::Builder::new()
+        .prefix("tasks-")
+        .suffix(".tmp")
+        .tempfile_in(parent)
+        .map_err(|e| EverettError::new(4, format!("cannot write {}: {e}", path.display())))?;
+    use std::io::Write;
+    let mut file = tmp;
+    file.write_all(format!("{text}\n").as_bytes())
+        .and_then(|_| file.as_file().sync_all())
+        .map_err(|e| EverettError::new(4, format!("cannot write {}: {e}", path.display())))?;
+    file.persist(path)
+        .map(|_| ())
+        .map_err(|e| EverettError::new(4, format!("cannot write {}: {}", path.display(), e.error)))
 }
 
 fn find<'a>(board: &'a mut Board, id: &str) -> Result<&'a mut Task> {
@@ -130,7 +140,7 @@ pub fn call(
                 return Err(bad("\"title\" is required for add"));
             }
             if board.tasks.len() >= MAX_TASKS {
-                return Err(bad(format!("task board is full ({MAX_TASKS} tasks); close old tasks first")));
+                return Err(bad(format!("task board is full ({MAX_TASKS} tasks); remove old tasks first")));
             }
             let at = now();
             let task = Task {
@@ -177,36 +187,4 @@ pub fn call(
             "unknown action {action:?}; use list, add, claim, done, or remove"
         ))),
     }
-}
-
-/// Compact one-line summary for hook/session-start context, "" when empty.
-pub fn summary(cwd: &str) -> String {
-    let Ok(board) = load(&board_path(cwd)) else {
-        return String::new();
-    };
-    let open: Vec<&Task> = board
-        .tasks
-        .iter()
-        .filter(|t| t.status != "done")
-        .collect();
-    if open.is_empty() {
-        return String::new();
-    }
-    let lines: Vec<String> = open
-        .iter()
-        .take(10)
-        .map(|t| {
-            let owner = if t.owner.is_empty() {
-                String::new()
-            } else {
-                format!(" (@{})", t.owner)
-            };
-            format!("- {} {}{}", t.id, t.title, owner)
-        })
-        .collect();
-    let mut out = format!("Project tasks (everett_tasks):\n{}", lines.join("\n"));
-    if open.len() > 10 {
-        out.push_str(&format!("\n- … {} more", open.len() - 10));
-    }
-    out
 }

@@ -66,7 +66,7 @@ fn search_finds_session_by_topic() {
 fn peers_list_empty_and_sessions_requires_peer() {
     let fx = fixture();
     let listed = tool_json(&call(&fx, "everett_peers", json!({})));
-    assert!(listed["peers"].as_object().unwrap().is_empty() || listed["peers"].is_object());
+    assert!(listed["peers"].is_object(), "{listed}");
     let missing = call(&fx, "everett_peers", json!({"action": "sessions"}));
     assert!(missing["error"]["message"].as_str().unwrap_or("").contains("peer"), "{missing}");
 }

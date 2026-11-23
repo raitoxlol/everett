@@ -253,7 +253,7 @@ pub fn tools() -> &'static Vec<Value> {
             }),
             json!({
                 "name": "everett_search",
-                "description": "Search recent agent sessions by what they worked on: titles, first/last requests, and session cards across every harness. Returns the best-matching sessions with a score and the query terms each matched. Use it to find which session owns a topic before sending work to it; everett_send still routes by itself when you just have a task.",
+                "description": "Search recent agent sessions by what they worked on: titles, first/last requests, session cards, and working directories across every harness. Returns the best-matching sessions with a score and the query terms each matched. Use it to find which session owns a topic before sending work to it; everett_send still routes by itself when you just have a task.",
                 "annotations": {"readOnlyHint": true, "openWorldHint": false},
                 "inputSchema": {"type": "object", "properties": {
                     "query": {"type": "string", "description": "Words to look for in session titles, requests, and cards.", "maxLength": 500},
