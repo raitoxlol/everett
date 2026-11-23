@@ -31,7 +31,8 @@ const INSTRUCTIONS: &str =
      you are replying to one. everett_ls is for a quick overview of what other sessions are doing, not for picking \
      a send target. everett_route is the read-only preview of that same routing decision, for when you want to see \
      it before sending. Answer messages you receive with everett_send(reply_to=...). Use everett_learn to push \
-     durable facts that every session should know into the shared core, and everett_core to read it. Keep your own \
+     durable facts that every session should know into the shared core, everett_core to read it, and \
+     everett_recall to search all learned facts. Keep your own \
      card current with everett_card so others can route to you, and report done / blocked / needs-input with \
      everett_event. everett_skill is the skill hub over the SKILL.md playbooks installed for every harness on this machine. \
      When the user names a skill -- /hill-climb, /full-send, or \"use the X skill\" -- load it with \
@@ -145,13 +146,26 @@ pub fn tools() -> &'static Vec<Value> {
             }),
             json!({
                 "name": "everett_learn",
-                "description": "Store one fact (a decision, convention, gotcha, path, or command). Durable facts queue for the shared core. Optional ttl_seconds stores temporary facts only for local search until expiry; they never enter merge or injected context. Max 500 characters. Secrets are rejected. Use scope \"project\" for project-only facts.",
+                "description": "Store one fact (a decision, convention, gotcha, path, or command). Durable facts queue for the shared core. Optional ttl_seconds stores temporary facts only for local search until expiry; they never enter merge or injected context. Max 500 characters. Secrets are rejected. Use scope \"project\" for project-only facts. Each fact is also saved to the Teresis memory.db for everett_recall.",
                 "inputSchema": {"type": "object", "properties": {
                     "fact": {"type": "string", "description": "One self-contained fact.", "maxLength": crate::core::MAX_LEARNING},
                     "project": s("Project name (default: the current folder's project)."),
                     "scope": {"type": "string", "enum": ["global", "project"]},
+                    "key": {"type": "string", "maxLength": 100, "description": "Stable name for a fact that changes, such as user.editor; a new value replaces the old one in memory search."},
                     "ttl_seconds": {"type":"integer", "minimum":1, "maximum":crate::core::MAX_TTL_SECONDS, "description":"Optional lifetime in whole seconds, up to one year. Temporary facts are search-only; existing permanent copies must be forgotten first."},
                 }, "required": ["fact"], "additionalProperties": false},
+            }),
+            json!({
+                "name": "everett_recall",
+                "description": "Search durable memory (every learned fact, beyond the compact core) with word, stem and typo-tolerant matching. Reads the Teresis memory.db shared with other Teresis clients. Searches the project scope plus global by default.",
+                "annotations": {"readOnlyHint":false, "destructiveHint":false, "openWorldHint":false},
+                "inputSchema": {"type": "object", "properties": {
+                    "query": {"type": "string", "maxLength": crate::core::MAX_LEARNING},
+                    "project": s("Project name (default: the current folder's project)."),
+                    "scope": {"type": "string", "enum": ["global", "project"]},
+                    "limit": {"type":"integer", "minimum":1, "maximum":50, "default":5},
+                    "explain": {"type": "boolean", "default": false},
+                }, "required": ["query"], "additionalProperties": false},
             }),
             json!({
                 "name": "everett_core",
@@ -1005,7 +1019,8 @@ fn tool_learn(args: &Map<String, Value>) -> std::result::Result<Map<String, Valu
         Some(value) => Some(value.as_u64().filter(|ttl| (1..=crate::core::MAX_TTL_SECONDS).contains(ttl))
             .ok_or_else(|| ToolFailure::Params("ttl_seconds must be an integer between 1 and 31536000".into()))?),
     };
-    let entry = crate::core::learn_with_ttl(
+    let key = str_arg(args, "key", false)?;
+    let entry = crate::core::learn_keyed(
         &fact,
         if project.is_empty() {
             None
@@ -1015,6 +1030,7 @@ fn tool_learn(args: &Map<String, Value>) -> std::result::Result<Map<String, Valu
         if scope.is_empty() { None } else { Some(&scope) },
         None,
         ttl_seconds,
+        if key.is_empty() { None } else { Some(&key) },
     )
     .map_err(ToolFailure::Tool)?;
     let mut out = Map::new();
@@ -1036,7 +1052,31 @@ fn tool_learn(args: &Map<String, Value>) -> std::result::Result<Map<String, Valu
         json!(if ttl_seconds.is_some() { "Stored for local search until expires_at; excluded from merge and injected core." }
             else { "Stored for search and queued in the inbox; the next `everett trunk merge` updates the shared core." }),
     );
+    out.insert(
+        "memory".into(),
+        entry.get("memory").cloned().unwrap_or(Value::Null),
+    );
     Ok(out)
+}
+
+fn tool_recall(args: &Map<String, Value>) -> std::result::Result<Map<String, Value>, ToolFailure> {
+    let query = str_arg(args, "query", true)?;
+    let project = str_arg(args, "project", false)?;
+    let scope = str_arg(args, "scope", false)?;
+    let limit = match args.get("limit") {
+        None => 5,
+        Some(value) => value.as_u64().filter(|limit| (1..=50).contains(limit))
+            .ok_or_else(|| ToolFailure::Params("limit must be an integer between 1 and 50".into()))? as usize,
+    };
+    let explain = args.get("explain").and_then(Value::as_bool).unwrap_or(false);
+    crate::memory::recall(
+        &query,
+        if project.is_empty() { None } else { Some(&project) },
+        if scope.is_empty() { None } else { Some(&scope) },
+        limit,
+        explain,
+    )
+    .map_err(ToolFailure::Tool)
 }
 
 pub(crate) fn tool_core(args: &Map<String, Value>) -> std::result::Result<Map<String, Value>, ToolFailure> {
@@ -1636,6 +1676,7 @@ fn call_handler(
         "everett_route" => tool_route(args, identity),
         "everett_send" => tool_send(args, identity, std::env::var("EVERETT_GATEWAY_EXACT_IDS").as_deref() == Ok("1")),
         "everett_learn" => tool_learn(args),
+        "everett_recall" => tool_recall(args),
         "everett_core" => tool_core(args),
         "everett_card" => tool_card(args, identity),
         "everett_skill" => tool_skill(args),

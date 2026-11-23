@@ -8,6 +8,7 @@
 
 ### Added
 
+- Add durable Teresis memory: every `everett learn` is also written to a shared `memory.db`, and `everett recall` plus the `everett_recall` MCP tool search all learned facts with word, stem, and typo-tolerant matching. `everett learn --key` names a fact so a new value replaces the old one in memory search, and `EVERETT_MEMORY_DB=off` disables the store.
 - Add private cross-account `LOCAL@SCOPE` inboxes with grants scoped to one sender owner/device and one recipient device/session; encrypt message bodies end-to-end and support grant revocation (#244).
 - Add the native Hermes plugin with per-session tools, inbox hooks, `/everett`, and opt-in local live wake (#247). Its portable Agent Plugins v1 fallback registers MCP only.
 - Add Hermes `/everett card` and `/everett sent`, reset/delete session cleanup, and active-profile plugin diagnostics with native install guidance (#253).

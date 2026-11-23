@@ -12,7 +12,7 @@ use std::time::{Duration, SystemTime};
 
 const TOOLS: &[&str] = &[ "everett_agent_relay", "everett_agent_send", "everett_agent_status",
     "everett_card", "everett_control", "everett_core", "everett_directory", "everett_event", "everett_inbox", "everett_learn",
-    "everett_ls", "everett_retry", "everett_route", "everett_send", "everett_sent", "everett_skill", "everett_status", "everett_subscribe", "everett_whoami"];
+    "everett_ls", "everett_recall", "everett_retry", "everett_route", "everett_send", "everett_sent", "everett_skill", "everett_status", "everett_subscribe", "everett_whoami"];
 
 fn binary() -> PathBuf {
     let path = std::env::var_os("EVERETT_VERIFY_BINARY").map(PathBuf::from).unwrap_or_else(|| env!("CARGO_BIN_EXE_everett").into());
@@ -228,6 +228,8 @@ fn release_journey_over_cli_and_all_mcp_tools() {
 
     let fact = "Use bounded retries for uploads";
     wire.call("everett_learn", json!({"fact": fact, "scope": "global"}));
+    let recalled = wire.call("everett_recall", json!({"query": "bounded retries"}))["memories"].clone();
+    assert!(recalled.as_array().unwrap().iter().any(|m| m["content"] == fact), "{recalled}");
     home.run(&["learn", "Retry caps are five", "--scope", "project", "--project", "verification"], "");
     assert_eq!(wire.call("everett_core", json!({"project": "verification"}))["pending_learnings"], 2);
     home.run(&["trunk", "merge", "--llm", "none"], "");

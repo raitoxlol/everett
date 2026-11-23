@@ -35,6 +35,7 @@ jobs:
           EVERETT_VERIFY_BINARY: ${{ github.workspace }}/everett-rs/target/debug/everett
         run: python3 -m unittest discover -s plugins/everett-local/tests -v
 
+
   fixture-isolation:
     runs-on: ubuntu-latest
     env:
@@ -70,6 +71,7 @@ jobs:
           fetch-depth: 0
       - name: The private-write ratchet passes and fails at each commit before a fix
         run: scripts/check-private-writes.py
+
 
   relay:
     if: startsWith(github.ref, 'refs/tags/v') || inputs.build_artifacts == true
