@@ -36,6 +36,37 @@ fn tasks_board_lifecycle() {
 }
 
 #[test]
+fn tasks_board_guards() {
+    let fx = fixture();
+    let added = tool_json(&call(&fx, "everett_tasks", json!({"action": "add", "title": "first"})));
+    let id = added["added"]["id"].as_str().unwrap().to_string();
+    tool_json(&call(&fx, "everett_tasks", json!({"action": "claim", "id": id})));
+
+    // A second claim must fail rather than hand the task to another owner.
+    let again = call(&fx, "everett_tasks", json!({"action": "claim", "id": id}));
+    assert_eq!(again["isError"], true, "{again}");
+
+    // Removing a task must not free its id for the next add.
+    tool_json(&call(&fx, "everett_tasks", json!({"action": "remove", "id": id})));
+    let readded = tool_json(&call(&fx, "everett_tasks", json!({"action": "add", "title": "second"})));
+    assert_ne!(readded["added"]["id"].as_str().unwrap(), id, "{readded}");
+}
+
+#[test]
+fn tasks_board_rejects_symlink() {
+    let fx = fixture();
+    // The MCP server's cwd is the fixture home; make it the project root and
+    // point .everett at another directory.
+    std::fs::create_dir_all(fx.home().join(".git")).unwrap();
+    let outside = fx.home().join("outside");
+    std::fs::create_dir_all(&outside).unwrap();
+    std::os::unix::fs::symlink(&outside, fx.home().join(".everett")).unwrap();
+    let out = call(&fx, "everett_tasks", json!({"action": "list"}));
+    assert_eq!(out["isError"], true, "{out}");
+    assert!(out["content"][0]["text"].as_str().unwrap_or("").contains("symlink"), "{out}");
+}
+
+#[test]
 fn search_finds_session_by_topic() {
     let fx = fixture();
     fx.write(

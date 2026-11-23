@@ -30,6 +30,9 @@ pub struct Task {
 struct Board {
     #[serde(default)]
     tasks: Vec<Task>,
+    // Monotonic id source; persisted so removed ids are never reused.
+    #[serde(default)]
+    seq: u64,
 }
 
 /// Nearest ancestor of `cwd` holding a `.git` entry (the project root), else `cwd`.
@@ -49,8 +52,38 @@ fn project_root(cwd: &str) -> PathBuf {
     }
 }
 
-fn board_path(cwd: &str) -> PathBuf {
-    project_root(cwd).join(".everett").join("tasks.json")
+fn board_path(cwd: &str) -> Result<PathBuf> {
+    let dir = project_root(cwd).join(".everett");
+    for p in [&dir, &dir.join("tasks.json")] {
+        if fs::symlink_metadata(p)
+            .map(|m| m.file_type().is_symlink())
+            .unwrap_or(false)
+        {
+            return Err(bad(format!(
+                "{} is a symlink; the task board must be a real file in this project",
+                p.display()
+            )));
+        }
+    }
+    Ok(dir.join("tasks.json"))
+}
+
+/// Serializes read-modify-write across sessions sharing one board.
+fn lock(path: &Path) -> Result<fs::File> {
+    use fs2::FileExt;
+    let lock_path = path.with_extension("lock");
+    if let Some(parent) = lock_path.parent() {
+        fs::create_dir_all(parent)
+            .map_err(|e| EverettError::new(4, format!("cannot create {}: {e}", parent.display())))?;
+    }
+    let file = fs::OpenOptions::new()
+        .create(true)
+        .write(true)
+        .open(&lock_path)
+        .map_err(|e| EverettError::new(4, format!("cannot lock {}: {e}", lock_path.display())))?;
+    file.lock_exclusive()
+        .map_err(|e| EverettError::new(4, format!("cannot lock {}: {e}", lock_path.display())))?;
+    Ok(file)
 }
 
 fn bad(msg: impl Into<String>) -> EverettError {
@@ -96,15 +129,14 @@ fn find<'a>(board: &'a mut Board, id: &str) -> Result<&'a mut Task> {
         .ok_or_else(|| bad(format!("no task {id:?} on this board")))
 }
 
-fn next_id(board: &Board) -> String {
-    let used: std::collections::HashSet<&str> = board.tasks.iter().map(|t| t.id.as_str()).collect();
-    for n in 1.. {
-        let id = format!("t{n}");
-        if !used.contains(id.as_str()) {
+fn next_id(board: &mut Board) -> String {
+    loop {
+        board.seq += 1;
+        let id = format!("t{}", board.seq);
+        if !board.tasks.iter().any(|t| t.id == id) {
             return id;
         }
     }
-    unreachable!()
 }
 
 fn view(t: &Task) -> Value {
@@ -127,7 +159,8 @@ pub fn call(
     title: &str,
     owner: &str,
 ) -> Result<Value> {
-    let path = board_path(cwd);
+    let path = board_path(cwd)?;
+    let _guard = lock(&path)?;
     let mut board = load(&path)?;
     match action {
         "list" => {
@@ -144,7 +177,7 @@ pub fn call(
             }
             let at = now();
             let task = Task {
-                id: next_id(&board),
+                id: next_id(&mut board),
                 title: title.chars().take(MAX_TITLE).collect(),
                 status: "open".into(),
                 owner: String::new(),
@@ -161,9 +194,20 @@ pub fn call(
             }
             match action {
                 "claim" => {
+                    if owner.is_empty() {
+                        return Err(bad(
+                            "claim needs an identified caller session (bind EVERETT_SESSION_ID)",
+                        ));
+                    }
                     let t = find(&mut board, id)?;
+                    if t.status != "open" {
+                        return Err(bad(format!(
+                            "cannot claim {id:?}: status is {:?}",
+                            t.status
+                        )));
+                    }
                     t.status = "claimed".into();
-                    t.owner = if owner.is_empty() { t.owner.clone() } else { owner.to_string() };
+                    t.owner = owner.to_string();
                     t.updated = now();
                 }
                 "done" => {
