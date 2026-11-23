@@ -28,4 +28,14 @@ Read this before working in Everett so another agent can pick up the same state.
 - `everett-rs/src/mcp.rs`, `gateway.rs` — stdio MCP server; owner-bound gateway for dots/Grok Bot.
 - `everett-rs/src/adapters/` — one module per harness (all read-only), plus the t3code overlay.
 - `everett-rs/tests/` — integration tests; `tests/common` gives each test a temp HOME.
+- `brand/BRAND_GUIDELINES.md`, `brand/brand.json`, `brand/assets/` — locked Everett brand identity.
+
+## Brand identity (locked)
+
+Reuse the canonical assets under `brand/assets/`. Do not invent or regenerate alternate Everett logos, wordmarks, or display fonts:
+
+- **Logo mark:** `M6` Many-Worlds Horizon Balloon (`brand/assets/everett-mark.svg`, `currentColor`, `128x128`, `R=43` at `(64,60)`, `60°` wrap, `108x7` horizon, `8u` gaps, 2 closed analytical paths, zero strokes). Static black/white (`everett-mark-black.svg`, `everett-mark-white.svg`), sun two-tone (`everett-mark-sun-light.svg`, `everett-mark-sun-dark.svg`), favicons (`everett-favicon-*.svg`), lockups (`everett-lockup-*.svg`), and README banners (`everett-hero-*.svg`) all derive from `M6`.
+- **Typography:** **Sora** (SIL OFL 1.1, self-hosted at `brand/assets/fonts/Sora-var.woff2`, weight `700` at `-0.035em` for wordmarks and display headlines) paired with **Geist Mono** (`site/assets/fonts/GeistMono-400.woff2`) for CLI commands, IDs, and labels. Local `everett dashboard` keeps zero remote system fonts per `DESIGN.md`.
+- **Colors:** monochrome `#000000` / `#FFFFFF`, warm paper `#F3EEE5` + oxide `#B64F1A` (`DESIGN.md`), and dark ink `#0E0C0B` + bone `#EDE6DC` + sun `#FF5A1F` + momo `#F596AA` (`raitox.tech/everett`).
+- **Source of truth:** `brand/brand.json` and `brand/BRAND_GUIDELINES.md`.
 

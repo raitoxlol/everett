@@ -1,0 +1,117 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<style>
+  @font-face {
+    font-family: "Sora";
+    src: url("fonts/Sora-var.woff2") format("woff2");
+    font-weight: 100 800;
+  }
+  @font-face {
+    font-family: "Geist Mono";
+    src: url("file:///home/nuc/.t3/worktrees/everett/t3-37b645f8-751392bac4256f05/site/assets/fonts/GeistMono-400.woff2") format("woff2");
+    font-weight: 400;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    width: 1200px;
+    height: 630px;
+    background: #0E0C0B;
+    color: #EDE6DC;
+    font-family: "Sora", ui-sans-serif, -apple-system, sans-serif;
+    padding: 64px 76px;
+    display: flex;
+    flex-direction: column;
+    justify-content: space-between;
+    position: relative;
+    overflow: hidden;
+  }
+  .top {
+    display: flex;
+    align-items: center;
+    gap: 14px;
+    font-family: "Geist Mono", monospace;
+    font-size: 16px;
+    letter-spacing: 0.08em;
+    color: #F596AA;
+  }
+  .top .sep { color: rgba(237,230,220,0.28); }
+  .mid {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 48px;
+  }
+  .copy {
+    max-width: 680px;
+    display: flex;
+    flex-direction: column;
+    gap: 22px;
+  }
+  h1 {
+    font-size: 68px;
+    font-weight: 600;
+    line-height: 1.04;
+    letter-spacing: -0.04em;
+    color: #EDE6DC;
+  }
+  .sub {
+    font-size: 24px;
+    line-height: 1.48;
+    color: rgba(237,230,220,0.58);
+    max-width: 600px;
+    letter-spacing: -0.015em;
+  }
+  .mark-hero {
+    width: 310px;
+    height: 310px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    border-radius: 28px;
+    background: rgba(237,230,220,0.025);
+    border: 1px solid rgba(237,230,220,0.1);
+    flex-shrink: 0;
+  }
+  .foot {
+    border-top: 1px solid rgba(237,230,220,0.12);
+    padding-top: 22px;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    font-family: "Geist Mono", monospace;
+    font-size: 15px;
+    color: rgba(237,230,220,0.45);
+  }
+  .foot .right { display: flex; gap: 20px; }
+  .foot .accent { color: #FF5A1F; }
+</style>
+</head>
+<body>
+  <div class="top">
+    <img src="everett-mark-sun-dark.svg" width="26" height="26">
+    <span>01</span>
+    <span class="sep">·</span>
+    <span>EVERETT</span>
+    <span class="sep">·</span>
+    <span>OPEN SOURCE · MIT</span>
+  </div>
+  <div class="mid">
+    <div class="copy">
+      <h1>One layer above your coding agents.</h1>
+      <p class="sub">Route requests, messages, skills, and shared memory across parallel AI coding sessions with one native Rust binary.</p>
+    </div>
+    <div class="mark-hero">
+      <img src="everett-mark-white.svg" width="218" height="218">
+    </div>
+  </div>
+  <div class="foot">
+    <span>github.com/raitoxlol/everett</span>
+    <div class="right">
+      <span>CLAUDE · CODEX · OMP · PI · HERMES · GROK · DEVIN · T3</span>
+      <span class="accent">v2.4</span>
+    </div>
+  </div>
+</body>
+</html>

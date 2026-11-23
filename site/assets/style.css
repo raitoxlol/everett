@@ -1,8 +1,8 @@
 /* Everett docs. Design language: raitox.tech/everett (project.css + everett-setup.css).
-   Ink background, bone text, sun + momo accents, Geist / Geist Mono, hairline lines,
-   a narrow reading column, mono numbered labels, pixel details. */
+   Ink background, bone text, sun + momo accents, Sora / Geist Mono, hairline lines,
+   a narrow reading column, mono numbered labels, M6 Horizon Balloon mark. */
 
-@font-face { font-family: "Geist"; src: url("fonts/Geist-var.woff2") format("woff2"); font-weight: 100 900; font-display: swap; }
+@font-face { font-family: "Sora"; src: url("fonts/Sora-var.woff2") format("woff2"); font-weight: 100 800; font-display: swap; }
 @font-face { font-family: "Geist Mono"; src: url("fonts/GeistMono-400.woff2") format("woff2"); font-weight: 400; font-display: swap; }
 
 :root {
@@ -16,7 +16,7 @@
   --hover: rgb(245 150 170 / 0.06);
   --raised: rgb(237 230 220 / 0.02);
   --tint: rgb(237 230 220 / 0.06);
-  --sans: "Geist", "Helvetica Neue", Arial, sans-serif;
+  --sans: "Sora", "Helvetica Neue", Arial, sans-serif;
   --mono: "Geist Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
   --col: 560px;
   --doc: 680px;
@@ -52,8 +52,8 @@ button, input { font: inherit; color: inherit; }
 .u:hover { text-decoration-color: var(--sun); }
 .n { font: 400 12px/1 var(--mono); letter-spacing: 0; color: var(--momo); }
 
-/* pixel icon life */
-.pi { display: block; width: 48px; height: 48px; color: var(--bone); image-rendering: pixelated; }
+/* M6 Many-Worlds Horizon Balloon mark */
+.pi { display: block; width: 48px; height: 48px; color: var(--bone); }
 .pi .o { fill: var(--sun); }
 .pi:hover { animation: hop 0.42s steps(2, jump-none) infinite alternate; }
 .pi:hover .o { animation: blink 0.5s steps(1) infinite; }

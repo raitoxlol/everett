@@ -1,0 +1,93 @@
+{
+  "brand": "Everett",
+  "cliName": "everett",
+  "status": "locked-draft",
+  "baselineCommit": "d8ed972",
+  "version": "2.4.0",
+  "tagline": "One layer above all your coding-agent sessions.",
+  "editorialLine": "Many sessions. One mind.",
+  "mark": {
+    "id": "M6",
+    "name": "Many-Worlds Horizon Balloon",
+    "viewBox": "0 0 128 128",
+    "geometry": {
+      "circleRadius": 43,
+      "circleCenter": [64, 60],
+      "domeCutY": 54,
+      "horizonWidth": 108,
+      "horizonHeight": 7,
+      "horizonY": [62, 69],
+      "middleBarHeight": 7,
+      "gapHeight": 8,
+      "bridgeWidth": 8.5,
+      "circleWrapDegrees": 60,
+      "apexFilletRadius": 5.5,
+      "closedPaths": 2,
+      "strokes": 0
+    },
+    "files": {
+      "canonical": "brand/assets/everett-mark.svg",
+      "black": "brand/assets/everett-mark-black.svg",
+      "white": "brand/assets/everett-mark-white.svg",
+      "sunLight": "brand/assets/everett-mark-sun-light.svg",
+      "sunDark": "brand/assets/everett-mark-sun-dark.svg",
+      "faviconDark": "brand/assets/everett-favicon-dark.svg",
+      "faviconLight": "brand/assets/everett-favicon-light.svg",
+      "faviconSun": "brand/assets/everett-favicon-sun.svg",
+      "lockupLight": "brand/assets/everett-lockup-light.svg",
+      "lockupDark": "brand/assets/everett-lockup-dark.svg",
+      "heroLight": "brand/assets/everett-hero-light.svg",
+      "heroDark": "brand/assets/everett-hero-dark.svg",
+      "ogCard": "brand/assets/everett-og-card.png",
+      "familySheet": "brand/assets/brand-family-sheet.png"
+    }
+  },
+  "typography": {
+    "displayAndSans": {
+      "family": "Sora",
+      "license": "SIL OFL 1.1",
+      "file": "brand/assets/fonts/Sora-var.woff2",
+      "licenseFile": "brand/assets/fonts/Sora-OFL.txt",
+      "wordmarkWeight": 700,
+      "wordmarkTracking": "-0.035em",
+      "svgWordmarkOutlined": true
+    },
+    "mono": {
+      "family": "Geist Mono",
+      "file": "site/assets/fonts/GeistMono-400.woff2"
+    },
+    "localDashboardFallback": {
+      "sans": "ui-sans-serif, -apple-system, BlinkMacSystemFont, \"Segoe UI\", sans-serif",
+      "mono": "ui-monospace, SFMono-Regular, Menlo, monospace"
+    }
+  },
+  "colors": {
+    "mono": { "black": "#000000", "white": "#FFFFFF" },
+    "lightDesk": {
+      "paper": "#F3EEE5",
+      "paperRaised": "#FFFAF1",
+      "paperMuted": "#E9E1D5",
+      "ink": "#141517",
+      "inkSoft": "#5D625D",
+      "carbon": "#242825",
+      "oxide": "#B64F1A",
+      "oxideDeep": "#8E3811",
+      "line": "#CBC1B3",
+      "green": "#216B4C",
+      "red": "#A1382F",
+      "focus": "#145E75"
+    },
+    "darkWeb": {
+      "ink": "#0E0C0B",
+      "bone": "#EDE6DC",
+      "sun": "#FF5A1F",
+      "momo": "#F596AA",
+      "orangeBright": "#D97236"
+    }
+  },
+  "rules": [
+    "Reuse the canonical M6 SVGs under brand/assets/; do not draw or generate alternate marks.",
+    "Use Sora (brand/assets/fonts/Sora-var.woff2) with Geist Mono for all Everett web, lockup, banner, and marketing materials.",
+    "Keep zero strokes and zero gradients in all mark SVGs."
+  ]
+}
