@@ -4,6 +4,7 @@ import argparse
 import importlib.util
 import json
 from pathlib import Path
+import subprocess
 import sys
 
 PORTABLE_FILES = ('plugin.json', 'mcp.json')
@@ -73,7 +74,7 @@ def check(plugin):
     try:
         binary, version = load_launcher(plugin).runtime(destination / 'runtime.json')
         add('runtime', True, f'{version} at {binary}')
-    except (OSError, ValueError, KeyError) as failure:
+    except (OSError, ValueError, KeyError, subprocess.SubprocessError) as failure:
         add('runtime', False, str(failure))
 
     market, error = read_json(destination / '.agents' / 'plugins' / 'marketplace.json')

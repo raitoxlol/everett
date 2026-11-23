@@ -71,6 +71,18 @@ class CheckTests(unittest.TestCase):
         self.assertFalse(ready)
         self.assertFalse(statuses['marketplace'])
 
+    def test_binary_failing_version_check_reports_remedy_not_traceback(self):
+        plugin = self.plugin_dir()
+        self.binary.write_text('#!/bin/sh\nexit 1\n')
+        run = subprocess.run([sys.executable, str(ROOT / 'check.py'), '--plugin', str(plugin)],
+                             capture_output=True, text=True, timeout=15)
+        self.assertEqual(run.returncode, 1)
+        self.assertNotIn('Traceback', run.stderr)
+        result = json.loads(run.stdout)
+        runtime = next(row for row in result['checks'] if row['name'] == 'runtime')
+        self.assertFalse(runtime['ok'])
+        self.assertIn('remedy', runtime)
+
     def test_cli_reports_ready_and_exit_codes(self):
         plugin = self.plugin_dir()
         run = subprocess.run([sys.executable, str(ROOT / 'check.py'), '--plugin', str(plugin)],
