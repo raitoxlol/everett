@@ -1010,18 +1010,17 @@ def _call_timeout_seconds(name: str, arguments: Mapping[str, Any]) -> float:
 
     if name == "everett_broadcast":
         targets = arguments.get("targets")
-        target_count = len(targets) if isinstance(targets, list) and targets else 1
+        # Rust accepts at most 16 targets and clamps each send's wait to 1800s.
+        target_count = min(len(targets), 16) if isinstance(targets, list) else 1
+        max_wait = MAX_CALL_TIMEOUT_SECONDS - TIMEOUT_HEADROOM_SECONDS
         mode = str(arguments.get("mode") or "ping").strip().lower()
         if mode == "inbox":
-            per_target = _positive_number(arguments.get("wait")) or 0.0
+            per_target = min(_positive_number(arguments.get("wait")) or 0.0, max_wait)
         else:
-            reply_budget = explicit_timeout if explicit_timeout is not None else SEND_REPLY_DEFAULT_SECONDS
+            reply_budget = min(explicit_timeout or SEND_REPLY_DEFAULT_SECONDS, max_wait)
             idle_budget = SEND_IDLE_WAIT_SECONDS if mode in ("resume", "auto", "ping") else 0.0
             per_target = reply_budget + idle_budget
-        return min(
-            max(per_target * target_count + TIMEOUT_HEADROOM_SECONDS, CALL_TIMEOUT_SECONDS),
-            MAX_SEND_TIMEOUT_SECONDS,
-        )
+        return max(per_target * target_count + TIMEOUT_HEADROOM_SECONDS, CALL_TIMEOUT_SECONDS)
 
     if name == "everett_control":
         if explicit_timeout is not None:

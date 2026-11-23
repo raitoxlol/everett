@@ -3,6 +3,7 @@
 //! instead of duplicating work. The file is plain JSON, rewritten atomically.
 
 use std::fs;
+use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
@@ -79,7 +80,9 @@ fn lock(path: &Path) -> Result<fs::File> {
     let file = fs::OpenOptions::new()
         .create(true)
         .write(true)
-        .truncate(true)
+        .truncate(false)
+        .mode(0o600)
+        .custom_flags(libc::O_NOFOLLOW)
         .open(&lock_path)
         .map_err(|e| EverettError::new(4, format!("cannot lock {}: {e}", lock_path.display())))?;
     file.lock_exclusive()
@@ -161,13 +164,16 @@ pub fn call(
     owner: &str,
 ) -> Result<Value> {
     let path = board_path(cwd)?;
+    if action == "list" {
+        // Saves replace the board atomically, so readers can use a snapshot.
+        let board = load(&path)?;
+        let tasks: Vec<Value> = board.tasks.iter().map(view).collect();
+        return Ok(json!({"board": path.display().to_string(), "tasks": tasks}));
+    }
+
     let _guard = lock(&path)?;
     let mut board = load(&path)?;
     match action {
-        "list" => {
-            let tasks: Vec<Value> = board.tasks.iter().map(view).collect();
-            Ok(json!({"board": path.display().to_string(), "tasks": tasks}))
-        }
         "add" => {
             let title = title.trim();
             if title.is_empty() {

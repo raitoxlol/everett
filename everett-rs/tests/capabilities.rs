@@ -36,6 +36,15 @@ fn tasks_board_lifecycle() {
 }
 
 #[test]
+fn tasks_list_does_not_create_a_lock() {
+    let fx = fixture();
+    let listed = tool_json(&call(&fx, "everett_tasks", json!({})));
+    assert_eq!(listed["tasks"], json!([]));
+    let board = std::path::Path::new(listed["board"].as_str().unwrap());
+    assert!(!board.with_extension("lock").exists());
+}
+
+#[test]
 fn tasks_board_guards() {
     let fx = fixture();
     let added = tool_json(&call(&fx, "everett_tasks", json!({"action": "add", "title": "first"})));

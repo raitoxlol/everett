@@ -333,6 +333,19 @@ class NativePluginUnitTests(unittest.TestCase):
             self.assertEqual(results["b"].get("session_id"), "hermes-b")
             self.assertLessEqual(pool.cached_count, 1)
 
+    def test_broadcast_deadline_covers_all_target_waits(self):
+        deadline = EVERETT_MOD._call_timeout_seconds
+        targets = ["first", "second"]
+        self.assertEqual(deadline("everett_broadcast", {
+            "targets": targets, "mode": "inbox", "wait": 60,
+        }), 150.0)
+        self.assertEqual(deadline("everett_broadcast", {
+            "targets": targets, "mode": "inbox", "wait": 2000,
+        }), 3630.0)
+        self.assertEqual(deadline("everett_broadcast", {
+            "targets": targets, "mode": "resume", "timeout": 1800,
+        }), 3870.0)
+
     def test_pool_teardown_discards_clients_initializing_concurrently_and_computes_deadlines(self):
         # S12: Bridge deadlines match Everett's mode-specific defaults, resume idle budget, spawn, and 1800s cap.
         self.assertEqual(EVERETT_MOD._call_timeout_seconds("everett_send", {"text": "hi"}), 450.0)
