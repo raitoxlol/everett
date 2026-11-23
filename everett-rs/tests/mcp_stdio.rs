@@ -231,6 +231,7 @@ fn round_trip_over_pipes() {
             "everett_inbox",
             "everett_learn",
             "everett_ls",
+            "everett_recall",
             "everett_retry",
             "everett_route",
             "everett_send",

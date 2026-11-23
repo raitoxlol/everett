@@ -52,6 +52,8 @@ anyhow = "1"
 
 ratatui = "0.29"
 crossterm = "0.28"
+unicode-normalization = "0.1.26"
+caseless = "0.2.2"
 
 [dev-dependencies]
 tokio-rustls = { version = "0.26", default-features = false, features = ["ring", "tls12"] }

@@ -190,6 +190,22 @@ FALLBACK_TOOLS: tuple[dict[str, Any], ...] = (
         },
     },
     {
+        "name": "everett_recall",
+        "description": "Search durable memory (every learned fact, beyond the compact core) in the shared Teresis memory.db.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "query": {"type": "string", "maxLength": 500},
+                "project": {"type": "string"},
+                "scope": {"type": "string", "enum": ["global", "project"]},
+                "limit": {"type": "integer", "minimum": 1, "maximum": 50},
+                "explain": {"type": "boolean"},
+            },
+            "required": ["query"],
+            "additionalProperties": False,
+        },
+    },
+    {
         "name": "everett_core",
         "description": "Read, search, forget, or correct Everett shared core memory.",
         "inputSchema": {

@@ -27,6 +27,7 @@ provides_tools:
   - everett_event
   - everett_subscribe
   - everett_learn
+  - everett_recall
   - everett_core
   - everett_card
   - everett_skill

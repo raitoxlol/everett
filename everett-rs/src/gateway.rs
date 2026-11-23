@@ -1505,6 +1505,7 @@ mod tests {
             "everett_ls",
             "everett_route",
             "everett_learn",
+            "everett_recall",
             "everett_event",
             "everett_subscribe",
         ] {
