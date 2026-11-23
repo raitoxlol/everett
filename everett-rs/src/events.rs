@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::fs::{self, OpenOptions};
 use std::io::Write;
 use std::os::unix::fs::PermissionsExt;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::OnceLock;
 
@@ -44,22 +44,13 @@ fn valid_sid(sid: &str) -> bool {
     inbox::valid_id(sid)
 }
 
-fn write_json(target: &PathBuf, data: &Value) -> Result<()> {
+fn write_json(target: &Path, data: &Value) -> Result<()> {
     if let Some(parent) = target.parent() {
         fs::create_dir_all(parent).map_err(|e| {
             EverettError::new(2, format!("cannot create {}: {}", parent.display(), e))
         })?;
     }
-    let tmp = target.with_file_name(format!(
-        ".{}.{}.tmp",
-        target.file_name().unwrap_or_default().to_string_lossy(),
-        std::process::id()
-    ));
-    let w = || {
-        fs::write(&tmp, serde_json::to_string(data).unwrap_or_default())
-            .and_then(|_| fs::rename(&tmp, target))
-    };
-    w().map_err(|e| EverettError::new(2, format!("cannot write {}: {}", target.display(), e)))
+    crate::storage::save(target, serde_json::to_string(data).unwrap_or_default().as_bytes())
 }
 
 pub fn state(session_id: &str) -> Option<Map<String, Value>> {

@@ -11,6 +11,7 @@ Each check below was proved red on a real past mistake and green on `main`. A ch
 | Test child inherits host `DEVIN_HOME`, lists real sessions (#230, #237, #241) | `common::fixture_command` clears the environment; `tests/fixture_isolation.rs` | `scripts/check-fixture-isolation.py` | `scripts/check-fixture-isolation.py --known-bad ebb13b2` |
 | T3 nudge sent twice on retry, in-flight window, or after an uncertain failure (#205) | `inbox/t3_dispatch/model.rs`: spec replayed against a real SQLite journal | `cargo test --lib t3_dispatch::model` | `scripts/check-dispatch-model.py` (mutates a copy back to each mistake; all must fail) |
 | Dot event posted again after a refresh, a busy receipt write, or an uncommitted claim (#206) | `gateway_events_model.rs`: every status crossed with refresh and a writer-held database, then retries, against a real SQLite store | `cargo test --lib gateway_events::model` | `scripts/check-delivery-model.py` |
+| Private file created under the umask by rename or copy (#236, #246, #260); `events.rs` state files were still 0644 | `tests/storage_discipline.rs` ratchet on `fs::rename`/`fs::copy` per source file; `storage::save` | `cargo test --test storage_discipline` | `scripts/check-private-writes.py` (fails at the commit before each of the three fixes) |
 
 ## Rules
 
@@ -24,5 +25,6 @@ Each check below was proved red on a real past mistake and green on `main`. A ch
 - The model covers `dispatch_once` only, with a panic standing in for a process crash inside the dispatch window. It does not kill a real process, and it does not test the T3 CLI call itself.
 - Dropping the `Some(None)` in-progress arm is not caught: the primary-key insert fails the same way. It is a redundant guard, not a gap.
 - The delivery model retries by calling `deliver` directly: `leases()` also flushes receipts and hid a missing flush from the first draft of the model. Real polling that always goes through `leases()` makes that flush a second guard.
+- The private-write ratchet counts `fs::rename(` and `fs::copy(` only. A new file made with `fs::write` or `File::create` under the umask is not caught. The remaining baseline entries (config, core, hooks_common, install, peer) were not audited one by one.
 - Red runs rebuild the historical tree, so CI needs full history (`fetch-depth: 0`).
 - The isolation check covers children spawned through `fixture_command`. Tests that build `Command` by hand are not caught until migrated.

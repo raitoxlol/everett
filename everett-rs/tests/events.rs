@@ -311,3 +311,28 @@ fn cli_event_events_subscribe_and_mcp_tools() {
     assert_eq!(replies[1]["result"]["structuredContent"]["following"], json!(["project:web"]));
     assert_eq!(replies[2]["error"]["code"], -32602);
 }
+
+#[test]
+fn event_state_and_subscriptions_are_owner_only_whatever_the_umask() {
+    use std::os::unix::fs::PermissionsExt;
+    use std::os::unix::process::CommandExt;
+
+    let fx = fixture();
+    for args in [&["event", "done", "private summary", "--session", "s1"][..], &["subscribe", "s1"]] {
+        let mut cmd = common::fixture_command(&fx.home());
+        cmd.args(args).env("EVERETT_SESSION_ID", "watcher");
+        // SAFETY: umask is async-signal-safe and runs before exec.
+        unsafe {
+            cmd.pre_exec(|| {
+                libc::umask(0o022);
+                Ok(())
+            });
+        }
+        assert!(cmd.output().unwrap().status.success(), "{args:?}");
+    }
+    for rel in [".everett/state/s1.json", ".everett/subscriptions.json"] {
+        let path = fx.home().join(rel);
+        let mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o600, "{rel} readable by others");
+    }
+}

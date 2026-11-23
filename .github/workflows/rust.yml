@@ -62,6 +62,15 @@ jobs:
       - name: The delivery model passes and catches each historical mistake
         run: scripts/check-delivery-model.py
 
+  private-writes:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - name: The private-write ratchet passes and fails at each commit before a fix
+        run: scripts/check-private-writes.py
+
   relay:
     if: startsWith(github.ref, 'refs/tags/v') || inputs.build_artifacts == true
     uses: ./.github/workflows/cloudflare.yml
