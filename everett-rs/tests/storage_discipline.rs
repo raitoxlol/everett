@@ -32,7 +32,7 @@ fn production_source(text: &str) -> String {
     let lines: Vec<&str> = text.lines().collect();
     let mut i = 0usize;
     while i < lines.len() {
-        let line = lines[i];
+        let mut line = lines[i];
         i += 1;
         if !line.trim_start().starts_with("#[cfg(test)]") {
             kept.push_str(line);
@@ -42,19 +42,31 @@ fn production_source(text: &str) -> String {
         let mut depth = 0usize;
         let mut opened = false;
         let mut terminated = false;
-        while i < lines.len() && !terminated && !(opened && depth == 0) {
-            for ch in lines[i].chars() {
-                match ch {
-                    '{' => {
+        // The item may sit on the attribute's own line (`#[cfg(test)] mod tests;`),
+        // so scan its remainder before consuming the next lines.
+        let mut j = line.find("#[cfg(test)]").unwrap() + "#[cfg(test)]".len();
+        loop {
+            while j < line.len() && !terminated {
+                match line.as_bytes()[j] {
+                    b'{' => {
                         depth += 1;
                         opened = true;
                     }
-                    '}' => depth = depth.saturating_sub(1),
-                    ';' if !opened && depth == 0 => terminated = true,
+                    b'}' => depth = depth.saturating_sub(1),
+                    b';' if !opened && depth == 0 => terminated = true,
                     _ => {}
                 }
+                j += 1;
             }
+            if terminated || (opened && depth == 0) {
+                break;
+            }
+            if i >= lines.len() {
+                break;
+            }
+            line = lines[i];
             i += 1;
+            j = 0;
         }
     }
     kept
@@ -91,6 +103,18 @@ fn baseline() -> BTreeMap<String, usize> {
         .filter_map(|line| line.split_once(' '))
         .map(|(path, count)| (path.to_string(), count.parse().unwrap()))
         .collect()
+}
+
+#[test]
+fn test_item_on_the_attribute_line_does_not_swallow_the_next_item() {
+    let text = "#[cfg(test)] mod tests;\nfn write(path: &Path) {\n    fs::rename(path, path).unwrap();\n}\n";
+    assert_eq!(1, CALLS.iter().map(|c| production_source(text).matches(c).count()).sum::<usize>());
+}
+
+#[test]
+fn test_module_block_still_hides_its_calls() {
+    let text = "#[cfg(test)]\nmod tests {\n    fn write() {\n        fs::rename(\"a\", \"b\").unwrap();\n    }\n}\n";
+    assert_eq!(0, CALLS.iter().map(|c| production_source(text).matches(c).count()).sum::<usize>());
 }
 
 #[test]
