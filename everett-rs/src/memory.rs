@@ -147,7 +147,13 @@ pub fn correct(
     };
     let mut store = match open_existing(&path) {
         Ok(Some(store)) => store,
-        _ => return record(new, scope_name, None, None, source, meta),
+        _ => {
+            let left = expires_at.map(|e| e - crate::session::now());
+            if left.is_some_and(|l| l <= 0.0) {
+                return json!({"db": path, "status": "expired"});
+            }
+            return record(new, scope_name, None, left.map(|l| l.ceil() as u64), source, meta);
+        }
     };
     let matches = matching(&store, old, scope_name);
     let old_row = matches.first();
