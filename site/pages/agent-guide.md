@@ -111,7 +111,10 @@ been read: check status before retrying.
 | --- | --- |
 | See what sessions exist | `everett_ls` |
 | Preview where a request would go | `everett_route` |
+| Find the session that owns a topic | `everett_search` |
 | Send, route, spawn, or reply | `everett_send` |
+| Send one request to several sessions | `everett_broadcast` |
+| Share a project task board | `everett_tasks` |
 | Read your inbox | `everett_inbox` |
 | Your identity | `everett_whoami` |
 | Your card | `everett_card` |
@@ -120,7 +123,7 @@ been read: check status before retrying.
 | A playbook for the task at hand | `everett_skill` with `action: "match"`; `get` when the user names one |
 | Track sent requests | `everett_sent`, `everett_status`, `everett_retry` |
 | Drive T3 threads or other harnesses | `everett_control` |
-| Other devices | `everett_agent_relay`, `everett_agent_send`, `everett_agent_status` |
+| Other devices | `everett_peers`, `everett_agent_relay`, `everett_agent_send`, `everett_agent_status` |
 
 Full arguments for each tool are in the [MCP tools reference](/mcp/).
 

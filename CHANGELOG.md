@@ -8,6 +8,7 @@
 
 ### Added
 
+- Add four MCP tools (#273): `everett_search` ranks recent sessions across harnesses by title, card, first/last request, and working directory; `everett_peers` lists paired SSH and relay devices or one SSH peer's recent sessions; `everett_broadcast` sends one request to up to 16 explicit `everett_send` targets with per-target results; `everett_tasks` keeps a shared per-project task board at `<project>/.everett/tasks.json` (`list`, `add`, `claim`, `done`, `remove`). Gateway bindings deny them by default, and the Hermes plugin's fallback catalog and manifest list them.
 - Add durable Teresis memory: every `everett learn` is also written to a shared `memory.db`, and `everett recall` plus the `everett_recall` MCP tool search all learned facts with word, stem, and typo-tolerant matching. `everett learn --key` names a fact so a new value replaces the old one in memory search, and `EVERETT_MEMORY_DB=off` disables the store.
 - Add private cross-account `LOCAL@SCOPE` inboxes with grants scoped to one sender owner/device and one recipient device/session; encrypt message bodies end-to-end and support grant revocation (#244).
 - Add the native Hermes plugin with per-session tools, inbox hooks, `/everett`, and opt-in local live wake (#247). Its portable Agent Plugins v1 fallback registers MCP only.
