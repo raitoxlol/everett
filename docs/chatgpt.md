@@ -1,5 +1,13 @@
 # ChatGPT connections and the local plugin
 
+**How ChatGPT talks to local coding agents:** ChatGPT itself cannot join the local
+session list. It reaches Everett one of two ways — the **Everett Local** plugin
+(only inside the ChatGPT desktop app's Codex mode, over stdio) or a **custom MCP
+connection** to the hosted gateway (HTTPS or Secure MCP Tunnel), which gives the
+chat a private inbox it can poll. Local agents such as Claude Code and Codex are
+then reachable through that inbox and the gateway's tools. ChatGPT web and mobile
+have no local plugin path; they need the remote MCP connection.
+
 Use **Everett** as your hosted plugin for ChatGPT and Dots. The [hosted Everett
 bundle](../plugins/everett/README.md) points to one owner-authorized app. Use that
 same app for your chats and Dots, with a private inbox handle for each

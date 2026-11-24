@@ -60,6 +60,7 @@ opened read-only; a headless resume lets the harness append to its own history.
 | If you are… | Start with |
 | --- | --- |
 | Installing for the first time | [Quickstart](/quickstart/), then [Onboarding wizard](/onboarding/) |
+| Connecting two agents end to end | [Connect Claude Code and Codex](/claude-code-codex/) |
 | Learning the vocabulary | [Core concepts](/concepts/) |
 | An AI agent with Everett tools | [Agent operating guide](/agent-guide/) and [MCP tools reference](/mcp/) |
 | Looking up a command | [CLI reference](/cli/) |
