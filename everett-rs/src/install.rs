@@ -434,7 +434,7 @@ pub fn apply(harness: &str, events: Option<&[String]>) -> std::result::Result<St
     let path = settings_path(harness);
     let mut data = load(&path)?;
     if harness == "muse" && data.get("schema_version").is_none() {
-        // Muse refuses every command on a settings file without schema_version 1.
+        // muse refuses every command on a settings file without schema_version 1.
         data.insert("schema_version".into(), json!(1));
     }
     let (merged, added, migrated) = merge(&data, harness, events)?;
@@ -814,7 +814,7 @@ pub fn apply_mcp(harness: &str, repair: bool) -> std::result::Result<String, Str
     let data = mcp_config(harness)?;
     let old = mcp_entry(harness, &data)?;
     let legacy = old.as_ref().and_then(|o| o.as_object()).map(is_legacy_mcp).unwrap_or(false);
-    // Muse rejects a settings file without schema_version even when the MCP
+    // muse rejects a settings file without schema_version even when the MCP
     // entry itself is already current, so repair it on any apply path.
     let needs_schema = harness == "muse" && data.get("schema_version").is_none();
     if old.is_some() && !repair && !legacy {
@@ -868,7 +868,7 @@ pub fn apply_mcp(harness: &str, repair: bool) -> std::result::Result<String, Str
     } else {
         let mut data = data.clone();
         if harness == "muse" && data.get("schema_version").is_none() {
-            // Muse refuses every command on a settings file without schema_version 1.
+            // muse refuses every command on a settings file without schema_version 1.
             data.insert("schema_version".into(), json!(1));
         }
         let key = if mcp_snake_key(harness) { "mcp_servers" } else { "mcpServers" };

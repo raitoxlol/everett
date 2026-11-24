@@ -384,7 +384,7 @@ enum Cmd {
         /// Devin CLI hooks that bind `everett mcp --harness devin` to the session
         #[arg(long)]
         devin: bool,
-        /// Muse Code hooks (SessionStart/Stop/UserPromptSubmit/PostToolUse in ~/.config/muse/settings.json)
+        /// muse hooks (SessionStart/Stop/UserPromptSubmit/PostToolUse in ~/.config/muse/settings.json)
         #[arg(long)]
         muse: bool,
         /// back up, then merge into the harness config
@@ -415,7 +415,7 @@ enum Cmd {
         /// print the ~/.hermes/config.yaml entry (not applied automatically)
         #[arg(long)]
         hermes: bool,
-        /// Muse Code: mcp_servers.everett in ~/.config/muse/settings.json
+        /// muse: mcp_servers.everett in ~/.config/muse/settings.json
         #[arg(long)]
         muse: bool,
         /// back up, then register

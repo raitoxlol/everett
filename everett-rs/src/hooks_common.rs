@@ -218,7 +218,7 @@ fn stop_event_inner(raw: &str, harness: &str) {
     crate::events::maybe_escalate(None);
 }
 
-/// Muse's Stop payload carries `transcript_path: null`; resolve the session
+/// muse's Stop payload carries `transcript_path: null`; resolve the session
 /// log from the session index, then run the common card/event hooks.
 pub fn muse_stop_hook(raw: &str) {
     let _ = muse_stop_inner(raw);

@@ -19,7 +19,7 @@ against an idle session. It does not inject a prompt into an attached agent.
 | Hermes Agent | Profile session databases | Default native plugin hooks surface validated message-ID notices at turn, tool-result, and verify events; call `everett_inbox` to read contents. Manual/portable MCP setups poll | Native plugin's opt-in `live_wake` sends ID-only nudges for local inbox messages when a session route is available; manual/portable MCP has no wake. CLI resume applies only to interactive CLI sessions; platform session records remain list/route only |
 | Grok CLI | Grok session files | `PostToolUse` or MCP polling | No native wake; Grok CLI is separate from Grok Bot |
 | Devin CLI | Devin database and transcripts | MCP polling; Devin hooks bind identity but do not inject inbox messages | No native wake |
-| Muse Code | `session-index.db` plus `session.jsonl` logs | `UserPromptSubmit`, `PostToolUse`, or MCP polling | No native wake |
+| muse | `session-index.db` plus `session.jsonl` logs | `UserPromptSubmit`, `PostToolUse`, or MCP polling | No native wake |
 
 Hooks require installation and support from the running harness version. Pickup
 behavior varies by integration: some hooks inject message contents, while native

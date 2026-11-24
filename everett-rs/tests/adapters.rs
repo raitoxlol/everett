@@ -326,7 +326,7 @@ fn muse_store_listed() {
     con.execute(
         "INSERT INTO sessions (session_id, session_stream_id, session_dir, session_log_path,
             layout, workspace_root, title, first_user_prompt, created_at_us, updated_at_us)
-         VALUES ('m-1','s-1',?1,?2,'v1','/work/muse','Muse task','fix the muse adapter',?3,?3)",
+         VALUES ('m-1','s-1',?1,?2,'v1','/work/muse','muse task','fix the muse adapter',?3,?3)",
         rusqlite::params![log_dir.to_string_lossy().to_string(), log.to_string_lossy().to_string(), now_us - 60_000_000],
     )
     .unwrap();
@@ -334,7 +334,7 @@ fn muse_store_listed() {
     let _l = fx.ls_json(); let s = session(&_l, "m-1");
     assert_eq!(s["harness"], "muse");
     assert_eq!(s["cwd"], "/work/muse");
-    assert_eq!(s["title"], "Muse task");
+    assert_eq!(s["title"], "muse task");
     assert_eq!(s["first_user"], "fix the muse adapter");
     assert_eq!(s["last_user"], "now add tests");
 }
