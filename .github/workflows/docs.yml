@@ -18,6 +18,8 @@ concurrency:
 jobs:
   build:
     runs-on: ubuntu-latest
+    outputs:
+      pages_enabled: ${{ steps.pages-enabled.outputs.enabled }}
     defaults:
       run:
         working-directory: site
@@ -29,20 +31,33 @@ jobs:
           cache: npm
           cache-dependency-path: site/package-lock.json
       - run: npm ci
-      - id: pages
+      # Pages deployment is opt-in: the build and --strict link check always run,
+      # but configure/upload/deploy only run when the repo actually has Pages enabled.
+      - id: pages-enabled
         if: github.event_name != 'pull_request'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if gh api "repos/${{ github.repository }}/pages" >/dev/null 2>&1; then
+            echo "enabled=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "enabled=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::GitHub Pages is not enabled for this repository; skipping deploy steps."
+          fi
+      - id: pages
+        if: github.event_name != 'pull_request' && steps.pages-enabled.outputs.enabled == 'true'
         uses: actions/configure-pages@v5
       # --strict fails the job on any unresolved link or anchor in README.md / docs/.
       - run: node build.mjs --strict
         env:
           SITE_URL: ${{ steps.pages.outputs.base_url }}
-      - if: github.event_name != 'pull_request'
+      - if: github.event_name != 'pull_request' && steps.pages-enabled.outputs.enabled == 'true'
         uses: actions/upload-pages-artifact@v3
         with:
           path: site/dist
 
   deploy:
-    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main' && needs.build.outputs.pages_enabled == 'true'
     needs: build
     runs-on: ubuntu-latest
     permissions:
