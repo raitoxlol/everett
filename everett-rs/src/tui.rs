@@ -570,7 +570,7 @@ fn explanation_lines(topic: ExplanationTopic, p: &Palette) -> Vec<Line<'static>>
         ExplanationTopic::Local => vec![
             ("Agents on this computer", p.cyan),
             ("Claude Code / Codex / OMP / Pi / Hermes", Style::default()),
-            ("Grok CLI / Devin CLI / muse", Style::default()),
+            ("Grok CLI / Devin CLI / Muse Code", Style::default()),
             ("", p.dim),
             (
                 "Find sessions and pass work between them.",

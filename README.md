@@ -34,8 +34,8 @@
 
 | Area | Current support and limits |
 | --- | --- |
-| Local CLIs (8) | Claude Code · Codex · OMP · Pi · Hermes Agent · Grok CLI · Devin CLI · muse. Read-only discovery, headless resume and spawn, plus native hooks, extensions, or the Hermes plugin where supported. |
-| GUI and cloud | T3 Code threads are recognized through their underlying harness sessions. OpenAI dots and Grok Bot connect through registered external MCP inboxes. ChatGPT uses the [Everett hosted plugin](plugins/everett/README.md), Everett Local, or gateway HTTPS / Secure MCP Tunnel ([ChatGPT setup](docs/chatgpt.md)). muse is supported as a local CLI below; the Meta muse VM agent and Hark compatibility is unverified. |
+| Local CLIs (8) | Claude Code · Codex · OMP · Pi · Hermes Agent · Grok CLI · Devin CLI · Muse Code. Read-only discovery, headless resume and spawn, plus native hooks, extensions, or the Hermes plugin where supported. |
+| GUI and cloud | T3 Code threads are recognized through their underlying harness sessions. OpenAI dots and Grok Bot connect through registered external MCP inboxes. ChatGPT uses the [Everett hosted plugin](plugins/everett/README.md), Everett Local, or gateway HTTPS / Secure MCP Tunnel ([ChatGPT setup](docs/chatgpt.md)). Muse Code is supported as a local CLI below; the Meta Muse VM agent and Hark compatibility is unverified. |
 | Wake support | Claude Code has native local wake and an optional relay receiver policy. Dots and Grok Bot can use owner-configured webhook nudges. Other harnesses use headless resume or inbox pickup. See [agent support and wake](docs/agent-support.md). |
 | Proof bar | The maintainer waived the v2.2.0 live proof bar; live same-org, cross-org, and external-binding evidence is not recorded. See [proof-bar status](docs/v2.2-proof-bar.md) and [Grok Bot 0.77 reachability](docs/grok-bot.md#grok-bot-077-reachability). |
 
@@ -182,7 +182,7 @@ preserving every other key). The same step has a "merge shared memory nightly" t
 Everett reads the session stores the harnesses already write: `~/.claude/projects`,
 `~/.codex/sessions`, `~/.omp/agent/sessions`, `~/.pi/agent/sessions`, `~/.grok/sessions`,
 Hermes' `state.db` files, the Devin CLI's `sessions.db` (plus `transcripts/*.json`),
-muse's `~/.local/share/muse/session-index.db` (honors `XDG_DATA_HOME`),
+Muse Code's `~/.local/share/muse/session-index.db` (honors `XDG_DATA_HOME`),
 and T3 Code's `~/.t3/userdata/statev2.sqlite` (legacy `state.sqlite` fallback). Every database is opened read-only.
 
 Cloud agents use explicit local registrations and the native restricted MCP gateway, not fabricated
@@ -330,7 +330,7 @@ transcripts support recent user/assistant reads; Devin SQLite sessions do not ye
 | Hermes Agent | `hermes -p <profile> chat --resume <id> -Q -q <text>` | `hermes chat -Q -q <text>` |
 | Grok CLI | `grok --resume <id> -p <text>` | `grok --session-id <new uuid> -p <text>` |
 | Devin CLI | `devin --resume <id> --print <text>` | `devin -p <text>` |
-| muse | `muse exec --session-id <id> --allow-workspace-switch <text>` | `muse exec <text>` |
+| Muse Code | `muse exec --session-id <id> --allow-workspace-switch <text>` | `muse exec <text>` |
 | T3 Code | Inbox; hooks where supported, otherwise explicit MCP polling; no CLI resume | not supported |
 | OpenAI dots / Grok Bot | Registered external inbox via owner-authorized MCP; no provider resume. Optional owner webhook nudge: [Wake a Grok Bot](#wake-a-grok-bot). | not supported |
 

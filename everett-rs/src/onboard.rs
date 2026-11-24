@@ -31,7 +31,7 @@ pub fn event_label(event: &str) -> &str {
 }
 
 pub const WELCOME_LINES: &[&str] = &[
-    "Everett lists recent Claude Code, Codex, OMP, Pi, Hermes Agent, Grok CLI, Devin CLI, and muse sessions on this machine.",
+    "Everett lists recent Claude Code, Codex, OMP, Pi, Hermes Agent, Grok CLI, Devin CLI, and Muse Code sessions on this machine.",
     "Local setup needs no Everett account. Sign in to use Everett MCP tools.",
     "It lets those sessions hand work to each other instead of you copy-pasting between them.",
     "It shares merged memory through supported hooks, or agents can read it with everett_core.",

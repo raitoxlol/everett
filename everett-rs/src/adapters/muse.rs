@@ -1,5 +1,5 @@
-//! muse sessions: `~/.local/share/muse/session-index.db` (SQLite, read-only)
-//! plus per-session `session.jsonl` event logs. muse honors XDG_DATA_HOME.
+//! Muse Code sessions: `~/.local/share/muse/session-index.db` (SQLite, read-only)
+//! plus per-session `session.jsonl` event logs. Muse honors XDG_DATA_HOME.
 
 use std::collections::HashMap;
 use std::fs::File;
@@ -84,7 +84,7 @@ fn intent_text(payload: &Map<String, Value>) -> String {
     parts.join(" ")
 }
 
-/// Last user prompt recorded in a muse session log, or "" when unreadable.
+/// Last user prompt recorded in a Muse session log, or "" when unreadable.
 pub fn last_user_text(path: &Path) -> String {
     let Ok(file) = File::open(path) else { return String::new() };
     let mut last = String::new();
@@ -110,7 +110,7 @@ pub fn last_user_text(path: &Path) -> String {
     last
 }
 
-/// `session_log_path` for a muse session id, for the Stop hook's auto card.
+/// `session_log_path` for a Muse session id, for the Stop hook's auto card.
 pub fn transcript_path(session_id: &str) -> Option<PathBuf> {
     let con = connect(&index_path()).ok()?;
     con.query_row(
@@ -141,7 +141,7 @@ pub fn user_text(row: &Map<String, Value>, _with_context: bool) -> String {
     }
 }
 
-/// muse has no stable assistant-text payload contract yet; cards still
+/// Muse Code has no stable assistant-text payload contract yet; cards still
 /// get What/State from user intents.
 pub fn assistant_text(_row: &Map<String, Value>, _with_context: bool) -> String {
     String::new()
