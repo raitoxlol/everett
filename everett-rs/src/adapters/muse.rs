@@ -191,11 +191,15 @@ pub fn scan(since_hours: f64) -> Vec<Session> {
     if active.is_empty() {
         return Vec::new();
     }
-    let last_expr = format!("COALESCE({})", active.join(", "));
+    let last_expr = if active.len() == 1 {
+        active[0].to_string()
+    } else {
+        format!("COALESCE({})", active.join(", "))
+    };
     let sql = format!(
         "SELECT {}, {} / 1000000.0 AS last_active FROM sessions \
          WHERE {} IS NOT NULL AND {} / 1000000.0 >= ?1 \
-         ORDER BY last_active DESC LIMIT 200",
+         ORDER BY last_active DESC",
         wanted.join(", "),
         last_expr,
         last_expr,

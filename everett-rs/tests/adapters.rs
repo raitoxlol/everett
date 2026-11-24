@@ -338,3 +338,37 @@ fn muse_store_listed() {
     assert_eq!(s["first_user"], "fix the muse adapter");
     assert_eq!(s["last_user"], "now add tests");
 }
+
+#[test]
+fn muse_index_with_only_created_at_listed() {
+    let fx = fixture();
+    let data = fx.home().join(".local/share/muse");
+    let log_dir = data.join("sessions/2026/11/23/m-1");
+    std::fs::create_dir_all(&log_dir).unwrap();
+    let log = log_dir.join("session.jsonl");
+    std::fs::write(&log, "{}\n").unwrap();
+    let db = data.join("session-index.db");
+    let con = rusqlite::Connection::open(&db).unwrap();
+    let now_us = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_micros() as i64;
+    con.execute_batch(
+        "CREATE TABLE sessions (
+            session_id TEXT PRIMARY KEY, session_stream_id TEXT, session_dir TEXT,
+            session_log_path TEXT, workspace_root TEXT, title TEXT,
+            created_at_us INTEGER);",
+    )
+    .unwrap();
+    con.execute(
+        "INSERT INTO sessions (session_id, session_stream_id, session_dir, session_log_path,
+            workspace_root, title, created_at_us)
+         VALUES ('m-1','s-1',?1,?2,'/work/muse','muse task',?3)",
+        rusqlite::params![log_dir.to_string_lossy().to_string(), log.to_string_lossy().to_string(), now_us - 60_000_000],
+    )
+    .unwrap();
+    drop(con);
+    let _l = fx.ls_json(); let s = session(&_l, "m-1");
+    assert_eq!(s["harness"], "muse");
+    assert_eq!(s["title"], "muse task");
+}
