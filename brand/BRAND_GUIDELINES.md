@@ -22,7 +22,7 @@ The visual identity below is locked. Future sessions, marketing assets, sites, a
 
 Check every piece of copy against these 5 facts before publishing:
 
-1. **Supported harnesses:** 8 local CLIs (Claude Code, Codex, OMP, Pi, Hermes Agent, Grok CLI, Devin CLI, Muse Code), T3 Code overlay (`[t3code]` over Claude, Codex, Grok, Devin), OpenAI dots and Grok Bot (registered external inboxes), and ChatGPT desktop (`Everett Local` and hosted plugin). Hark and Muse VM agent compatibility is unverified.
+1. **Supported harnesses:** 8 local CLIs (Claude Code, Codex, OMP, Pi, Hermes Agent, Grok CLI, Devin CLI, Muse Code), T3 Code overlay (`[t3code]` over Claude, Codex, Grok, Devin), OpenAI dots and Grok Bot (registered external inboxes), the Meta Muse VM agent (registered external inbox, `muse-agent`), and ChatGPT desktop (`Everett Local` and hosted plugin). Hark compatibility is unverified.
 2. **Routing:** Local BM25 plus recency scoring runs offline with zero keys. Jev (`typesafe.ai`) is optional. `ASK` returns candidates and sends nothing.
 3. **Delivery receipts:** `queued` records an inbox write, `delivered` records device ingress or inbox consumption, `claimed` records pickup, and `replied` records a reply linked by `reply_to`. Task completion is separate. "Active" in `everett ls` and `everett dashboard` is a process and recency check (file changed in the last 10 minutes), separate from a live heartbeat.
 4. **Accounts:** Local CLI commands (`ls`, `route`, `send`, `cards`, `skills`, `learn`, `core`, `dashboard`, `doctor`) and SSH peers need zero Everett account. Calling the 18 stdio MCP tools (`tools/call`) and using the optional Cloudflare E2EE relay require 1 `everett login` per profile.

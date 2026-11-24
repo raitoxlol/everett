@@ -99,7 +99,7 @@ Eyebrow: `WORKS WITH THE HARNESSES YOU ALREADY RUN`
 | Desktop GUI overlay | T3 Code | Annotates underlying Claude, Codex, Grok, and Devin threads as `[t3code]`; exact thread IDs, inbox nudge via `t3 thread send`, `everett_control` |
 | Cloud and external | OpenAI dots · Grok Bot · ChatGPT desktop (`Everett Local` and hosted plugin) | Registered external MCP inboxes, owner-bound Rust gateway, optional webhook nudges, and opt-in MCP Events |
 
-Footnote: `Everett reads the session stores your tools already write. Hark and Muse VM agent compatibility is unverified.`
+Footnote: `Everett reads the session stores your tools already write. Hark compatibility is unverified.`
 
 ---
 

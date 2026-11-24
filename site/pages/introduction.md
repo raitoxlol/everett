@@ -14,8 +14,8 @@ MCP registration, and SSH peers need no account. Everett MCP tool calls require
 | --- | --- |
 | Local harnesses | Claude Code · Codex · OMP · Pi · Hermes Agent · Grok CLI · Devin CLI · Muse Code |
 | Overlay | T3 Code threads, recognized through the harness session each thread drives |
-| Cloud agents | OpenAI dots and Grok Bot, through registered external MCP inboxes |
-| Unverified | Hark and the Muse VM agent |
+| Cloud agents | OpenAI dots, Grok Bot and the Muse VM agent, through registered external inboxes |
+| Unverified | Hark |
 
 A supported integration does not mean every agent can be woken. See
 [Agent support and wake](/agent-support/) for the per-agent table.

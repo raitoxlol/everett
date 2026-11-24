@@ -564,8 +564,11 @@ fn explanation_lines(topic: ExplanationTopic, p: &Palette) -> Vec<Line<'static>>
                 Style::default(),
             ),
             ("", p.dim),
-            ("Dots / Grok Bot / local coding agents", p.dim),
-            ("Muse and Hark: compatibility needs checking.", p.amber),
+            (
+                "Dots / Grok Bot / Muse VM agent / local coding agents",
+                p.dim,
+            ),
+            ("Hark: compatibility needs checking.", p.amber),
         ],
         ExplanationTopic::Local => vec![
             ("Agents on this computer", p.cyan),
@@ -608,22 +611,22 @@ fn explanation_lines(topic: ExplanationTopic, p: &Palette) -> Vec<Line<'static>>
         ExplanationTopic::Vm => vec![
             ("Agents with their own computer", p.cyan),
             ("Muse / another agent running in a VM", Style::default()),
-            ("Muse integration has not been verified.", p.amber),
+            ("Muse registers as an external inbox agent.", p.dim),
             ("", p.dim),
             (
-                "A VM agent could join your other machines",
+                "A VM agent joins your other machines",
                 Style::default(),
             ),
             ("to exchange work and results.", Style::default()),
             ("", p.dim),
-            ("What needs checking", p.violet),
+            ("How it connects", p.violet),
             (
-                "Can it run Everett and keep its credentials?",
+                "Register it as an external inbox agent.",
                 Style::default(),
             ),
-            ("Can it reach the service from its VM?", Style::default()),
+            ("Run Everett in its VM and pair over relay.", Style::default()),
             (
-                "Does the connection survive a VM restart?",
+                "Verify send, inbox read and reply.",
                 Style::default(),
             ),
         ],
@@ -759,8 +762,8 @@ impl RemoteConnection {
 
     fn status(self) -> &'static str {
         match self {
-            Self::Dots | Self::GrokBot | Self::Computer => "setup needed",
-            Self::Hark | Self::Muse => "unverified",
+            Self::Dots | Self::GrokBot | Self::Muse | Self::Computer => "setup needed",
+            Self::Hark => "unverified",
         }
     }
 
@@ -800,13 +803,17 @@ impl RemoteConnection {
                 "docs/cloudflare-native.md has exact commands.",
             ],
             Self::Muse => &[
-                "Muse has not been tested with Everett.",
-                "Check whether your Muse environment can:",
-                "1. Run a persistent Everett process.",
-                "2. Store its credentials privately.",
-                "3. Reach your other computer or MCP gateway.",
-                "4. Keep the connection after a VM restart.",
-                "A VM alone does not establish compatibility.",
+                "The Muse agent runs inside Meta's Muse VM;",
+                "Everett treats it as an external inbox agent.",
+                "1. Register it here:",
+                "   everett external add --id muse --harness muse-agent",
+                "2. Install Everett inside the Muse VM.",
+                "3. Run everett login --provider cloudflare there.",
+                "4. Run everett relay register on both devices.",
+                "   Compare fingerprints; use peer add-relay.",
+                "5. Bind the inbox: re-add with --device PEER/muse-agent/SESSION.",
+                "Verify a send, inbox read and reply before use.",
+                "https://github.com/raitoxlol/everett/blob/main/docs/muse.md",
             ],
             Self::Hark => &[
                 "Hark has not been tested with Everett.",

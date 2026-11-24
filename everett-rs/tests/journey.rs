@@ -932,7 +932,7 @@ fn onboard_tui_animation_and_multiple_colors_reach_the_terminal() {
     p.see("OpenAI Dots / setup needed");
     record(&mut p, 10);
     p.send("\r");
-    p.see("Muse / unverified");
+    p.see("Muse / setup needed");
     record(&mut p, 10);
     p.send("\r");
     p.review();
@@ -1027,12 +1027,12 @@ fn onboard_tui_optional_explanation_and_account_back_navigation() {
     p.see("Hark: connection support needs verification.");
     p.see("Queued work is not a confirmed reply.");
     p.send("4");
-    p.see("Muse integration has not been verified.");
+    p.see("Muse registers as an external inbox agent.");
     p.resize(54, 14);
     p.see("1 Overview");
     p.see("Enter ↵   Check this computer");
     p.send("jjjjjjjjjjjjjjj");
-    p.see("Does the connection survive a VM restart?");
+    p.see("Verify send, inbox read and reply.");
     p.send("\r");
     p.see("Welcome to Everett");
     p.send("\r");
@@ -1064,7 +1064,7 @@ fn onboard_tui_cloud_vm_choices_remain_pending_and_cancel_without_writes() {
     p.send(" ");
     p.see("[x] OpenAI Dots");
     p.send("3 ");
-    p.see("[x] Muse / unverified");
+    p.see("[x] Muse / setup needed");
     p.resize(54, 14);
     p.see("Review connection setup");
     p.send("\r");
@@ -1072,7 +1072,7 @@ fn onboard_tui_cloud_vm_choices_remain_pending_and_cancel_without_writes() {
     p.send("\x1b[F");
     p.see("It stays pending; no client grant is added.");
     p.send("\r");
-    p.see("Muse / unverified");
+    p.see("Muse / setup needed");
     p.send("\r");
     p.review();
     p.see("OpenAI Dots / pending, not added");

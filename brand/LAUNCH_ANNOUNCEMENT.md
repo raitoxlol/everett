@@ -87,7 +87,7 @@ Everett started in Python. Moving to one native Rust binary (`everett-rs`, retir
 
 - Local CLI commands (`ls`, `route`, `send`, `skills`, `learn`, `core`, `dashboard`, `doctor`) and SSH peers need zero Everett account. Calling Everett MCP tools (`tools/call`) requires 1 `everett login` per profile for online Cloudflare verification.
 - Transport receipts are explicit: `queued` records an inbox write, `delivered` records device ingress or consumption, `claimed` records pickup, and `replied` records a reply linked by `reply_to`. Task completion is separate.
-- Hark and Muse VM agent compatibility is unverified. Cross-owner Cloudflare relay grants are unavailable. Relay metadata visibility is documented in `docs/relay-threat-model.md`.
+- Hark compatibility is unverified. Cross-owner Cloudflare relay grants are unavailable. Relay metadata visibility is documented in `docs/relay-threat-model.md`.
 
 ### Install
 

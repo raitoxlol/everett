@@ -75,7 +75,7 @@ Both `1120x260` vector banners are generated under `brand/assets/` (copy to `doc
 | Area | Current support and limits |
 | --- | --- |
 | Local CLIs (8) | Claude Code · Codex · OMP · Pi · Hermes Agent · Grok CLI · Devin CLI · Muse Code. Read-only discovery, headless resume and spawn, plus native hooks, extensions, or the Hermes plugin where supported. |
-| GUI and cloud | T3 Code (`[t3code]` over Claude, Codex, Grok, Devin), OpenAI dots and Grok Bot (registered external inboxes and gateway), ChatGPT desktop (`Everett Local` and hosted plugin). Hark and Muse VM agent compatibility is unverified. |
+| GUI and cloud | T3 Code (`[t3code]` over Claude, Codex, Grok, Devin), OpenAI dots and Grok Bot (registered external inboxes and gateway), the Meta Muse VM agent (registered external inbox, `muse-agent`), ChatGPT desktop (`Everett Local` and hosted plugin). Hark compatibility is unverified. |
 | Accounts | Local CLI, `everett dashboard`, and SSH peers need no account. Calling Everett MCP tools (`tools/call`) and optional Cloudflare E2EE relay require 1 `everett login` per profile. |
 | Wake and receipts | Direct pings run on idle local sessions and verified local Claude, OMP 18.12.2, and owner-local T3 targets. Other paths use `--mode inbox`. See [agent support and wake](docs/agent-support.md) and [v2.2 proof-bar status](docs/v2.2-proof-bar.md). |
 ```

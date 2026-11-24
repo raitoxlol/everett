@@ -83,7 +83,7 @@ Everett works with the sessions you already have.
 - Connects OpenAI dots and Grok Bot through registered external inboxes and the Rust gateway, plus ChatGPT desktop via `Everett Local` and the hosted plugin.
 - Reads bounded transcript slices and opens SQLite databases read-only (`mode=ro`). It leaves harness session files untouched.
 - Ships as one native Rust binary (`everett-rs`, Rust 1.89, LTO and stripped) for macOS arm64/x86_64 and static Linux musl x86_64/aarch64.
-- Limit to keep exact: Hark and Muse VM agent compatibility is unverified.
+- Limit to keep exact: Hark compatibility is unverified.
 
 ### 2. Targeted routing with live session cards
 
