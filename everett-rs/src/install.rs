@@ -401,6 +401,10 @@ pub fn snippet(harness: &str) -> String {
         _ => "# write ~/.grok/hooks/everett.json (Grok loads every file in ~/.grok/hooks/)".to_string(),
     };
     let mut body = Map::new();
+    if harness == "muse" {
+        // muse refuses every command on a settings file without schema_version 1.
+        body.insert("schema_version".into(), json!(1));
+    }
     body.insert("hooks".into(), Value::Object(hooks));
     format!("{}\n{}\n", note, serde_json::to_string_pretty(&body).unwrap())
 }
@@ -433,17 +437,21 @@ pub fn apply(harness: &str, events: Option<&[String]>) -> std::result::Result<St
     }
     let path = settings_path(harness);
     let mut data = load(&path)?;
-    if harness == "muse" && data.get("schema_version").is_none() {
+    let needs_schema = harness == "muse" && data.get("schema_version").is_none();
+    if needs_schema {
         // muse refuses every command on a settings file without schema_version 1.
         data.insert("schema_version".into(), json!(1));
     }
     let (merged, added, migrated) = merge(&data, harness, events)?;
-    if added.is_empty() && migrated.is_empty() {
+    if added.is_empty() && migrated.is_empty() && !needs_schema {
         return Ok(format!("{}: already installed ({})", harness, path.display()));
     }
     let saved = backup(&path);
     write_json(&path, &merged).map_err(|e| e.to_string())?;
     let mut changes = Vec::new();
+    if needs_schema {
+        changes.push("added schema_version 1".to_string());
+    }
     if !added.is_empty() {
         changes.push(format!("added {}", added.join(", ")));
     }
