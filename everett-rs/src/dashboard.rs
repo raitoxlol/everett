@@ -19,6 +19,7 @@ const HARNESSES: &[(&str, &str)] = &[
     ("hermes", "Hermes"),
     ("grok", "Grok CLI"),
     ("devin", "Devin CLI"),
+    ("muse", "muse"),
     ("t3code", "T3 Code"),
     ("openai-dot", "OpenAI dot"),
     ("grok-bot", "Grok Bot"),
