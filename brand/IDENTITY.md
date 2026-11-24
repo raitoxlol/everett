@@ -20,7 +20,7 @@ Give developers and their coding agents one neutral, local-first layer to see, r
 
 ### Vision
 
-A multi-harness workflow where Claude Code, Codex, OMP, Pi, Hermes Agent, Grok CLI, Devin CLI, T3 Code, and registered cloud agents work like one organized desk. Each branch keeps its own history, durable facts and playbooks stay aligned, and every message reports its exact delivery state.
+A multi-harness workflow where Claude Code, Codex, OMP, Pi, Hermes Agent, Grok CLI, Devin CLI, Muse Code, T3 Code, and registered cloud agents work like one organized desk. Each branch keeps its own history, durable facts and playbooks stay aligned, and every message reports its exact delivery state.
 
 ## 3. Tagline options
 
@@ -78,12 +78,12 @@ Everett is a local-first CLI, 18-tool MCP server, loopback HTML dashboard, and c
 
 Everett works with the sessions you already have.
 
-- Discovers 7 local CLIs: Claude Code, Codex, OMP, Pi, Hermes Agent, Grok CLI, and Devin CLI.
+- Discovers 8 local CLIs: Claude Code, Codex, OMP, Pi, Hermes Agent, Grok CLI, Devin CLI, and Muse Code.
 - Recognizes T3 Code threads over Claude, Codex, Grok, and Devin as `[t3code]` without listing them twice.
 - Connects OpenAI dots and Grok Bot through registered external inboxes and the Rust gateway, plus ChatGPT desktop via `Everett Local` and the hosted plugin.
 - Reads bounded transcript slices and opens SQLite databases read-only (`mode=ro`). It leaves harness session files untouched.
 - Ships as one native Rust binary (`everett-rs`, Rust 1.89, LTO and stripped) for macOS arm64/x86_64 and static Linux musl x86_64/aarch64.
-- Limit to keep exact: Hark and Muse compatibility is unverified.
+- Limit to keep exact: Hark and Muse VM agent compatibility is unverified.
 
 ### 2. Targeted routing with live session cards
 
@@ -151,14 +151,14 @@ Everett states exactly what runs offline and what uses a network service.
 | --- | --- | --- |
 | CLI and doctor | Short, diagnostic, 1 next command. | `Stale Claude MCP launcher detected. Run: everett install-mcp --claude --repair --apply` |
 | README and docs | Structured tables, copyable commands, explicit boundaries. | `Local CLI commands and SSH peers need no account. Calling Everett MCP tools requires everett login in the same profile.` |
-| Landing page | Scannable benefits backed immediately by real terminal output. | `Seven harnesses. One native Rust binary. Zero wrapper lock-in.` |
+| Landing page | Scannable benefits backed immediately by real terminal output. | `Eight harnesses. One native Rust binary. Zero wrapper lock-in.` |
 | Launch and social | First-person builder voice with concrete workflows and clear limits. | `We built a native Rust layer above Claude Code, Codex, OMP, Devin, and T3 Code so parallel sessions can share routing, skills, and memory.` |
 
 ### Rewrites
 
 | Avoid | Use |
 | --- | --- |
-| Unleash an autonomous 10x AI engineering swarm. | See, route, message, and share memory across parallel Claude Code, Codex, OMP, Devin, Grok, Pi, and Hermes sessions. |
+| Unleash an autonomous 10x AI engineering swarm. | See, route, message, and share memory across parallel Claude Code, Codex, OMP, Devin, Grok, Pi, Hermes, and Muse Code sessions. |
 | Instantly wakes and syncs every AI agent in real time. | Resumes idle local sessions headlessly, nudges verified local Claude, OMP, and T3 sessions, and queues explicit inbox messages everywhere else. |
 | Completely offline zero-account MCP and cloud sync. | Local CLI, local dashboard, and SSH peers work offline with no account. Calling MCP tools and using the optional Cloudflare relay require `everett login`. |
 | Infinite neural hive mind that never forgets. | Secret-filtered learnings distilled into 300-word global and project cores, backed by local SQLite BM25 search and expiring temporary facts. |

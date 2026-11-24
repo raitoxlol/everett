@@ -122,7 +122,7 @@ encrypted native relay operations and outbound inbox polling. Its private relay 
 lives under `.everett/relay-cloudflare`. Retired keys and pins are never loaded. See
 [connect two computers through Cloudflare](cloudflare-native.md) for exact commands and
 verification boundaries. Dots/Grok client OAuth has its own consent/grant;
-Hark/Muse compatibility remains unverified.
+Hark and Muse VM agent compatibility remains unverified.
 
 
 ## Native MCP sign-in

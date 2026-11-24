@@ -571,7 +571,7 @@ const llms = `# Everett
 
 > ${site.tagline}
 
-Everett is one native binary for macOS and Linux that discovers the sessions your coding-agent harnesses (Claude Code, Codex, OMP, Pi, Hermes Agent, Grok CLI, Devin CLI; T3 Code as an overlay) already recorded, summarizes them with cards, routes requests between them, delivers messages and replies, records status events, and maintains a shared memory core. Agents use it through the \`everett mcp\` stdio server.
+Everett is one native binary for macOS and Linux that discovers the sessions your coding-agent harnesses (Claude Code, Codex, OMP, Pi, Hermes Agent, Grok CLI, Devin CLI, Muse Code; T3 Code as an overlay) already recorded, summarizes them with cards, routes requests between them, delivers messages and replies, records status events, and maintains a shared memory core. Agents use it through the \`everett mcp\` stdio server.
 
 How to read these docs as an agent:
 - Each entry below links to a Markdown version of the page. Every HTML page at /<slug>/ has a Markdown twin at /<slug>.md.

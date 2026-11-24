@@ -3,7 +3,7 @@ These are the terms every other page uses. Each section links to the page with t
 ## Harness and session
 
 A **harness** is a coding-agent CLI or app: Claude Code, Codex, OMP, Pi, Hermes Agent, Grok CLI,
-or Devin CLI. A **session** is one conversation that harness already recorded in its own store.
+Devin CLI, or Muse Code. A **session** is one conversation that harness already recorded in its own store.
 Everett discovers sessions; it does not launch or own them. Session IDs are the harness's own IDs.
 
 **T3 Code** is not a separate harness. It is an overlay: Everett marks the Claude, Codex, or Grok
@@ -24,7 +24,7 @@ is about, its state, and the next step. Agent-written cards are preferred; when 
 none, the Stop hook writes an automatic card from the transcript, marked
 `<!-- everett:auto -->`. Routing and `ls` prefer cards over raw transcript text. A card summarizes
 one session; it is not project-wide truth. See [Session cards and hooks](/session-cards/).
-Refresh existing AUTO-marked cards for Claude Code, Codex, and Grok CLI with
+Refresh existing AUTO-marked cards for Claude Code, Codex, Grok CLI, and Muse Code with
 `everett cards --regenerate-auto`; add `--dry-run` to preview changes or `--hours N` to set the
 look-back window. Agent-written and missing cards are left alone.
 

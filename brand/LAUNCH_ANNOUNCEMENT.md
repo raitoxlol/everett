@@ -28,9 +28,9 @@ Everett 2.4 is a single, MIT-licensed native Rust binary for macOS and Linux.
 
 ### What Everett 2.4 does
 
-#### 1. Read-only discovery across 7 local CLIs, T3 Code, and cloud inboxes
+#### 1. Read-only discovery across 8 local CLIs, T3 Code, and cloud inboxes
 
-`everett ls` reads the session stores your harnesses already write: Claude Code, Codex, OMP, Pi, Hermes Agent, Grok CLI, and Devin CLI. It reads bounded JSONL slices and opens SQLite databases read-only (`mode=ro`). It leaves harness transcripts untouched.
+`everett ls` reads the session stores your harnesses already write: Claude Code, Codex, OMP, Pi, Hermes Agent, Grok CLI, Devin CLI, and Muse Code. It reads bounded JSONL slices and opens SQLite databases read-only (`mode=ro`). It leaves harness transcripts untouched.
 
 T3 Code threads (including T3-managed Claude, Codex, Grok, and Devin sessions) appear annotated as `[t3code]` so nothing is listed twice. Registered external inboxes connect OpenAI dots and Grok Bot, and `Everett Local` and the hosted plugin connect ChatGPT desktop.
 
@@ -87,7 +87,7 @@ Everett started in Python. Moving to one native Rust binary (`everett-rs`, retir
 
 - Local CLI commands (`ls`, `route`, `send`, `skills`, `learn`, `core`, `dashboard`, `doctor`) and SSH peers need zero Everett account. Calling Everett MCP tools (`tools/call`) requires 1 `everett login` per profile for online Cloudflare verification.
 - Transport receipts are explicit: `queued` records an inbox write, `delivered` records device ingress or consumption, `claimed` records pickup, and `replied` records a reply linked by `reply_to`. Task completion is separate.
-- Hark and Muse compatibility is unverified. Cross-owner Cloudflare relay grants are unavailable. Relay metadata visibility is documented in `docs/relay-threat-model.md`.
+- Hark and Muse VM agent compatibility is unverified. Cross-owner Cloudflare relay grants are unavailable. Relay metadata visibility is documented in `docs/relay-threat-model.md`.
 
 ### Install
 
