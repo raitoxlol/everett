@@ -384,6 +384,9 @@ enum Cmd {
         /// Devin CLI hooks that bind `everett mcp --harness devin` to the session
         #[arg(long)]
         devin: bool,
+        /// Muse Code hooks (SessionStart/Stop/UserPromptSubmit/PostToolUse in ~/.config/muse/settings.json)
+        #[arg(long)]
+        muse: bool,
         /// back up, then merge into the harness config
         #[arg(long)]
         apply: bool,
@@ -412,6 +415,9 @@ enum Cmd {
         /// print the ~/.hermes/config.yaml entry (not applied automatically)
         #[arg(long)]
         hermes: bool,
+        /// Muse Code: mcp_servers.everett in ~/.config/muse/settings.json
+        #[arg(long)]
+        muse: bool,
         /// back up, then register
         #[arg(long)]
         apply: bool,
@@ -1252,6 +1258,7 @@ fn main() {
             grok,
             pi,
             devin,
+            muse,
             apply,
         } => {
             a.claude = claude;
@@ -1260,6 +1267,7 @@ fn main() {
             a.grok = grok;
             a.pi = pi;
             a.devin = devin;
+            a.muse = muse;
             a.apply = apply;
             cli::cmd_install_hooks(&a)
         }
@@ -1344,6 +1352,7 @@ fn main() {
             devin,
             pi,
             hermes,
+            muse,
             apply,
             repair,
         } => {
@@ -1354,6 +1363,7 @@ fn main() {
             a.devin = devin;
             a.pi = pi;
             a.hermes = hermes;
+            a.muse = muse;
             a.apply = apply;
             a.repair = repair;
             cli::cmd_install_mcp(&a)

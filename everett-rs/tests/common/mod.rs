@@ -323,6 +323,7 @@ const CALLER_IDENTITY_UNSET: &[&str] = &[
     "HERMES_SESSION_ID",
     "PI_SESSION_FILE",
     "GROK_SESSION_ID",
+    "MUSE_SESSION_ID",
 ];
 
 const SANDBOX_UNSET: &[&str] = &[
@@ -345,6 +346,8 @@ const SANDBOX_UNSET: &[&str] = &[
     "CLAUDECODE",
     "EVERETT_NOTIFY_COMMAND",
     "EVERETT_ESCALATE_MINUTES",
+    "XDG_DATA_HOME",
+    "MUSE_DATA_HOME",
 ];
 
 pub fn lib_home() -> LibHome {

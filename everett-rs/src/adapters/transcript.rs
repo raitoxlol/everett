@@ -11,6 +11,9 @@ use crate::session::Session;
 use super::{devin, grok, hermes};
 
 pub(crate) fn read(session: &Session, messages: usize) -> Result<Vec<Value>> {
+    if session.harness == "muse" {
+        return Err(EverettError::new(4, "read is not supported for muse sessions yet."));
+    }
     if session.harness == "devin" && Path::new(&session.path).extension().and_then(|e| e.to_str()) != Some("json") {
         return Err(EverettError::new(4, "read is not supported for devin SQLite sessions yet."));
     }
