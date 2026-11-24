@@ -366,7 +366,7 @@ function footHtml(root) {
         </footer>`;
 }
 
-function layout({ root, title, description, current, body, mdHref, bodyClass = '', side = true }) {
+function layout({ root, title, description, current, body, mdHref, bodyClass = '', side = true, canonical = null }) {
   return `<!doctype html>
 <html lang="en">
 <head>
@@ -374,11 +374,16 @@ function layout({ root, title, description, current, body, mdHref, bodyClass = '
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>${esc(title)}</title>
 <meta name="description" content="${esc(description)}">
-<meta name="theme-color" content="#0E0C0B">
+${canonical ? `<link rel="canonical" href="${esc(canonical)}">\n` : ''}<meta name="theme-color" content="#0E0C0B">
 <meta name="color-scheme" content="dark">
 <meta property="og:title" content="${esc(title)}">
 <meta property="og:description" content="${esc(description)}">
-<meta property="og:image" content="${SITE_URL ? `${SITE_URL}/` : root}assets/og-card.png">
+<meta property="og:type" content="website">
+<meta property="og:site_name" content="Everett docs">
+${canonical ? `<meta property="og:url" content="${esc(canonical)}">\n` : ''}<meta property="og:image" content="${SITE_URL ? `${SITE_URL}/` : root}assets/og-card.png">
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:title" content="${esc(title)}">
+<meta name="twitter:description" content="${esc(description)}">
 ${mdHref ? `<link rel="alternate" type="text/markdown" href="${esc(mdHref)}" title="Markdown">\n` : ''}<link rel="alternate" type="text/plain" href="${root}llms.txt" title="llms.txt">
 <link rel="icon" href="${root}assets/favicon.svg" type="image/svg+xml">
 <link rel="preload" href="${root}assets/fonts/Sora-var.woff2" as="font" type="font/woff2" crossorigin>
@@ -451,7 +456,7 @@ ${html}
   </main>${tocHtml}
 </div>
 <div class="scrim" data-close-nav hidden></div>`;
-  return { html: layout({ root, title: `${p.title} · Everett docs`, description: p.summary, current: p.slug, body, mdHref: `${root}${p.slug}.md` }), sections };
+  return { html: layout({ root, title: `${p.title} · Everett docs`, description: p.summary, current: p.slug, body, mdHref: `${root}${p.slug}.md`, canonical: SITE_URL ? absUrl(p.slug) : null }), sections };
 }
 
 function renderInline(md) {
@@ -529,7 +534,7 @@ function homePage() {
     ${footHtml(root)}
   </section>
 </main>`;
-  return layout({ root, title: 'Everett docs · many sessions, one mind', description: site.tagline, current: 'index', body, bodyClass: 'is-home', mdHref: `${root}index.md`, side: false });
+  return layout({ root, title: 'Everett docs · many sessions, one mind', description: site.tagline, current: 'index', body, bodyClass: 'is-home', mdHref: `${root}index.md`, side: false, canonical: SITE_URL ? `${SITE_URL}/` : null });
 }
 
 
