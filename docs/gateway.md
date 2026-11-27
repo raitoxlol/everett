@@ -234,7 +234,7 @@ the grant, refreshing client tool registrations, and running a live model test
 require separate owner authorization. Source and fixture tests do not establish
 that an existing hosted connector supports it.
 
-The only native operation is `everett_start`. The owner fixes the T3 project
+The native operations are `everett_start` and read-only `everett_start_status`. The owner fixes the default T3 project
 and provider instance and sets the default model and optional reasoning effort.
 Existing remote-derived callers remain refused by local `everett_control`.
 
@@ -291,6 +291,62 @@ required so retry scope survives
 normal account/client reapproval. Another chat cannot read or retry that chat's
 receipt. While a request has a journal reservation, changing the text, resolved
 pair, or owner policy under the same ID is rejected.
+
+The optional `approved_projects` map adds selectable aliases, without replacing
+or widening the original default grant. Each entry fixes both identifiers:
+
+```json
+"approved_projects": {
+  "everett": {"project_id":"EXACT_EVERETT_PROJECT", "provider":"EXACT_EVERETT_PROVIDER_INSTANCE"},
+  "teresis": {"project_id":"EXACT_SEPARATELY_APPROVED_PROJECT", "provider":"EXACT_APPROVED_PROVIDER_INSTANCE"}
+}
+```
+
+These are configuration examples, not actual grants. There is no project lookup,
+auto-approval, directory-derived permission, or fallback. Unknown aliases and raw
+project IDs are rejected before dispatch. The reserved `default` alias and an
+omitted `project` use the original fixed project/provider. All approved projects
+use the policy's model/effort pairs and MCP endpoint; T3 preflight checks the
+selected provider instance. At most 32 aliases are accepted.
+
+With a verified registered private identity, `everett_whoami.native_start_scope`
+reports `fixed_project`, `configured_provider`, `default_selection`, `receipt_mode`
+(`legacy` or `attested`), `default_project`, and a `projects` map with those fields
+per alias. It is omitted without a resolved private identity or exact OAuth
+account/client authorization. Configuration is not provider pickup evidence.
+The request namespace remains issuer/resource/account/client/registered-identity,
+never project or model. Reusing a reserved ID with changed resolved inputs or
+policy is rejected, including after restart. Equivalent aliases resolve identically.
+
+`everett_start_status(identity_handle=..., request_id=...)` reads the private
+journal read-only. It accepts no thread ID, project, prompt or provider argument.
+It uses only the caller's accepted journaled thread/run and current approved
+project/provider to call loopback T3 `t3_thread_read` (`runLimit=50`). It checks
+the exact thread, project, run and provider, and returns only selected run metadata;
+transcript items and thread-card model/status are discarded. Status calls do not
+update receipts, dispatch, grant destinations, wake or control runs.
+
+The response keeps `receipt` and `reconciliation` separate. Launch receipts carry
+`configured_provider`, `effective_provider` (null for CLI), and `receipt_mode`;
+old receipts remain replayable.
+`effective` is launch-attested selection, not executed selection. Reconciliation
+reports `executed_model` and `started_at` from the exact T3 run. Both are required
+for `pickup_confirmed`; `terminal_confirmed` includes failed/cancelled/interrupted/
+rolled-back outcomes and `completion_confirmed` requires completed. It never
+asserts `reply_confirmed` or invents a `native_session_id`. Unknown run, a run
+outside the bounded recent-run window, transport failure or mismatched scope
+returns a bounded diagnostic without promoting evidence. Legacy grants retain
+dispatch-only receipts. Uncertain starts without an accepted run cannot be
+reconciled automatically and must never be retried under a fresh ID.
+
+Connector schema refresh is a separate rollout step. Register optional string
+`everett_start.project` with the exact approved alias enum, preserve model/effort
+pairs and required private handle/request ID/text, and expose read-only
+`everett_start_status` with required string `identity_handle` and `request_id`,
+`additionalProperties=false`. Preserve structured nested whoami/receipt/status
+results and expose `everett_directory` for existing-thread handoffs. A plugin
+bundle update alone does not refresh the hosted app catalog. Never route around
+a missing alias or stale schema with another plugin or local T3 tool.
 
 Before dispatch, the gateway commits a reservation in the private
 `~/.everett/gateway-starts.sqlite` journal. A confirmed MCP preflight failure
