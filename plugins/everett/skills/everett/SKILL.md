@@ -31,7 +31,7 @@ entry whose `label` or `project` matches what the user named, then call
 thread's provider session inbox (`resolved_to`). Entries with empty `actions`
 are not sendable — read the `note` for the reason and report it instead of
 guessing another target. `everett_start`, when advertised, only starts a NEW run
-in the owner's fixed project and never reaches an existing thread; do not
+in an owner-approved project and never reaches an existing thread; do not
 substitute it for an existing-thread handoff.
 
 On a `message.created` event, call `everett_inbox` with `message_id` from the
@@ -51,12 +51,26 @@ local T3, another plugin, a shell command, or an inbox message for a hosted star
 An explicitly authorized start can consume the owner's model allowance. Use a
 private identity handle and one fresh durable request ID. Retain the exact ID
 and inputs before dispatch. Reuse them after any timeout or reconnect. The owner
-fixes the project and provider and grants model and effort pairs. When the
+fixes each project and provider and grants model and effort pairs. Read
+`native_start_scope` from whoami with the registered private handle. Omit
+`project` for the original fixed grant, or use an exact advertised approved alias.
+If the named project is absent, report that it needs separate owner approval.
+Never substitute a raw project ID, directory entry or another transport. When the
 tool advertises model and effort, omit them to use the defaults or send a
 granted pair. Verify `effective` against `requested` for a selection
 claim. Legacy CLI receipts report `effective: null`.
 `dispatch_not_started` confirms a preflight rejection. After resolving the
 diagnostic, retry it with the original request ID and inputs.
+
+Use `everett_start_status(identity_handle=<same handle>, request_id=<original ID>)`
+when registered. It reconciles only this identity's journaled accepted run through
+native T3 metadata. It cannot read an arbitrary thread or send/control anything.
+Keep the immutable dispatch receipt separate from `reconciliation`. A T3 executed
+model plus started timestamp establishes T3-reported provider pickup; terminal
+status establishes the run outcome. Neither establishes an inbox reply. Missing
+run metadata, unavailable transport and a legacy receipt leave pickup unknown.
+Never use a thread card's model or status as evidence. `native_session_id` stays
+null unless a supported source actually provides it.
 
 A confirmed start receipt proves dispatch only. Independently verify the native
 provider identity, intended target, inbox pickup and correlated reply before

@@ -84,6 +84,18 @@ class HostedReadiness(unittest.TestCase):
                 result = self.run_check(require_event_pickup=True)
                 self.assertIn('event_pickup_client_catalog_stale', result['errors'])
 
+    def test_approved_projects_require_refreshed_selector_and_status_schema(self):
+        self.whoami['native_start_scope'] = {'projects': {'default': {}, 'teresis': {}}}
+        errors = self.run_check()['errors']
+        self.assertIn('native_project_client_catalog_stale', errors)
+        self.assertIn('native_status_client_catalog_stale', errors)
+        start = next(t for t in self.catalog['tools'] if t['name'] == 'everett_start')
+        start['inputSchema'] = {'properties': {'project': {'type': 'string', 'enum': ['default', 'teresis']}}}
+        self.catalog['tools'].append({'name': 'everett_start_status', 'inputSchema': {'properties': {
+            'request_id': {'type': 'string'}, 'identity_handle': {'type': 'string'}}}})
+        self.assertTrue(self.run_check()['checks_passed'])
+        self.assertFalse(self.run_check()['native_dispatch_verified'])
+
     def test_inbox_only_requires_explicit_native_grant(self):
         self.whoami['capabilities']['native_session_start'] = False
         self.catalog['tools'] = [t for t in self.catalog['tools'] if t['name'] != 'everett_start']
