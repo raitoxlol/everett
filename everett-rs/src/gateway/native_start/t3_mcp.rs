@@ -47,38 +47,8 @@ pub(super) fn launch(
     request_id: &str,
     timeout: Duration,
 ) -> Result<Value, LaunchError> {
-    let endpoint = policy.mcp_endpoint.as_deref().ok_or(UNAVAILABLE)?;
-    let bearer = std::env::var("EVERETT_T3_MCP_TOKEN").map_err(|_| UNAVAILABLE)?;
-    if bearer.is_empty() || bearer.len() > 4096 || !bearer.bytes().all(|b| b.is_ascii_graphic()) {
-        return Err(UNAVAILABLE.into());
-    }
     let effort = json!(selection.effort.ok_or(UNAVAILABLE)?);
-    let mut session = Session {
-        agent: ureq::Agent::config_builder()
-            .proxy(None)
-            .max_redirects(0)
-            .timeout_global(Some(timeout / 5))
-            .build()
-            .into(),
-        endpoint,
-        auth: format!("Bearer {bearer}"),
-        protocol: "2025-06-18".into(),
-        id: None,
-    };
-    let init = session.post(
-        1,
-        "initialize",
-        json!({
-            "protocolVersion": session.protocol,
-            "capabilities": {},
-            "clientInfo": {"name":"everett-gateway","version":env!("CARGO_PKG_VERSION")}
-        }),
-    )?;
-    session.protocol = match init["protocolVersion"].as_str() {
-        Some(version @ ("2025-03-26" | "2025-06-18" | "2025-11-25")) => version.into(),
-        _ => return Err(UNAVAILABLE.into()),
-    };
-    session.post(0, "notifications/initialized", Value::Null)?;
+    let mut session = connect(policy, timeout)?;
 
     let catalog = session.call(
         2,
@@ -137,9 +107,107 @@ pub(super) fn launch(
         || effective["model"] != selection.model
         || !verified_effort
     {
-        return Err(LaunchError::Unconfirmed(DispatchDiagnostic::T3EffectiveSelectionMismatch));
+        return Err(LaunchError::Unconfirmed(
+            DispatchDiagnostic::T3EffectiveSelectionMismatch,
+        ));
     }
     Ok(receipt)
+}
+
+fn connect(policy: &Policy, timeout: Duration) -> Result<Session<'_>, &'static str> {
+    let endpoint = policy.mcp_endpoint.as_deref().ok_or(UNAVAILABLE)?;
+    let bearer = std::env::var("EVERETT_T3_MCP_TOKEN").map_err(|_| UNAVAILABLE)?;
+    if bearer.is_empty() || bearer.len() > 4096 || !bearer.bytes().all(|b| b.is_ascii_graphic()) {
+        return Err(UNAVAILABLE);
+    }
+    let mut session = Session {
+        agent: ureq::Agent::config_builder()
+            .proxy(None)
+            .max_redirects(0)
+            .timeout_global(Some(timeout / 5))
+            .build()
+            .into(),
+        endpoint,
+        auth: format!("Bearer {bearer}"),
+        protocol: "2025-06-18".into(),
+        id: None,
+    };
+    let init = session.post(
+        1,
+        "initialize",
+        json!({
+            "protocolVersion": session.protocol,
+            "capabilities": {},
+            "clientInfo": {"name":"everett-gateway","version":env!("CARGO_PKG_VERSION")}
+        }),
+    )?;
+    session.protocol = match init["protocolVersion"].as_str() {
+        Some(version @ ("2025-03-26" | "2025-06-18" | "2025-11-25")) => version.into(),
+        _ => return Err(UNAVAILABLE),
+    };
+    session.post(0, "notifications/initialized", Value::Null)?;
+
+    Ok(session)
+}
+
+pub(super) fn reconcile(
+    policy: &Policy,
+    receipt: &Value,
+    timeout: Duration,
+) -> Result<Value, &'static str> {
+    let mut session = connect(policy, timeout)?;
+    let status = session.call(
+        2,
+        "t3_thread_read",
+        json!({
+            "threadId":receipt["thread_id"], "limit":1, "maxCharsPerItem":1, "runLimit":50
+        }),
+    )?;
+    if status["thread"]["threadId"] != receipt["thread_id"]
+        || status["thread"]["projectId"] != receipt["project_id"]
+    {
+        return Err("t3_run_scope_mismatch");
+    }
+    let run = entries(&status["recentRuns"])
+        .find(|run| run["runId"] == receipt["run_id"])
+        .ok_or("t3_accepted_run_not_in_status_window")?;
+    if run["providerInstanceId"] != policy.provider {
+        return Err("t3_run_provider_mismatch");
+    }
+    if !matches!(
+        run["status"].as_str(),
+        Some(
+            "preparing"
+                | "queued"
+                | "starting"
+                | "running"
+                | "waiting"
+                | "completed"
+                | "failed"
+                | "cancelled"
+                | "interrupted"
+                | "rolled_back"
+        )
+    ) {
+        return Err("t3_run_status_invalid");
+    }
+    let terminal = matches!(
+        run["status"].as_str(),
+        Some("completed" | "failed" | "cancelled" | "interrupted" | "rolled_back")
+    );
+    let executed = run["executedModel"]
+        .as_str()
+        .filter(|s| valid_receipt_id(s));
+    let started = run["startedAt"]
+        .as_str()
+        .filter(|s| chrono::DateTime::parse_from_rfc3339(s).is_ok());
+    Ok(json!({
+        "source":"t3_native_run_status", "run_id":receipt["run_id"], "status":run["status"],
+        "provider_instance":run["providerInstanceId"], "executed_model":executed,
+        "started_at":started, "pickup_confirmed":executed.is_some() && started.is_some(),
+        "terminal_confirmed":terminal, "completion_confirmed":run["status"] == "completed",
+        "reply_confirmed":false, "native_session_id":null
+    }))
 }
 
 fn entries(value: &Value) -> impl Iterator<Item = &Value> {
