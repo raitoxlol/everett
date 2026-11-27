@@ -1073,6 +1073,20 @@ fn onboard_tui_cloud_vm_choices_remain_pending_and_cancel_without_writes() {
     p.see("It stays pending; no client grant is added.");
     p.send("\r");
     p.see("Muse / setup needed");
+    p.resize(80, 26);
+    p.see("Register the receiving inbox inside the Muse VM.");
+    let screen = p.screen();
+    let mut vm_step = screen
+        .lines()
+        .skip_while(|line| !line.contains("Register the receiving inbox"));
+    assert!(vm_step.next().is_some(), "{screen}");
+    assert_eq!(
+        vm_step.next().map(str::trim),
+        Some("everett external add --id muse --harness muse-agent"),
+        "{screen}"
+    );
+    p.see("--replace --device 'PEER/muse-agent/muse'");
+    p.resize(54, 14);
     p.send("\r");
     p.review();
     p.see("OpenAI Dots / pending, not added");

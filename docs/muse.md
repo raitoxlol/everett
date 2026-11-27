@@ -1,66 +1,96 @@
 # Muse agent setup
 
-Muse is Meta's consumer VM agent: it runs on its own computer inside Meta's Muse
-VM. Everett treats it as an **external inbox agent** — the same connection shape
-as an OpenAI dot or Grok Bot, registered explicitly and addressed by id.
+Muse is Meta's consumer agent that runs inside the Muse VM. Everett registers
+it as an external inbox agent so your coding agent can send it messages.
 
-Muse is distinct from Muse Code, the `muse` terminal CLI. Muse Code is a local
-harness Everett discovers from `~/.local/share/muse`; the Muse VM agent connects
-through registration and relay instead.
+Muse Code is the `muse` terminal CLI. Everett discovers its local sessions in
+`~/.local/share/muse`.
 
-## 1. Register the agent
+Give your coding agent this setup request.
 
-On the computer that owns your Everett sessions:
+> Connect this computer to my Muse VM using the steps below. Run the sender
+> commands here and ask the Muse agent to run the VM commands in its terminal.
+> Show me the device approval URL if sign-in is needed. Send one status check
+> and report the reply you receive from Muse.
+
+## 1. Register on the sending computer
+
+Run this on the computer that will send messages to Muse.
 
 ```bash
 everett external add --id muse --harness muse-agent --title "Muse VM agent"
 ```
 
-The registration creates a durable `ext`-style inbox. Registration alone does not
-connect anything — the agent still needs a way to reach it.
+The sender will use `muse` as its local name for the remote inbox after step 4.
 
-## 2. Run Everett inside the Muse VM
+## 2. Register the receiving inbox inside the Muse VM
 
-The Muse VM can run the Everett binary itself, like any other computer:
+Ask the Muse agent to install Everett in the VM and start sign-in there.
 
 ```bash
 # inside the Muse VM
 everett login --provider cloudflare
 ```
 
-Approve the same account from the device-flow URL. See
-[account setup](auth.md) and [Cloudflare native relay](cloudflare-native.md) for
-the exact flow.
+Open the approval URL and approve the same Everett account used on the sending
+computer. If the sender also needs sign-in, run the same login command there.
+See [account setup](auth.md).
 
-## 3. Pair the two devices over relay
+Have the Muse agent create an unbound inbox in the same Everett profile that
+will run the VM's relay listener. The relay checks for the exact `muse-agent/muse`
+registration before it imports a message.
+
+```bash
+# inside the Muse VM
+everett external add --id muse --harness muse-agent
+```
+
+## 3. Start the relay on both devices
 
 ```bash
 # on both devices
 everett relay register
 ```
 
-Compare fingerprints, then `peer add-relay`, and start `everett relay` on both.
-Device names and same-owner trust select and authenticate the destination; they
-do not grant wake permission.
+On the sender, run `everett relay devices --names` and identify the VM's unique
+device name. Keep `everett relay` running on both devices, in separate terminal
+sessions from the remaining commands. See [Cloudflare native relay](cloudflare-native.md)
+for device selection and same-account pairing.
 
-## 4. Bind the registration to the relay peer
+## 4. Replace the sender registration with a relay binding
 
-```bash
-everett external add --id muse --harness muse-agent --replace \
-  --device PEER/muse-agent/SESSION
-```
-
-Sends to `muse` then ride the encrypted relay and stay queued until the Muse VM's
-Everett picks them up — no local inbox file is written for bound registrations.
-
-## 5. Verify
-
-Send one message and confirm pickup before relying on the connection:
+On the sending computer, replace `PEER` with the VM's unique device name. If
+the name is ambiguous, use `id:DEVICE_ID` in its place. Keep `muse-agent/muse`
+to match the VM registration from step 2.
 
 ```bash
-everett send "status check" --to muse --mode inbox
+everett external add --id muse --harness muse-agent --title "Muse VM agent" \
+  --replace --device 'PEER/muse-agent/muse'
 ```
 
-`queued` means retained for pickup, `claimed` means inbox pickup, `replied` means
-a reply was observed. None proves the Muse agent completed the task. Muse has no
-native wake: delivery is inbox or relay-bound only.
+The sender now queues messages for `muse` on the encrypted relay for the VM to
+pick up.
+
+## 5. Verify pickup and reply
+
+Have the coding agent send a status check from the sending computer.
+
+```bash
+everett send "status check" --to muse --mode inbox --json
+```
+
+In the VM, have the Muse agent read its inbox and reply using the message's
+local `id` from the inbox output.
+
+```bash
+everett inbox --session muse --json
+EVERETT_SESSION_ID=muse EVERETT_HARNESS_NAME=muse-agent \
+  everett reply LOCAL_MESSAGE_ID "Muse inbox ready"
+```
+
+On the sender, use `everett peer status 'PEER' RELAY_MESSAGE_ID` with the
+`message_id` from the send result. `queued` means the relay retained the message.
+`claimed` means the Muse inbox was read. `replied` means Everett observed a reply.
+The Muse agent must read its inbox to pick up work because it has no native wake.
+If the VM's relay reports `recipient session not found`, check its Everett
+profile and the exact `muse-agent/muse` binding.
