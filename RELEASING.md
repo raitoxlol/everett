@@ -51,7 +51,21 @@ provider pickup and a correlated reply require separate live acceptance.
 
 `RELEASE_NOTES.md` at the repo root becomes the GitHub release body
 (`gh release create --notes-file`). Summarize user-facing changes; point at the
-CHANGELOG for the full list.
+CHANGELOG for the full list. Include this pinned install block, replacing every
+`vX.Y.Z` with the candidate tag:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/raitoxlol/everett/vX.Y.Z/install.sh -o everett-install.sh
+EVERETT_VERSION=vX.Y.Z sh everett-install.sh
+export PATH="$HOME/.local/bin:$PATH"
+everett --version
+```
+
+The URL pins installer source; `EVERETT_VERSION` pins the downloaded binary.
+The README's `main/install.sh` example instead uses rolling installer source
+and defaults to the latest binary. Setting only the variable does not pin the
+installer. Expect `everett X.Y.Z`; if another version appears, inspect `command -v everett`
+before continuing. With a custom install directory, add that directory to PATH.
 
 ## 4. Tag and push
 
@@ -99,7 +113,9 @@ The tap lags the tag by however long that step takes — `install.sh` does not.
 ## 7. Verify the install path
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/raitoxlol/everett/main/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/raitoxlol/everett/vX.Y.Z/install.sh -o everett-install.sh
+EVERETT_VERSION=vX.Y.Z sh everett-install.sh
+export PATH="$HOME/.local/bin:$PATH"
 everett --version   # should print X.Y.Z
 brew tap raitoxlol/tap && brew install everett   # once the tap is updated
 ```

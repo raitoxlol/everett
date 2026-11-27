@@ -17,7 +17,7 @@ See [native MCP sign-in](auth.md#native-mcp-sign-in).
 | Devin CLI | `everett mcp --harness devin` + `SessionStart`/`UserPromptSubmit` hooks record the session (Unreleased) | `everett install-hooks --devin --apply` and `everett install-mcp --devin --repair --apply` |
 | Hermes Agent (native plugin) | Unreleased: the plugin starts a per-session MCP bridge with the Hermes session ID in `EVERETT_SESSION_ID`; supports CLI, TUI, Desktop, and shared gateway sessions | Install and enable the [native plugin](../plugins/everett-hermes/README.md), then restart Hermes |
 | Hermes Agent (manual MCP) | `--harness hermes` accepts `EVERETT_SESSION_ID` or `HERMES_SESSION_ID`; without either, it uses process detection | `everett install-mcp --hermes` prints native-plugin install/enable guidance plus a separate fallback entry with no explicit ID; it does not edit config or support `--apply`. Detection can bind only one unambiguous interactive Hermes CLI session in the server's directory. A static ID binds that one session but does not provide the native plugin's per-session gateway binding |
-| T3 Code | none | set `EVERETT_SESSION_ID` in the thread's MCP launch environment |
+| T3 Code | provider binding when available; verify in the thread | Follow the [binding check and dedicated launch fallback](t3code.md#have-the-agent-verify-its-binding-first); stop if tools or identity are missing |
 | Remote connections | `everett gateway` supplies a fixed binding or verifies a private conversation handle | see [gateway.md](gateway.md#http-conversation-identity) |
 
 ## How `--harness` binds

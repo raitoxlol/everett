@@ -214,8 +214,19 @@ fn release_journey_over_cli_and_all_mcp_tools() {
     assert_eq!(retry["isError"], true, "{retry}");
     assert!(retry.to_string().contains("no longer queued"), "{retry}");
     let cli_sent = home.json(&["send", "Check the retry cap", "--to", "verify-worker", "--mode", "inbox", "--json"], "verify-sender");
-    worker_wire.call("everett_send", json!({"reply_to": cli_sent["message_id"], "text": "Cap is five"}));
-    assert_eq!(home.json(&["inbox", "--session", "verify-sender", "--json"], "")["messages"][0]["text"], "Cap is five");
+    assert_eq!(cli_sent["reply_inbox"], "verify-sender");
+    let mid = cli_sent["message_id"].as_str().unwrap();
+    let picked_up = worker_wire.call("everett_inbox", json!({"message_id": mid}));
+    assert_eq!(picked_up["messages"][0]["id"], mid);
+    worker_wire.call("everett_send", json!({"reply_to": mid, "text": "Cap is five"}));
+    let response = home.json(&["inbox", "--session", "verify-sender", "--reply-to", mid, "--json"], "");
+    assert_eq!(response["messages"][0]["text"], "Cap is five");
+    assert_eq!(response["messages"][0]["reply_to"], mid);
+    assert_eq!(response["messages"][0]["from"], "verify-worker");
+    let status = home.json(&["status", mid, "--json"], "verify-sender");
+    assert_eq!(status["picked_up"], true);
+    assert_eq!(status["state"], "replied");
+    assert_eq!(status["reply"]["text"], "Cap is five");
 
     wire.call("everett_subscribe", json!({"target": "verify-worker"}));
     worker_wire.call("everett_event", json!({"kind": "done", "message": "Upload tests passed"}));
