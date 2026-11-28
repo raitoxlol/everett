@@ -2,11 +2,18 @@
 
 ## Unreleased
 
+## 2.4.1 — 2026-11-28
+
 ### Changed
 
 - Skip HostedAuth expiry sweeps on OAuth discovery and introspection while keeping expiry checks in authorization paths; use bounded indexed sweeps on other requests and prune stale `auth_rates` buckets once per minute window (#252).
 
 ### Added
+
+- Let an authorized agent start a new T3 run in the owner's fixed default project or an explicitly approved project alias (`everett_start`), then check only that identity's accepted run with read-only `everett_start_status`. Status reconciliation uses loopback T3 `t3_thread_read` and keeps the launch receipt separate from pickup, terminal outcome, and reply evidence. Native session identity stays unconfirmed, and a reply is never inferred from status metadata alone (#282).
+- Add the Muse VM as a supported external inbox. The setup wizard tells you to register the inbox inside the Muse VM, and the bind command includes `--replace` (#278).
+- Document Muse Code as a local CLI across docs, the site, and brand pages, and make the first local T3 handoff checks explicit (#277, #283).
+- Add canonical/OG metadata and a Claude Code + Codex walkthrough; skip GitHub Pages deploy steps when Pages is not enabled (#279, #280).
 
 - Add Muse Code as an eighth local harness (#268): `everett ls` and routing read Muse's `session-index.db` (read-only, under `$MUSE_DATA_HOME`, `$XDG_DATA_HOME/muse`, or `~/.local/share/muse`) plus each session's `session.jsonl`; `everett send` resumes with `muse exec --session-id <id> --allow-workspace-switch` and `--spawn` uses `muse exec`. `install-hooks --muse` adds `SessionStart`, `Stop`, `UserPromptSubmit`, and `PostToolUse` hooks and `install-mcp --muse` registers `mcp_servers.everett` in `~/.config/muse/settings.json`, both writing `schema_version: 1` and a backup; MCP calls bind through `MUSE_SESSION_ID`, and `doctor` and onboarding check Muse. Transcript reads (`control read`) are not supported for Muse yet.
 - Add four MCP tools (#273): `everett_search` ranks recent sessions across harnesses by title, card, first/last request, and working directory; `everett_peers` lists paired SSH and relay devices or one SSH peer's recent sessions; `everett_broadcast` sends one request to up to 16 explicit `everett_send` targets with per-target results; `everett_tasks` keeps a shared per-project task board at `<project>/.everett/tasks.json` (`list`, `add`, `claim`, `done`, `remove`). Gateway bindings deny them by default, and the Hermes plugin's fallback catalog and manifest list them.

@@ -1,17 +1,16 @@
-# Everett 2.4.0
+# Everett 2.4.1
 
-Everett can route a request to a local coding session, show whether it was picked up, and retrieve the retained reply. When several sessions match, use an address from the route results or an exposed card to choose the recipient (#231, #232).
+An authorized agent can start a new T3 run in the owner's fixed default project or an approved project alias, then check only that accepted run with `everett_start_status` (#282). The Muse VM is a supported external inbox, and Muse Code is documented as a local harness (#277, #278, #283).
 
-Pi connects during onboarding, and Hermes users get local setup instructions (#229). The skill hub selects a playbook for a task, and Everett recognizes Devin threads managed by T3 Code (#228).
-
-Local CLI setup and routing work without an Everett account. Run `everett login` once per profile for local MCP tool calls. Grok CLI and Devin headless turns depend on provider access. Outside-hosted inbox and wake integrations remain in preview and require separate acceptance on the configured connection.
+This release also includes the Muse Code local harness, four MCP tools (`search`, `peers`, `broadcast`, `tasks`), Teresis-backed `everett recall`, the native Hermes plugin, `everett_directory`, and the other unreleased fixes accumulated since 2.4.0. See the changelog for the full list.
 
 Install the runtime on Linux or macOS:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/raitoxlol/everett/v2.4.0/install.sh -o everett-install.sh
-EVERETT_VERSION=v2.4.0 sh everett-install.sh
+curl -fsSL https://raw.githubusercontent.com/raitoxlol/everett/v2.4.1/install.sh -o everett-install.sh
+EVERETT_VERSION=v2.4.1 sh everett-install.sh
+export PATH="$HOME/.local/bin:$PATH"
 everett --version
 ```
 
-See the [full changelog](https://github.com/raitoxlol/everett/blob/v2.4.0/CHANGELOG.md).
+See the [full changelog](https://github.com/raitoxlol/everett/blob/v2.4.1/CHANGELOG.md).
