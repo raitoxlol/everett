@@ -654,12 +654,12 @@ impl Gateway {
             selected.agent_id = identities::resolve(binding, handle)?;
         }
         let binding = &selected;
-        if name == "everett_start" {
+        if matches!(name, "everett_start" | "everett_start_status") {
             if !private_identity { return Err("native start requires a private identity_handle for durable retry isolation".into()); }
             let policy = binding.native_start.as_ref().filter(|p| p.permits(agent))
                 .ok_or("native start is not granted to this OAuth account and client")?;
             let _permit = self.workers.try_acquire().map_err(|_| "gateway workers busy; retry later")?;
-            return native_start::start(binding, policy, arguments).await;
+            return if name == "everett_start_status" { native_start::status(binding, policy, arguments).await } else { native_start::start(binding, policy, arguments).await };
         }
         let args = binding.authorize(name, arguments)?;
         let _permit = self
@@ -763,6 +763,12 @@ impl Gateway {
                     "provenance": if private_identity { "owner_registered_logical" } else { "legacy_client_binding" },
                     "ownership": if private_identity && account_verified && client_verified { "verified_account_client" } else { "unmapped" }}
             });
+            data.as_object_mut().ok_or("invalid whoami response")?.remove("native_start_scope");
+            if private_identity {
+                if let Some(policy) = binding.native_start.as_ref().filter(|p| p.permits(agent)) {
+                    data["native_start_scope"] = policy.scope_info();
+                }
+            }
             data["gateway_runtime"] = crate::build_info::value();
             data["authorized_destinations"] = json!(binding.destinations);
             let directory_granted = !binding.conversation_identity
@@ -872,6 +878,7 @@ impl ServerHandler for Gateway {
         }
         if let Some(policy) = binding.native_start.as_ref().filter(|p| p.permits(agent.as_ref())) {
             tools.push(native_start::tool(policy));
+            tools.push(native_start::status_tool());
         }
         Ok(ListToolsResult::with_all_items(tools))
     }

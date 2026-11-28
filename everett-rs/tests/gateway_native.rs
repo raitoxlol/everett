@@ -518,25 +518,38 @@ fn owner_native_start_is_explicit_isolated_and_durable() {
         let listed = oauth_rpc(port,token,"tools/list",json!({}));
         let present = listed["result"]["tools"].as_array().unwrap().iter().any(|t| t["name"]=="everett_start");
         assert_eq!(present,token=='a',"{listed}");
+        assert_eq!(listed["result"]["tools"].as_array().unwrap().iter().any(|t| t["name"]=="everett_start_status"),token=='a');
     }
     let identity = native_identity(port,"native-start-registration-key-12345");
     let args = json!({"identity_handle":identity["identity_handle"],"request_id":"native-start-request-id-1234567890","text":"Synthetic request --model never-a-flag"});
     let info=success(&native_call(port,'a',"everett_whoami",json!({"identity_handle":identity["identity_handle"]})));
     assert_eq!(info["capabilities"]["native_session_start"],true);
+    assert_eq!(info["native_start_scope"]["projects"]["default"]["receipt_mode"], "legacy");
+    assert!(success(&native_call(port,'a',"everett_whoami",json!({}))).get("native_start_scope").is_none());
     assert_eq!(info["gateway_resource"],RESOURCE);
     assert_eq!(info["gateway_runtime"]["version"],env!("CARGO_PKG_VERSION"));
-    for token in ['c','d','e'] { denied(&native_call(port,token,"everett_start",args.clone())); }
+    for token in ['c','d','e'] {
+        denied(&native_call(port,token,"everett_start",args.clone()));
+        denied(&native_call(port,token,"everett_start_status",json!({"identity_handle":identity["identity_handle"],"request_id":args["request_id"]})));
+        assert!(success(&native_call(port,token,"everett_whoami",json!({}))).get("native_start_scope").is_none());
+    }
     denied(&native_call(port,'a',"everett_start",json!({"request_id":args["request_id"],"text":"without handle"})));
     for (key,value) in [("cwd",json!("/tmp")),("project",json!("foreign")),("provider",json!("other")),("model",json!("other")),("wait",json!(true)),("spawn",json!(true))] {
         let mut bad=args.clone();bad[key]=value;denied(&native_call(port,'a',"everett_start",bad));
     }
     assert!(native_records(&c).is_empty());
+    denied(&native_call(port,'a',"everett_start_status",json!({"identity_handle":identity["identity_handle"],"request_id":args["request_id"]})));
+    assert!(!c.home.join(".everett/gateway-starts.sqlite").exists());
     let receipt = success(&native_call(port,'a',"everett_start",args.clone()));
     assert_eq!(receipt["state"],"dispatch_confirmed");
     assert_eq!(receipt["thread_id"],"mcp:fixture-thread");
     assert_eq!(receipt["run_id"],"run:thread:mcp%3Afixture-thread:ordinal:1");
     for key in ["pickup_confirmed","completion_confirmed","reply_confirmed"] { assert_eq!(receipt[key],false); }
     assert!(receipt["native_session_id"].is_null());
+    assert_eq!(receipt["configured_provider"], "fixed-provider");
+    assert_eq!(receipt["receipt_mode"], "legacy");
+    let legacy_status = success(&native_call(port,'a',"everett_start_status",json!({"identity_handle":identity["identity_handle"],"request_id":args["request_id"]})));
+    assert_eq!(legacy_status["reconciliation"]["diagnostic"], "legacy_dispatch_only");
     assert_eq!(success(&native_call(port,'a',"everett_start",args.clone())),receipt);
     let mut changed=args.clone();changed["text"]=json!("changed");
     denied(&native_call(port,'a',"everett_start",changed));
@@ -548,6 +561,15 @@ fn owner_native_start_is_explicit_isolated_and_durable() {
     let disabled_server=c.spawn_http(c.oauth_command(&json!({"oauth":{"issuer":issuer.url,"resource":RESOURCE}})));
     denied(&native_call(disabled_server,'b',"everett_start",args.clone()));
     assert_eq!(success(&native_call(disabled_server,'b',"everett_whoami",json!({"identity_handle":identity["identity_handle"]})))["capabilities"]["native_session_start"],false);
+    let mut old_receipt = receipt.clone();
+    for field in ["configured_provider","effective_provider","receipt_mode","requested","effective"] {
+        old_receipt.as_object_mut().unwrap().remove(field);
+    }
+    let con = rusqlite::Connection::open(c.home.join(".everett/gateway-starts.sqlite")).unwrap();
+    con.execute("UPDATE starts SET result=?1",[old_receipt.to_string()]).unwrap();
+    let replay = success(&native_call(restarted,'b',"everett_start",args.clone()));
+    assert_eq!(replay["thread_id"],receipt["thread_id"]);
+    assert!(replay["effective"].is_null());
     let records=native_records(&c);
     assert_eq!(records.len(),1);
     assert_eq!(records[0]["text"],args["text"]);
@@ -577,7 +599,10 @@ fn native_start_policy_and_journal_fail_closed() {
     issuer.grant(&access('a'),"agent-one",json!({"everett_account":"github:alice"}));
     let cfg=native_config(&issuer.url);
     for (key,value) in [("owner_account",json!("")),("client_id",json!("")),("command",json!("relative-t3")),
-        ("project_id",json!("--injected-flag")),("model",json!("")),("provider",json!("")),("unexpected",json!(true))] {
+        ("project_id",json!("--injected-flag")),("model",json!("")),("provider",json!("")),("unexpected",json!(true)),
+        ("approved_projects",json!({"default":{"project_id":"p","provider":"v"}})),
+        ("approved_projects",json!({"bad":{"project_id":"--flag","provider":"v"}})),
+        ("approved_projects",json!({"bad":{"project_id":"p","provider":""}}))] {
         let mut bad=cfg.clone();bad["native_start"][key]=value;
         let path=c.config_path(&bad);assert_eq!(c.gateway_code(&path),Some(2));
     }
@@ -1855,6 +1880,10 @@ fn hosted_start_checks_model_effort_and_effective_receipt() {
     let seen = launches.clone();
     let preflight = Arc::new(AtomicUsize::new(2));
     let remaining_failures = preflight.clone();
+    let status_mode = Arc::new(AtomicUsize::new(0));
+    let mode = status_mode.clone();
+    let reads = Arc::new(AtomicUsize::new(0));
+    let read_count = reads.clone();
     std::thread::spawn(move || {
         for mut stream in listener.incoming().map_while(Result::ok) {
             let mut reader = BufReader::new(&mut stream);
@@ -1892,6 +1921,7 @@ fn hosted_start_checks_model_effort_and_effective_receipt() {
                         json!({"structuredContent":{"providers":[]}})
                     }
                     "orchestrator_capabilities" => json!({"structuredContent":{"providers":[
+                        {"providerInstanceId":"second-provider","models":[{"id":"gpt-6.2-sol","options":[{"id":"reasoningEffort","values":["xhigh"]}]}]},
                         {"providerInstanceId":"fixed-provider","driverKind":"codex","models":[
                             {"id":"gpt-6.2-sol","options":[{"id":"reasoningEffort","values":["high","xhigh"]}]},
                             {"id":"gpt-6.1-sol","options":[{"id":"reasoningEffort","values":["high"]}]}
@@ -1903,9 +1933,31 @@ fn hosted_start_checks_model_effort_and_effective_receipt() {
                         if args["message"] == "wrong effective selection" {
                             selection["options"][0]["value"] = json!("high");
                         }
+                        let project = args["projectId"].clone();
+                        let thread = if project == "fixed-project" { "test-thread" } else { "second-thread" };
                         seen.lock().unwrap().push(args);
-                        json!({"structuredContent":{"projectId":"fixed-project","threadId":"test-thread","runId":"test-run",
+                        json!({"structuredContent":{"projectId":project,"threadId":thread,"runId":"test-run",
                             "status":"queued","modelSelection":selection}})
+                    }
+                    "t3_thread_read" => {
+                        read_count.fetch_add(1, Ordering::Relaxed);
+                        let args = &msg["params"]["arguments"];
+                        let second = args["threadId"] == "second-thread";
+                        assert!(second || args["threadId"] == "test-thread");
+                        assert!(args.get("message").is_none());
+                        let scenario = mode.load(Ordering::Relaxed);
+                        let mut result = json!({"thread":{"threadId":args["threadId"],"projectId":if second { "second-project" } else { "fixed-project" }, "status":"completed", "model":"spoof-card-model"},
+                            "items":[{"text":"private transcript never returned"}],
+                            "recentRuns":[{"runId":"test-run","providerInstanceId":if second { "second-provider" } else { "fixed-provider" },"status":"queued","startedAt":null,"executedModel":null}]});
+                        if scenario == 1 || scenario == 2 || scenario == 3 {
+                            result["recentRuns"][0]["startedAt"] = json!("2026-11-27T00:00:00Z");
+                            result["recentRuns"][0]["executedModel"] = json!("provider-reported-model");
+                            result["recentRuns"][0]["status"] = json!(match scenario { 1 => "running", 2 => "completed", _ => "failed" });
+                        }
+                        if scenario == 4 { result["recentRuns"] = json!([]); }
+                        if scenario == 5 { result["thread"]["projectId"] = json!("foreign-project"); }
+                        if scenario == 6 { result["recentRuns"][0]["providerInstanceId"] = json!("foreign-provider"); }
+                        json!({"structuredContent":result})
                     }
                     other => panic!("unexpected tool {other}"),
                 },
@@ -1921,6 +1973,10 @@ fn hosted_start_checks_model_effort_and_effective_receipt() {
     cfg["native_start"]["effort"] = json!("xhigh");
     cfg["native_start"]["mcp_endpoint"] = json!(endpoint);
     cfg["native_start"]["allowed_selections"] = json!([{"model":"gpt-6.1-sol","effort":"high"}]);
+    cfg["native_start"]["approved_projects"] = json!({
+        "everett-fixture":{"project_id":"fixed-project","provider":"fixed-provider"},
+        "teresis-fixture":{"project_id":"second-project","provider":"second-provider"}
+    });
     let port = c.spawn_http({
         let mut command = c.oauth_command(&cfg);
         command.env("EVERETT_T3_MCP_TOKEN", "synthetic-model-fixture");
@@ -1929,6 +1985,7 @@ fn hosted_start_checks_model_effort_and_effective_receipt() {
     let catalog = oauth_rpc(port, 'a', "tools/list", json!({}));
     let tool = catalog["result"]["tools"].as_array().unwrap().iter()
         .find(|tool| tool["name"] == "everett_start").unwrap();
+    assert_eq!(tool["inputSchema"]["properties"]["project"]["enum"],json!(["default","everett-fixture","teresis-fixture"]));
     assert_eq!(tool["inputSchema"]["properties"]["model"]["type"], "string");
     assert_eq!(tool["inputSchema"]["properties"]["effort"]["type"], "string");
     assert_eq!(tool["inputSchema"]["properties"]["model"]["enum"], json!(["gpt-6.2-sol","gpt-6.1-sol"]));
@@ -1940,6 +1997,14 @@ fn hosted_start_checks_model_effort_and_effective_receipt() {
     let identity = native_identity(port, "native-model-registration-key-123456");
     let mut args = json!({"identity_handle":identity["identity_handle"],"request_id":"native-model-request-id-123456789","text":"explicit dispatch"});
     let call = |args: Value| native_call(port, 'a', "everett_start", args);
+    let info = success(&native_call(port,'a',"everett_whoami",json!({"identity_handle":identity["identity_handle"]})));
+    assert_eq!(info["native_start_scope"]["default_project"], "default");
+    assert_eq!(info["native_start_scope"]["projects"]["teresis-fixture"]["configured_provider"], "second-provider");
+    assert_eq!(info["native_start_scope"]["projects"]["default"]["receipt_mode"], "attested");
+    for invalid in [json!("unapproved"),json!("second-project"),Value::Null,json!(4)] {
+        let mut bad = args.clone(); bad["project"] = invalid;
+        denied(&call(bad));
+    }
     for (field, value) in [("model",json!("other-model")),("effort",json!("high")),("effort",Value::Null),("effort",json!(8))] {
         let mut invalid = args.clone();
         invalid[field] = value;
@@ -1961,8 +2026,36 @@ fn hosted_start_checks_model_effort_and_effective_receipt() {
     assert_eq!(response["requested"], selected);
     assert_eq!(response["effective"], selected);
     assert_eq!(response["dispatch_confirmed"], true);
+    assert_eq!(response["effective_provider"], "fixed-provider");
     assert_eq!(response["pickup_confirmed"], false);
     assert_eq!(success(&call(args.clone())), response);
+    let status_args = json!({"identity_handle":identity["identity_handle"],"request_id":args["request_id"]});
+    let status = || success(&native_call(port,'a',"everett_start_status",status_args.clone()));
+    let journal_before = std::fs::read(c.home.join(".everett/gateway-starts.sqlite")).unwrap();
+    let queued = status();
+    assert_eq!(queued["reconciliation"]["pickup_confirmed"],false);
+    assert_eq!(queued["reconciliation"]["completion_confirmed"],false);
+    for scenario in 1..=6 {
+        status_mode.store(scenario, Ordering::Relaxed);
+        let observed = status();
+        let evidence = &observed["reconciliation"];
+        assert_eq!(evidence["reply_confirmed"],false);
+        assert!(!observed.to_string().contains("private transcript"));
+        if scenario <= 3 {
+            assert_eq!(evidence["pickup_confirmed"],true);
+            assert_eq!(evidence["executed_model"],"provider-reported-model");
+            assert_eq!(evidence["completion_confirmed"],scenario == 2);
+            assert_eq!(evidence["terminal_confirmed"],scenario >= 2);
+        } else { assert!(evidence["diagnostic"].is_string()); }
+    }
+    assert_eq!(std::fs::read(c.home.join(".everett/gateway-starts.sqlite")).unwrap(),journal_before);
+    let before = reads.load(Ordering::Relaxed);
+    let other = native_identity(port,"status-other-registration-123456789");
+    let mut bad = status_args.clone(); bad["identity_handle"] = other["identity_handle"].clone();
+    denied(&native_call(port,'a',"everett_start_status",bad));
+    let mut bad = status_args.clone(); bad["thread_id"] = json!("arbitrary-thread");
+    denied(&native_call(port,'a',"everett_start_status",bad));
+    assert_eq!(reads.load(Ordering::Relaxed),before);
     let recorded = launches.lock().unwrap().clone();
     assert_eq!(recorded.len(), 1);
     assert_eq!(recorded[0]["modelSelection"], json!({"instanceId":"fixed-provider","model":"gpt-6.2-sol",
@@ -1991,4 +2084,25 @@ fn hosted_start_checks_model_effort_and_effective_receipt() {
     assert!(mismatch["effective"].is_null());
     assert_eq!(native_outcome(&call(args)), mismatch);
     assert_eq!(launches.lock().unwrap().len(), 4);
+    let mut second = json!({"identity_handle":identity["identity_handle"],"request_id":"native-second-project-request-123456","text":"second synthetic project","project":"teresis-fixture"});
+    let accepted = success(&call(second.clone()));
+    assert_eq!(accepted["project_id"],"second-project");
+    assert_eq!(accepted["configured_provider"],"second-provider");
+    assert_eq!(accepted["effective"],selected);
+    status_mode.store(1, Ordering::Relaxed);
+    let observed = success(&native_call(port,'a',"everett_start_status",json!({"identity_handle":identity["identity_handle"],"request_id":second["request_id"]})));
+    assert_eq!(observed["reconciliation"]["provider_instance"],"second-provider");
+    assert_eq!(observed["reconciliation"]["pickup_confirmed"],true);
+    assert_eq!(success(&call(second.clone())),accepted);
+    let restarted = c.spawn_http({
+        let mut command = c.oauth_command(&cfg);
+        command.env("EVERETT_T3_MCP_TOKEN", "synthetic-model-fixture");
+        command
+    });
+    assert_eq!(success(&native_call(restarted,'a',"everett_start",second.clone())),accepted);
+    second["project"] = json!("everett-fixture");
+    denied(&call(second));
+    assert_eq!(success(&call(json!({"identity_handle":identity["identity_handle"],"request_id":"native-model-request-id-123456789","text":"explicit dispatch","project":"everett-fixture"}))),response);
+    assert_eq!(launches.lock().unwrap().len(),5);
+    assert_eq!(launches.lock().unwrap()[4]["modelSelection"]["instanceId"],"second-provider");
 }

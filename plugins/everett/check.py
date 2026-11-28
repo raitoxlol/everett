@@ -51,6 +51,7 @@ def check(whoami, catalog, resource, require_native_start=False, *, require_even
     rows = catalog.get('tools')
     if not isinstance(rows, list) or any(not isinstance(row, dict) or not isinstance(row.get('name'), str) for row in rows):
         names = set()
+        rows = []
         errors.append('invalid_tool_catalog')
     else:
         names = {row['name'] for row in rows}
@@ -72,6 +73,29 @@ def check(whoami, catalog, resource, require_native_start=False, *, require_even
         errors.append('native_start_client_catalog_stale')
     elif require_native_start and not granted:
         errors.append('native_start_not_granted')
+    scope = whoami.get('native_start_scope')
+    if scope is not None:
+        projects = scope.get('projects') if isinstance(scope, dict) else None
+        if not isinstance(projects, dict) or 'default' not in projects:
+            errors.append('native_start_scope_invalid')
+        else:
+            start = next((row for row in rows if row['name'] == 'everett_start'), {})
+            schema = start.get('inputSchema', {})
+            props = schema.get('properties', {}) if isinstance(schema, dict) else {}
+            selector = props.get('project', {}) if isinstance(props, dict) else {}
+            if len(projects) > 1 and (not isinstance(selector, dict)
+                    or selector.get('type') != 'string'
+                    or not isinstance(selector.get('enum'), list)
+                    or any(not isinstance(alias, str) for alias in selector['enum'])
+                    or set(selector['enum']) != set(projects)):
+                errors.append('native_project_client_catalog_stale')
+            status = next((row for row in rows if row['name'] == 'everett_start_status'), {})
+            schema = status.get('inputSchema', {})
+            props = schema.get('properties', {}) if isinstance(schema, dict) else {}
+            if not isinstance(props, dict) or any(
+                    not isinstance(props.get(key), dict) or props[key].get('type') != 'string'
+                    for key in ('request_id', 'identity_handle')):
+                errors.append('native_status_client_catalog_stale')
     return {'checks_passed': not errors, 'errors': errors, 'native_start_granted': granted is True,
             'native_start_registered': 'everett_start' in names,
             'destination_directory_registered': 'everett_directory' in names,

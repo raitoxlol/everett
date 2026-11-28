@@ -1,6 +1,7 @@
 //! Explicit owner grant to promote remote text to a fixed T3 project's prompt.
 //! This does not grant general control, wake, transcript access or destinations.
 use std::{
+    collections::BTreeMap,
     fs,
     os::unix::fs::{DirBuilderExt, OpenOptionsExt, PermissionsExt},
     path::PathBuf,
@@ -39,6 +40,15 @@ pub(super) struct Policy {
     mcp_endpoint: Option<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     allowed_selections: Vec<AllowedSelection>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    approved_projects: BTreeMap<String, ProjectGrant>,
+}
+
+#[derive(Clone, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct ProjectGrant {
+    project_id: String,
+    provider: String,
 }
 
 #[derive(Clone, Deserialize, Serialize, PartialEq, Eq)]
@@ -103,7 +113,55 @@ impl Policy {
         {
             return Err("native_start allowed_selections must contain at most 32 distinct non-default model/effort pairs".into());
         }
+        if self.approved_projects.len() > 32
+            || self.approved_projects.iter().any(|(alias, grant)| {
+                alias == "default"
+                    || alias.len() > 64
+                    || !super::valid_destination(alias)
+                    || !super::valid_destination(&grant.project_id)
+                    || grant.project_id.starts_with('-')
+                    || !token(&grant.provider)
+            })
+        {
+            return Err("native_start approved_projects requires distinct aliases and exact project/provider instances".into());
+        }
         Ok(())
+    }
+
+    fn resolve_project(&self, args: &Map<String, Value>) -> Result<Self, String> {
+        let alias = match args.get("project") {
+            None => "default",
+            Some(value) => value.as_str().ok_or("project must be an approved alias")?,
+        };
+        let mut selected = self.clone();
+        if alias != "default" {
+            let grant = self
+                .approved_projects
+                .get(alias)
+                .ok_or("project is not owner-approved")?;
+            selected.project_id = grant.project_id.clone();
+            selected.provider = grant.provider.clone();
+        }
+        Ok(selected)
+    }
+
+    pub(super) fn scope_info(&self) -> Value {
+        let describe = |project: &str, provider: &str| {
+            json!({
+                "fixed_project":project, "configured_provider":provider,
+                "default_selection":self.default_selection(),
+                "receipt_mode":if self.mcp_endpoint.is_some() { "attested" } else { "legacy" }
+            })
+        };
+        let mut projects = serde_json::Map::new();
+        projects.insert("default".into(), describe(&self.project_id, &self.provider));
+        for (alias, grant) in &self.approved_projects {
+            projects.insert(alias.clone(), describe(&grant.project_id, &grant.provider));
+        }
+        let mut scope = describe(&self.project_id, &self.provider);
+        scope["default_project"] = json!("default");
+        scope["projects"] = json!(projects);
+        scope
     }
 
     fn default_selection(&self) -> Selection<'_> {
@@ -156,7 +214,7 @@ impl Policy {
 pub(super) fn tool(policy: &Policy) -> Tool {
     let mut schema = json!({
         "name":"everett_start",
-        "description":"Start a NEW native T3 run in the owner's fixed project and provider; it cannot reach an existing thread -- for a handoff to an existing session or T3 Code thread, use everett_send with an ID from everett_directory. When advertised, choose an owner-authorized model and effort pair or omit both to use the default. This promotes text to a model prompt and may consume the owner's model allowance. Reuse the same request ID and inputs after an uncertain result. A dispatch receipt establishes only T3 dispatch.",
+        "description":"Start a NEW native T3 run in the owner's fixed default project/provider or an explicitly approved project alias; it cannot reach an existing thread -- for a handoff to an existing session or T3 Code thread, use everett_send with an ID from everett_directory. When advertised, choose an owner-authorized model and effort pair or omit both to use the default. This promotes text to a model prompt and may consume the owner's model allowance. Reuse the same request ID and inputs after an uncertain result. A dispatch receipt establishes only T3 dispatch.",
         "inputSchema":{"type":"object","additionalProperties":false,"required":["request_id","text","identity_handle"],"properties":{
             "request_id":{"type":"string","minLength":32,"maxLength":128},
             "text":{"type":"string","minLength":1,"maxLength":16000},
@@ -164,6 +222,12 @@ pub(super) fn tool(policy: &Policy) -> Tool {
         }},
         "annotations":{"readOnlyHint":false,"destructiveHint":true,"idempotentHint":true,"openWorldHint":true}
     });
+    if !policy.approved_projects.is_empty() {
+        let aliases: Vec<_> = std::iter::once("default")
+            .chain(policy.approved_projects.keys().map(String::as_str))
+            .collect();
+        schema["inputSchema"]["properties"]["project"] = json!({"type":"string","enum":aliases,"default":"default", "description":"Owner-approved alias. Omit for the original fixed grant."});
+    }
     if let Some(effort) = policy.effort {
         let mut models = vec![policy.model.as_str()];
         let mut efforts = vec![effort];
@@ -195,6 +259,115 @@ pub(super) fn tool(policy: &Policy) -> Tool {
         schema["inputSchema"]["anyOf"] = json!(choices);
     }
     serde_json::from_value(schema).expect("native start tool schema")
+}
+
+pub(super) fn status_tool() -> Tool {
+    serde_json::from_value(json!({
+        "name":"everett_start_status",
+        "description":"Read-only reconciliation of this registered identity's own accepted native start. Supply its original request_id, never a thread ID. Reports T3 run metadata, not transcript or inbox reply proof. No dispatch or control.",
+        "inputSchema":{"type":"object","additionalProperties":false,"required":["request_id","identity_handle"],"properties":{
+            "request_id":{"type":"string","minLength":32,"maxLength":128},
+            "identity_handle":{"type":"string","minLength":64,"maxLength":64}
+        }},
+        "annotations":{"readOnlyHint":true,"destructiveHint":false,"idempotentHint":true,"openWorldHint":false}
+    })).expect("native status schema")
+}
+
+pub(super) async fn status(
+    binding: &Binding,
+    policy: &Policy,
+    args: Map<String, Value>,
+) -> Result<Value, String> {
+    if args.len() != 1 {
+        return Err("status requires only the original request_id".into());
+    }
+    let key = args
+        .get("request_id")
+        .and_then(Value::as_str)
+        .filter(|s| {
+            (32..=128).contains(&s.len())
+                && s.bytes()
+                    .all(|b| b.is_ascii_alphanumeric() || b"_-".contains(&b))
+        })
+        .ok_or("invalid request_id")?;
+    let oauth = binding
+        .oauth
+        .as_ref()
+        .ok_or("native status requires OAuth")?;
+    let scope = hash(
+        &serde_json::to_vec(&(
+            &oauth.issuer,
+            &oauth.resource,
+            &policy.owner_account,
+            &policy.client_id,
+        ))
+        .map_err(|_| STORE_ERROR)?,
+    );
+    let request_key =
+        hash(&serde_json::to_vec(&(&binding.agent_id, key)).map_err(|_| STORE_ERROR)?);
+    let path = binding.home.join(".everett/gateway-starts.sqlite");
+    let meta =
+        fs::symlink_metadata(&path).map_err(|_| "no native request owned by this identity")?;
+    if !meta.file_type().is_file() || meta.permissions().mode() & 0o077 != 0 {
+        return Err(STORE_ERROR.into());
+    }
+    let con = Connection::open_with_flags(path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)
+        .map_err(|_| STORE_ERROR)?;
+    con.busy_timeout(Duration::from_secs(2))
+        .map_err(|_| STORE_ERROR)?;
+    let raw: String = con
+        .query_row(
+            "SELECT result FROM starts WHERE scope=?1 AND request_key=?2",
+            params![scope, request_key],
+            |r| r.get(0),
+        )
+        .optional()
+        .map_err(|_| STORE_ERROR)?
+        .ok_or("no native request owned by this identity")?;
+    if raw.len() > MAX_RESULT {
+        return Err(STORE_ERROR.into());
+    }
+    let receipt: Value = serde_json::from_str(&raw).map_err(|_| STORE_ERROR)?;
+    if receipt["request_id"] != key {
+        return Err(STORE_ERROR.into());
+    }
+    if receipt["dispatch_confirmed"] != true {
+        cached_receipt(&raw, key, policy, &receipt["requested"])?;
+        return Ok(
+            json!({"receipt":receipt,"reconciliation":{"source":null,"diagnostic":"no_accepted_run","pickup_confirmed":false,"completion_confirmed":false,"reply_confirmed":false}}),
+        );
+    }
+    let mut selected = policy.clone();
+    if receipt["project_id"] != policy.project_id
+        || receipt
+            .get("configured_provider")
+            .is_some_and(|v| v != &policy.provider)
+    {
+        let grant = policy
+            .approved_projects
+            .values()
+            .find(|g| {
+                receipt["project_id"] == g.project_id
+                    && receipt["configured_provider"] == g.provider
+            })
+            .ok_or("accepted run no longer matches an approved project/provider")?;
+        selected.project_id = grant.project_id.clone();
+        selected.provider = grant.provider.clone();
+    }
+    cached_receipt(&raw, key, &selected, &receipt["requested"])?;
+    if selected.mcp_endpoint.is_none() {
+        return Ok(
+            json!({"receipt":receipt,"reconciliation":{"source":null,"diagnostic":"legacy_dispatch_only","pickup_confirmed":false,"completion_confirmed":false,"reply_confirmed":false}}),
+        );
+    }
+    let copy = receipt.clone();
+    let duration = Duration::from_secs_f64(binding.timeout);
+    let observed =
+        tokio::task::spawn_blocking(move || t3_mcp::reconcile(&selected, &copy, duration))
+            .await
+            .map_err(|_| "native status unavailable")?;
+    let reconciliation = observed.unwrap_or_else(|code| json!({"source":null,"diagnostic":code,"pickup_confirmed":false,"completion_confirmed":false,"reply_confirmed":false}));
+    Ok(json!({"receipt":receipt,"reconciliation":reconciliation}))
 }
 
 const STORE_ERROR: &str =
@@ -274,7 +447,8 @@ fn cached_receipt(
                 && value["recovery"] == RECOVERY
                 && value["diagnostic"].as_str().is_some_and(|diagnostic| {
                     use serde::de::{value::StrDeserializer, IntoDeserializer};
-                    let value: StrDeserializer<'_, serde::de::value::Error> = diagnostic.into_deserializer();
+                    let value: StrDeserializer<'_, serde::de::value::Error> =
+                        diagnostic.into_deserializer();
                     DispatchDiagnostic::deserialize(value).is_ok()
                 }) =>
         {
@@ -291,9 +465,37 @@ fn cached_receipt(
         }
         _ => return Err(STORE_ERROR.into()),
     };
-    if object
-        .keys()
-        .any(|k| !matches!(k.as_str(), "requested" | "effective") && !allowed.contains(&k.as_str()))
+    if object.keys().any(|k| {
+        !matches!(
+            k.as_str(),
+            "requested"
+                | "effective"
+                | "configured_provider"
+                | "effective_provider"
+                | "receipt_mode"
+        ) && !allowed.contains(&k.as_str())
+    }) {
+        return Err(STORE_ERROR.into());
+    }
+    if value.get("effective_provider").is_some_and(|v| {
+        v != &if policy.mcp_endpoint.is_some() {
+            json!(policy.provider)
+        } else {
+            Value::Null
+        }
+    }) {
+        return Err(STORE_ERROR.into());
+    }
+    if value
+        .get("configured_provider")
+        .is_some_and(|v| v != &policy.provider)
+        || value.get("receipt_mode").is_some_and(|v| {
+            v != if policy.mcp_endpoint.is_some() {
+                "attested"
+            } else {
+                "legacy"
+            }
+        })
     {
         return Err(STORE_ERROR.into());
     }
@@ -355,12 +557,16 @@ pub(super) async fn start(
     policy: &Policy,
     args: Map<String, Value>,
 ) -> Result<Value, String> {
-    if args
-        .keys()
-        .any(|k| !matches!(k.as_str(), "request_id" | "text" | "model" | "effort"))
-    {
+    if args.keys().any(|k| {
+        !matches!(
+            k.as_str(),
+            "request_id" | "text" | "model" | "effort" | "project"
+        )
+    }) {
         return Err("unexpected native start argument".into());
     }
+    let selected_policy = policy.resolve_project(&args)?;
+    let policy = &selected_policy;
     let key = args
         .get("request_id")
         .and_then(Value::as_str)
@@ -468,6 +674,9 @@ pub(super) async fn start(
             json!({"state":"dispatch_confirmed","dispatch_confirmed":true,"request_id":key,
             "thread_id":receipt["threadId"],"run_id":receipt["runId"],"project_id":receipt["projectId"],
             "requested":requested,
+            "configured_provider":policy.provider,
+            "effective_provider":policy.mcp_endpoint.as_ref().map(|_| &policy.provider),
+            "receipt_mode":if policy.mcp_endpoint.is_some() { "attested" } else { "legacy" },
             "effective":policy.mcp_endpoint.as_ref().map(|_| &requested),
             "native_session_id":null,"pickup_confirmed":false,"completion_confirmed":false,"reply_confirmed":false})
         }

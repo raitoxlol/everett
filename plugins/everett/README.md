@@ -57,3 +57,10 @@ identity, pickup, reply and duplicate-launch protection.
 ```sh
 python3 -m unittest discover -s plugins/everett/tests -v
 ```
+
+When registered whoami includes `native_start_scope`, the check also requires
+`everett_start_status` with string `request_id` and `identity_handle`. Multiple
+approved aliases require the exact `everett_start.project` enum. Errors
+`native_project_client_catalog_stale` or `native_status_client_catalog_stale`
+mean the existing connector schema needs refreshing. The checker never infers
+pickup, completion or reply from configuration or tool registration.
