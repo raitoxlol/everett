@@ -1406,8 +1406,7 @@ fn configuration_rejects_fifo_without_writer() {
     let path = c.home.join("binding.fifo");
     make_fifo(&path);
 
-    let mut child = common::fixture_command(&c.home)
-        .args(["gateway", "--config"])
+    let mut child = c.command(&["gateway", "--config"])
         .arg(&path)
         .args(["--transport", "stdio"])
         .stdin(Stdio::null())
