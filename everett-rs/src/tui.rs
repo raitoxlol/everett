@@ -1,6 +1,7 @@
 //! Human onboarding. Account approval is separate from reviewed local configuration.
 
 use std::io;
+use std::sync::atomic::{AtomicU16, Ordering};
 use std::time::{Duration, Instant};
 
 use crossterm::cursor;
@@ -28,6 +29,23 @@ const STEP_TITLES: &[&str] = &[
 ];
 const MIN_COLS: u16 = 54;
 const MIN_ROWS: u16 = 14;
+// Last SIGWINCH size. crossterm::terminal::size() can lag a Resize event
+// and briefly report a value below the minimum, which used to drop Enter.
+static LAST_RESIZE_COLS: AtomicU16 = AtomicU16::new(0);
+static LAST_RESIZE_ROWS: AtomicU16 = AtomicU16::new(0);
+
+fn reported_size() -> TResult<(u16, u16)> {
+    let (cols, rows) = crossterm::terminal::size().map_err(|_| Quit)?;
+    let resized = (
+        LAST_RESIZE_COLS.load(Ordering::SeqCst),
+        LAST_RESIZE_ROWS.load(Ordering::SeqCst),
+    );
+    if resized.0 >= MIN_COLS && resized.1 >= MIN_ROWS {
+        Ok(resized)
+    } else {
+        Ok((cols, rows))
+    }
+}
 
 enum Dir {
     Forward,
@@ -235,13 +253,17 @@ fn read_key_for(timeout: Option<Duration>) -> TResult<KeyCode> {
                 } else {
                     k.code
                 };
-                let (cols, rows) = crossterm::terminal::size().map_err(|_| Quit)?;
+                let (cols, rows) = reported_size()?;
                 if !is_quit(&code) && (cols < MIN_COLS || rows < MIN_ROWS) {
                     return Ok(KeyCode::Null);
                 }
                 return Ok(code);
             }
-            Ok(Event::Resize(_, _)) => return Ok(KeyCode::Null),
+            Ok(Event::Resize(cols, rows)) => {
+                LAST_RESIZE_COLS.store(cols, Ordering::SeqCst);
+                LAST_RESIZE_ROWS.store(rows, Ordering::SeqCst);
+                return Ok(KeyCode::Null);
+            }
             Ok(_) => {}
             Err(_) => return Err(Quit),
         }
@@ -564,8 +586,11 @@ fn explanation_lines(topic: ExplanationTopic, p: &Palette) -> Vec<Line<'static>>
                 Style::default(),
             ),
             ("", p.dim),
-            ("Dots / Grok Bot / local coding agents", p.dim),
-            ("Muse and Hark: compatibility needs checking.", p.amber),
+            (
+                "Dots / Grok Bot / Muse VM agent / local coding agents",
+                p.dim,
+            ),
+            ("Hark: compatibility needs checking.", p.amber),
         ],
         ExplanationTopic::Local => vec![
             ("Agents on this computer", p.cyan),
@@ -608,22 +633,22 @@ fn explanation_lines(topic: ExplanationTopic, p: &Palette) -> Vec<Line<'static>>
         ExplanationTopic::Vm => vec![
             ("Agents with their own computer", p.cyan),
             ("Muse / another agent running in a VM", Style::default()),
-            ("Muse integration has not been verified.", p.amber),
+            ("Muse registers as an external inbox agent.", p.dim),
             ("", p.dim),
             (
-                "A VM agent could join your other machines",
+                "A VM agent joins your other machines",
                 Style::default(),
             ),
             ("to exchange work and results.", Style::default()),
             ("", p.dim),
-            ("What needs checking", p.violet),
+            ("How it connects", p.violet),
             (
-                "Can it run Everett and keep its credentials?",
+                "Register it as an external inbox agent.",
                 Style::default(),
             ),
-            ("Can it reach the service from its VM?", Style::default()),
+            ("Run Everett in its VM and pair over relay.", Style::default()),
             (
-                "Does the connection survive a VM restart?",
+                "Verify send, inbox read and reply.",
                 Style::default(),
             ),
         ],
@@ -759,8 +784,8 @@ impl RemoteConnection {
 
     fn status(self) -> &'static str {
         match self {
-            Self::Dots | Self::GrokBot | Self::Computer => "setup needed",
-            Self::Hark | Self::Muse => "unverified",
+            Self::Dots | Self::GrokBot | Self::Muse | Self::Computer => "setup needed",
+            Self::Hark => "unverified",
         }
     }
 
@@ -800,13 +825,26 @@ impl RemoteConnection {
                 "docs/cloudflare-native.md has exact commands.",
             ],
             Self::Muse => &[
-                "Muse has not been tested with Everett.",
-                "Check whether your Muse environment can:",
-                "1. Run a persistent Everett process.",
-                "2. Store its credentials privately.",
-                "3. Reach your other computer or MCP gateway.",
-                "4. Keep the connection after a VM restart.",
-                "A VM alone does not establish compatibility.",
+                "The Muse agent runs inside Meta's Muse VM.",
+                "Everett treats it as an external inbox agent.",
+                "1. On the sending computer, run",
+                "   everett external add --id muse --harness muse-agent",
+                "2. Install Everett in the Muse VM. In the VM run",
+                "   everett login --provider cloudflare",
+                "   Approve the same Everett account.",
+                "3. Register the receiving inbox inside the Muse VM.",
+                "   everett external add --id muse --harness muse-agent",
+                "4. On both devices run everett relay register.",
+                "   Find the VM name with everett relay devices --names.",
+                "   Keep everett relay running on both devices.",
+                "5. On the sending computer, replace the registration.",
+                "   everett external add --id muse --harness muse-agent \\",
+                "     --replace --device 'PEER/muse-agent/muse'",
+                "   Use the VM's unique device name for PEER.",
+                "Send to muse. Read the message in the Muse VM with",
+                "   everett inbox --session muse --json",
+                "Reply from the VM and confirm it on the sender.",
+                "https://github.com/raitoxlol/everett/blob/main/docs/muse.md",
             ],
             Self::Hark => &[
                 "Hark has not been tested with Everett.",

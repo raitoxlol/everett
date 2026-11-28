@@ -45,8 +45,8 @@ synthetic CLI/MCP tests.
 | --- | --- | --- |
 | OpenAI dots (`openai-dot`) | Explicit registration and owner-authorized MCP gateway; inbox and reply tools | Opt-in [MCP Events candidate](mcp-events.md), disabled by default; current live ChatGPT wake acceptance remains pending |
 | Grok Bot (`grok-bot`) | Explicit registration and owner-authorized MCP gateway; inbox and reply tools | Optional owner webhook routine configured through `receiver-webhook.json` |
+| Muse (`muse-agent`) | Explicit registration; local inbox or relay-bound delivery to its VM — see [Muse setup](muse.md) | No native wake |
 | Hark | Compatibility unverified; no dedicated adapter | Unverified |
-| Muse VM agent | Compatibility unverified; no dedicated adapter. The Muse Code CLI is a local harness above | Unverified |
 
 External registrations do not create a provider session. A successful webhook
 POST shows endpoint acceptance. Verify that the provider reads the correlated

@@ -41,7 +41,7 @@ The proposed permission is one fixed non-admin relay grant. Do not show selectab
 | Existing custom auth state machine | 37 Cloudflare Workers runtime checks passed before this assessment, with synthetic outbound providers. This is not RFC conformance or real account proof. |
 | Remote browser approval | Not verified; new GitHub provider configuration and remote native adapter gate this. Approve a request actually started on NUC/SSH/VM from the Mac/phone browser. |
 | Cross-device message and revoke | Not verified; remote native registration, encrypted send/read/reply and independent install revocation must pass with the Mac credential still active. |
-| Grok Bot, Hark, Muse | Grok Bot command-line/shared-account capability does not prove per-bot isolation. A VM alone does not prove CLI install, durable storage or MCP support for Hark/Muse. Keep compatibility labels unverified until tested. |
+| Grok Bot, Hark | Grok Bot command-line/shared-account capability does not prove per-bot isolation. A VM alone does not prove CLI install, durable storage or MCP support for Hark. Keep compatibility labels unverified until tested. |
 
 Backend owner: cloudflare/** and provider configuration. CLI owner: native Rust transport/auth/UI and remote installation journey. Coordinator owns the unavoidable account interaction. No Rust, provider configuration or auth protocol behavior changed by this assessment.
 

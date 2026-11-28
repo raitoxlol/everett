@@ -23,7 +23,7 @@ macro_rules! native_harnesses {
 
 native_harnesses!(
     native: [Claude => "claude", Codex => "codex", Omp => "omp", Pi => "pi", Hermes => "hermes", Grok => "grok", Devin => "devin", Muse => "muse"],
-    external: ["openai-dot", "grok-bot", "devin-bot"]
+    external: ["openai-dot", "grok-bot", "devin-bot", "muse-agent"]
 );
 
 pub const SPAWNABLE: &[&str] = NATIVE;

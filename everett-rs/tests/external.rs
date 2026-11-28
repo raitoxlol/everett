@@ -211,6 +211,30 @@ fn native_registration_roundtrip_preserves_the_shared_store_and_inbox() {
 }
 
 #[test]
+fn muse_agent_registers_and_queues_inbox_delivery() {
+    let fx = fixture();
+    let path = fx.home().join(".everett/external/ext-muse.json");
+    let add = run(
+        &fx,
+        &["external", "add", "--id", "ext-muse", "--harness", "muse-agent", "--title", "Muse VM agent"],
+        None,
+        "fixture-owner",
+        "",
+    );
+    assert!(add.status.success(), "{}", String::from_utf8_lossy(&add.stderr));
+    let record: Value = serde_json::from_slice(&add.stdout).unwrap();
+    assert_eq!(record["harness"], "muse-agent");
+    let filtered = run(&fx, &["ls", "--harness", "muse-agent", "--json"], None, "fixture-owner", "");
+    assert!(filtered.status.success(), "{}", String::from_utf8_lossy(&filtered.stderr));
+    assert_eq!(serde_json::from_slice::<Value>(&filtered.stdout).unwrap()[0]["id"], "ext-muse");
+    let send = run(&fx, &["send", "Check inbox", "--to", "ext-muse", "--mode", "inbox", "--json"], None, "fixture-owner", "");
+    assert!(send.status.success(), "{}", String::from_utf8_lossy(&send.stderr));
+    let queued = mcp(&fx, &[("everett_inbox", json!({"peek":true}))], "ext-muse", "muse-agent");
+    assert_eq!(data(&queued[0])["messages"][0]["text"], "Check inbox");
+    assert!(path.exists());
+}
+
+#[test]
 fn device_binding_roundtrips_and_validates_the_relay_target() {
     let fx = fixture();
     let path = fx.home().join(".everett/external/ext-hugo.json");

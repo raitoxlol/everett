@@ -381,6 +381,67 @@ fn unpaired_same_owner_names_deliver_encrypted_inbox_and_retry_once() {
     }
 }
 #[test]
+fn muse_binding_reaches_the_vm_only_after_the_receiver_registers() {
+    let server = Server::new();
+    let sender = fixture();
+    let vm = fixture();
+    server.configure(&sender, "agent-max");
+    server.configure(&vm, "agent-hugo");
+
+    let register = ["external", "add", "--id", "muse", "--harness", "muse-agent"];
+    success(&sender, &register);
+    let mut bind = register.to_vec();
+    bind.extend(["--device", "Hugo Box/muse-agent/muse"]);
+    assert_eq!(run(&sender, &bind).status.code(), Some(2));
+    bind.push("--replace");
+    let binding = success(&sender, &bind);
+    assert_eq!(binding["device"], "Hugo Box/muse-agent/muse");
+
+    let sent = success(
+        &sender,
+        &[
+            "send", "Muse status check", "--to", "muse", "--mode", "inbox", "--json",
+        ],
+    );
+    assert_eq!(sent["transport"], "relay");
+    assert_eq!(sent["delivered"], false);
+    assert_eq!(sent["relay_state"], "queued");
+    let inbox_path = ".everett/inbox/muse.jsonl";
+    assert!(!sender.home().join(inbox_path).exists());
+
+    let receiver = listen(&vm);
+    let log = vm.home().join("relay-test.stderr");
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        let stderr = std::fs::read_to_string(&log).unwrap();
+        if stderr.contains("recipient session not found; row remains queued until TTL") {
+            break;
+        }
+        assert!(Instant::now() < deadline, "relay rejection missing: {stderr}");
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    assert!(!vm.home().join(inbox_path).exists());
+    drop(receiver);
+
+    success(&vm, &register);
+    let _receiver = listen(&vm);
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        let inbox = success(&vm, &["inbox", "--session", "muse", "--json"]);
+        if let Some(message) = inbox["messages"].as_array().unwrap().first() {
+            assert_eq!(message["text"], "Muse status check");
+            assert_eq!(message["relay_message_id"], sent["message_id"]);
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "VM inbox did not receive the queued send: {inbox}"
+        );
+        std::thread::sleep(Duration::from_millis(50));
+    }
+}
+
+#[test]
 fn duplicate_names_revocation_foreign_owner_and_unavailability_fail_closed() {
     let server = Server::new();
     let a = fixture();

@@ -421,6 +421,24 @@ impl TuiProc {
         }
     }
 
+    fn see_line_ending(&mut self, suffix: &str) {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        loop {
+            let screen = self.screen();
+            if screen
+                .lines()
+                .any(|line| line.trim_end().ends_with(suffix))
+            {
+                return;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "never saw a line ending {suffix:?} on screen:\n{screen}"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
+    }
+
     fn review(&mut self) {
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
         let mut last = String::new();
@@ -932,7 +950,7 @@ fn onboard_tui_animation_and_multiple_colors_reach_the_terminal() {
     p.see("OpenAI Dots / setup needed");
     record(&mut p, 10);
     p.send("\r");
-    p.see("Muse / unverified");
+    p.see("Muse / setup needed");
     record(&mut p, 10);
     p.send("\r");
     p.review();
@@ -1027,12 +1045,12 @@ fn onboard_tui_optional_explanation_and_account_back_navigation() {
     p.see("Hark: connection support needs verification.");
     p.see("Queued work is not a confirmed reply.");
     p.send("4");
-    p.see("Muse integration has not been verified.");
+    p.see("Muse registers as an external inbox agent.");
     p.resize(54, 14);
     p.see("1 Overview");
     p.see("Enter ↵   Check this computer");
     p.send("jjjjjjjjjjjjjjj");
-    p.see("Does the connection survive a VM restart?");
+    p.see("Verify send, inbox read and reply.");
     p.send("\r");
     p.see("Welcome to Everett");
     p.send("\r");
@@ -1064,7 +1082,7 @@ fn onboard_tui_cloud_vm_choices_remain_pending_and_cancel_without_writes() {
     p.send(" ");
     p.see("[x] OpenAI Dots");
     p.send("3 ");
-    p.see("[x] Muse / unverified");
+    p.see("[x] Muse / setup needed");
     p.resize(54, 14);
     p.see("Review connection setup");
     p.send("\r");
@@ -1072,7 +1090,25 @@ fn onboard_tui_cloud_vm_choices_remain_pending_and_cancel_without_writes() {
     p.send("\x1b[F");
     p.see("It stays pending; no client grant is added.");
     p.send("\r");
-    p.see("Muse / unverified");
+    p.see("Muse / setup needed");
+    p.resize(80, 26);
+    p.see("Register the receiving inbox inside the Muse VM.");
+    let screen = p.screen();
+    let mut vm_step = screen
+        .lines()
+        .skip_while(|line| !line.contains("Register the receiving inbox"));
+    assert!(vm_step.next().is_some(), "{screen}");
+    assert_eq!(
+        vm_step.next().map(str::trim),
+        Some("everett external add --id muse --harness muse-agent"),
+        "{screen}"
+    );
+    p.see("--replace --device 'PEER/muse-agent/muse'");
+    p.resize(54, 14);
+    // The 54-col wrap is the redraw signal. "Muse / setup needed"
+    // was already on the 80x26 screen, so see() would return too early
+    // and Enter could be dropped before the resize settled.
+    p.see_line_ending("muse-a");
     p.send("\r");
     p.review();
     p.see("OpenAI Dots / pending, not added");

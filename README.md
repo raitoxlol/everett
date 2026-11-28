@@ -35,7 +35,7 @@
 | Area | Current support and limits |
 | --- | --- |
 | Local CLIs (8) | Claude Code · Codex · OMP · Pi · Hermes Agent · Grok CLI · Devin CLI · Muse Code. Read-only discovery, headless resume and spawn, plus native hooks, extensions, or the Hermes plugin where supported. |
-| GUI and cloud | T3 Code threads are recognized through their underlying harness sessions. OpenAI dots and Grok Bot connect through registered external MCP inboxes. ChatGPT uses the [Everett hosted plugin](plugins/everett/README.md), Everett Local, or gateway HTTPS / Secure MCP Tunnel ([ChatGPT setup](docs/chatgpt.md)). Muse Code is supported as a local CLI below; the Meta Muse VM agent and Hark compatibility is unverified. |
+| GUI and cloud | T3 Code threads are recognized through their underlying harness sessions. OpenAI dots and Grok Bot connect through registered external MCP inboxes. ChatGPT uses the [Everett hosted plugin](plugins/everett/README.md), Everett Local, or gateway HTTPS / Secure MCP Tunnel ([ChatGPT setup](docs/chatgpt.md)). Muse Code is supported as a local CLI below; the Meta Muse VM agent registers as an external inbox agent (`muse-agent`, [Muse setup](docs/muse.md)); Hark compatibility is unverified. |
 | Wake support | Claude Code has native local wake and an optional relay receiver policy. Dots and Grok Bot can use owner-configured webhook nudges. Other harnesses use headless resume or inbox pickup. See [agent support and wake](docs/agent-support.md). |
 | Proof bar | The maintainer waived the v2.2.0 live proof bar; live same-org, cross-org, and external-binding evidence is not recorded. See [proof-bar status](docs/v2.2-proof-bar.md) and [Grok Bot 0.77 reachability](docs/grok-bot.md#grok-bot-077-reachability). |
 
@@ -139,7 +139,7 @@ Local choices use detected sessions and installed CLIs. Cloud and VM tabs includ
 Hark, Muse and another computer. Each selected local agent gets a guide for its actual settings,
 restart and tool verification. Cloud/VM choices remain pending until their own connection is
 completed. Everett account approval, local hooks/MCP and external-client OAuth are separate.
-The Muse tab is the Meta Muse VM agent, not the Muse Code CLI; Muse VM agent and Hark compatibility is unverified.
+The Muse tab is the Meta Muse VM agent, not the Muse Code CLI. Muse connects as a registered external inbox agent; Hark compatibility is unverified.
 
 Space selects a local agent's supported integrations together. Press `d` for individual controls and
 file paths. At review, `d` shows exact changes and `v` opens Advanced. Routing keys, nightly merges,
