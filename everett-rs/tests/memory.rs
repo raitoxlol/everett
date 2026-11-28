@@ -509,19 +509,9 @@ fn mcp_recall_round_trip() {
 
 #[test]
 fn python_teresis_reads_everett_and_back() {
-    let src = std::env::var("TERESIS_SRC").ok().map(std::path::PathBuf::from)
-        .or_else(|| {
-            let p = std::path::PathBuf::from("/home/nuc/Projects/teresis/src");
-            p.exists().then_some(p)
-        });
-    let Some(src) = src else {
-        eprintln!("skipped: no Teresis checkout (set TERESIS_SRC)");
+    let Some(src) = common::teresis_src() else {
         return;
     };
-    if Command::new("python3").arg("--version").output().is_err() {
-        eprintln!("skipped: python3 not available");
-        return;
-    }
     let fx = fixture();
     let out = fx.run(&["learn", "The relay bill is capped at five dollars", "--project", "orbit"]);
     assert_eq!(out.status.code(), Some(0), "{}", String::from_utf8_lossy(&out.stderr));
@@ -536,7 +526,7 @@ print(json.dumps([{"content": m.content, "source": m.source} for m in hits]))
 r = s.remember("Wright wants weekly cost reports", scope="project/orbit", key="reports.cadence")
 print(json.dumps({"id": r.id, "status": r.status}))
 "#;
-    let out = Command::new("python3").arg("-c").arg(script)
+    let out = Command::new("python3").args(["-B", "-c"]).arg(script)
         .arg(&src).arg(&db).output().unwrap();
     assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
     let stdout = String::from_utf8_lossy(&out.stdout);
@@ -558,7 +548,7 @@ from teresis.store import MemoryStore
 s = MemoryStore(sys.argv[2], embedder=None, reranker=None)
 print(json.dumps([(m.content, bool(m.superseded_by)) for m in s.history(scope="project/orbit", key="reports.cadence")]))
 "#;
-    let out = Command::new("python3").arg("-c").arg(script)
+    let out = Command::new("python3").args(["-B", "-c"]).arg(script)
         .arg(&src).arg(&db).output().unwrap();
     assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
     let history: serde_json::Value = serde_json::from_str(String::from_utf8_lossy(&out.stdout).trim()).unwrap();
