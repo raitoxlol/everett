@@ -79,21 +79,93 @@ Inbox enqueue is **not proof of pickup**. An explicit inbox-only T3 send reports
 `poll_session_id`, and `hooked=false` conservatively; Everett does not verify that
 T3's SDK executes native hooks or inherits a user-installed Everett MCP server.
 The receiver must have access to Everett's MCP tools and the same local Everett
-home. Each sending or replying provider session needs its own host-bound MCP caller identity, using `EVERETT_SESSION_ID` in the launch environment when native detection is unavailable. A `session_id` argument must match that binding. Installing Everett in a standalone provider does not prove it is available
+home. Each sending or replying provider session needs its own host-bound MCP caller identity.
+Use the binding check below before configuring an explicit launch environment.
+A `session_id` argument cannot establish that binding. Installing Everett in a standalone provider does not prove it is available
 inside a T3-created provider session.
 
-1. List the thread with `everett_ls` for its provider session `id`. If you already have the exact T3 thread ID from `everett_control(action="threads")`, you can use it as the send destination too.
-2. Bind each participant's exact provider ID as `EVERETT_SESSION_ID` in that
-   T3 thread's MCP launch environment.
-3. From another agent, call `everett_send(to=<provider id>, text=..., mode="inbox")`.
-4. In the receiving T3 session, call `everett_inbox()`.
-   This marks returned messages consumed; use `peek=true` to inspect without consuming.
-5. Reply with `everett_send(reply_to=<message id>, text=...)`.
-6. The sender polls `everett_inbox()` for the reply.
+### Have the agent verify its binding first
 
-An explicit inbox-only send does not wake the receiver. Poll again at task/turn boundaries
-when native hook pickup has not been independently verified. A wait timeout does not
-mean the queued request was lost.
+Ask the agent already running in the receiving T3 thread to drive these checks.
+Use the same Everett profile for the terminal and the MCP server. Native MCP
+calls require an existing sign-in in that profile; local CLI commands do not.
+If sign-in is missing, stop and obtain authorization before running `everett login`.
+
+1. The agent runs `everett ls --json` and identifies its exact underlying provider
+   session ID. A T3 application thread ID is a destination alias, not a caller ID.
+2. Inside that thread, the agent calls `everett_whoami()` and compares `session_id`
+   with that provider ID. If they match, keep the working binding. Current Codex
+   integration can use per-call `_meta.threadId`; it does not need a static override.
+3. If identity is missing, configure a **dedicated** MCP launch for this one
+   provider session. Merge the following environment into that launch's existing
+   Everett server entry, preserving its absolute command, arguments, profile
+   environment, and other servers:
+
+   ```json
+   {
+     "command": "/absolute/path/to/everett",
+     "args": ["mcp"],
+     "env": {"EVERETT_SESSION_ID": "EXACT_PROVIDER_SESSION_ID"}
+   }
+   ```
+
+   For a launcher that accepts command and arguments instead of an `env` object,
+   the equivalent launch is `/usr/bin/env EVERETT_SESSION_ID=EXACT_PROVIDER_SESSION_ID /absolute/path/to/everett mcp`.
+   The variable must reach the MCP subprocess. Exporting it in an unrelated shell
+   or passing a `session_id` tool argument does not configure a running MCP server.
+   Never put one thread's static ID in a shared registration used by other threads.
+4. Restart or rebind that thread's MCP process and call `everett_whoami()` again.
+   Stop if the tool is absent, sign-in fails, the ID is empty or mismatched, or the
+   host cannot provide a dedicated launch. Do not send or consume an inbox to
+   work around a missing binding.
+
+The launch-environment contract is covered by `everett-rs/tests/host_identity.rs`
+and the isolated `release_journey` test. The JSON above describes a subprocess
+registration, not a verified T3 settings screen or CLI flag. A T3-specific way
+to install a dedicated per-thread registration remains **unverified**. Standalone
+provider configuration alone does not establish that T3 loaded it. The in-thread
+`everett_whoami` check is required before treating setup as successful.
+
+### One CLI request, recipient pickup, and correlated reply
+
+This is an agent-driven manual acceptance procedure, **not a recorded live T3
+result**. Use one existing, authorized receiving thread. Do not start another
+model session. First complete the binding check above. Explicit inbox mode does
+not wake the receiver; arrange for the existing agent to poll on its next turn.
+
+1. In the sending agent's terminal, choose an explicit sender identity for this
+   check and the exact recipient ID from `everett ls --json`:
+
+   ```sh
+   sender_id=local-cli-acceptance
+   recipient_id=EXACT_PROVIDER_SESSION_ID
+   EVERETT_SESSION_ID="$sender_id" everett send "Reply with ACK only" --to "$recipient_id" --mode inbox --json
+   ```
+
+   Save the returned `message_id` as `request_id`. Confirm `reply_inbox` equals
+   `local-cli-acceptance`. `queued=true` proves enqueue only. Send once; do not
+   retry automatically after an uncertain result.
+2. In the receiving T3 thread, have the agent call
+   `everett_inbox(message_id="REQUEST_ID")`, substituting that request ID. Confirm
+   the returned message's `id` matches. This consumes the matching request.
+   Then call `everett_send(reply_to="REQUEST_ID", text="ACK")`.
+3. Back in the original terminal, the sending agent sets the saved ID and checks
+   the original receipt and the matching reply:
+
+   ```sh
+   request_id=RETURNED_MESSAGE_ID
+   EVERETT_SESSION_ID="$sender_id" everett status "$request_id" --json
+   everett inbox --session "$sender_id" --reply-to "$request_id" --json
+   ```
+
+   Require `picked_up=true`, state `replied`, and reply text `ACK` in status.
+   Require the inbox reply's `reply_to` to equal the original request ID and
+   `from` to equal the recipient's provider ID. An empty inbox after prior
+   consumption is not a lost reply: status retains the correlated response.
+
+The isolated release journey covers CLI send, MCP pickup/reply, and retained
+correlation using synthetic sessions. It does not verify this host's T3 MCP
+registration, automatic hooks, wake, provider access, or task completion.
 
 ## Identity and shared memory
 

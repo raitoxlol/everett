@@ -91,6 +91,18 @@ even empty, verifies the tool.
 See [MCP caller identity](docs/mcp-identity.md).
 No router key or model call is needed for this setup. Codex may ask you to enable/trust its hooks.
 
+The Quickstart downloads the installer from rolling `main` and installs the latest
+release binary. To reproduce a release, replace both `vX.Y.Z` placeholders below
+with the same published tag:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/raitoxlol/everett/vX.Y.Z/install.sh -o everett-install.sh
+EVERETT_VERSION=vX.Y.Z sh everett-install.sh
+export PATH="$HOME/.local/bin:$PATH"
+everett --version
+```
+Pinning only `EVERETT_VERSION` still runs the installer from the URL you downloaded.
+
 `install.sh` verifies the release checksum; `EVERETT_VERSION=vX.Y.Z` pins a release and
 `EVERETT_INSTALL_DIR` changes the target directory. Rerun it to update.
 
