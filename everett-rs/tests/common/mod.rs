@@ -7,6 +7,16 @@ use std::process::{Command, Output};
 /// Host-installed harness CLIs (omp, devin, pi, ...) must not leak into tests.
 pub const HERMETIC_PATH: &str = "/usr/bin:/bin";
 
+pub fn teresis_src() -> Option<PathBuf> {
+    let Some(src) = std::env::var_os("TERESIS_SRC") else {
+        eprintln!("skipped: set TERESIS_SRC to the Python reference documented in tests/fixtures/teresis/README.md");
+        return None;
+    };
+    let src = PathBuf::from(src);
+    assert!(src.join("teresis/store.py").is_file(), "TERESIS_SRC must point to the Python source directory containing teresis/store.py: {}", src.display());
+    Some(src)
+}
+
 /// A child `everett` that sees only the fixture: nothing inherited, so no host
 /// session store, harness home override or caller identity can reach it.
 pub fn fixture_command(home: &Path) -> Command {

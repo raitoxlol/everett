@@ -12,8 +12,9 @@ mod ownership_shadow;
 
 use std::{
     collections::BTreeSet,
-    fs::File,
+    fs::OpenOptions,
     io::{self, Cursor, Read},
+    os::unix::fs::OpenOptionsExt,
     path::{Path, PathBuf},
     pin::Pin,
     process::Stdio,
@@ -147,10 +148,20 @@ fn default_backend_command() -> Vec<String> {
 }
 
 fn bounded_file(path: &Path, limit: usize) -> Result<Vec<u8>, String> {
+    let read_error = |_| "cannot read boundary file";
+    // A FIFO can block during open; check the opened file before reading it.
+    let file = OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NONBLOCK)
+        .open(path)
+        .map_err(read_error)?;
+    if !file.metadata().map_err(read_error)?.is_file() {
+        return Err("boundary path must refer to a regular file".into());
+    }
     let mut raw = Vec::new();
-    File::open(path)
-        .and_then(|file| file.take((limit + 1) as u64).read_to_end(&mut raw))
-        .map_err(|_| "cannot read boundary file".to_string())?;
+    file.take((limit + 1) as u64)
+        .read_to_end(&mut raw)
+        .map_err(read_error)?;
     if raw.len() > limit {
         return Err("boundary file exceeds size limit".into());
     }

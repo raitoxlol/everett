@@ -1,3 +1,5 @@
+mod common;
+
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
@@ -356,30 +358,11 @@ fn newer_schema_is_refused_untouched() {
     assert_eq!(before, after);
 }
 
-fn teresis_src() -> Option<PathBuf> {
-    if let Ok(v) = std::env::var("TERESIS_SRC") {
-        let p = PathBuf::from(v);
-        if p.join("teresis/store.py").exists() {
-            return Some(p);
-        }
-    }
-    let fallback = PathBuf::from("/home/nuc/Projects/teresis/src");
-    if fallback.join("teresis/store.py").exists() {
-        return Some(fallback);
-    }
-    None
-}
-
 #[test]
 fn python_teresis_round_trip() {
-    let Some(src) = teresis_src() else {
-        eprintln!("skipped: no Teresis checkout (set TERESIS_SRC)");
+    let Some(src) = common::teresis_src() else {
         return;
     };
-    if std::process::Command::new("python3").arg("--version").output().is_err() {
-        eprintln!("skipped: python3 not available");
-        return;
-    }
     let cases = cases();
     let expected = expected();
     let t0 = f(&cases["t0"]);
@@ -387,6 +370,7 @@ fn python_teresis_round_trip() {
     let dir = tempfile::tempdir().unwrap();
     let gen_dir = dir.path().join("gen");
     let gen = std::process::Command::new("python3")
+        .arg("-B")
         .arg(fixture_dir().join("gen.py"))
         .arg(&src)
         .arg(&gen_dir)
@@ -429,6 +413,7 @@ fn python_teresis_round_trip() {
         }
     }
     let verify = std::process::Command::new("python3")
+        .arg("-B")
         .arg(fixture_dir().join("verify.py"))
         .arg(&src)
         .arg(&db)
