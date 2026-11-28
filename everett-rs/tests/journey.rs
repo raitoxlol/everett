@@ -421,6 +421,24 @@ impl TuiProc {
         }
     }
 
+    fn see_line_ending(&mut self, suffix: &str) {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        loop {
+            let screen = self.screen();
+            if screen
+                .lines()
+                .any(|line| line.trim_end().ends_with(suffix))
+            {
+                return;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "never saw a line ending {suffix:?} on screen:\n{screen}"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
+    }
+
     fn review(&mut self) {
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
         let mut last = String::new();
@@ -1087,6 +1105,10 @@ fn onboard_tui_cloud_vm_choices_remain_pending_and_cancel_without_writes() {
     );
     p.see("--replace --device 'PEER/muse-agent/muse'");
     p.resize(54, 14);
+    // The 54-col wrap is the redraw signal. "Muse / setup needed"
+    // was already on the 80x26 screen, so see() would return too early
+    // and Enter could be dropped before the resize settled.
+    p.see_line_ending("muse-a");
     p.send("\r");
     p.review();
     p.see("OpenAI Dots / pending, not added");

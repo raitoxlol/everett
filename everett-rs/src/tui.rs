@@ -1,6 +1,7 @@
 //! Human onboarding. Account approval is separate from reviewed local configuration.
 
 use std::io;
+use std::sync::atomic::{AtomicU16, Ordering};
 use std::time::{Duration, Instant};
 
 use crossterm::cursor;
@@ -28,6 +29,23 @@ const STEP_TITLES: &[&str] = &[
 ];
 const MIN_COLS: u16 = 54;
 const MIN_ROWS: u16 = 14;
+// Last SIGWINCH size. crossterm::terminal::size() can lag a Resize event
+// and briefly report a value below the minimum, which used to drop Enter.
+static LAST_RESIZE_COLS: AtomicU16 = AtomicU16::new(0);
+static LAST_RESIZE_ROWS: AtomicU16 = AtomicU16::new(0);
+
+fn reported_size() -> TResult<(u16, u16)> {
+    let (cols, rows) = crossterm::terminal::size().map_err(|_| Quit)?;
+    let resized = (
+        LAST_RESIZE_COLS.load(Ordering::SeqCst),
+        LAST_RESIZE_ROWS.load(Ordering::SeqCst),
+    );
+    if resized.0 >= MIN_COLS && resized.1 >= MIN_ROWS {
+        Ok(resized)
+    } else {
+        Ok((cols, rows))
+    }
+}
 
 enum Dir {
     Forward,
@@ -235,13 +253,17 @@ fn read_key_for(timeout: Option<Duration>) -> TResult<KeyCode> {
                 } else {
                     k.code
                 };
-                let (cols, rows) = crossterm::terminal::size().map_err(|_| Quit)?;
+                let (cols, rows) = reported_size()?;
                 if !is_quit(&code) && (cols < MIN_COLS || rows < MIN_ROWS) {
                     return Ok(KeyCode::Null);
                 }
                 return Ok(code);
             }
-            Ok(Event::Resize(_, _)) => return Ok(KeyCode::Null),
+            Ok(Event::Resize(cols, rows)) => {
+                LAST_RESIZE_COLS.store(cols, Ordering::SeqCst);
+                LAST_RESIZE_ROWS.store(rows, Ordering::SeqCst);
+                return Ok(KeyCode::Null);
+            }
             Ok(_) => {}
             Err(_) => return Err(Quit),
         }
