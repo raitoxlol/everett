@@ -32,7 +32,7 @@ verifier. Where a model was needed, a loopback model selected the tool.
 | Devin CLI 3000.14.30821 | MCP list showed Everett with `--harness devin`. Headless execution required Devin login. Host binding is covered by fixtures. | Devin skill lookup covered by fixture. |
 
 T3 Code annotates sessions driven by local harnesses. OpenAI dots, Grok Bot and Devin Bot are
-hosted clients with separate gateway or relay setup. This audit covers the seven local clients.
+hosted clients with separate gateway or relay setup. This audit covers seven of the eight local clients; Muse Code is not in it yet.
 
 Run `python3 plugins/everett-hermes/tests/smoke.py --upstream --everett-binary /path/to/everett --hermes-executable /path/to/hermes` to repeat the GitHub install and first tool calls. Omit `--upstream` to exercise the local checkout.
 

@@ -43,7 +43,7 @@ Draft wireframe and copy for review. Nothing is deployed. Grounded in Everett 2.
 
 ### Subheadline
 
-> Everett is a single native Rust binary that reads your existing Claude Code, Codex, OMP, Pi, Hermes, Grok, Devin, and T3 Code sessions read-only. Route requests, send messages with explicit delivery states, match `SKILL.md` playbooks, and share durable project memory through a CLI, 24 MCP tools, or a local dashboard.
+> Everett is a single native Rust binary that reads your existing Claude Code, Codex, OMP, Pi, Hermes, Grok, Devin, Muse Code, and T3 Code sessions read-only. Route requests, send messages with explicit delivery states, match `SKILL.md` playbooks, and share durable project memory through a CLI, 24 MCP tools, or a local dashboard.
 
 ### Primary and secondary buttons
 
@@ -95,11 +95,11 @@ Eyebrow: `WORKS WITH THE HARNESSES YOU ALREADY RUN`
 
 | Group | Tools | Scope |
 | --- | --- | --- |
-| Local CLIs (7) | Claude Code · Codex · OMP · Pi · Hermes Agent · Grok CLI · Devin CLI | Read-only discovery, headless resume and spawn, plus native hooks, extensions, or the Hermes plugin where supported |
+| Local CLIs (8) | Claude Code · Codex · OMP · Pi · Hermes Agent · Grok CLI · Devin CLI · Muse Code | Read-only discovery, headless resume and spawn, plus native hooks, extensions, or the Hermes plugin where supported |
 | Desktop GUI overlay | T3 Code | Annotates underlying Claude, Codex, Grok, and Devin threads as `[t3code]`; exact thread IDs, inbox nudge via `t3 thread send`, `everett_control` |
 | Cloud and external | OpenAI dots · Grok Bot · ChatGPT desktop (`Everett Local` and hosted plugin) | Registered external MCP inboxes, owner-bound Rust gateway, optional webhook nudges, and opt-in MCP Events |
 
-Footnote: `Everett reads the session stores your tools already write. Hark and Muse compatibility is unverified.`
+Footnote: `Everett reads the session stores your tools already write. Hark and Muse VM agent compatibility is unverified.`
 
 ---
 

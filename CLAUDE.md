@@ -4,7 +4,7 @@ Read this before working in Everett so another agent can pick up the same state.
 
 ## Purpose and current state
 
-- Everett is the layer above all harness sessions (Claude Code, Codex, OMP, Pi, Hermes, Grok CLI; T3 Code threads annotate the sessions they drive). It lists them, routes and delivers work between them, and gives them one shared core. Agents use it mainly through `everett mcp`.
+- Everett is the layer above all harness sessions (Claude Code, Codex, OMP, Pi, Hermes, Grok CLI, Devin CLI, Muse Code; T3 Code threads annotate the sessions they drive). It lists them, routes and delivers work between them, and gives them one shared core. Agents use it mainly through `everett mcp`.
 - Session cards live under `~/.everett/cards/`. They summarize one session; they are not the project-wide source of truth.
 - `.everett/WORKING.md` is the repo-wide current state. Dated notes in `.everett/handoffs/` preserve task-level transfers.
 
