@@ -22,6 +22,7 @@ use std::net::TcpListener;
 use std::sync::mpsc::{channel, Receiver};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
+use wait_timeout::ChildExt;
 
 const BIN: &str = env!("CARGO_BIN_EXE_everett");
 const TOKEN: &str = "synthetic-gateway-test-token-not-a-real-secret";
@@ -1300,6 +1301,27 @@ fn reply_authorization_fails_closed() {
     assert!(c.records().is_empty());
 }
 
+fn make_fifo(path: &Path) {
+    use std::os::unix::ffi::OsStrExt;
+    let path = std::ffi::CString::new(path.as_os_str().as_bytes()).unwrap();
+    let result = unsafe { libc::mkfifo(path.as_ptr(), 0o600) };
+    assert_eq!(result, 0, "mkfifo: {}", std::io::Error::last_os_error());
+}
+
+fn reply_rejects_fifo_inbox() {
+    let c = ctx();
+    let inbox = c.home.join(".everett/inbox/dot-one.jsonl");
+    std::fs::create_dir_all(inbox.parent().unwrap()).unwrap();
+    make_fifo(&inbox);
+
+    let mut peer = c.peer(&fixture(&[]));
+    let reply = peer.call("everett_send", json!({"text": "reply", "reply_to": "message-one"}));
+    denied(&reply);
+    assert!(reply.to_string().contains("boundary path must refer to a regular file"), "{reply}");
+    assert!(c.records().is_empty());
+    success(&peer.call("everett_whoami", json!({})));
+}
+
 fn legacy_or_malformed_exact_id_capability_blocks_direct_send_only() {
     let c = ctx();
     for options in [vec!["--legacy"], vec!["--capability", "true"], vec!["--capability", r#"{"enforced":"true"}"#],
@@ -1377,6 +1399,31 @@ fn configuration_rejects_bad_types_reserved_ids_paths_and_unknown_fields() {
     let path = c.config_path(&json!({}));
     std::fs::write(&path, "x".repeat(16385)).unwrap();
     assert_eq!(c.gateway_code(&path), Some(2));
+}
+
+fn configuration_rejects_fifo_without_writer() {
+    let c = ctx();
+    let path = c.home.join("binding.fifo");
+    make_fifo(&path);
+
+    let mut child = common::fixture_command(&c.home)
+        .args(["gateway", "--config"])
+        .arg(&path)
+        .args(["--transport", "stdio"])
+        .stdin(Stdio::null())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let status = child.wait_timeout(Duration::from_secs(6)).unwrap();
+    if status.is_none() {
+        let _ = child.kill();
+        child.wait().unwrap();
+        panic!("gateway hung on a config FIFO with no writer");
+    }
+    let output = child.wait_with_output().unwrap();
+    assert_eq!(status.unwrap().code(), Some(2));
+    let stderr = String::from_utf8(output.stderr).unwrap();
+    assert!(stderr.contains("boundary path must refer to a regular file"), "{stderr}");
 }
 
 fn http_requires_a_strong_token_without_logging_it() {
@@ -1733,10 +1780,12 @@ const CASES: &[Case] = &[
     ("conversation_metadata_cannot_replace_the_gateway_binding", conversation_metadata_cannot_replace_the_gateway_binding),
     ("core_is_an_explicit_grant", core_is_an_explicit_grant),
     ("reply_authorization_fails_closed", reply_authorization_fails_closed),
+    ("reply_rejects_fifo_inbox", reply_rejects_fifo_inbox),
     ("legacy_or_malformed_exact_id_capability_blocks_direct_send_only", legacy_or_malformed_exact_id_capability_blocks_direct_send_only),
     ("worker_identity_cwd_credentials_and_lifecycle", worker_identity_cwd_credentials_and_lifecycle),
     ("worker_timeout_and_concurrency_are_bounded_and_reap_children", worker_timeout_and_concurrency_are_bounded_and_reap_children),
     ("configuration_rejects_bad_types_reserved_ids_paths_and_unknown_fields", configuration_rejects_bad_types_reserved_ids_paths_and_unknown_fields),
+    ("configuration_rejects_fifo_without_writer", configuration_rejects_fifo_without_writer),
     ("http_requires_a_strong_token_without_logging_it", http_requires_a_strong_token_without_logging_it),
     ("http_sdk_roundtrip_is_stateless_and_native", http_sdk_roundtrip_is_stateless_and_native),
     ("http_rejects_auth_host_origin_oversized_and_non_json_requests", http_rejects_auth_host_origin_oversized_and_non_json_requests),
